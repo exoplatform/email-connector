@@ -684,6 +684,43 @@ public class UserEmailSettingServiceTest {
     }
   }
 
+  /**
+   * The guard the migration stands on: with no credentials contract wired, a mailbox
+   * connection is refused rather than authenticated with the stored password behind
+   * the administrator's back. Mutation-verified: with the null check removed the call
+   * ends in a NullPointerException, not this refusal.
+   */
+  @Test
+  void authenticatorForRefusesToRunWithoutTheCredentialsContract() {
+    Object wired = ReflectionTestUtils.getField(userEmailSettingService, "emailCredentialsResolver");
+    ReflectionTestUtils.setField(userEmailSettingService, "emailCredentialsResolver", null);
+    try {
+      IllegalStateException refusal = assertThrows(IllegalStateException.class,
+                                                   () -> userEmailSettingService.authenticatorFor(emailConnector(), TEST_USER));
+      assertTrue("the refusal says what is missing", refusal.getMessage().contains("credentials contract is not available"));
+    } finally {
+      ReflectionTestUtils.setField(userEmailSettingService, "emailCredentialsResolver", wired);
+    }
+  }
+
+  /**
+   * A provider that cannot produce material for this account fails the connection
+   * with its own exception, and no session is opened with anything else.
+   * Mutation-verified: a fallback to the stored password opens a session and fails
+   * the {@code never()}.
+   */
+  @Test
+  void connectRefusesWhenTheProviderCannotAuthenticateTheAccount() throws ConnectorCredentialsException {
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
+    when(emailCredentialsResolver.authenticator(any(), any(), any(), any()))
+        .thenThrow(new ConnectorCredentialsException("no material for this account"));
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      assertThrows(ConnectorCredentialsException.class,
+                   () -> userEmailSettingService.connect(userEmailSetting().getEmailConnectorId(), TEST_USER));
+      mockedSession.verify(() -> Session.getInstance(any(Properties.class), any(Authenticator.class)), never());
+    }
+  }
+
   @Test
   void canConnect() throws TokenServiceInitializationException {
     SettingValue userEmailSettingValue = mock(SettingValue.class);

@@ -200,6 +200,63 @@ public class HttpCardDavClientTest {
     assertTrue(failure.getMessage().contains(PROVIDER), "the message names the provider that could not answer");
   }
 
+  /**
+   * With no credentials contract wired, no request goes out at all: the client
+   * refuses rather than sending unauthenticated, or with a header it assembled
+   * itself. Mutation-verified: with the null check in {@code authorization} removed
+   * the call ends in a NullPointerException, not this refusal.
+   */
+  @Test
+  void withoutTheCredentialsContractEveryRequestIsRefused() {
+    HttpCardDavClient unwired = new HttpCardDavClient(transport, null);
+
+    CardDavException refusal = assertThrows(CardDavException.class, () -> unwired.discoverAddressBook(BOOK_URL, ACCOUNT));
+
+    assertTrue(refusal.getMessage().contains("credentials contract is not available"), "the refusal says what is missing");
+    verifyNoInteractions(transport);
+  }
+
+  /**
+   * The same refusal on the other question the client asks the contract -- whose
+   * account a templated URL is for. Mutation-verified: with the null check in
+   * {@code targetAccount} removed the call ends in a NullPointerException.
+   */
+  @Test
+  void withoutTheCredentialsContractATemplatedUrlCannotBeResolved() {
+    HttpCardDavClient unwired = new HttpCardDavClient(transport, null);
+
+    CardDavException refusal = assertThrows(CardDavException.class,
+                                            () -> unwired.resolveUrl("https://mail.example.com/dav/{email}/", ACCOUNT));
+
+    assertTrue(refusal.getMessage().contains("credentials contract is not available"), "the refusal says what is missing");
+  }
+
+  /**
+   * A provider that cannot produce material fails the request as a CardDAV failure
+   * naming the provider, before anything is sent. Mutation-verified: a message that
+   * does not name the provider fails the first assertion; a request sent anyway
+   * fails the second.
+   */
+  @Test
+  void aProviderThatCannotProduceMaterialFailsTheRequestNamingItself() throws Exception {
+    when(resolver.authorization(any(), any(), any())).thenThrow(new ConnectorCredentialsException("no material"));
+
+    CardDavException failure = assertThrows(CardDavException.class, () -> client.discoverAddressBook(BOOK_URL, ACCOUNT));
+
+    assertTrue(failure.getMessage().contains(PROVIDER), "the message names the provider that could not answer");
+    verifyNoInteractions(transport);
+  }
+
+  @Test
+  void aProviderThatCannotNameTheAccountFailsTheUrlNamingItself() throws Exception {
+    when(resolver.targetAccount(any(), any(), any())).thenThrow(new ConnectorCredentialsException("no account"));
+
+    CardDavException failure = assertThrows(CardDavException.class,
+                                            () -> client.resolveUrl("https://mail.example.com/dav/{email}/", ACCOUNT));
+
+    assertTrue(failure.getMessage().contains(PROVIDER), "the message names the provider that could not answer");
+  }
+
   @Test
   void anAccountThatCannotSitInAPathIsRefusedByItsOwnMessage() throws Exception {
     // A percent starts an escape the account is not, so the URI parser refuses it
