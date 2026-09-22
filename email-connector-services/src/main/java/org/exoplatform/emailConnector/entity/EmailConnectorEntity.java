@@ -81,10 +81,10 @@ public class EmailConnectorEntity {
   /**
    * Name of the {@link org.exoplatform.services.connector.credentials.ConnectorCredentialsProvider}
    * this connector is configured to use (e.g. "personal", "bluemind-sudo").
-   * Defaults to Personal, the only mode that requires no administrator
-   * action beyond this connector's own IMAP/SMTP settings - every connector
-   * created before this field existed backfills to the same value via the
-   * migration's column default.
+   * A blank name is defaulted to {@code personal} - the only mode that requires
+   * no administrator action beyond this connector's own IMAP/SMTP settings - by
+   * {@code EmailConnectorStorage.toEntity}, not here; rows created before this
+   * column existed carry the migration's column default.
    */
   @Column(name = "AUTH_PROVIDER_NAME")
   private String  authProviderName;

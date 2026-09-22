@@ -198,6 +198,7 @@ public class HttpCardDavClientTest {
                                             () -> client.resolveUrl("https://mail.example.com/dav/{email}/", ACCOUNT));
 
     assertTrue(failure.getMessage().contains(PROVIDER), "the message names the provider that could not answer");
+    assertTrue(failure.getMessage().contains("named no account"), "a provider that answered null, not one that failed");
   }
 
   /**
@@ -247,6 +248,12 @@ public class HttpCardDavClientTest {
     verifyNoInteractions(transport);
   }
 
+  /**
+   * A provider that fails and a provider that names no account are two different
+   * failures with two different messages; this one is the failure, with its cause. A
+   * {@code targetAccount} that swallowed the exception into null would produce the other
+   * message and pass a name-only assertion.
+   */
   @Test
   void aProviderThatCannotNameTheAccountFailsTheUrlNamingItself() throws Exception {
     when(resolver.targetAccount(any(), any(), any())).thenThrow(new ConnectorCredentialsException("no account"));
@@ -255,6 +262,8 @@ public class HttpCardDavClientTest {
                                             () -> client.resolveUrl("https://mail.example.com/dav/{email}/", ACCOUNT));
 
     assertTrue(failure.getMessage().contains(PROVIDER), "the message names the provider that could not answer");
+    assertTrue(failure.getMessage().contains("could not name the account"), "the provider failed, it did not answer null");
+    assertNotNull(failure.getCause(), "the provider's own failure travels with it");
   }
 
   @Test
