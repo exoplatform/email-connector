@@ -29,10 +29,12 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.Map;
 
 import javax.mail.MessagingException;
 import javax.mail.Store;
@@ -47,6 +49,8 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
@@ -435,6 +439,71 @@ class EmailDelegationServiceTest {
     verify(emailFolderStorage).deleteDelegatedFolders(GRANTEE, 100L);
     verify(engine, never()).revoke(any(), any(), any());
     verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * #432-3 -- a disconnected or rebound mailbox ends the shares its user was using, as a
+   * leave would: eXo-made ones back to DECLINED, server-made ones to AVAILABLE, their
+   * folders dropped, the owner told; a pending or declined one is left alone, and no
+   * server is asked.
+   */
+  @Test
+  void aDisconnectEndsTheSharesInUseAsALeaveWould() throws Exception {
+    EmailDelegation exoMade = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    EmailDelegation serverMade = row(DelegationStatus.ACCEPTED, DelegationOrigin.SERVER);
+    serverMade.setId(101L);
+    EmailDelegation pending = row(DelegationStatus.PENDING, DelegationOrigin.EXO);
+    pending.setId(102L);
+    when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(exoMade, serverMade, pending));
+
+    service.endReceivedShares(GRANTEE);
+
+    assertEquals(DelegationStatus.DECLINED, exoMade.getStatus());
+    assertEquals(DelegationStatus.AVAILABLE, serverMade.getStatus());
+    assertEquals(DelegationStatus.PENDING, pending.getStatus());
+    verify(emailFolderStorage).deleteDelegatedFolders(GRANTEE, 100L);
+    verify(emailFolderStorage).deleteDelegatedFolders(GRANTEE, 101L);
+    verify(emailFolderStorage, never()).deleteDelegatedFolders(GRANTEE, 102L);
+    verify(eventPublisher, times(2)).publishEvent(any(EmailDelegationEvent.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * #432-5 -- a namespace segment names an owner by the local part only when a single
+   * connected user has it: on a preset serving two domains, "anne" is nobody.
+   */
+  @Test
+  void aLocalPartNamesAnOwnerOnlyWhenItIsUnique() {
+    Map<String, String> oneAnne = Map.of("anne@acme.com", "anne", "bob@acme.com", "bob");
+    Map<String, String> twoAnnes = Map.of("anne@acme.com", "anne", "anne@globex.com", "anne2");
+
+    assertEquals("anne", ReflectionTestUtils.invokeMethod(service, "ownerFor", oneAnne, "anne"));
+    assertEquals("anne2", ReflectionTestUtils.invokeMethod(service, "ownerFor", twoAnnes, "anne@globex.com"));
+    assertNull(ReflectionTestUtils.invokeMethod(service, "ownerFor", twoAnnes, "anne"));
+
+    EmailDelegation acme = row(DelegationStatus.AVAILABLE, DelegationOrigin.SERVER);
+    acme.setOwnerMailbox("anne@acme.com");
+    EmailDelegation globex = row(DelegationStatus.AVAILABLE, DelegationOrigin.SERVER);
+    globex.setId(101L);
+    globex.setOwnerMailbox("anne@globex.com");
+    SharedMailbox listed = new SharedMailbox("anne", "Other Users/anne", "Other Users/anne/INBOX", "/");
+    assertSame(acme, ReflectionTestUtils.invokeMethod(service, "rowFor", List.of(acme), CONNECTOR_ID, listed));
+    assertNull(ReflectionTestUtils.invokeMethod(service, "rowFor", List.of(acme, globex), CONNECTOR_ID, listed));
+  }
+
+  /**
+   * #432-6 -- two listings creating the same share at once: the second insert is
+   * refused by the unique key, and the row the first created is answered instead of a
+   * server error.
+   */
+  @Test
+  void aConcurrentCreateAnswersTheRowTheFirstCreated() {
+    EmailDelegation mine = row(DelegationStatus.AVAILABLE, DelegationOrigin.SERVER);
+    EmailDelegation theirs = row(DelegationStatus.AVAILABLE, DelegationOrigin.SERVER);
+    doThrow(new DataIntegrityViolationException("UQ_EMAIL_DELEGATION")).when(emailDelegationStorage).create(any());
+    when(emailDelegationStorage.getByKey(GRANTEE, CONNECTOR_ID, OWNER_MAILBOX)).thenReturn(theirs);
+
+    assertSame(theirs, ReflectionTestUtils.invokeMethod(service, "createOrReread", mine));
   }
 
   /**
@@ -891,10 +960,16 @@ class EmailDelegationServiceTest {
     accepted.setNotifyNewMail(true);
     when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(accepted);
 
+    EmailDelegation stored = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    when(emailDelegationStorage.updatePreferences(GRANTEE, 100L, true, true)).thenReturn(stored);
+
     EmailDelegation updated = service.updatePreferences(GRANTEE, 100L, true, null);
 
-    assertTrue(updated.isBadgeIncluded());
-    assertTrue(updated.isNotifyNewMail());
+    // #432-2: the two toggles alone, never the row read before -- a null keeps the
+    // stored toggle, and the rest of the row is not written at all.
+    assertSame(stored, updated);
+    verify(emailDelegationStorage).updatePreferences(GRANTEE, 100L, true, true);
+    verify(emailDelegationStorage, never()).update(any());
     when(emailDelegationStorage.getAsGrantee(OWNER, 100L)).thenReturn(null);
     assertThrows(ObjectNotFoundException.class, () -> service.updatePreferences(OWNER, 100L, true, true));
   }

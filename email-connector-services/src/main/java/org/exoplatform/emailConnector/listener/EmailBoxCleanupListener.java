@@ -25,6 +25,7 @@ import org.springframework.transaction.event.TransactionalEventListener;
 import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailContactService;
+import org.exoplatform.emailConnector.service.EmailDelegationService;
 
 /**
  * Drops what a rebound or disconnected mailbox leaves behind: its cached
@@ -52,6 +53,9 @@ public class EmailBoxCleanupListener {
   @Autowired
   private EmailContactService emailContactService;
 
+  @Autowired
+  private EmailDelegationService emailDelegationService;
+
   /**
    * Handles a mailbox that has been rebound or disconnected, after the
    * address-book release has run — the {@code @Order} pair pins that.
@@ -68,6 +72,9 @@ public class EmailBoxCleanupListener {
   @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT, fallbackExecution = true)
   public void handleEmailBoxCleanup(EmailBoxCleanupEvent event) {
     emailBoxService.deleteUserEmails(event.getUsername());
+    // The mailboxes shared with the user were read with the account that has just gone:
+    // those in use end as a leave would (#432-3). Their mirrored mail went with the rest.
+    emailDelegationService.endReceivedShares(event.getUsername());
     // The cache the collection reads has just gone, so collection has to be able to
     // start from nothing again. Without this the next mailbox collects nobody: its
     // first sync caches the inbox before the sent folder, and an inbox sender is
