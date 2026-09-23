@@ -120,10 +120,23 @@ public final class MailboxRights {
   }
 
   /**
-   * Parses a rights string as a server or a preset spells it. The RFC 2086 letters are
-   * folded into their RFC 4314 pairs, repeats are dropped, and the known letters are
-   * put in canonical order, followed by any letter this class does not know, in the
-   * order met.
+   * Parses a rights string as a server or a preset spells it. Repeats are dropped, and
+   * the known letters are put in canonical order, followed by any letter this class
+   * does not know, in the order met.
+   * <p>
+   * <b>The RFC 2086 letters are read two ways, depending on what else the string
+   * holds.</b> From a server that speaks only RFC 2086 ({@code c} and {@code d} with
+   * none of their RFC 4314 members), {@code c} is folded into {@code k}+{@code x} and
+   * {@code d} into {@code t}+{@code e}. From a server that speaks RFC 4314 they are
+   * RFC 4314 section 2.1.1's <i>virtual</i> rights, which that server "MUST also
+   * include" when <b>any</b> member is set: they then say nothing the members do not
+   * already say, and are dropped. Dovecot 2.3 answers an Editor granted {@code lrswit}
+   * as {@code ilrwtsd} (GETACL) and {@code lrwstid} (MYRIGHTS): folding that {@code d}
+   * read an {@code e} the grant never gave, i.e. "this delegate can finish a move" on a
+   * server that answers the delegate's {@code UID EXPUNGE} with
+   * {@code OK Expunge ignored: Permission denied} (EXO-90552, observed 2026-09-23).
+   * The members are {@code k}, {@code x} for {@code c} and {@code t}, {@code e},
+   * {@code x} for {@code d} -- the widest of the two groupings the RFC allows a server.
    *
    * @param rights the letters, possibly null or blank
    * @return the rights, never null
@@ -131,16 +144,22 @@ public final class MailboxRights {
   public static MailboxRights of(String rights) {
     Set<Character> parsed = new LinkedHashSet<>();
     if (rights != null) {
+      boolean speaksCreateMembers = containsAny(rights, CREATE_MAILBOX, DELETE_MAILBOX);
+      boolean speaksDeleteMembers = containsAny(rights, DELETE_MESSAGES, EXPUNGE, DELETE_MAILBOX);
       for (char letter : rights.toCharArray()) {
         if (Character.isWhitespace(letter)) {
           continue;
         }
         if (letter == LEGACY_CREATE) {
-          parsed.add(CREATE_MAILBOX);
-          parsed.add(DELETE_MAILBOX);
+          if (!speaksCreateMembers) {
+            parsed.add(CREATE_MAILBOX);
+            parsed.add(DELETE_MAILBOX);
+          }
         } else if (letter == LEGACY_DELETE) {
-          parsed.add(DELETE_MESSAGES);
-          parsed.add(EXPUNGE);
+          if (!speaksDeleteMembers) {
+            parsed.add(DELETE_MESSAGES);
+            parsed.add(EXPUNGE);
+          }
         } else {
           parsed.add(letter);
         }
@@ -154,6 +173,22 @@ public final class MailboxRights {
     }
     ordered.addAll(parsed);
     return new MailboxRights(ordered);
+  }
+
+  /**
+   * Whether a rights string holds at least one of some letters.
+   *
+   * @param rights the rights string
+   * @param letters the letters looked for
+   * @return true when one of them is present
+   */
+  private static boolean containsAny(String rights, char... letters) {
+    for (char letter : letters) {
+      if (rights.indexOf(letter) >= 0) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
