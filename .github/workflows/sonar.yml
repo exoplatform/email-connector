@@ -6,6 +6,7 @@ on:
     branches:
       - feature/maintenance
       - feature/mips
+      - feature/ai-contribution
       - develop
       - stable/*
   workflow_dispatch:
