@@ -44,7 +44,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <template v-if="canExtend">
         <v-divider class="my-1" />
         <v-list-item @click="$emit('extend')">
-          <v-list-item-title>{{ $t('UserSettings.emailConnector.sharing.extend') }}</v-list-item-title>
+          <v-list-item-title>{{ extendLabel }}</v-list-item-title>
         </v-list-item>
       </template>
       <v-divider class="my-1" />
@@ -64,8 +64,10 @@ export default {
     // READER or EDITOR, or null when the letters read as no preset.
     currentPreset: { type: String, default: null },
     disabled: { type: Boolean, default: false },
-    // Whether the share covers the Inbox only and may be extended (EXO-90548).
+    // Whether the owner's mailbox has role folders the share does not cover yet (EXO-90548).
     canExtend: { type: Boolean, default: false },
+    // What an Extend would add, said: "Share Spam too".
+    extendLabel: { type: String, default: '' },
   },
   data: () => ({ PRESETS }),
   methods: {

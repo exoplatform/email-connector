@@ -255,7 +255,19 @@ public class EmailDelegationService {
         return new GrantedDelegations(capabilities, ownerMailbox, rowsOnly(rows));
       }
       List<MailboxAce> acl = engine.listAcl(session, OWNER_INBOX);
-      return new GrantedDelegations(capabilities, ownerMailbox, merge(ownerUsername, ownerMailbox, connector, acl, rows));
+      List<DelegationGrantee> grantees = merge(ownerUsername, ownerMailbox, connector, acl, rows);
+      if (capabilities.grantGranularity() == GrantGranularity.FOLDER
+          && grantees.stream().anyMatch(grantee -> isExtendable(grantee.delegation()))) {
+        // What an Extend would add to each share eXo wrote (EXO-90548): the owner's role
+        // folders as her session names them now, one LIST for the whole list, and only
+        // when some share could be extended at all.
+        Set<FolderRole> ownerRoles = roleFoldersOf(engine, session).keySet();
+        grantees = grantees.stream()
+                           .map(grantee -> isExtendable(grantee.delegation()) ? grantee.withExtendableRoles(missingRoles(grantee.delegation(), ownerRoles))
+                                                                              : grantee)
+                           .toList();
+      }
+      return new GrantedDelegations(capabilities, ownerMailbox, grantees);
     }
   }
 
@@ -617,9 +629,7 @@ public class EmailDelegationService {
     EmailDelegation delegation = asOwner(ownerUsername, id);
     // Only a share in use or on offer (decision 3b): a declined or merely available
     // share is extended by inviting again, a revoked or gone one not at all.
-    if ((delegation.getStatus() != DelegationStatus.ACCEPTED && delegation.getStatus() != DelegationStatus.PENDING)
-        || delegation.getOrigin() != DelegationOrigin.EXO || delegation.getPreset() == null || !delegation.getPreset().isGrantable()
-        || delegation.grantsWholeMailbox()) {
+    if (!isExtendable(delegation)) {
       throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
     }
     UserEmailSetting ownerSetting = connectedSetting(ownerUsername);
@@ -645,6 +655,15 @@ public class EmailDelegationService {
       if (capabilities.grantGranularity() != GrantGranularity.FOLDER) {
         throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
       }
+      // What there is to add, read before anything is written: the default roles her
+      // mailbox has and the share does not cover yet (EXO-90548). Nothing to add is a
+      // refusal, not an INBOX rewritten for nothing.
+      Map<FolderRole, String> current = roleFoldersOf(engine, session);
+      roleFolders.putAll(current);
+      List<FolderRole> missing = missingRoles(delegation, current.keySet());
+      if (missing.isEmpty()) {
+        throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
+      }
       // Still on the server? A share the owner removed in another mail application is
       // not revived by "Extend access": eXo never rewrites what was decided there.
       requireOnInbox(engine, session, identifier);
@@ -655,10 +674,7 @@ public class EmailDelegationService {
                          session,
                          identifier,
                          engine.grant(session, OWNER_INBOX, identifier, delegation.getPreset(), engine.myRights(session, OWNER_INBOX)));
-      roleFolders.putAll(roleFoldersOf(engine, session));
-      Set<FolderRole> missing = EnumSet.noneOf(FolderRole.class);
-      FolderRole.GRANTED.stream().filter(role -> !granted.contains(role)).forEach(missing::add);
-      granted.addAll(grantRoleFolders(engine, session, identifier, delegation.getPreset(), missing, roleFolders));
+      granted.addAll(grantRoleFolders(engine, session, identifier, delegation.getPreset(), EnumSet.copyOf(missing), roleFolders));
     }
     MailboxRights inboxRights = written.rights() == null ? MailboxRights.NONE : written.rights();
     DelegationPreset recorded = written.preset() == null || written.preset() == DelegationPreset.CUSTOM ? delegation.getPreset()
@@ -692,6 +708,35 @@ public class EmailDelegationService {
              identifier,
              delegation.getGrantedRoles());
     return delegation;
+  }
+
+  /**
+   * Whether "Extend access" can act on a share at all (EXO-90548): one eXo wrote, in use
+   * or on offer (decision 3b), with a preset eXo grants, and recorded per folder -- a
+   * grant of a whole mailbox at once already covers every folder.
+   *
+   * @param delegation the share, or null
+   * @return true when an Extend may be asked for it
+   */
+  private static boolean isExtendable(EmailDelegation delegation) {
+    return delegation != null
+        && (delegation.getStatus() == DelegationStatus.ACCEPTED || delegation.getStatus() == DelegationStatus.PENDING)
+        && delegation.getOrigin() == DelegationOrigin.EXO && delegation.getPreset() != null && delegation.getPreset().isGrantable()
+        && !delegation.grantsWholeMailbox();
+  }
+
+  /**
+   * The default roles (Sent, Archive, Trash, Spam -- never Drafts) the owner's mailbox has
+   * and a share does not cover yet, in the order they are granted: exactly what an
+   * Extend adds (EXO-90548).
+   *
+   * @param delegation the share
+   * @param ownerRoles the roles the owner's mailbox has now
+   * @return the roles to add, possibly empty
+   */
+  private static List<FolderRole> missingRoles(EmailDelegation delegation, Set<FolderRole> ownerRoles) {
+    Set<FolderRole> granted = delegation.grantedRoleSet();
+    return FolderRole.GRANTED.stream().filter(ownerRoles::contains).filter(role -> !granted.contains(role)).toList();
   }
 
   /**
@@ -2284,7 +2329,8 @@ public class EmailDelegationService {
                                          row.getPreset(),
                                          row.getRights(),
                                          row.getNativeRights(),
-                                         row.getMailboxRights().affordances()));
+                                         row.getMailboxRights().affordances(),
+                                         List.of()));
     }
     return grantees;
   }
