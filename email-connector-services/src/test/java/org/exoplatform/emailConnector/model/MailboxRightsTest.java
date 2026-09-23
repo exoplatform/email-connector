@@ -196,4 +196,15 @@ class MailboxRightsTest {
     assertFalse(DelegationPreset.CUSTOM.isGrantable());
     assertTrue(DelegationPreset.READER.isGrantable());
   }
+
+  /**
+   * EXO-90548 -- taking mail out of a folder is offered with t AND e: without e a server
+   * keeps the original (silently, on Dovecot).
+   */
+  @Test
+  void movingMailOutNeedsDeleteAndExpunge() {
+    assertTrue(MailboxRights.of("lrswite").affordances().get("moveOut"));
+    assertFalse(MailboxRights.of("lrswit").affordances().get("moveOut"));
+    assertTrue(MailboxRights.of("lrswit").affordances().get("delete"), "the flag alone is still said as it is");
+  }
 }

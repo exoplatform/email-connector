@@ -148,6 +148,7 @@ import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderClassification;
 import org.exoplatform.emailConnector.model.FolderMessageCounts;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailboxRights;
@@ -642,6 +643,22 @@ public class EmailBoxService {
    */
   static final String             CROSS_MAILBOX_MESSAGE                                       =
                                                                              "emailConnector.folder.crossMailbox";
+
+  /** A delete in a shared mailbox whose owner shares no Trash with the caller (EXO-90548). */
+  static final String             NO_SHARED_TRASH_MESSAGE                                     = "emailConnector.delegation.noTrash";
+
+  /** An archive in a shared mailbox whose owner shares no Archive with the caller. */
+  static final String             NO_SHARED_ARCHIVE_MESSAGE                                   = "emailConnector.delegation.noArchive";
+
+  /** A "mark as spam" in a shared mailbox whose owner shares no Spam folder with the caller. */
+  static final String             NO_SHARED_JUNK_MESSAGE                                      = "emailConnector.delegation.noJunk";
+
+  /**
+   * Destroying mail for good in a shared mailbox: refused whatever the letters, as a
+   * policy -- a per-mailbox server (BlueMind) grants {@code e} everywhere, and eXo never
+   * offers a delegate permanent deletion (EXO-90548, plan S1.6).
+   */
+  static final String             PURGE_NOT_ALLOWED_MESSAGE                                   = "emailConnector.delegation.purgeNotAllowed";
 
   /**
    * The administrator's kill switch for the server-side half of drafts, in the
@@ -6527,16 +6544,13 @@ public class EmailBoxService {
    * is not what "delete" or "archive" means to the person who clicked it, and is not
    * recoverable from the mailbox they were looking at.
    * <p>
-   * The consequence, stated plainly because it is a phase-1 limitation and not a
-   * design: <b>delete, archive and "mark as spam" are refused on a delegated folder in
-   * this phase</b>, because their destinations are the caller's OWN Trash, Archive and
-   * Junk, and the shared mailbox's own equivalents are not registered yet (accept
-   * enables its INBOX and nothing else). The delegation plan's affordance table reads
-   * "Delete (into Trash, needs {@code i} on Trash)", which presumes a delegated Trash
-   * folder; registering the shared mailbox's other folders is the later task, and the
-   * day it lands this method already says what it will then allow. The rights check
-   * runs FIRST so that a delegate who holds no {@code t} at all is told the true reason
-   * -- their rights -- rather than a limitation that would not apply to them anyway.
+   * Since EXO-90548 a delete, an archive or a "mark as spam" in a shared mailbox files
+   * into that mailbox's own Trash, Archive or Spam ({@link #destinationKeyOf}), so this
+   * refusal is left to what it always meant: an explicit Move-to, or a drag, from one
+   * mailbox into another. The source also needs {@code e}, since the move ends in an
+   * expunge. The rights checks run FIRST so that a delegate who holds no {@code t} is
+   * told the true reason -- their rights -- rather than a rule that would not apply to
+   * them anyway.
    *
    * @param username the caller
    * @param sourceKey the folder the messages leave
@@ -6547,6 +6561,14 @@ public class EmailBoxService {
    */
   private void checkDelegatedMove(String username, String sourceKey, String destinationKey) throws MailboxRightMissingException {
     checkDelegatedRight(username, sourceKey, MailboxRights.DELETE_MESSAGES);
+    try {
+      // And e (EXO-90548): a move ends in an expunge, and a server holding the source
+      // without it keeps the original -- silently, on Dovecot. Said as what the user
+      // tried, taking mail out of the folder, not as "permanent deletion".
+      checkDelegatedRight(username, sourceKey, MailboxRights.EXPUNGE);
+    } catch (MailboxRightMissingException missingExpunge) {
+      throw new MailboxRightMissingException(MailboxRights.DELETE_MESSAGES);
+    }
     checkDelegatedRight(username, destinationKey, MailboxRights.INSERT);
     if (!isSameMailbox(username, sourceKey, destinationKey)) {
       throw new IllegalArgumentException(CROSS_MAILBOX_MESSAGE);
@@ -6555,19 +6577,48 @@ public class EmailBoxService {
 
   /**
    * Where a move action files its messages, as a folder key -- what
-   * {@link #checkDelegatedMove} needs the destination to be named by.
+   * {@link #checkDelegatedMove} needs the destination to be named by. From a shared
+   * mailbox, a delete, an archive or a "mark as spam" files into that mailbox's own
+   * Trash, Archive or Spam, derived here from the source's share and never taken from
+   * the client (EXO-90548, plan S1.6); a mailbox without one refuses the action by name,
+   * and a delete from its Trash is refused as the permanent deletion it would be.
    *
+   * @param username the caller
    * @param action the action
+   * @param sourceFolder the folder the messages leave
    * @param targetFolder the destination of a {@link MoveAction#MOVE}, null otherwise
    * @return the destination's key
+   * @throws IllegalArgumentException {@code emailConnector.delegation.noTrash},
+   *           {@code noArchive}, {@code noJunk} or {@code purgeNotAllowed}
    */
-  private String destinationKeyOf(MoveAction action, String targetFolder) {
-    return switch (action) {
-      case DELETE -> MailFolder.TRASH;
-      case ARCHIVE -> MailFolder.ARCHIVE;
-      case JUNK -> MailFolder.JUNK;
-      case MOVE -> targetFolder;
+  private String destinationKeyOf(String username, MoveAction action, String sourceFolder, String targetFolder) {
+    EmailDelegation delegation = emailDelegationService.delegationOf(username, sourceFolder);
+    if (delegation == null || action == MoveAction.MOVE) {
+      return switch (action) {
+        case DELETE -> MailFolder.TRASH;
+        case ARCHIVE -> MailFolder.ARCHIVE;
+        case JUNK -> MailFolder.JUNK;
+        case MOVE -> targetFolder;
+      };
+    }
+    FolderRole role = switch (action) {
+      case DELETE -> FolderRole.TRASH;
+      case ARCHIVE -> FolderRole.ARCHIVE;
+      default -> FolderRole.JUNK;
     };
+    if (action == MoveAction.DELETE && emailDelegationService.roleOf(username, sourceFolder) == FolderRole.TRASH) {
+      // A delete from the owner's Trash would be the permanent one.
+      throw new IllegalArgumentException(PURGE_NOT_ALLOWED_MESSAGE);
+    }
+    String key = emailDelegationService.roleFolderKey(username, delegation.getId(), role);
+    if (key == null) {
+      throw new IllegalArgumentException(switch (action) {
+        case DELETE -> NO_SHARED_TRASH_MESSAGE;
+        case ARCHIVE -> NO_SHARED_ARCHIVE_MESSAGE;
+        default -> NO_SHARED_JUNK_MESSAGE;
+      });
+    }
+    return key;
   }
 
   /**
@@ -6711,7 +6762,12 @@ public class EmailBoxService {
     // In the shared body rather than at each of the five entry points, because this is
     // the one place that is guaranteed to be on the path of all of them -- including
     // the per-folder calls the conversation widening makes.
-    checkDelegatedMove(username, sourceFolder, destinationKeyOf(action, targetFolder));
+    String destinationKey = destinationKeyOf(username, action, sourceFolder, targetFolder);
+    checkDelegatedMove(username, sourceFolder, destinationKey);
+    // A shared mailbox's folder files inside that mailbox, into the folder its own
+    // registry names (EXO-90548) -- never through the loose finders, which look at the
+    // caller's own mailbox.
+    boolean delegatedSource = emailDelegationService.delegationOf(username, sourceFolder) != null;
     Map<Long, Email> rows = new LinkedHashMap<>();
     for (Long mailRemoteId : mailRemoteIds) {
       try {
@@ -6754,12 +6810,22 @@ public class EmailBoxService {
       // every screen, in a folder the sync never opens. A MOVE's destination is the
       // caller's own folder, resolved through the registry exactly as its rows are read
       // back, so the folder the message lands in is the folder its mirror will list.
-      Folder destination = switch (action) {
+      Folder destination = delegatedSource ? resolveCachedImapFolder(store, destinationKey, username, syncState) : switch (action) {
         case DELETE -> findTrashFolder(store);
         case ARCHIVE -> findArchiveFolder(store);
         case JUNK -> resolveJunkFolder(store, syncState);
         case MOVE -> resolveCachedImapFolder(store, targetFolder, username, syncState);
       };
+      if (destination == null && delegatedSource) {
+        // The owner's folder was listed at the last discovery and is gone now: nothing
+        // is removed from their mailbox without somewhere to file it.
+        LOG.warn("The {} folder of a shared mailbox of user {} is gone; {} message(s) left where they are",
+                 destinationKey,
+                 username,
+                 mailRemoteIds.size());
+        rows.values().forEach(this::recreateCachedRow);
+        return mailRemoteIds.size();
+      }
       if (destination == null) {
         if (action != MoveAction.DELETE) {
           // Nowhere to archive to, nowhere to file spam, or a folder that vanished
@@ -6845,7 +6911,23 @@ public class EmailBoxService {
                         mailRemoteId);
               continue;
             }
-            expungeOnClose = removeMessageByUid(source, mailRemoteId, expectedMessageId, sourceFolder, username) || expungeOnClose;
+            boolean deferred = removeMessageByUid(source, mailRemoteId, expectedMessageId, sourceFolder, username);
+            expungeOnClose = deferred || expungeOnClose;
+            if (delegatedSource && !deferred && isStillThere(message)) {
+              // The server answered the expunge and kept the message: Dovecot answers an
+              // expunge it refused "OK Expunge ignored" (EXO-90548). Its copy in the
+              // destination stays -- without e there, as on the owner's Trash, eXo cannot
+              // take it back -- but the original is not shown as gone.
+              LOG.warn("The mail server kept message {} of folder {} of a shared mailbox of user {} after an expunge; its rights are re-read",
+                       mailRemoteId,
+                       sourceFolder,
+                       username);
+              unflagDeleted(source, mailRemoteId);
+              recreateCachedRow(row);
+              moved.decrementAndGet();
+              failures++;
+              emailDelegationService.refreshFolderRights(username, sourceFolder, store);
+            }
           } catch (MessageRemovedException alreadyRemoved) {
             LOG.debug("Email {} already removed from {} by the copy for user {}", mailRemoteId, sourceFolder, username);
           }
@@ -7196,9 +7278,12 @@ public class EmailBoxService {
     // then answers the rest. Reached today only from this class -- the REST layer sends
     // TRASH or JUNK -- which is exactly why it is checked here and not left to trust.
     if (action == HiddenFolderAction.PURGE) {
-      // Destroying mail for good is t (flag \Deleted) AND e (EXPUNGE). eXo never grants
-      // e from its own presets, so a delegate is refused here by their own letters, not
-      // by a special case.
+      // Destroying mail for good in a shared mailbox is refused as a policy, whatever
+      // the letters (EXO-90548): an Editor now holds e on INBOX, and a per-mailbox
+      // server grants it everywhere.
+      if (emailDelegationService.delegationOf(username, folderKey) != null) {
+        throw new IllegalArgumentException(PURGE_NOT_ALLOWED_MESSAGE);
+      }
       checkDelegatedRight(username, folderKey, MailboxRights.DELETE_MESSAGES);
       checkDelegatedRight(username, folderKey, MailboxRights.EXPUNGE);
     } else {
@@ -10623,6 +10708,43 @@ public class EmailBoxService {
     } catch (MessagingException e) {
       LOG.debug("No UID EXPUNGE for user {}; the {} message goes on close instead", username, folderLabel, e);
       return true;
+    }
+  }
+
+  /**
+   * Whether a message the server was just asked to expunge is still in the folder --
+   * the check a shared mailbox's move ends with, because a server may answer an expunge
+   * it did not do with a tagged OK (Dovecot: "Expunge ignored: Permission denied",
+   * EXO-90548) and JavaMail then reports nothing. Read off the handle the move already
+   * holds, which the server's own EXPUNGE response marks: no round trip either way.
+   * <p>
+   * Only after a UID EXPUNGE: on a server without UIDPLUS the removal waits for the
+   * folder's close, and this check cannot see it -- the servers certified for sharing
+   * (Stalwart, Dovecot) both offer UIDPLUS.
+   *
+   * @param message the message the move flagged and expunged
+   * @return true when the server still holds it
+   */
+  private boolean isStillThere(Message message) {
+    return message != null && !message.isExpunged();
+  }
+
+  /**
+   * Takes back the {@code \Deleted} flag of a message the server would not expunge, so
+   * another client does not show it struck through and a later expunge by someone with
+   * the right does not remove it unasked.
+   *
+   * @param folder the open folder
+   * @param uid the message's UID
+   */
+  private void unflagDeleted(IMAPFolder folder, long uid) {
+    try {
+      Message message = folder.getMessageByUID(uid);
+      if (message != null) {
+        message.setFlag(Flags.Flag.DELETED, false);
+      }
+    } catch (MessagingException e) {
+      LOG.debug("Could not take back the deleted flag of uid {}", uid, e);
     }
   }
 
