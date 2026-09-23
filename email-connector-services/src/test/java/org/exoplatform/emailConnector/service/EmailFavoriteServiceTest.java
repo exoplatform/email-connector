@@ -16,6 +16,8 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import static org.mockito.ArgumentMatchers.eq;
+import org.exoplatform.emailConnector.model.MailFolder;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -79,6 +81,35 @@ public class EmailFavoriteServiceTest {
     assertEquals("12", created.getValue().getObjectId());
     assertEquals(EmailFavoriteService.OBJECT_TYPE, created.getValue().getObjectType());
     assertEquals(IDENTITY_ID, created.getValue().getUserIdentityId());
+  }
+
+  /**
+   * EXO-90550, Benjamin's decision (a) -- a delegate's star on a shared mailbox's message
+   * is its owner's star and enters the OWNER's favorites (through her own reconcile, on
+   * her own INBOX rows), never the delegate's: the delegate's reconcile reads their own
+   * INBOX alone, so a starred row of a shared mailbox's folder never becomes their
+   * favorite.
+   */
+  @Test
+  public void aDelegatesReconcileNeverAddsASharedMailboxsRow() throws Exception {
+    givenUserIdentity();
+    givenFavoritedEmailIds();
+    Email own = new Email();
+    own.setId(11L);
+    own.setStarred(true);
+    Email shared = new Email();
+    shared.setId(99L);
+    shared.setFolder("CUSTOM:8");
+    shared.setStarred(true);
+    when(emailBoxStorage.getStarredEmails(USERNAME, MailFolder.INBOX)).thenReturn(List.of(own));
+    org.mockito.Mockito.lenient().when(emailBoxStorage.getStarredEmails(USERNAME, "CUSTOM:8")).thenReturn(List.of(shared));
+
+    emailFavoriteService.reconcileFavorites(USERNAME);
+
+    ArgumentCaptor<Favorite> created = ArgumentCaptor.forClass(Favorite.class);
+    verify(favoriteService, times(1)).createFavorite(created.capture());
+    assertEquals("11", created.getValue().getObjectId(), "the delegate's own INBOX star only");
+    verify(emailBoxStorage, never()).getStarredEmails(eq(USERNAME), org.mockito.ArgumentMatchers.argThat(folder -> !MailFolder.INBOX.equals(folder)));
   }
 
   @Test

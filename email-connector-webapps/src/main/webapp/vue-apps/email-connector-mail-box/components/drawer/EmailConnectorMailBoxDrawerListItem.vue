@@ -144,6 +144,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 }"
                 :favorite="threadFavorite"
                 :can-toggle="canToggleFavorite && !selectMode"
+                :shared-owner="starSharedOwner"
                 class="me-1"
                 :size="18"
                 @toggle="toggleThreadFavorite" />
@@ -400,10 +401,20 @@ export default {
     threadFavorite() {
       return this.thread ? this.thread.emails.some(message => message.starred) : !!this.email.starred;
     },
-    // The favorite is pushed through the INBOX folder, so only inbox rows can toggle
-    // it; in Sent/Archive/Trash it stays a read-only indicator.
+    // An inbox row, or a shared mailbox's row where the user holds w (canStar,
+    // EXO-90550), can toggle it; in the user's own Sent/Archive/Trash it stays a
+    // read-only indicator.
     canToggleFavorite() {
-      return (this.email.folder || 'INBOX') === 'INBOX';
+      return this.$emailConnectorMailBoxService.canStar(this.email.folder);
+    },
+    /**
+     * The owner of the shared mailbox this message is in, whose star it also sets
+     * (EXO-90550) -- said on the star; empty in the user's own mailbox.
+     *
+     * @returns {String} the owner's name, or empty
+     */
+    starSharedOwner() {
+      return this.$emailConnectorMailBoxService.sharedMailboxOfFolder(this.email.folder)?.ownerFullName || '';
     },
     /**
      * Whether this row sits in a folder the interface may only read (Trash, Spam),
@@ -528,7 +539,11 @@ export default {
     // Favorite/unfavorite the whole row, i.e. every listed message of the thread —
     // matching how the row's read/unread action treats a conversation.
     toggleThreadFavorite() {
-      this.$root.$emit('update-email-favorite-status', !this.threadFavorite, this.threadIds);
+      const folder = this.email.folder || 'INBOX';
+      // In a shared mailbox, the conversation's messages in the row's own folder: the ids
+      // are numbered there, and the star is addressed to it (EXO-90550).
+      const ids = folder === 'INBOX' ? this.threadIds : this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread);
+      this.$root.$emit('update-email-favorite-status', !this.threadFavorite, ids, false, folder);
     },
     openDetail() {
       if (this.selectMode) {

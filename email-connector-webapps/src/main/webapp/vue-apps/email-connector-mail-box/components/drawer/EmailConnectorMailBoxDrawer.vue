@@ -2484,24 +2484,31 @@ export default {
      * this is also how a refused push is rolled back visually.
      *
      * @param {boolean} favorite the flag value to show
-     * @param {Array<number>} emailIds the INBOX IMAP UIDs of the messages
+     * @param {Array<number>} emailIds the IMAP UIDs of the messages, within `folder`
      * @param {boolean} acknowledged whether the value carried here is already the
      *          mail server's: false for an optimistic toggle whose \Flagged push
      *          is still travelling, true for the revert broadcast below (which
      *          exists precisely because the server refused) and for a change
      *          another app made and had confirmed
+     * @param {String} folder the folder the ids are numbered in: INBOX, or a folder of
+     *          a mailbox shared with the user (EXO-90550)
      * @returns {void}
      */
-    applyEmailsFavoriteStatus(favorite, emailIds = [], acknowledged = false) {
+    applyEmailsFavoriteStatus(favorite, emailIds = [], acknowledged = false, folder = 'INBOX') {
       const ids = new Set(emailIds);
-      // INBOX rows only, like the two copies below: the in-app star never fires
-      // while another folder is listed, but the Favorites drawer's does, and a
-      // Sent row happening to share the UID is another message.
+      // That folder's rows only, like the two copies below: the Favorites drawer's star
+      // fires while another folder is listed, and a Sent row happening to share the UID
+      // is another message.
       (this.emailBox?.emails || []).forEach(email => {
-        if ((email.folder || this.currentFolder) === 'INBOX' && ids.has(email.mailRemoteId)) {
+        if ((email.folder || this.currentFolder) === folder && ids.has(email.mailRemoteId)) {
           this.$set(email, 'starred', favorite);
         }
       });
+      if (folder !== 'INBOX') {
+        // A shared mailbox's rows are never among the user's own search hits, which the
+        // overrides below exist for.
+        return;
+      }
       // A server hit is a snapshot of the FLAGS as they were when the search ran, so
       // the toggled rows still have to be stamped even though hits now carry the
       // flag. INBOX rows only: UIDs are per-folder, so the same number elsewhere is
@@ -2533,12 +2540,15 @@ export default {
     // already reverted those in its cache, so the interface must not leave
     // their favorite lit either, or the next synchronization silently takes it
     // away after the user believed the message was favorite.
-    onUpdateEmailFavoriteStatus(favorite, emailIds = []) {
+    onUpdateEmailFavoriteStatus(favorite, emailIds = [], ...addressing) {
+      // (favorite, ids, acknowledged, folder): an update is never acknowledged; the
+      // folder addresses the star, INBOX unless a shared mailbox's (EXO-90550).
+      const folder = addressing[1] || 'INBOX';
       if (!emailIds.length) {
         return;
       }
-      this.applyEmailsFavoriteStatus(favorite, emailIds);
-      this.$emailConnectorMailBoxService.updateEmailsFavoriteStatus(emailIds, favorite)
+      this.applyEmailsFavoriteStatus(favorite, emailIds, false, folder);
+      this.$emailConnectorMailBoxService.updateEmailsFavoriteStatus(emailIds, favorite, folder)
         .then(result => {
           const failedUpdates = result?.failedUpdates ?? 0;
           if (failedUpdates > 0 && failedUpdates < emailIds.length) {
@@ -2549,7 +2559,8 @@ export default {
             // server's own truth, is worse than claiming nothing. loadEmailBox() below
             // carries the truth for the listed window, and the next search answer
             // carries the server's own flags for the search rows.
-            emailIds.forEach(mailRemoteId => {
+            // INBOX overrides only: a shared mailbox's ids are numbered elsewhere (EXO-90550).
+            (folder === 'INBOX' ? emailIds : []).forEach(mailRemoteId => {
               const override = this.favoriteOverrides.get(mailRemoteId);
               // Guarded exactly as the restamp is: an entry a later toggle replaced
               // belongs to that toggle's own confirmation, and dropping it here would
@@ -2558,17 +2569,17 @@ export default {
                 this.favoriteOverrides.delete(mailRemoteId);
               }
             });
-          } else {
+          } else if (folder === 'INBOX') {
             // Every id settled the same way, so the value is known: acknowledge it. For
             // an all-failed batch the revert broadcast below overwrites this with the
             // rolled-back value, itself acknowledged.
             this.restampFavoriteOverrides(favorite, emailIds);
           }
           if (failedUpdates > 0) {
-            this.onFavoriteUpdateFailed(favorite, emailIds, failedUpdates);
+            this.onFavoriteUpdateFailed(favorite, emailIds, failedUpdates, folder);
           }
         })
-        .catch(() => this.onFavoriteUpdateFailed(favorite, emailIds, emailIds.length));
+        .catch(() => this.onFavoriteUpdateFailed(favorite, emailIds, emailIds.length, folder));
     },
     // Move the confirmed overrides onto the search generation in flight NOW that the
     // server has taken the flag. Until this runs an override carries the generation of
@@ -2590,12 +2601,12 @@ export default {
     // list rows, reader, detail drawer — flips back. When only part of a bulk
     // toggle failed, the server does not say which ones, but its cache is
     // already truthful: reload the listed window from it.
-    onFavoriteUpdateFailed(favorite, emailIds, failedUpdates) {
+    onFavoriteUpdateFailed(favorite, emailIds, failedUpdates, folder = 'INBOX') {
       if (failedUpdates >= emailIds.length) {
         // Acknowledged: the server refusing the push is itself the answer, so the
         // reverted value is the server's own. Left unacknowledged it would be immune
         // from pruning and outlive a change made later from another mail client.
-        this.$root.$emit('apply-email-favorite-status', !favorite, emailIds, true);
+        this.$root.$emit('apply-email-favorite-status', !favorite, emailIds, true, folder);
       } else {
         this.loadEmailBox();
       }
