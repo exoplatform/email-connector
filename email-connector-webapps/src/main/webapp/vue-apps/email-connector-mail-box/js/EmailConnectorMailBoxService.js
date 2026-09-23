@@ -910,14 +910,19 @@ export function settleListingRow(row) {
 /**
  * The query naming the folder a conversation is read from, when that matters: opened
  * from the Trash or the Junk folder, the reader must see the conversation's copies in
- * that folder (EXO-89942), which every other read hides. Any other folder adds
- * nothing, so the request stays what it always was.
+ * that folder (EXO-89942), which every other read hides; opened from a mailbox
+ * somebody shared with the user, the server keeps the conversation inside that mailbox
+ * (EXO-90557) -- neither the user's own drafts nor their own copies are shown in it.
+ * Any other folder adds nothing, so the request stays what it always was.
  *
  * @param {String} folder the folder the reader was opened from
- * @returns {String} the query string, empty unless the folder is a hidden one
+ * @returns {String} the query string, empty unless the folder is one of those
  */
 function openedFromQuery(folder) {
-  return isReadOnlyFolder(folder) && folder ? `?folder=${encodeURIComponent(folder)}` : '';
+  // Any CUSTOM key, not only one the switcher already knows: a shared folder opened
+  // before the switcher's entries load would otherwise be read as the user's own, and
+  // the server answers an own custom key exactly as it answers no folder at all.
+  return folder && (isReadOnlyFolder(folder) || String(folder).startsWith('CUSTOM:')) ? `?folder=${encodeURIComponent(folder)}` : '';
 }
 
 /**

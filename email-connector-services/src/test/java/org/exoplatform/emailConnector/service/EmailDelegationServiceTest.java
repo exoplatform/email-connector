@@ -1120,6 +1120,128 @@ class EmailDelegationServiceTest {
   }
 
   // ---------------------------------------------------------------------------------
+  // EXO-90557: the delegate's rights re-read, stale rows, and the owner's list
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * At the start of a delegated pass the grantee's own MYRIGHTS on the shared INBOX is
+   * re-read on the sync's store: changed letters are recorded with the preset they read
+   * as, and a move of the right to keep read state is announced.
+   */
+  @Test
+  void theGranteesRightsAreReReadAndRecorded() throws Exception {
+    EmailDelegation accepted = accepted("lrp");
+    // The row as it stands now: the grantee switched the badge on during the pass.
+    EmailDelegation current = accepted("lrp");
+    current.setBadgeIncluded(true);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(current);
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(delegatedFolder(12L)));
+    when(engine.myRights(any(), eq("Other Users/alice/INBOX"))).thenReturn(MailboxRights.of("rlitesw"));
+    when(engine.presetOf(any())).thenReturn(DelegationPreset.EDITOR);
+
+    EmailDelegation refreshed = service.refreshGranteeRights(GRANTEE, accepted, store);
+
+    ArgumentCaptor<MailboxAclSession> session = ArgumentCaptor.forClass(MailboxAclSession.class);
+    verify(engine).myRights(session.capture(), eq("Other Users/alice/INBOX"));
+    assertSame(store, session.getValue().store(), "the sync's own store, borrowed");
+    assertEquals(GRANTEE, session.getValue().username());
+    assertEquals("lrswite", refreshed.getRights(), "the letters, in their canonical order");
+    assertEquals(DelegationPreset.EDITOR, refreshed.getPreset());
+    assertTrue(refreshed.isBadgeIncluded(), "what changed on the row since the pass began is kept");
+    verify(emailDelegationStorage).update(current);
+    ArgumentCaptor<EmailDelegationEvent> event = ArgumentCaptor.forClass(EmailDelegationEvent.class);
+    verify(eventPublisher).publishEvent(event.capture());
+    assertEquals(EmailDelegationEvent.Type.RIGHTS_CHANGED, event.getValue().type());
+  }
+
+  /**
+   * Unchanged rights write nothing; a share the server no longer lets the grantee read
+   * -- no r, or a refusal -- is revoked and its folders dropped; a server that cannot
+   * be asked leaves the share as it was.
+   */
+  @Test
+  void theGranteesRightsDecideWhetherTheShareStands() throws Exception {
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(delegatedFolder(12L)));
+    EmailDelegation same = accepted("lrs");
+    when(engine.myRights(any(), any())).thenReturn(MailboxRights.of("lrs"));
+    assertSame(same, service.refreshGranteeRights(GRANTEE, same, store));
+    verify(emailDelegationStorage, never()).update(any());
+
+    EmailDelegation withdrawn = accepted("lrs");
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(withdrawn);
+    when(engine.myRights(any(), any())).thenThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED, "NO"));
+    assertNull(service.refreshGranteeRights(GRANTEE, withdrawn, store));
+    assertEquals(DelegationStatus.REVOKED, withdrawn.getStatus());
+    verify(emailFolderStorage).deleteDelegatedFolders(GRANTEE, 100L);
+
+    EmailDelegation revokedMeanwhile = accepted("lrs");
+    org.mockito.Mockito.clearInvocations(emailDelegationStorage);
+    org.mockito.Mockito.reset(engine);
+    when(engine.myRights(any(), any())).thenReturn(MailboxRights.of("lrsw"));
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(row(DelegationStatus.REVOKED, DelegationOrigin.EXO));
+    assertNull(service.refreshGranteeRights(GRANTEE, revokedMeanwhile, store), "an owner's revoke made meanwhile is not undone");
+    verify(emailDelegationStorage, never()).update(any());
+
+    EmailDelegation unreachable = accepted("lrs");
+    org.mockito.Mockito.reset(engine);
+    when(engine.myRights(any(), any())).thenThrow(new MailboxAclException(MailboxAclException.UNREACHABLE, "down"));
+    assertSame(unreachable, service.refreshGranteeRights(GRANTEE, unreachable, store));
+    assertEquals(DelegationStatus.ACCEPTED, unreachable.getStatus());
+  }
+
+  /**
+   * A row of a mailbox the owner is no longer connected to is not revoked on the
+   * mailbox connected now: that DELETEACL would remove an entry this row never covered.
+   */
+  @Test
+  void revokeRefusesARowOfAnotherMailbox() throws Exception {
+    EmailDelegation elsewhere = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    elsewhere.setOwnerMailbox("alice@previous.org");
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(elsewhere);
+    lenient().when(engine.probe(any())).thenReturn(SUPPORTED);
+
+    assertEquals(EmailDelegationService.NOT_CHANGEABLE_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> service.revoke(OWNER, 100L)).getMessage());
+    verify(engine, never()).revoke(any(), any(), any());
+    assertEquals(DelegationStatus.ACCEPTED, elsewhere.getStatus());
+  }
+
+  /**
+   * The owner opening their list does not overwrite a share in use with their own ACE:
+   * its stored rights are the grantee's MYRIGHTS, what the grantee's controls and guards
+   * read. A share not in use is still refreshed from the ACL.
+   */
+  @Test
+  void theOwnersListLeavesAShareInUseToItsGrantee() throws Exception {
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswite"))));
+    EmailDelegation accepted = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    accepted.setRights("lrswit");
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(accepted));
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER, GRANTEE));
+
+    service.getGrantedDelegations(OWNER);
+
+    assertEquals("lrswit", accepted.getRights(), "the grantee's own reading stands");
+    verify(emailDelegationStorage, never()).update(accepted);
+  }
+
+  /**
+   * The folder keys of every mailbox shared with the caller, across their shares.
+   */
+  @Test
+  void theDelegatedFolderKeysSpanEveryShare() {
+    EmailDelegation first = accepted("lrs");
+    EmailDelegation second = accepted("lrs");
+    second.setId(101L);
+    when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(first, second));
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(delegatedFolder(12L)));
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 101L)).thenReturn(List.of(delegatedFolder(13L)));
+
+    assertEquals(List.of("CUSTOM:12", "CUSTOM:13"), service.getDelegatedFolderKeys(GRANTEE));
+  }
+
+  // ---------------------------------------------------------------------------------
   // Reading the server's shares
   // ---------------------------------------------------------------------------------
 
