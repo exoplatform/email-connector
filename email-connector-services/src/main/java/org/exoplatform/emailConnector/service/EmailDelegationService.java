@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import javax.mail.Store;
 
@@ -192,6 +193,9 @@ public class EmailDelegationService {
   public static final String      TOO_MANY_MESSAGE           = "emailConnector.delegation.tooMany";
 
   public static final String      NOT_FOUND_MESSAGE          = "emailConnector.delegation.notFound";
+
+  /** No accepted share of the caller's has the name an agent gave (EXO-90555). */
+  public static final String      SHARED_MAILBOX_NOT_FOUND_MESSAGE = "emailConnector.delegation.sharedMailboxNotFound";
 
   @Autowired
   private UserEmailSettingService userEmailSettingService;
@@ -1410,6 +1414,22 @@ public class EmailDelegationService {
   }
 
   /**
+   * The same letters as {@link #folderRights(EmailFolder, EmailDelegation)}, from a
+   * share's letters as a switcher entry carries them (EXO-90555), for a caller that holds
+   * the entry rather than the row.
+   *
+   * @param folder the delegated folder
+   * @param shareLetters the share's letters
+   * @return the letters, never null
+   */
+  private static MailboxRights folderRights(EmailFolder folder, String shareLetters) {
+    if (folder != null && MailFolderView.TYPE_DELEGATED.equals(folder.getType()) && folder.getRightsCheckDate() != null) {
+      return MailboxRights.of(StringUtils.defaultString(folder.getRights()));
+    }
+    return MailboxRights.of(StringUtils.defaultString(shareLetters));
+  }
+
+  /**
    * The name the switcher and the identity cue show for a share's owner: the eXo
    * profile's full name when the owner is a known user, the mailbox address otherwise. A
    * profile that cannot be read falls back to the address rather than failing the list.
@@ -2051,6 +2071,103 @@ public class EmailDelegationService {
       return null;
     }
   }
+
+  /**
+   * A mailbox shared with the caller, named the way a person or an agent names it
+   * (EXO-90555): by its address, or by its owner's eXo username, ignoring case. The ONE
+   * place an agent's {@code mailbox} argument is resolved, and it resolves among
+   * {@link #getSharedMailboxes} alone -- the caller's own received shares, ACCEPTED,
+   * with a registered INBOX -- so a pending, declined, revoked or gone share, somebody
+   * else's share, a share without a mirror and a name that matches nothing all get the
+   * same answer: not found. Nothing distinguishes "not yours" from "does not exist".
+   * <p>
+   * A blank name resolves to nothing either: "the user's own mailbox" is the caller's
+   * decision to make by not naming one, never this method's fallback.
+   *
+   * @param granteeUsername the caller
+   * @param mailbox the owner's mailbox address or eXo username
+   * @return the shared mailbox, never null
+   * @throws ObjectNotFoundException when no accepted share of the caller's has that name
+   */
+  public SharedMailboxEntry getSharedMailbox(String granteeUsername, String mailbox) throws ObjectNotFoundException {
+    String wanted = StringUtils.trimToNull(mailbox);
+    if (wanted == null) {
+      throw new ObjectNotFoundException(SHARED_MAILBOX_NOT_FOUND_MESSAGE);
+    }
+    return getSharedMailboxes(granteeUsername).stream()
+                                              .filter(entry -> wanted.equalsIgnoreCase(entry.ownerMailbox())
+                                                  || wanted.equalsIgnoreCase(entry.ownerId()))
+                                              .findFirst()
+                                              .orElseThrow(() -> new ObjectNotFoundException(SHARED_MAILBOX_NOT_FOUND_MESSAGE));
+  }
+
+  /**
+   * The key of a shared mailbox's folder of one kind, when that folder is in the
+   * caller's mirror (EXO-90555): registered for that share (by DELEGATION_ID), still
+   * listed by the server, readable with the caller's letters on it, opted in, and synced
+   * at least once. The periodic pass mirrors the shared INBOX only; the owner's other
+   * folders are mirrored once somebody opens them, so a folder can be shared and still
+   * hold nothing yet -- which is "not available", never "no mail".
+   *
+   * @param granteeUsername the caller
+   * @param share the shared mailbox, as {@link #getSharedMailbox} resolved it
+   * @param folder {@code INBOX} (or blank), {@code SENT} or {@code ARCHIVE}
+   * @return the {@code CUSTOM:<id>} key, or null when that folder is not in the mirror
+   * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for any
+   *           other folder
+   */
+  public String getMirroredFolderKey(String granteeUsername, SharedMailboxEntry share, String folder) {
+    boolean inbox = StringUtils.isBlank(folder) || MailFolder.INBOX.equals(folder);
+    if (!inbox && !MailFolder.SENT.equals(folder) && !MailFolder.ARCHIVE.equals(folder)) {
+      throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
+    }
+    return mirroredFolderKey(emailFolderStorage.getDelegatedFolders(granteeUsername, share.delegationId()),
+                             share,
+                             inbox ? MailFolder.INBOX : folder);
+  }
+
+  /**
+   * Which of a shared mailbox's INBOX, SENT and ARCHIVE are in the caller's mirror
+   * (EXO-90555), by the rule of {@link #getMirroredFolderKey}, from one read of the
+   * share's folders.
+   *
+   * @param granteeUsername the caller
+   * @param share the shared mailbox, as {@link #getSharedMailbox} resolved it
+   * @return the available folders among INBOX, SENT and ARCHIVE, in that order
+   */
+  public List<String> getMirroredFolders(String granteeUsername, SharedMailboxEntry share) {
+    List<EmailFolder> folders = emailFolderStorage.getDelegatedFolders(granteeUsername, share.delegationId());
+    return Stream.of(MailFolder.INBOX, MailFolder.SENT, MailFolder.ARCHIVE)
+                 .filter(folder -> mirroredFolderKey(folders, share, folder) != null)
+                 .toList();
+  }
+
+  /**
+   * The rule of {@link #getMirroredFolderKey}, over a share's registered folders: the
+   * folder of that kind still listed, opted in, synced at least once, and readable with
+   * the caller's letters on it.
+   *
+   * @param folders the share's registered folders
+   * @param share the shared mailbox
+   * @param folder INBOX, SENT or ARCHIVE
+   * @return the key, or null
+   */
+  private static String mirroredFolderKey(List<EmailFolder> folders, SharedMailboxEntry share, String folder) {
+    boolean inbox = MailFolder.INBOX.equals(folder);
+    FolderRole role = MailFolder.SENT.equals(folder) ? FolderRole.SENT : FolderRole.ARCHIVE;
+    return folders.stream()
+                  .filter(candidate -> inbox ? MailFolderView.TYPE_DELEGATED_INBOX.equals(candidate.getType())
+                                             : MailFolderView.TYPE_DELEGATED.equals(candidate.getType())
+                                                 && candidate.getRole() == role)
+                  .filter(candidate -> !candidate.isMissing())
+                  .filter(EmailFolder::isSyncEnabled)
+                  .filter(candidate -> candidate.getLastSyncDate() != null)
+                  .filter(candidate -> folderRights(candidate, share.rights()).canRead())
+                  .map(EmailFolder::getKey)
+                  .findFirst()
+                  .orElse(null);
+  }
+
 
   /**
    * Whether an administrator left the owner's Sent copy on (EXO-90551). A setting that
