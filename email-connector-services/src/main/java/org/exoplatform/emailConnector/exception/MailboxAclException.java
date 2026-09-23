@@ -41,12 +41,6 @@ public class MailboxAclException extends RuntimeException {
   /** The connection is not an IMAP one, so no ACL command exists for it. */
   public static final String NOT_IMAP                = "emailConnector.delegation.unsupported.notImap";
 
-  /**
-   * MYRIGHTS on the owner's own INBOX does not carry {@code a}: this server keeps ACL
-   * administration to itself (or to its own interface), and eXo cannot write a grant.
-   */
-  public static final String OWNER_CANNOT_ADMINISTER = "emailConnector.delegation.ownerCannotAdminister";
-
   /** The server answered NO (or failed) to an ACL command. */
   public static final String SERVER_REFUSED          = "emailConnector.delegation.serverRefused";
 
