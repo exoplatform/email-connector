@@ -46,6 +46,10 @@ import java.util.Map;
  *          so that only the INBOX is shared and the owner can extend it (EXO-90548 review):
  *          what the band tells the delegate, rather than what the last discovery happened
  *          to find. False for a share made in the mail server's own interface
+ * @param sentCopy whether a mail the delegate sends from this mailbox is also filed in
+ *          its owner's Sent (EXO-90551): a Sent is shared, the delegate holds i there,
+ *          and an administrator has not switched the copy off -- what the composer's
+ *          notice says and what its "Copy {owner}" box defaults from (PO decision Q-3)
  */
 public record SharedMailboxEntry(Long delegationId,
                                  String ownerId,
@@ -57,5 +61,6 @@ public record SharedMailboxEntry(Long delegationId,
                                  String folderKey,
                                  int unreadCount,
                                  List<SharedMailboxFolder> folders,
-                                 boolean inboxOnly) {
+                                 boolean inboxOnly,
+                                 boolean sentCopy) {
 }
