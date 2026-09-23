@@ -68,8 +68,11 @@
  * lifecycle calls subscribe before it looks for the shared mailbox, because the share
  * may not be listable before acceptance.</li>
  * <li><b>The server e-mails the owner itself</b> (sections 5.1, 13.B.16). {@code probe}
- * answers {@code serverNotifiesOwner = true}; the lifecycle gates every owner-facing
- * notification of its own on that bit, so a BlueMind owner is told once per act.</li>
+ * answers {@code serverNotifiesOwner = true}. That bit is for an owner-facing notice
+ * of an ACL <i>change</i>, should eXo ever add one: it would be gated on it so a
+ * BlueMind owner is told once. The notices of an answer (accepted, declined, left) are
+ * not ACL changes and are never gated -- see
+ * {@code EmailDelegationNotificationListener#notifyOwner}.</li>
  * <li><b>Credentials and endpoint</b> (sections 3.3, 4.5, 13.B.1–2). The core API root
  * is the webmail host + {@code /api}, read from the connector's
  * {@code webMailUrl} ({@code EmailConnector.getWebMailUrl()}, a Lombok accessor) -- never
