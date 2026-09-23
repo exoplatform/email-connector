@@ -150,6 +150,26 @@ public class EmailBoxDAOTest {
    * @param mailHeaderId the Message-ID the row remembers
    * @return the row's generated id
    */
+  /**
+   * Stack review #437-1 -- the sweep's query, run on HSQLDB: the distinct custom and
+   * shared-mailbox folder keys of one user's cache, never a built-in folder, never
+   * somebody else's.
+   */
+  @Test
+  void theCustomFolderKeysAreDistinctAndTheUsersOwn() {
+    persistEmail(30L, "CUSTOM:1", "a", Boolean.FALSE);
+    persistEmail(31L, "CUSTOM:1", "b", Boolean.FALSE);
+    persistEmail(32L, "CUSTOM:9", "c", Boolean.FALSE);
+    persistEmail(33L, MailFolder.INBOX, "d", Boolean.FALSE);
+    EmailBoxEntity other = entityManager.find(EmailBoxEntity.class, persistEmail(34L, "CUSTOM:7", "e", Boolean.FALSE));
+    other.setUserId("bob");
+    entityManager.persist(other);
+    entityManager.flush();
+    entityManager.clear();
+
+    assertEquals(List.of("CUSTOM:1", "CUSTOM:9"), emailBoxDAO.findCustomFolderKeysByUserId(USERNAME).stream().sorted().toList());
+  }
+
   private Long persistEmailCarrying(long remoteId, String folder, String mailHeaderId) {
     Long id = persistEmail(remoteId, folder, "body", Boolean.FALSE);
     EmailBoxEntity email = entityManager.find(EmailBoxEntity.class, id);

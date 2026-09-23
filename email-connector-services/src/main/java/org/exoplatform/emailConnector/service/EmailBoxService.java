@@ -1311,6 +1311,11 @@ public class EmailBoxService {
         } catch (Exception e) {
           LOG.warn("Could not sync the delegated folders of user {}", username, e);
         }
+        try {
+          purgeOrphanedFolderMail(username);
+        } catch (Exception e) {
+          LOG.warn("Could not sweep the orphaned folder mail of user {}", username, e);
+        }
       }
       updateEmailSyncStatus(username, SyncStatus.SUCCESS);
       if (countUnreadEmails(username) != unreadCountBeforeSync) {
@@ -1919,7 +1924,89 @@ public class EmailBoxService {
                         false,
                         delegatedFolder.getSnapshot(),
                         snapshot -> captured[0] = snapshot);
+    // A revoke, a leave or a withdrawal found by another path can land WHILE this
+    // folder is being synced: its row dropped and its mail purged, then this pass
+    // re-inserting a window of the owner's mail under a key nothing marks as shared any
+    // more (stack review #437-1). So, as syncCustomFolder does for an opt-out, the row
+    // is re-read after the sync, and a folder dropped in the meantime loses what the
+    // sync wrote.
+    EmailFolder current;
+    try {
+      current = emailFolderService.getFolder(username, delegatedFolder.getId());
+    } catch (IllegalArgumentException gone) {
+      current = null;
+    }
+    if (current == null || !current.isSyncEnabled()) {
+      LOG.info("Delegated folder '{}' of user {} was dropped while it was being synced; dropping what the sync wrote",
+               delegatedFolder.getRemoteName(),
+               username);
+      deleteUserEmails(username, delegatedFolder.getKey());
+      return;
+    }
     emailFolderService.recordSync(username, delegatedFolder.getId(), captured[0]);
+  }
+
+  /**
+   * Purges the mail mirrored under the folders of a shared mailbox that were just
+   * dropped from the delegate's registry (stack review #437-1), with what goes with a
+   * folder's mail -- its category links, its attachments, its sync snapshot.
+   *
+   * @param username the delegate
+   * @param folderKeys the dropped folders' {@code CUSTOM:<id>} keys
+   */
+  public void purgeDelegatedMirror(String username, List<String> folderKeys) {
+    if (StringUtils.isBlank(username) || folderKeys == null) {
+      return;
+    }
+    for (String key : folderKeys) {
+      try {
+        deleteUserEmails(username, key);
+      } catch (RuntimeException e) {
+        // The next pass's orphan sweep takes it: a leftover is never left for good.
+        LOG.warn("Could not purge the mirrored mail of dropped folder {} of user {}", key, username, e);
+      }
+    }
+  }
+
+  /**
+   * Whether no registered folder of the user has an id.
+   *
+   * @param username the user
+   * @param id the folder id
+   * @return true when the id names no folder of theirs
+   */
+  private boolean isUnregistered(String username, long id) {
+    try {
+      emailFolderService.getFolder(username, id);
+      return false;
+    } catch (IllegalArgumentException unknown) {
+      return true;
+    }
+  }
+
+  /**
+   * Deletes the mail a user's cache still holds under a folder key whose folder is no
+   * longer registered (stack review #437-1): what a purge that failed, or one from before
+   * purges existed, left behind. Such rows are reachable by nothing that knows they are
+   * a shared mailbox's -- search, conversations and the agent tools would show them as
+   * the user's own. Run once per sync pass; one query for the keys, one registry read
+   * per key.
+   *
+   * @param username the user
+   */
+  void purgeOrphanedFolderMail(String username) {
+    for (String key : emailBoxStorage.getCustomFolderKeys(username)) {
+      long id;
+      try {
+        id = MailFolder.customId(key);
+      } catch (IllegalArgumentException malformed) {
+        continue;
+      }
+      if (isUnregistered(username, id)) {
+        LOG.info("Mail of user {} is cached under folder {}, which is no longer registered; purging it", username, key);
+        deleteUserEmails(username, key);
+      }
+    }
   }
 
   /**
@@ -4689,19 +4776,6 @@ public class EmailBoxService {
   }
 
   /**
-   * One custom folder, checked and if changed synced, on the calling thread -- the
-   * on-open refresh, and the single-folder precedent {@link #runSentFolderRefresh}
-   * set: under the {@code syncingUsers} guard (a folder sync and a mailbox sync must
-   * never write the same (user, folder, UID) rows at once), and if the guard is taken
-   * the cache is answered as it stands, because the background sync is doing the work.
-   * Never touches the mailbox's sync STATUS, never broadcasts a run's completion, never
-   * the unread count -- one folder is not a run, and the count is the inbox's alone.
-   *
-   * @param username the mailbox owner
-   * @param userEmailSetting the user's connector binding
-   * @param customFolder the registered folder to refresh
-   */
-  /**
    * The on-open refresh of a folder of a shared mailbox -- {@link #refreshCustomFolderIfStale}
    * with two differences, both deliberate.
    * <p>
@@ -4724,6 +4798,19 @@ public class EmailBoxService {
     }
   }
 
+  /**
+   * One custom folder, checked and if changed synced, on the calling thread -- the
+   * on-open refresh, and the single-folder precedent {@link #runSentFolderRefresh}
+   * set: under the {@code syncingUsers} guard (a folder sync and a mailbox sync must
+   * never write the same (user, folder, UID) rows at once), and if the guard is taken
+   * the cache is answered as it stands, because the background sync is doing the work.
+   * Never touches the mailbox's sync STATUS, never broadcasts a run's completion, never
+   * the unread count -- one folder is not a run, and the count is the inbox's alone.
+   *
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   * @param customFolder the registered folder to refresh
+   */
   private void refreshCustomFolder(String username, UserEmailSetting userEmailSetting, EmailFolder customFolder) {
     if (!syncingUsers.add(username)) {
       LOG.debug("A synchronization is running for user {}; folder '{}' is answered from the cache",
@@ -6107,14 +6194,6 @@ public class EmailBoxService {
   }
 
   /**
-   * Where {@link #applyMoveAction} is putting the messages it takes out of the folder
-   * they are listed in. The four differ by their destination folder and by nothing
-   * else — same connection, same identity check, same removal, same compensation —
-   * which is the same reason {@link HiddenFolderAction} exists beside them. MOVE is
-   * the one whose destination is named by the caller (one of the user's own folders)
-   * rather than by the action.
-   */
-  /**
    * Refuses a write on a folder of a mailbox somebody else shared with the caller when
    * the RFC 4314 right it needs is not among the letters the server grants them there.
    * A folder of the caller's own mailbox passes through untouched, which is what lets
@@ -6226,6 +6305,14 @@ public class EmailBoxService {
     };
   }
 
+  /**
+   * Where {@link #applyMoveAction} is putting the messages it takes out of the folder
+   * they are listed in. The four differ by their destination folder and by nothing
+   * else — same connection, same identity check, same removal, same compensation —
+   * which is the same reason {@link HiddenFolderAction} exists beside them. MOVE is
+   * the one whose destination is named by the caller (one of the user's own folders)
+   * rather than by the action.
+   */
   private enum MoveAction {
     /** Into the Trash folder. */
     DELETE,

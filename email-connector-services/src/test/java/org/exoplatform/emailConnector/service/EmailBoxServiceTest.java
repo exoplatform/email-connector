@@ -36,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
@@ -11244,6 +11245,61 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * Stack review #437-1 -- a share revoked or left WHILE its folder is being synced: the
+   * pass re-reads the folder after syncing, and a folder dropped in the meantime loses
+   * what the sync wrote instead of leaving the owner's mail under a key nothing marks as
+   * shared any more.
+   */
+  @Test
+  @SneakyThrows
+  void aDelegatedFolderDroppedDuringItsSyncLosesWhatTheSyncWrote() {
+    givenAMailboxListing();
+    when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(1000);
+    IMAPFolder shared = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Other Users/alice/INBOX");
+    when(shared.getMessageCount()).thenReturn(1000);
+    Store store = userEmailSettingService.connect(userEmailSetting().getEmailConnectorId(), TEST_USER);
+    when(store.getFolder("Other Users/alice/INBOX")).thenReturn(shared);
+    givenAnActiveShare(delegatedInbox(8L));
+    when(emailFolderStorage.getFolder(TEST_USER, 8L)).thenReturn(null);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(shared).getMessages(701, 1000);
+    verify(emailBoxStorage, atLeastOnce()).getEmails(TEST_USER, "CUSTOM:8");
+    verify(emailFolderStorage, never()).updateSyncMemory(eq(TEST_USER), eq(8L), any(), any(Date.class));
+  }
+
+  /**
+   * Stack review #437-1 -- the mail of a share's dropped folders is purged, folder by
+   * folder, with its category links and snapshot; and the pass's sweep purges what the
+   * cache still holds under a folder key no registered folder claims, while a key that
+   * is still registered is left alone.
+   */
+  @Test
+  @SneakyThrows
+  void theMailOfDroppedAndUnregisteredFoldersIsPurged() {
+    Email shared = email(TEST_USER);
+    shared.setId(71L);
+    shared.setFolder("CUSTOM:12");
+    when(emailBoxStorage.getEmails(TEST_USER, "CUSTOM:12")).thenReturn(new ArrayList<>(List.of(shared)));
+
+    emailBoxService.purgeDelegatedMirror(TEST_USER, List.of("CUSTOM:12"));
+
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(71L));
+
+    when(emailBoxStorage.getCustomFolderKeys(TEST_USER)).thenReturn(List.of("CUSTOM:12", "CUSTOM:5"));
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
+    when(emailBoxStorage.getEmails(TEST_USER, "CUSTOM:12")).thenReturn(new ArrayList<>(List.of(shared)));
+    clearInvocations(emailBoxStorage);
+
+    ReflectionTestUtils.invokeMethod(emailBoxService, "purgeOrphanedFolderMail", TEST_USER);
+
+    verify(emailBoxStorage).getEmails(TEST_USER, "CUSTOM:12");
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(71L));
+    verify(emailBoxStorage, never()).getEmails(TEST_USER, "CUSTOM:5");
+  }
+
+  /**
    * <b>The exclusion that carries the rest of the phase.</b> A delegated folder is
    * synced with {@code notify} false, so nothing that hangs off the new-mail broadcast
    * -- the notification plugins, the badge's announce, the enterprise auto-categoriser,
@@ -11547,6 +11603,8 @@ public class EmailBoxServiceTest {
   private void givenAnActiveShare(EmailFolder folder) {
     when(emailDelegationService.getActiveDelegations(eq(TEST_USER), any())).thenReturn(List.of(aSharedMailboxRow()));
     when(emailDelegationService.getSyncableFolders(TEST_USER, 100L)).thenReturn(List.of(folder));
+    // Still registered when the pass re-reads it after syncing (stack review #437-1).
+    lenient().when(emailFolderStorage.getFolder(TEST_USER, folder.getId())).thenReturn(folder);
   }
 
   /**

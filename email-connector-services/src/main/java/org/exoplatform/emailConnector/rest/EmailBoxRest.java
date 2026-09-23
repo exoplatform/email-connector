@@ -933,6 +933,11 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      // A refusal of the request itself, by message code -- crossMailbox for a move
+      // between two mailboxes: a 400, never the 500 an uncaught refusal would be (stack
+      // review #437-3).
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
@@ -981,6 +986,11 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      // A refusal of the request itself, by message code -- crossMailbox for a move
+      // between two mailboxes: a 400, never the 500 an uncaught refusal would be (stack
+      // review #437-3).
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
@@ -1003,7 +1013,8 @@ public class EmailBoxRest {
   @PostMapping("/trash/restore")
   @Secured("users")
   @Operation(summary = "Restores trashed emails", method = "POST", description = "Moves the given messages out of the Trash folder and back where they came from: the user's own messages to Sent, the others to the inbox. The answer lists which ids went to Sent.")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+  @ApiResponses(value = { @ApiResponse(responseCode = "400", description = "Refused by message code, e.g. emailConnector.folder.crossMailbox"),
+      @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public Map<String, Object> restoreEmail(HttpServletRequest request,
@@ -1031,6 +1042,11 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      // A refusal of the request itself, by message code -- crossMailbox for a move
+      // between two mailboxes: a 400, never the 500 an uncaught refusal would be (stack
+      // review #437-3).
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
@@ -1105,7 +1121,8 @@ public class EmailBoxRest {
   @PostMapping("/junk")
   @Secured("users")
   @Operation(summary = "Marks emails as spam", method = "POST", description = "Moves the given messages, out of the folder they are listed in, to the Junk folder. The folder is part of the address, not a filter: IMAP UIDs are numbered per folder. Refused, and counted as failed, from Trash, Drafts and Junk itself, and when the mailbox has no Junk folder. With conversation=true, every other message of those messages' conversations goes along, wherever it is cached (inbox, Sent, archive, the user's folders).")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+  @ApiResponses(value = { @ApiResponse(responseCode = "400", description = "Refused by message code, e.g. emailConnector.folder.crossMailbox"),
+      @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public Map<String, Integer> markAsJunk(HttpServletRequest request,
@@ -1139,6 +1156,11 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      // A refusal of the request itself, by message code -- crossMailbox for a move
+      // between two mailboxes: a 400, never the 500 an uncaught refusal would be (stack
+      // review #437-3).
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
@@ -1161,7 +1183,8 @@ public class EmailBoxRest {
   @PostMapping("/junk/restore")
   @Secured("users")
   @Operation(summary = "Marks quarantined emails as not spam", method = "POST", description = "Moves the given messages out of the Junk folder and back where they came from: the user's own messages to Sent, the others to the inbox. The answer lists which ids went to Sent.")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+  @ApiResponses(value = { @ApiResponse(responseCode = "400", description = "Refused by message code, e.g. emailConnector.folder.crossMailbox"),
+      @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public Map<String, Object> restoreFromJunk(HttpServletRequest request,
@@ -1189,6 +1212,11 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      // A refusal of the request itself, by message code -- crossMailbox for a move
+      // between two mailboxes: a 400, never the 500 an uncaught refusal would be (stack
+      // review #437-3).
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }

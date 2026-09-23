@@ -32,6 +32,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.event.DelegatedFoldersDroppedEvent;
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
@@ -308,11 +309,8 @@ public class EmailDelegationService {
    * Removes a grantee's access: DELETEACL on the caller's own INBOX, on the caller's
    * own session, for the identifier the grant was written to (kept on the row, so this
    * works after the grantee disconnected their own mailbox from eXo). The row goes
-   * {@code REVOKED} and the grantee's registered folders of this mailbox are dropped.
-   * <p>
-   * TODO (sync branch): the mirrored {@code EMAIL_BOX} rows of those folders are purged
-   * by the delegated sync when it lands; in this phase no such rows exist, since
-   * delegated folders are registered with the sync off.
+   * {@code REVOKED} and the grantee's registered folders of this mailbox are dropped,
+   * the mail mirrored under them with them ({@link #dropDelegatedFolders}).
    *
    * @param ownerUsername the caller
    * @param id the delegation id
@@ -337,7 +335,7 @@ public class EmailDelegationService {
     delegation.setStatus(DelegationStatus.REVOKED);
     delegation.setRevokedDate(new Date());
     delegation = emailDelegationStorage.update(delegation);
-    emailFolderStorage.deleteDelegatedFolders(delegation.getGranteeId(), delegation.getId());
+    dropDelegatedFolders(delegation.getGranteeId(), delegation.getId());
     LOG.info("Mailbox delegation revoked: actor={} ownerMailbox={} grantee={} identifier={}",
              ownerUsername,
              delegation.getOwnerMailbox(),
@@ -390,11 +388,10 @@ public class EmailDelegationService {
    * that moment is what decides, so a share the owner removed meanwhile is reported
    * honestly.
    * <p>
-   * TODO (sync branch): the folder is registered with {@code SYNC_ENABLED} off. The
-   * delegated sync -- window cap, activity gate, lazy attachments, no new-mail
-   * broadcast -- is not in this delivery, and the custom-folder rotation must not pick
-   * the folder up in its place (its queries exclude delegated rows). That branch turns
-   * the opt-in on at accept.
+   * The folder is registered opted in: accepting is the delegate asking for the mailbox,
+   * and the delegated sync (window cap, activity gate, no new-mail broadcast) mirrors it
+   * from the next pass the delegate is in it. The custom-folder rotation never picks it
+   * up, since its queries exclude delegated rows.
    *
    * @param granteeUsername the caller
    * @param id the delegation id
@@ -573,7 +570,7 @@ public class EmailDelegationService {
     delegation.setStatus(delegation.getOrigin() == DelegationOrigin.SERVER ? DelegationStatus.AVAILABLE : DelegationStatus.DECLINED);
     delegation.setRespondedDate(new Date());
     EmailDelegation updated = emailDelegationStorage.update(delegation);
-    emailFolderStorage.deleteDelegatedFolders(granteeUsername, updated.getId());
+    dropDelegatedFolders(granteeUsername, updated.getId());
     return updated;
   }
 
@@ -1206,6 +1203,25 @@ public class EmailDelegationService {
   }
 
   /**
+   * Drops a share's folders from the delegate's registry, and the mail mirrored under
+   * them with them (stack review #437-1): the keys are read before the rows go, and the
+   * mailbox cache purges them on the event. The one way a share's folders are dropped --
+   * revoke, leave, a disconnect, a withdrawal found on the server -- so no path can
+   * leave the owner's mail in the delegate's database, where it would resurface as the
+   * delegate's own once nothing marks it as shared any more.
+   *
+   * @param granteeUsername the delegate
+   * @param delegationId the share
+   */
+  private void dropDelegatedFolders(String granteeUsername, long delegationId) {
+    List<String> keys = emailFolderStorage.getDelegatedFolders(granteeUsername, delegationId).stream().map(EmailFolder::getKey).toList();
+    emailFolderStorage.deleteDelegatedFolders(granteeUsername, delegationId);
+    if (!keys.isEmpty() && eventPublisher != null) {
+      eventPublisher.publishEvent(new DelegatedFoldersDroppedEvent(granteeUsername, keys));
+    }
+  }
+
+  /**
    * Records that the server no longer grants a row's access.
    *
    * @param delegation the row
@@ -1216,7 +1232,7 @@ public class EmailDelegationService {
     delegation.setStatus(status);
     delegation.setRevokedDate(new Date());
     EmailDelegation updated = emailDelegationStorage.update(delegation);
-    emailFolderStorage.deleteDelegatedFolders(updated.getGranteeId(), updated.getId());
+    dropDelegatedFolders(updated.getGranteeId(), updated.getId());
     return updated;
   }
 

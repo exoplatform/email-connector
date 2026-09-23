@@ -363,6 +363,28 @@ public class EmailBoxRestTest {
     verify(emailBoxService, never()).deleteEmail(anyList(), anyString(), eq(MailFolder.INBOX));
   }
 
+  /**
+   * Stack review #437-3 -- a refusal by message code (a move between two mailboxes) is
+   * a 400 carrying the code, never the 500 an uncaught refusal would be, on delete as on
+   * archive.
+   */
+  @Test
+  void aRefusalByMessageCodeIsABadRequest() throws Exception {
+    List<Long> emailIds = List.of(123L);
+    when(emailBoxService.deleteEmail(emailIds, SIMPLE_USER, "CUSTOM:8")).thenThrow(new IllegalArgumentException("emailConnector.folder.crossMailbox"));
+    when(emailBoxService.archiveEmail(emailIds, SIMPLE_USER, "CUSTOM:8")).thenThrow(new IllegalArgumentException("emailConnector.folder.crossMailbox"));
+
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "?folder=CUSTOM:8").with(testSimpleUser())
+                                                              .content(asJsonString(emailIds))
+                                                              .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.folder.crossMailbox"));
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/archive?folder=CUSTOM:8").with(testSimpleUser())
+                                                                      .content(asJsonString(emailIds))
+                                                                      .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest());
+  }
+
   @Test
   void archiveEmail() throws Exception {
     ResultActions response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/archive").with(testSimpleUser()));

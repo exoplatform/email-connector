@@ -163,6 +163,9 @@ public class ReadReceiptService {
   @Autowired
   private EmailReadReceiptAnswerStorage answerStorage;
 
+  @Autowired
+  private EmailDelegationService  emailDelegationService;
+
   /**
    * The user's read-receipt preferences, with the defaults (no request by default,
    * ASK) when they never chose, and ALWAYS answered as ASK when the administrator
@@ -532,6 +535,14 @@ public class ReadReceiptService {
    */
   private boolean isAnswerable(Email email, String ownAddress) {
     String folder = StringUtils.defaultIfBlank(email.getFolder(), MailFolder.INBOX);
+    // Never on a shared mailbox's mail (stack review #437-2, decision 1): the receipt
+    // would leave in the delegate's name for mail sent to its owner -- telling the
+    // requester somebody else reads that mailbox -- and $MDNSent would be set on the
+    // owner's copy, so the owner's own clients never ask them. A delegated Sent folder,
+    // keyed CUSTOM:<id>, is covered by the same rule.
+    if (isSharedMailboxMail(email)) {
+      return false;
+    }
     if (isOutgoing(email) || MailFolder.JUNK.equals(folder) || MailFolder.TRASH.equals(folder)) {
       return false;
     }
@@ -540,6 +551,16 @@ public class ReadReceiptService {
       return false;
     }
     return requestedAddresses(email.getReadReceiptTo()).length > 0;
+  }
+
+  /**
+   * Whether a message is a copy of a shared mailbox's mail in the reader's cache.
+   *
+   * @param email the message
+   * @return true for a folder of a mailbox somebody shared with its reader
+   */
+  private boolean isSharedMailboxMail(Email email) {
+    return MailFolder.isCustom(email.getFolder()) && emailDelegationService.delegationOf(email.getUserId(), email.getFolder()) != null;
   }
 
   /**

@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
@@ -55,6 +56,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.event.DelegatedFoldersDroppedEvent;
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
@@ -789,6 +791,51 @@ class EmailDelegationServiceTest {
     ArgumentCaptor<EmailDelegationEvent> event = ArgumentCaptor.forClass(EmailDelegationEvent.class);
     verify(eventPublisher).publishEvent(event.capture());
     assertEquals(EmailDelegationEvent.Type.REVOKED, event.getValue().type());
+  }
+
+  /**
+   * Stack review #437-1 -- every way a share's folders are dropped takes the mail
+   * mirrored under them too: revoke, leave, a disconnect, and a withdrawal found on the
+   * server (here at accept). The keys are read before the rows go, and handed to the
+   * mailbox cache on the event.
+   */
+  @Test
+  void everyDropOfASharesFoldersPurgesTheirMail() throws Exception {
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(delegatedFolder(12L), delegatedFolder(13L)));
+    List<String> keys = List.of("CUSTOM:12", "CUSTOM:13");
+
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO));
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    service.revoke(OWNER, 100L);
+    assertDropped(keys);
+
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO));
+    service.leave(GRANTEE, 100L);
+    assertDropped(keys);
+
+    when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO)));
+    service.endReceivedShares(GRANTEE);
+    assertDropped(keys);
+
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(row(DelegationStatus.PENDING, DelegationOrigin.EXO));
+    when(engine.findSharedMailbox(any(), eq(OWNER_MAILBOX))).thenReturn(null);
+    assertThrows(DelegationRevokedException.class, () -> service.accept(GRANTEE, 100L));
+    assertDropped(keys);
+  }
+
+  /**
+   * The last drop published the dropped keys, read before the folder rows were deleted.
+   *
+   * @param keys the keys expected
+   */
+  private void assertDropped(List<String> keys) {
+    InOrder order = inOrder(emailFolderStorage, eventPublisher);
+    order.verify(emailFolderStorage).getDelegatedFolders(GRANTEE, 100L);
+    order.verify(emailFolderStorage).deleteDelegatedFolders(GRANTEE, 100L);
+    ArgumentCaptor<DelegatedFoldersDroppedEvent> dropped = ArgumentCaptor.forClass(DelegatedFoldersDroppedEvent.class);
+    order.verify(eventPublisher).publishEvent(dropped.capture());
+    assertEquals(new DelegatedFoldersDroppedEvent(GRANTEE, keys), dropped.getValue());
+    clearInvocations(emailFolderStorage, eventPublisher);
   }
 
   /**

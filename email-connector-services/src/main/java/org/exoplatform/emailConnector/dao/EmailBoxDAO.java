@@ -1111,4 +1111,16 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String userId, @Param("mailHeaderIds")
   List<String> mailHeaderIds, @Param("state")
   ReadReceiptState state);
+
+  /**
+   * The folder keys of the custom and shared-mailbox folders a user's cache holds mail
+   * under -- for the sweep that purges what no registered folder claims any more (stack
+   * review #437-1).
+   *
+   * @param userId the user
+   * @return the distinct {@code CUSTOM:<id>} keys, never null
+   */
+  @Query("SELECT DISTINCT email.folder FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder LIKE 'CUSTOM:%'")
+  List<String> findCustomFolderKeysByUserId(@Param("userId")
+  String userId);
 }
