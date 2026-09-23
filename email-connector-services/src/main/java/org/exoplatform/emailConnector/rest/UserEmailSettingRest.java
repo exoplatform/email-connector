@@ -405,7 +405,7 @@ public class UserEmailSettingRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Self, unknown or unconnected grantee, invalid preset, or already shared (emailConnector.delegation.*)"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
-      @ApiResponse(responseCode = "502", description = "The mail server does not support ACLs, the caller cannot administer their INBOX, or SETACL was refused (emailConnector.delegation.*)") })
+      @ApiResponse(responseCode = "502", description = "The mail server does not support ACLs, nothing was left to grant, or SETACL was refused (emailConnector.delegation.*)") })
   public EmailDelegation inviteDelegation(HttpServletRequest request,
                                           @RequestBody
                                           DelegationInviteRequest invite) {

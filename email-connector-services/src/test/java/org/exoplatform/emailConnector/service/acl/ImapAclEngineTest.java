@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -33,6 +34,7 @@ import static org.mockito.Mockito.when;
 import java.util.List;
 
 import javax.mail.Folder;
+import javax.mail.FolderNotFoundException;
 import javax.mail.MessagingException;
 import javax.mail.Store;
 import javax.mail.StoreClosedException;
@@ -357,8 +359,10 @@ class ImapAclEngineTest {
     Folder aliceInbox = folder("INBOX", "Other Users/alice/INBOX", '/');
     Folder aliceSent = folder("Sent", "Other Users/alice/Sent", '/');
     Folder carol = folder("carol", "Other Users/carol", '/');
+    Folder root = folder("", "", '/');
     when(store.getUserNamespaces(isNull())).thenReturn(new Folder[] { namespace });
-    when(namespace.list("%")).thenReturn(new Folder[] { alice, carol });
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.list("Other Users/%")).thenReturn(new Folder[] { alice, carol });
     when(alice.list("%")).thenReturn(new Folder[] { aliceSent, aliceInbox });
     when(carol.list("%")).thenReturn(new Folder[0]);
 
@@ -368,7 +372,7 @@ class ImapAclEngineTest {
     assertEquals(new SharedMailbox("alice", "Other Users/alice", "Other Users/alice/INBOX", "/"), shared.get(0));
     assertEquals(new SharedMailbox("carol", "Other Users/carol", "Other Users/carol", "/"), shared.get(1),
                  "no INBOX child: the owner's root is the INBOX (Cyrus without altnamespace)");
-    verify(store, never()).getDefaultFolder();
+    verify(namespace, never()).list(anyString());
   }
 
   /**
@@ -379,6 +383,45 @@ class ImapAclEngineTest {
    * {@code Archive}, a {@code Customers/Acme} tree) are not mistaken for one. Reverting
    * the fallback fails this test on the count.
    */
+  /**
+   * The pin for the defect this replaced, reproduced from the Stalwart rig
+   * (2026-09-22). That server does not advertise NAMESPACE and answers the NAMESPACE
+   * command anyway -- {@code (("" "/")) (("Shared Folders" "/")) NIL} -- so
+   * {@code getUserNamespaces} returns a folder flagged as a namespace and the LIST
+   * fallback never runs. Listing THAT folder made the mail library first probe whether
+   * it exists, and for a namespace the library appends the separator:
+   * {@code LIST "" "Shared Folders/"}, which Stalwart answers with nothing while
+   * answering {@code LIST "" "Shared Folders/%"} perfectly. The probe therefore said
+   * the namespace did not exist and discovery died on FolderNotFoundException before a
+   * single real listing -- the accept button reported "the server refused" on a server
+   * that was answering every command correctly.
+   * <p>
+   * So: the namespace folder is never listed through, and a folder that throws on
+   * {@code list} does not stop discovery.
+   */
+  @Test
+  void listSharedMailboxesNeverListsThroughTheNamespaceFolderItself() throws MessagingException {
+    Folder namespace = folder("Shared Folders", "Shared Folders", '/');
+    Folder root = folder("", "", '/');
+    Folder alice = folder("alice@stalwart.local", "Shared Folders/alice@stalwart.local", '/');
+    Folder aliceInbox = folder("Inbox", "Shared Folders/alice@stalwart.local/Inbox", '/');
+    when(store.getUserNamespaces(isNull())).thenReturn(new Folder[] { namespace });
+    when(namespace.list(anyString())).thenThrow(new FolderNotFoundException(namespace, "Shared Folders not found"));
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.list("Shared Folders/%")).thenReturn(new Folder[] { alice });
+    when(alice.list("%")).thenReturn(new Folder[] { aliceInbox });
+
+    List<SharedMailbox> shared = engine.listSharedMailboxes(session());
+
+    assertEquals(1, shared.size(), "the share is found although the namespace folder itself refuses to be listed");
+    assertEquals(new SharedMailbox("alice@stalwart.local",
+                                   "Shared Folders/alice@stalwart.local",
+                                   "Shared Folders/alice@stalwart.local/Inbox",
+                                   "/"),
+                 shared.get(0),
+                 "and the owner's INBOX is matched case-insensitively -- Stalwart names it Inbox");
+  }
+
   @Test
   void listSharedMailboxesFallsBackToTheSessionsListWithoutNamespace() throws MessagingException {
     when(store.getUserNamespaces(isNull())).thenReturn(new Folder[0]);
@@ -394,6 +437,7 @@ class ImapAclEngineTest {
     when(root.list("%")).thenReturn(new Folder[] { ownInbox, archive, customers, sharedRoot });
     when(customers.list("%")).thenReturn(new Folder[] { acme });
     when(acme.list("%")).thenReturn(new Folder[0]);
+    when(root.list("Shared Folders/%")).thenReturn(new Folder[] { alice });
     when(sharedRoot.list("%")).thenReturn(new Folder[] { alice });
     when(alice.list("%")).thenReturn(new Folder[] { aliceInbox });
 
@@ -433,8 +477,10 @@ class ImapAclEngineTest {
     Folder namespace = folder("Other Users", "Other Users", '/');
     Folder alice = folder("alice", "Other Users/alice", '/');
     Folder aliceAtAcme = folder("alice@acme.com", "Other Users/alice@acme.com", '/');
+    Folder listRoot = folder("", "", '/');
     when(store.getUserNamespaces(isNull())).thenReturn(new Folder[] { namespace });
-    when(namespace.list("%")).thenReturn(new Folder[] { alice, aliceAtAcme });
+    when(store.getDefaultFolder()).thenReturn(listRoot);
+    when(listRoot.list("Other Users/%")).thenReturn(new Folder[] { alice, aliceAtAcme });
     when(alice.list("%")).thenReturn(new Folder[0]);
     when(aliceAtAcme.list("%")).thenReturn(new Folder[0]);
 

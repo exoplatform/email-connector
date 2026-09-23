@@ -25,6 +25,16 @@
     <type>org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationPwaPlugin</type>
   </component>
 
+  <!-- The push twins of the two mailbox-delegation notifications (EXO-90503). Both
+       render what the web plugin already wrote in the receiver's language. -->
+  <component>
+    <type>org.exoplatform.emailConnector.notification.plugin.EmailDelegationInvitationPwaPlugin</type>
+  </component>
+
+  <component>
+    <type>org.exoplatform.emailConnector.notification.plugin.EmailDelegationResponsePwaPlugin</type>
+  </component>
+
   <external-component-plugins>
     <target-component>org.exoplatform.commons.addons.AddOnService</target-component>
     <component-plugin>
@@ -201,6 +211,90 @@
         </object-param>
       </init-params>
     </component-plugin>
+    <!-- Somebody shared their mailbox with you, and it waits for your answer
+         (EXO-90503). The payload is the owner's username and the preset, never a
+         sentence: the notification is written in the RECEIVER's language. -->
+    <component-plugin>
+      <name>notification.plugins</name>
+      <set-method>addPlugin</set-method>
+      <type>org.exoplatform.emailConnector.notification.plugin.EmailDelegationInvitationPlugin</type>
+      <description>Initial information for plugin EmailDelegationInvitationPlugin</description>
+      <init-params>
+        <object-param>
+          <name>template.EmailDelegationInvitationPlugin</name>
+          <description>The template for the plugin of a mailbox shared with the receiver</description>
+          <object type="org.exoplatform.commons.api.notification.plugin.config.PluginConfig">
+            <field name="pluginId">
+              <string>EmailDelegationInvitationPlugin</string>
+            </field>
+            <field name="resourceBundleKey">
+              <string>UINotification.label.emailDelegationInvitation</string>
+            </field>
+            <field name="order">
+              <string>3</string>
+            </field>
+            <field name="defaultConfig">
+              <collection type="java.util.ArrayList">
+                <value>
+                  <string>Instantly</string>
+                </value>
+              </collection>
+            </field>
+            <field name="groupId">
+              <string>email-connector</string>
+            </field>
+            <field name="bundlePath">
+              <string>locale.notification.emailConnectorNotification</string>
+            </field>
+            <field name="mutable">
+              <boolean>true</boolean>
+            </field>
+          </object>
+        </object-param>
+      </init-params>
+    </component-plugin>
+    <!-- Where a share now stands, told to whichever party did not act (EXO-90503):
+         accepted, declined, left, or the access removed. One preference for the four,
+         because switching off "declined" must not lose "revoked" with it. -->
+    <component-plugin>
+      <name>notification.plugins</name>
+      <set-method>addPlugin</set-method>
+      <type>org.exoplatform.emailConnector.notification.plugin.EmailDelegationResponseNotificationPlugin</type>
+      <description>Initial information for plugin EmailDelegationResponseNotificationPlugin</description>
+      <init-params>
+        <object-param>
+          <name>template.EmailDelegationResponseNotificationPlugin</name>
+          <description>The template for the plugin of an answer to a shared mailbox</description>
+          <object type="org.exoplatform.commons.api.notification.plugin.config.PluginConfig">
+            <field name="pluginId">
+              <string>EmailDelegationResponseNotificationPlugin</string>
+            </field>
+            <field name="resourceBundleKey">
+              <string>UINotification.label.emailDelegationResponse</string>
+            </field>
+            <field name="order">
+              <string>4</string>
+            </field>
+            <field name="defaultConfig">
+              <collection type="java.util.ArrayList">
+                <value>
+                  <string>Instantly</string>
+                </value>
+              </collection>
+            </field>
+            <field name="groupId">
+              <string>email-connector</string>
+            </field>
+            <field name="bundlePath">
+              <string>locale.notification.emailConnectorNotification</string>
+            </field>
+            <field name="mutable">
+              <boolean>true</boolean>
+            </field>
+          </object>
+        </object-param>
+      </init-params>
+    </component-plugin>
   </external-component-plugins>
   
   <external-component-plugins>
@@ -291,6 +385,65 @@
           <name>notificationPluginId</name>
           <description>Notification Plugin Id</description>
           <value>ScheduledEmailFailedNotificationPlugin</value>
+        </value-param>
+        <value-param>
+          <name>notificationChannelId</name>
+          <description>Notification Channel Id, applied to all when empty</description>
+          <value></value>
+        </value-param>
+      </init-params>
+    </component-plugin>
+    <!-- Same reason as above for the two delegation notifications (EXO-90503): a user
+         whose stored notification settings predate them would never be told that a
+         colleague shared a mailbox with them, which is the whole invitation. -->
+    <component-plugin>
+      <name>EmailDelegationInvitationPlugin</name>
+      <set-method>addUpgradePlugin</set-method>
+      <type>io.meeds.social.notification.upgrade.NotificationUpgradePlugin</type>
+      <description>Enables the mailbox sharing invitation notification for existing users</description>
+      <init-params>
+        <value-param>
+          <name>product.group.id</name>
+          <description>The groupId of the product</description>
+          <value>org.exoplatform.social</value>
+        </value-param>
+        <value-param>
+          <name>plugin.execution.order</name>
+          <description>The plugin execution order</description>
+          <value>7</value>
+        </value-param>
+        <value-param>
+          <name>notificationPluginId</name>
+          <description>Notification Plugin Id</description>
+          <value>EmailDelegationInvitationPlugin</value>
+        </value-param>
+        <value-param>
+          <name>notificationChannelId</name>
+          <description>Notification Channel Id, applied to all when empty</description>
+          <value></value>
+        </value-param>
+      </init-params>
+    </component-plugin>
+    <component-plugin>
+      <name>EmailDelegationResponseNotificationPlugin</name>
+      <set-method>addUpgradePlugin</set-method>
+      <type>io.meeds.social.notification.upgrade.NotificationUpgradePlugin</type>
+      <description>Enables the mailbox sharing answer notification for existing users</description>
+      <init-params>
+        <value-param>
+          <name>product.group.id</name>
+          <description>The groupId of the product</description>
+          <value>org.exoplatform.social</value>
+        </value-param>
+        <value-param>
+          <name>plugin.execution.order</name>
+          <description>The plugin execution order</description>
+          <value>8</value>
+        </value-param>
+        <value-param>
+          <name>notificationPluginId</name>
+          <description>Notification Plugin Id</description>
+          <value>EmailDelegationResponseNotificationPlugin</value>
         </value-param>
         <value-param>
           <name>notificationChannelId</name>

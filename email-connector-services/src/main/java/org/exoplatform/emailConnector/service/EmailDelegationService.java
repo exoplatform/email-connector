@@ -85,9 +85,11 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * <li><b>Allowlist, then intersection.</b> A preset is expanded by the engine into its
  * server's vocabulary, capped by the engine's allowlist ({@link MailboxRights#GRANTABLE},
  * {@code lrswit}, on IMAP: never {@code a x e p k}) and by the owner's own MYRIGHTS,
- * which this service reads and requires {@code a} in -- eXo never grants a right the
- * owner does not hold. The row records what the engine says it wrote, in letters and
- * in the server's own words ({@code NATIVE_RIGHTS}).</li>
+ * which this service reads -- eXo never grants a right the owner does not hold. The
+ * owner holding {@code a} is not a precondition: the server's answer to SETACL decides
+ * (Stalwart grants an owner's SETACL without {@code a} in MYRIGHTS). The row records
+ * what the engine says it wrote, in letters and in the server's own words
+ * ({@code NATIVE_RIGHTS}).</li>
  * <li><b>No unattended identity switch.</b> The ACL is written at <i>invite</i>, on the
  * owner's own session and consented action; it is not written at accept, which would
  * mean running SETACL as the owner on the grantee's request thread with nobody at the
@@ -113,9 +115,12 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * share immediately), a real server-side subscription on BlueMind (the share was
  * invisible until accepted) -- {@link #accept} calls the engine's subscribe hook when
  * its capabilities say so, before looking for the mailbox. BlueMind e-mails the owner
- * on every rights change itself; any owner-facing notification this add-on adds must
- * be gated on {@code capabilities.serverNotifiesOwner()} being false. What is still
- * open is named where it matters, in the engine.
+ * on every rights change itself: an owner-facing notification of an ACL change this
+ * add-on might add would have to be gated on {@code capabilities.serverNotifiesOwner()}
+ * being false -- none exists today. The notices of an answer (accepted, declined,
+ * left) are not ACL changes and are never gated
+ * ({@code EmailDelegationNotificationListener#notifyOwner}). What is still open is
+ * named where it matters, in the engine.
  */
 @Service
 public class EmailDelegationService {
@@ -222,12 +227,13 @@ public class EmailDelegationService {
    * <p>
    * The grant happens HERE and not at accept -- see the class comment. The order is:
    * the grantee resolved from their own connected setting on the same preset; the
-   * server probed; the owner's own MYRIGHTS read and {@code a} required; the engine
-   * handed the preset and the owner's rights, expanding the one and capping by the
-   * other in its server's own vocabulary (letters on IMAP, a verb on BlueMind -- plan,
-   * section 3.4); then the row ({@code PENDING/EXO}) recording what was written,
-   * reusing a declined, revoked, gone or available row of the same key so the unique
-   * key holds and the history stays on one row.
+   * server probed; the owner's own MYRIGHTS read -- {@code a} is not required, the
+   * server's answer to SETACL decides; the engine handed the preset and the owner's
+   * rights, expanding the one and capping by the other in its server's own vocabulary
+   * (letters on IMAP, a verb on BlueMind -- plan, section 3.4); then the row
+   * ({@code PENDING/EXO}) recording what was written, reusing a declined, revoked,
+   * gone or available row of the same key so the unique key holds and the history
+   * stays on one row.
    * <p>
    * The grant is on the mailbox as a whole -- INBOX on a per-folder server -- on every
    * engine in this phase (plan, section 3.4: BlueMind's {@code _acls} is per mailbox,
@@ -241,9 +247,8 @@ public class EmailDelegationService {
    * @throws IllegalArgumentException with a message code when the grantee is the
    *           caller, unknown, not connected on the same preset, the preset is not
    *           grantable, or the share already stands
-   * @throws MailboxAclException when the server does not support ACLs, the owner
-   *           cannot administer their INBOX, nothing is left to grant, or SETACL is
-   *           refused
+   * @throws MailboxAclException when the server does not support ACLs, nothing is left
+   *           to grant, or SETACL is refused
    */
   public EmailDelegation invite(String ownerUsername, String granteeUsername, DelegationPreset preset) throws IllegalAccessException {
     if (preset == null || !preset.isGrantable()) {
@@ -268,9 +273,18 @@ public class EmailDelegationService {
       requireSupported(engine.probe(session));
       MailboxRights ownerRights = engine.myRights(session, OWNER_INBOX);
       if (!ownerRights.canAdminister()) {
-        // Verified on BlueMind (the owner holds lrswipkxtea) and consistent with
-        // Stalwart accepting the owner's SETACL; still read per session, never assumed.
-        throw new MailboxAclException(MailboxAclException.OWNER_CANNOT_ADMINISTER, "MYRIGHTS INBOX = " + ownerRights.letters());
+        // NOT a refusal: 'a' is a positive signal, never a precondition -- the same
+        // lesson the capability probe learned, met a second time on the same rig.
+        // BlueMind answers lrswipkxtea, so the owner holds 'a' there; Stalwart 0.11.8
+        // answers rliteswkxp for the owner OF THAT VERY MAILBOX -- no 'a' at all --
+        // and then accepts her SETACL perfectly well (verified: the phase-0 grant to
+        // bob was made exactly that way). Refusing here told the owner of a mailbox
+        // she could not share her own mailbox, on a server that was willing.
+        // So: try the command. A server that really does refuse answers the SETACL,
+        // and engine.grant turns that into the refusal the user reads.
+        LOG.debug("{} holds no administer right on their own INBOX ({}); granting anyway, the server decides",
+                  ownerUsername,
+                  ownerRights.letters());
       }
       written = engine.grant(session, OWNER_INBOX, granteeIdentifier, preset, ownerRights);
     }
@@ -957,17 +971,15 @@ public class EmailDelegationService {
       }
       if (row.getStatus() == DelegationStatus.PENDING || row.getStatus() == DelegationStatus.ACCEPTED
           || row.getStatus() == DelegationStatus.DECLINED || row.getStatus() == DelegationStatus.AVAILABLE) {
-        // The server no longer carries the entry: an administrator, or the server's
-        // own interface, removed it. The server is the truth.
-        row = markRevoked(row, DelegationStatus.REVOKED);
+        // The server no longer carries the entry: an administrator, the server's own
+        // interface, or the revoke the owner just asked for removed it. The server is
+        // the truth.
+        markRevoked(row, DelegationStatus.REVOKED);
       }
-      grantees.add(new DelegationGrantee(row.getGranteeMailbox(),
-                                         row.getGranteeId(),
-                                         row,
-                                         row.getPreset(),
-                                         row.getRights(),
-                                         row.getNativeRights(),
-                                         row.getMailboxRights().affordances()));
+      // And it is NOT a grantee any more, so it does not belong in a list of who holds
+      // access. Adding it here made a successful revoke look like a failed one: the row
+      // went REVOKED on the server and in the database, and came straight back to the
+      // screen the owner had just removed it from, with no way to remove it again.
     }
     return grantees;
   }
