@@ -81,6 +81,11 @@ public class EmailManagedEnrollmentService {
 
   /**
    * Queues the enrolment of a user who just logged in. Returns at once.
+   * <p>
+   * The login thread opens nothing (EXO-90573): {@link #enrollOnLogin} is called on
+   * {@code this} from the executor thread and still binds its container, because
+   * {@link ContainerTransactional} is woven by ajc into the method body, not applied by
+   * the Spring proxy.
    *
    * @param username the eXo login of the user who logged in
    * @return true when the attempt was queued, false when it was dropped
