@@ -36,8 +36,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('UserSettings.emailConnector.sharedWithMe.none') }}
       </div>
       <template v-for="group in groups">
+        <!-- A group's title only when there are several groups: alone, it would repeat
+             the drawer's own title. -->
         <div
-          v-if="group.rows.length"
+          v-if="group.rows.length && shownGroups > 1"
           :key="group.status"
           class="px-4 pt-4 pb-1 text-caption text-sub-title text-wrap">
           {{ $t(group.titleKey) }}
@@ -46,68 +48,27 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           v-if="group.rows.length"
           :key="`${group.status}-list`"
           class="pa-0">
-          <v-list-item
+          <email-connector-user-setting-shared-mailbox-row
             v-for="delegation in group.rows"
             :key="delegation.id"
-            class="height-auto">
-            <v-list-item-content class="py-2">
-              <user-avatar
-                v-if="delegation.ownerId"
-                :profile-id="delegation.ownerId"
-                avatar
-                fullname
-                class="mb-1" />
-              <v-list-item-title v-else>
-                {{ delegation.ownerMailbox }}
-              </v-list-item-title>
-              <email-connector-delegation-rights
-                :preset="delegation.preset"
-                :rights="delegation.rights"
-                :native-rights="delegation.nativeRights"
-                :affordances="delegation.affordances"
-                class="my-1" />
-              <!-- Declining does not take the access away, and the wording may not
-                   suggest it does: the access was written when the invitation was
-                   sent, and only its owner removes it. Saying otherwise would leave
-                   someone believing they had closed a door that is still open. -->
-              <v-list-item-subtitle v-if="group.noteKey" class="caption text-sub-title text-wrap">
-                {{ $t(group.noteKey) }}
-              </v-list-item-subtitle>
-              <!-- Shown only on a share whose rights let read state be kept: without
-                   it there is no unread count to add, so the toggle would promise a
-                   number that cannot exist. Absent right, absent control. -->
-              <div
-                v-if="group.status === 'ACCEPTED' && delegation.affordances && delegation.affordances.markRead"
-                class="d-flex align-center mt-1">
-                <v-switch
-                  :input-value="delegation.badgeIncluded"
-                  :loading="savingId === delegation.id"
-                  :disabled="savingId !== null"
-                  dense
-                  hide-details
-                  class="mt-0 pt-0 me-2"
-                  @change="saveBadge(delegation, $event)" />
-                <span class="caption text-sub-title text-wrap">
-                  {{ $t('UserSettings.emailConnector.sharedWithMe.badge') }}
-                </span>
-              </div>
-            </v-list-item-content>
-            <v-list-item-action class="flex-row align-center">
-              <v-btn
-                v-for="action in group.actions"
-                :key="action"
-                :title="$t(`UserSettings.emailConnector.sharedWithMe.${action}`)"
-                :loading="savingId === delegation.id"
-                :disabled="savingId !== null"
-                small
-                text
-                @click="answer(delegation, action)">
-                {{ $t(`UserSettings.emailConnector.sharedWithMe.${action}`) }}
-              </v-btn>
-            </v-list-item-action>
-          </v-list-item>
+            :delegation="delegation"
+            :actions="group.actions"
+            :note="group.noteKey ? $t(group.noteKey) : ''"
+            :saving="savingId === delegation.id"
+            :disabled="savingId !== null"
+            @answer="onAnswer(delegation, $event)"
+            @badge="saveBadge(delegation, $event)" />
         </v-list>
       </template>
+      <!-- Leaving is the one answer that takes a mailbox away from the user's screens,
+           so it is asked first; the access itself stays, and the question says so. -->
+      <exo-confirm-dialog
+        ref="leaveConfirmDialog"
+        :title="$t('UserSettings.emailConnector.sharedWithMe.leave.confirm.title', { 0: leavingName })"
+        :message="$t('UserSettings.emailConnector.sharedWithMe.leave.confirm.message', { 0: leavingName })"
+        :ok-label="$t('UserSettings.emailConnector.sharedWithMe.leave')"
+        :cancel-label="$t('UserSettings.emailConnector.sharedWithMe.leave.confirm.cancel')"
+        @ok="confirmLeave" />
     </template>
     <template #footer>
       <div class="d-flex align-center">
@@ -121,6 +82,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+// The row is this drawer's own part, registered here rather than globally: nothing else
+// shows it.
+import EmailConnectorUserSettingSharedMailboxRow from './EmailConnectorUserSettingSharedMailboxRow.vue';
+
 /**
  * The four states a share can be in on this side, the order they are shown in, and
  * what may be done to each. Declared once, outside the component, because it is the
@@ -155,14 +120,36 @@ const GROUPS = [
 ];
 
 export default {
+  components: {
+    'email-connector-user-setting-shared-mailbox-row': EmailConnectorUserSettingSharedMailboxRow,
+  },
   data: () => ({
     drawer: false,
     loading: false,
     loaded: false,
     delegations: [],
     savingId: null,
+    // The share whose "Leave" is being confirmed.
+    leaving: null,
   }),
   computed: {
+    /**
+     * How many groups have rows to show.
+     *
+     * @returns {Number} the count
+     */
+    shownGroups() {
+      return this.groups.filter(group => group.rows.length).length;
+    },
+    /**
+     * How the share being left is named in its confirmation: the owner's mailbox, which
+     * every row carries whether or not eXo knows its owner.
+     *
+     * @returns {String} the name
+     */
+    leavingName() {
+      return this.leaving?.ownerMailbox || '';
+    },
     /**
      * The rows grouped by state, in the order the screen shows them. REVOKED and GONE
      * rows are deliberately absent: they are history of an access that no longer
@@ -184,6 +171,18 @@ export default {
     this.$root.$off('open-email-shared-with-me-drawer', this.open);
   },
   methods: {
+    /**
+     * Shows a message on the platform's toast, through the document event it listens to,
+     * whichever app this drawer is mounted in (the settings page, or the mailbox's
+     * "Manage shared mailboxes").
+     *
+     * @param {String} message the message
+     * @param {String} type success or error
+     * @returns {void}
+     */
+    showAlert(message, type) {
+      document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: type, alertMessage: message}}));
+    },
     /**
      * Opens the drawer, walking the mail server for shares nobody invited from here.
      *
@@ -210,7 +209,7 @@ export default {
         })
         .catch(() => {
           const message = this.$t('UserSettings.emailConnector.sharedWithMe.error');
-          this.$root.$emit('alert-message', message, 'error');
+          this.showAlert(message, 'error');
         })
         .finally(() => this.loading = false);
     },
@@ -228,14 +227,14 @@ export default {
       this.$emailConnectorUserSettingService.answerDelegation(delegation.id, action)
         .then(() => {
           const message = this.$t(`UserSettings.emailConnector.sharedWithMe.${action}.done`);
-          this.$root.$emit('alert-message', message, 'success');
+          this.showAlert(message, 'success');
         })
         .catch(error => {
           const code = error?.message;
           const known = !!code && typeof this.$te === 'function' && this.$te(code);
           const fallback = this.$t(`UserSettings.emailConnector.sharedWithMe.${action}.error`);
           const message = known ? this.$t(code) : fallback;
-          this.$root.$emit('alert-message', message, 'error');
+          this.showAlert(message, 'error');
         })
         .finally(() => {
           this.savingId = null;
@@ -257,12 +256,39 @@ export default {
     saveBadge(delegation, included) {
       this.savingId = delegation.id;
       this.$emailConnectorUserSettingService.updateDelegationPreferences(delegation.id, {badgeIncluded: !!included})
-        .then(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.preferences.saved'), 'success'))
-        .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.preferences.error'), 'error'))
+        .then(() => this.showAlert(this.$t('UserSettings.emailConnector.preferences.saved'), 'success'))
+        .catch(() => this.showAlert(this.$t('UserSettings.emailConnector.preferences.error'), 'error'))
         .finally(() => {
           this.savingId = null;
           this.load(false);
         });
+    },
+    /**
+     * A row's answer: Leave is asked first, the others are sent as they are.
+     *
+     * @param {Object} delegation the row
+     * @param {String} action accept, decline or leave
+     * @returns {void}
+     */
+    onAnswer(delegation, action) {
+      if (action === 'leave') {
+        this.leaving = delegation;
+        this.$refs.leaveConfirmDialog.open();
+        return;
+      }
+      this.answer(delegation, action);
+    },
+    /**
+     * Leaves the share whose confirmation was just accepted.
+     *
+     * @returns {void}
+     */
+    confirmLeave() {
+      const delegation = this.leaving;
+      this.leaving = null;
+      if (delegation) {
+        this.answer(delegation, 'leave');
+      }
     },
     /**
      * Closes the drawer and tells the settings rows to re-read their counters.
