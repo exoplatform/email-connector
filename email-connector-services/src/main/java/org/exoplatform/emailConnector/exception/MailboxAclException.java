@@ -50,6 +50,18 @@ public class MailboxAclException extends RuntimeException {
   /** The intersection of the preset with the owner's own rights left nothing to grant. */
   public static final String NOTHING_TO_GRANT        = "emailConnector.delegation.nothingToGrant";
 
+  /**
+   * The server accepted a grant but its ACL does not name the grantee afterwards
+   * (EXO-90548): nothing was shared, whatever the server answered.
+   */
+  public static final String NOT_RECORDED            = "emailConnector.delegation.notRecorded";
+
+  /**
+   * An access was narrowed on INBOX, but one of the other shared folders kept the wider
+   * rights and could not be removed either (EXO-90548).
+   */
+  public static final String NOT_NARROWED            = "emailConnector.delegation.notNarrowed";
+
   private final String       detail;
 
   /**
