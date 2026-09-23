@@ -212,6 +212,23 @@ class ImapAclEngineTest {
   }
 
   /**
+   * EXO-90557 -- a MYRIGHTS the connection dropped under is "could not ask", not "no":
+   * the periodic re-read revokes a share on a refusal only, and a network hiccup must
+   * not cost a grantee their share. A real NO stays a refusal.
+   */
+  @Test
+  void aDroppedConnectionIsNotARefusal() throws MessagingException {
+    doThrow(new StoreClosedException(store, "BYE")).when(inbox).myRights();
+    assertEquals(MailboxAclException.UNREACHABLE,
+                 assertThrows(MailboxAclException.class, () -> engine.myRights(session(), "INBOX")).getCode());
+
+    org.mockito.Mockito.reset(inbox);
+    doThrow(new MessagingException("NO", new CommandFailedException("NO"))).when(inbox).myRights();
+    assertEquals(MailboxAclException.SERVER_REFUSED,
+                 assertThrows(MailboxAclException.class, () -> engine.myRights(session(), "INBOX")).getCode());
+  }
+
+  /**
    * Stalwart stores an Editor granted from eXo ({@code lrswit}) with {@code e} beside
    * {@code t}: its GETACL answers {@code tewsirl}, the delegate's MYRIGHTS
    * {@code rlitesw} (both observed on the rig, 2026-09-23). Both read as an Editor, not

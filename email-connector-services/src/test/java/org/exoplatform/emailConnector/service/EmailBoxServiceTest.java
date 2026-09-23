@@ -9858,6 +9858,43 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90557 -- a delegate's own walk lists the mailbox shared with them (Stalwart:
+   * {@code Shared Folders/alice@acme.com/Inbox}); it is not registered as one of their
+   * own folders. Their own folder still is.
+   */
+  @Test
+  @SneakyThrows
+  void aWalkNeverRegistersASharedMailboxAsTheUsersOwnFolder() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    IMAPFolder factures = listedFolder("Factures", true);
+    IMAPFolder sharedRoot = listedFolder("Shared Folders", false);
+    IMAPFolder owner = listedFolder("Shared Folders/alice@acme.com", false);
+    IMAPFolder sharedInbox = listedFolder("Shared Folders/alice@acme.com/Inbox", true);
+    givenAMailboxListing(factures, sharedRoot, owner, sharedInbox);
+
+    emailBoxService.getFolders(TEST_USER, true);
+
+    ArgumentCaptor<EmailFolder> created = ArgumentCaptor.forClass(EmailFolder.class);
+    verify(emailFolderStorage).createFolder(created.capture());
+    assertEquals("Factures", created.getValue().getRemoteName(), "the user's own folder, and only it");
+  }
+
+  /**
+   * One folder as a listing shows it, with its separator.
+   *
+   * @param fullName the full name
+   * @param holdsMail whether it can hold mail (a container otherwise)
+   * @return the folder
+   */
+  @SneakyThrows
+  private IMAPFolder listedFolder(String fullName, boolean holdsMail) {
+    IMAPFolder folder = aHiddenFolder(holdsMail ? ArrayUtils.EMPTY_STRING_ARRAY : new String[] { "\\Noselect" }, fullName);
+    lenient().when(folder.getName()).thenReturn(fullName.substring(fullName.lastIndexOf('/') + 1));
+    lenient().when(folder.getSeparator()).thenReturn('/');
+    return folder;
+  }
+
+  /**
    * A requested walk that cannot reach the mailbox still answers the registered list,
    * and SAYS the walk did not run: "refreshed" over a mailbox that could not be reached
    * would send the user looking for a folder that was never asked about. Nothing is
@@ -11714,6 +11751,146 @@ public class EmailBoxServiceTest {
     lenient().when(emailDelegationService.getSyncableFolders(TEST_USER, 100L)).thenReturn(List.of(delegatedInbox(8L)));
   }
 
+  // ---------------------------------------------------------------------------------
+  // A shared mailbox's mail kept apart from the delegate's own (EXO-90557)
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * A conversation read from a shared mailbox holds that mailbox's rows only: the
+   * delegate's own unsent answer (their Drafts) and own copies stay in their own
+   * mailbox -- the "Draft 2 / me" lines seen in alice's Inbox as bob. Read from the
+   * delegate's own mailbox, or by an agent, the shared mailbox's rows are left out.
+   */
+  @Test
+  void aConversationIsReadInsideTheMailboxItIsOpenedFrom() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email shared = email(TEST_USER);
+    shared.setFolder("CUSTOM:8");
+    Email ownDraft = email(TEST_USER);
+    ownDraft.setFolder(MailFolder.DRAFTS);
+    Email ownSent = email(TEST_USER);
+    ownSent.setFolder(MailFolder.SENT);
+    when(emailBoxStorage.getEmailsByThreadId(TEST_USER, "<t@host>", "testEmail")).thenReturn(List.of(shared, ownDraft, ownSent));
+    givenASharedInboxKeyed("CUSTOM:8");
+
+    assertEquals(List.of(shared), emailBoxService.getThread("<t@host>", TEST_USER, "CUSTOM:8"), "inside the shared mailbox");
+    assertEquals(List.of(ownDraft, ownSent), emailBoxService.getThread("<t@host>", TEST_USER, MailFolder.INBOX), "inside the own one");
+    assertEquals(List.of(ownDraft, ownSent), emailBoxService.getThread("<t@host>", TEST_USER), "an agent names no folder");
+  }
+
+  /**
+   * An agent handed the id of a shared mailbox's row is told it does not exist: its UID
+   * would act on another message of the user's own INBOX in the write tools.
+   */
+  @Test
+  void anAgentIsNeverHandedASharedMailboxsRowById() throws Exception {
+    Email shared = email(TEST_USER);
+    shared.setFolder("CUSTOM:8");
+    Email own = email(TEST_USER);
+    own.setFolder(MailFolder.INBOX);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(emailBoxStorage.getEmailById(eq(5L), eq(TEST_USER), any())).thenReturn(shared);
+    when(emailBoxStorage.getEmailById(eq(6L), eq(TEST_USER), any())).thenReturn(own);
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(aSharedMailboxRow());
+
+    assertNull(emailBoxService.getOwnMailboxEmailById(5L, TEST_USER));
+    assertSame(own, emailBoxService.getOwnMailboxEmailById(6L, TEST_USER));
+  }
+
+  /**
+   * The cached search leaves the shared mailboxes out -- phase 1 offers them nowhere in
+   * the unified search -- and a user who shares nothing reads exactly as before.
+   */
+  @Test
+  void theCachedSearchLeavesTheSharedMailboxesOut() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    when(emailDelegationService.getDelegatedFolderKeys(TEST_USER)).thenReturn(List.of("CUSTOM:8"));
+    when(emailBoxStorage.getEmailsForSearch(TEST_USER, List.of("CUSTOM:8"))).thenReturn(List.of());
+
+    emailBoxService.searchCachedEmails(TEST_USER, "budget", false, 10);
+
+    verify(emailBoxStorage).getEmailsForSearch(TEST_USER, List.of("CUSTOM:8"));
+    verify(emailBoxStorage, never()).getEmailsForSearch(TEST_USER);
+  }
+
+  /**
+   * A shared mailbox's listing counts its conversations inside that mailbox, and the
+   * user's own listing leaves the shared copies out of its counts.
+   */
+  @Test
+  @SneakyThrows
+  void aListingCountsItsConversationsInsideItsOwnMailbox() {
+    givenAConnectedMailbox();
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    EmailFolder delegated = delegatedInbox(8L);
+    delegated.setLastSyncDate(new Date());
+    when(emailFolderStorage.getFolder(TEST_USER, 8L)).thenReturn(delegated);
+    when(emailBoxStorage.getEmails(TEST_USER, "CUSTOM:8")).thenReturn(new ArrayList<>());
+    givenASharedInboxKeyed("CUSTOM:8");
+
+    emailBoxService.getEmailBox(TEST_USER, "CUSTOM:8");
+    verify(emailBoxStorage).getMailboxThreadSummaries(TEST_USER, List.of("CUSTOM:8"));
+
+    when(emailBoxStorage.getEmails(TEST_USER, MailFolder.INBOX)).thenReturn(new ArrayList<>());
+    emailBoxService.getEmailBox(TEST_USER, MailFolder.INBOX);
+    verify(emailBoxStorage).getThreadSummaries(TEST_USER, "testEmail", List.of("CUSTOM:8"));
+  }
+
+  /**
+   * A share the rights re-read finds withdrawn is not synced: nothing of it is pulled.
+   */
+  @Test
+  void aShareFoundWithdrawnIsNotSynced() throws Exception {
+    mockEmptySync();
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    when(emailDelegationService.getActiveDelegations(eq(TEST_USER), any())).thenReturn(List.of(aSharedMailboxRow()));
+    when(emailDelegationService.refreshGranteeRights(eq(TEST_USER), any(), any())).thenReturn(null);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(emailDelegationService).refreshGranteeRights(eq(TEST_USER), any(), any());
+    verify(emailDelegationService, never()).getSyncableFolders(anyString(), anyLong());
+  }
+
+  /**
+   * The Trash and Archive finders skip a folder under an advertised Other Users root,
+   * whatever its name says: {@code Other Users/allan/INBOX} contains "all" and was taken
+   * for the user's archive, {@code Other Users/anne/Trash} for their Trash.
+   */
+  @Test
+  @SneakyThrows
+  void theLooseFindersSkipAnotherUsersFolders() {
+    IMAPStore store = mock(IMAPStore.class);
+    Folder otherUsers = mock(Folder.class);
+    when(otherUsers.getFullName()).thenReturn("Other Users/");
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[] { otherUsers });
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    IMAPFolder allan = listedFolder("Other Users/allan/INBOX", true);
+    IMAPFolder anneTrash = listedFolder("Other Users/anne/Trash", true);
+    IMAPFolder ownArchive = listedFolder("Archive", true);
+    IMAPFolder ownTrash = listedFolder("Trash", true);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.listSubscribed("*")).thenReturn(new Folder[] { allan, anneTrash, ownArchive, ownTrash });
+
+    assertSame(ownArchive, ReflectionTestUtils.invokeMethod(emailBoxService, "findArchiveFolder", store));
+    assertSame(ownTrash, ReflectionTestUtils.invokeMethod(emailBoxService, "findTrashFolder", store));
+  }
+
+
+  /**
+   * One share of alice's mailbox whose INBOX is registered under a key.
+   *
+   * @param key the shared INBOX's folder key
+   */
+  private void givenASharedInboxKeyed(String key) {
+    lenient().when(emailDelegationService.getDelegatedFolderKeys(TEST_USER)).thenReturn(List.of(key));
+    lenient().when(emailDelegationService.delegationOf(TEST_USER, key)).thenReturn(aSharedMailboxRow());
+    lenient().when(emailDelegationService.getMailboxFolderKeys(TEST_USER, 100L)).thenReturn(List.of(key));
+  }
+
   /**
    * A connected mailbox and nothing else -- the guard tests never reach the server, so
    * stubbing a folder listing for them would be dead stubbing under strict Mockito.
@@ -11745,6 +11922,8 @@ public class EmailBoxServiceTest {
    */
   private void givenAnActiveShare(EmailFolder folder) {
     when(emailDelegationService.getActiveDelegations(eq(TEST_USER), any())).thenReturn(List.of(aSharedMailboxRow()));
+    // The rights re-read at the start of the pass (EXO-90557) find the share as it was.
+    lenient().when(emailDelegationService.refreshGranteeRights(eq(TEST_USER), any(), any())).thenAnswer(invocation -> invocation.getArgument(1));
     when(emailDelegationService.getSyncableFolders(TEST_USER, 100L)).thenReturn(List.of(folder));
     // Still registered when the pass re-reads it after syncing (stack review #437-1).
     lenient().when(emailFolderStorage.getFolder(TEST_USER, folder.getId())).thenReturn(folder);

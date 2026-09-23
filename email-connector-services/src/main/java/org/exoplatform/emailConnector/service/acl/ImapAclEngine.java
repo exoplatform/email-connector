@@ -163,6 +163,12 @@ public class ImapAclEngine implements MailboxAclEngine {
     try {
       return MailboxRights.fromRights(folder(session.store(), mailbox).myRights());
     } catch (MessagingException e) {
+      // A dropped line is not the server saying no (EXO-90557): a caller that revokes on
+      // a refusal must not revoke on a network hiccup.
+      if (isConnectionFailure(e)) {
+        LOG.debug("MYRIGHTS on '{}' could not be asked, the connection failed: {}", mailbox, e.getMessage());
+        throw new MailboxAclException(MailboxAclException.UNREACHABLE, e);
+      }
       throw refused("MYRIGHTS", mailbox, e);
     }
   }

@@ -133,7 +133,10 @@ public class EmailMcpTool implements McpToolPlugin {
    * @throws IllegalAccessException if the email belongs to somebody else
    */
   public EmailModel getEmailById(long emailId) throws ObjectNotFoundException, IllegalAccessException {
-    Email email = emailBoxService.getOwnedEmailById(emailId, getCurrentUserName());
+    // The user's own mailbox only (EXO-90557): a row of a mailbox somebody shared with
+    // them is its owner's mail, and chaining its UID into the INBOX-pinned write tools
+    // would act on another message of the user's own INBOX.
+    Email email = emailBoxService.getOwnMailboxEmailById(emailId, getCurrentUserName());
     if (email == null) {
       throw new ObjectNotFoundException("Email with id %s not found");
     }
@@ -181,7 +184,7 @@ public class EmailMcpTool implements McpToolPlugin {
       return email;
     }
     try {
-      Email whole = emailBoxService.getOwnedEmailById(email.getId(), getCurrentUserName());
+      Email whole = emailBoxService.getOwnMailboxEmailById(email.getId(), getCurrentUserName());
       return whole == null ? email : whole;
     } catch (IllegalAccessException e) {
       LOG.debug("Could not re-read email {} whole for the agent listing; answering it as listed", email.getId(), e);

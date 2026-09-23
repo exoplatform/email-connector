@@ -450,6 +450,7 @@ public class UserEmailSettingRest {
              method = "DELETE",
              description = "DELETEACL on the caller's INBOX, on the caller's own session, for the identifier the grant was written to; the delegation goes REVOKED and the grantee's registered folders of the mailbox are dropped. Works on a declined invitation too, which is how an owner answers a decline.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "A share of a mailbox the caller is no longer connected to (emailConnector.delegation.notChangeable)"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
       @ApiResponse(responseCode = "404", description = "No such delegation of the caller's mailbox"),
       @ApiResponse(responseCode = "502", description = "The mail server refused DELETEACL (emailConnector.delegation.*)") })
@@ -463,6 +464,9 @@ public class UserEmailSettingRest {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      // notChangeable: a share of a mailbox the owner is no longer connected to (#443-1).
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (MailboxAclException e) {
       throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getCode());
     }

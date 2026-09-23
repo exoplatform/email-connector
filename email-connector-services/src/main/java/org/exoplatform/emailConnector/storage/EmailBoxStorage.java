@@ -1380,7 +1380,22 @@ public class EmailBoxStorage {
    * @return the cached messages, newest first, carrying only what a search reads
    */
   public List<Email> getEmailsForSearch(String userId) {
-    return emailBoxDao.findByUserIdForSearch(userId, MailFolder.HIDDEN_FOLDERS).stream().map(this::fromEntityForSearch).toList();
+    return getEmailsForSearch(userId, List.of());
+  }
+
+  /**
+   * {@link #getEmailsForSearch(String)} leaving further folders out -- the mailboxes
+   * somebody shared with the user, which the unified search does not offer in phase 1
+   * (EXO-90557).
+   *
+   * @param userId the mailbox owner
+   * @param alsoExcluded the folders to leave out beside the hidden ones
+   * @return the showable cached messages, newest first
+   */
+  public List<Email> getEmailsForSearch(String userId, List<String> alsoExcluded) {
+    List<String> excluded = new ArrayList<>(MailFolder.HIDDEN_FOLDERS);
+    excluded.addAll(alsoExcluded == null ? List.of() : alsoExcluded);
+    return emailBoxDao.findByUserIdForSearch(userId, excluded).stream().map(this::fromEntityForSearch).toList();
   }
 
   @SneakyThrows
@@ -1494,9 +1509,51 @@ public class EmailBoxStorage {
    * @return a map of thread id to its summary, never null
    */
   public Map<String, ThreadSummary> getThreadSummaries(String userId, String userEmail) {
-    Map<String, List<String>> participants = getDraftThreadParticipants(userId, userEmail);
+    return getThreadSummaries(userId, userEmail, List.of());
+  }
+
+  /**
+   * {@link #getThreadSummaries(String, String)} leaving further folders out -- the
+   * user's own list does not count the copies a mailbox shared with them holds of the
+   * same conversation (EXO-90557).
+   *
+   * @param userId the mailbox owner
+   * @param userEmail the owner's own address
+   * @param alsoExcluded the folders to leave out beside the hidden ones
+   * @return the summaries, by thread id
+   */
+  public Map<String, ThreadSummary> getThreadSummaries(String userId, String userEmail, List<String> alsoExcluded) {
+    List<String> excluded = new ArrayList<>(MailFolder.HIDDEN_FOLDERS);
+    excluded.addAll(alsoExcluded == null ? List.of() : alsoExcluded);
+    return summarize(emailBoxDao.summarizeThreadsByUserId(userId, excluded), getDraftThreadParticipants(userId, userEmail));
+  }
+
+  /**
+   * The conversations of a mailbox somebody shared with the user, counted within its
+   * folders alone (EXO-90557): none of the user's own copies or drafts, so no row there
+   * reads "Draft" or counts a reply the user keeps in their own Sent.
+   *
+   * @param userId the delegate whose mirror it is
+   * @param folders the shared mailbox's folder keys
+   * @return the summaries, by thread id
+   */
+  public Map<String, ThreadSummary> getMailboxThreadSummaries(String userId, List<String> folders) {
+    if (folders == null || folders.isEmpty()) {
+      return new HashMap<>();
+    }
+    return summarize(emailBoxDao.summarizeThreadsByUserIdInFolders(userId, folders), Map.of());
+  }
+
+  /**
+   * Turns the grouped rows into summaries.
+   *
+   * @param rows {@code [threadId, messageCount, draftCount]} rows
+   * @param participants the draft conversations' correspondents, by thread id
+   * @return the summaries, by thread id
+   */
+  private Map<String, ThreadSummary> summarize(List<Object[]> rows, Map<String, List<String>> participants) {
     Map<String, ThreadSummary> summaries = new HashMap<>();
-    for (Object[] row : emailBoxDao.summarizeThreadsByUserId(userId, MailFolder.HIDDEN_FOLDERS)) {
+    for (Object[] row : rows) {
       String threadId = (String) row[0];
       // The draft column is a SUM, so it can be null on a dialect that returns no
       // rows to add up; "no drafts" is the honest reading of that.
