@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.service;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.EnumMap;
 import java.util.EnumSet;
@@ -47,6 +48,7 @@ import org.exoplatform.emailConnector.model.DelegationGrantee;
 import org.exoplatform.emailConnector.model.DelegationOrigin;
 import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
+import org.exoplatform.emailConnector.model.DiscoveredFolder;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailFolder;
@@ -61,6 +63,7 @@ import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
+import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngine;
@@ -143,6 +146,23 @@ public class EmailDelegationService {
 
   /** The default of {@link #MAX_PER_USER_PROPERTY}. */
   public static final int         DEFAULT_MAX_PER_USER       = 5;
+
+  /**
+   * How many folders of one shared mailbox a delegate's discovery registers, INBOX aside
+   * (EXO-90548, plan S1.4): the roles first, then by name. A mailbox with more reports the
+   * rest as not shown. Read from this JVM property, 50 by default -- the custom folders'
+   * own cap.
+   */
+  public static final String      MAX_FOLDERS_PROPERTY       = "exo.email.delegation.maxFolders";
+
+  /** The default of {@link #MAX_FOLDERS_PROPERTY}. */
+  public static final int         DEFAULT_MAX_FOLDERS        = 50;
+
+  /**
+   * How often a shared mailbox's folders are discovered again from the periodic pass: at
+   * most once per quarter-hour per share (plan S1.4, S1.7).
+   */
+  static final long               DISCOVERY_INTERVAL_MS      = 15L * 60 * 1000;
 
   /** The mailbox every grant is written on in this phase. */
   static final String             OWNER_INBOX                = MailFolder.INBOX;
@@ -1001,6 +1021,18 @@ public class EmailDelegationService {
     }
     delegation = emailDelegationStorage.update(delegation);
     registerDelegatedInbox(granteeUsername, delegation, shared);
+    // The mailbox's other folders, at once: the delegate opens it now. Best-effort -- the
+    // share stands on its INBOX, and the next periodic pass discovers them otherwise. The
+    // rows it could drop here are only rows the delegate's own walk registered before
+    // shared trees were kept out of it and that the delegate cannot read: their mirror
+    // stays, unreachable behind the guard (no r), until a later discovery drops the row
+    // or the share ends -- this service has no mail to delete.
+    try (MailboxAclSession session = session(connector, granteeUsername, mailboxIdentifier(granteeSetting))) {
+      discoverDelegatedFolders(granteeUsername, delegation, engine, session, true);
+    } catch (RuntimeException e) {
+      LOG.info("The folders of shared mailbox {} could not be discovered at accept; the next pass will", delegation.getOwnerMailbox());
+      LOG.debug("Discovery at accept failed", e);
+    }
     LOG.info("Mailbox delegation accepted: actor={} ownerMailbox={} remoteRoot={} rights={}",
              granteeUsername,
              delegation.getOwnerMailbox(),
@@ -1200,11 +1232,11 @@ public class EmailDelegationService {
                                                                                            : counts.getUnreadCounts();
     List<SharedMailboxEntry> entries = new ArrayList<>();
     for (EmailDelegation delegation : accepted) {
-      EmailFolder inbox = emailFolderStorage.getDelegatedFolders(granteeUsername, delegation.getId())
-                                            .stream()
-                                            .filter(folder -> MailFolderView.TYPE_DELEGATED_INBOX.equals(folder.getType()))
-                                            .findFirst()
-                                            .orElse(null);
+      List<EmailFolder> folders = emailFolderStorage.getDelegatedFolders(granteeUsername, delegation.getId());
+      EmailFolder inbox = folders.stream()
+                                 .filter(folder -> MailFolderView.TYPE_DELEGATED_INBOX.equals(folder.getType()))
+                                 .findFirst()
+                                 .orElse(null);
       if (inbox == null) {
         continue;
       }
@@ -1216,9 +1248,56 @@ public class EmailDelegationService {
                                          delegation.getRights(),
                                          delegation.getAffordances(),
                                          inbox.getKey(),
-                                         unreadCounts.getOrDefault(inbox.getKey(), 0)));
+                                         unreadCounts.getOrDefault(inbox.getKey(), 0),
+                                         otherFolders(folders, delegation)));
     }
     return entries;
+  }
+
+  /**
+   * A shared mailbox's folders besides INBOX, for the switcher and the folder tree: the
+   * ones the last discovery still listed, roles first in their usual order, then by
+   * name; each with the controls the delegate's letters on it unlock.
+   *
+   * @param folders the share's registered folders
+   * @param delegation the share
+   * @return the folders, never null
+   */
+  private List<SharedMailboxFolder> otherFolders(List<EmailFolder> folders, EmailDelegation delegation) {
+    return folders.stream()
+                  .filter(folder -> MailFolderView.TYPE_DELEGATED.equals(folder.getType()))
+                  .filter(folder -> !folder.isMissing())
+                  .sorted(Comparator.comparing((EmailFolder folder) -> folder.getRole() == null ? Integer.MAX_VALUE : folder.getRole().ordinal())
+                                    .thenComparing(EmailFolder::getDisplayName, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)))
+                  .map(folder -> {
+                    MailboxRights rights = folderRights(folder, delegation);
+                    return new SharedMailboxFolder(folder.getKey(),
+                                                   folder.getRole(),
+                                                   folder.getDisplayName(),
+                                                   rights.letters(),
+                                                   rights.affordances(),
+                                                   rights.canRead());
+                  })
+                  .toList();
+  }
+
+  /**
+   * The delegate's letters on one folder of a share: the folder's own, as discovery read
+   * them, for a folder beside INBOX (EXO-90548); the share's for its INBOX -- re-read
+   * every periodic pass -- and for a row discovery has not read yet, which knows no
+   * better.
+   *
+   * @param folder the delegated folder
+   * @param delegation its share
+   * @return the letters, never null
+   */
+  private static MailboxRights folderRights(EmailFolder folder, EmailDelegation delegation) {
+    // "Discovery has read this folder" is its stamp, not its letters: no letter at all is
+    // stored as an empty string, which Oracle reads back as null.
+    if (folder != null && MailFolderView.TYPE_DELEGATED.equals(folder.getType()) && folder.getRightsCheckDate() != null) {
+      return MailboxRights.of(StringUtils.defaultString(folder.getRights()));
+    }
+    return delegation.getMailboxRights();
   }
 
   /**
@@ -1391,6 +1470,307 @@ public class EmailDelegationService {
   }
 
   /**
+   * The periodic pass's discovery of a shared mailbox's folders (EXO-90548), on the
+   * delegate's own store, borrowed and not closed: at most every
+   * {@link #DISCOVERY_INTERVAL_MS} per share. See
+   * {@link #discoverDelegatedFolders(String, EmailDelegation, MailboxAclEngine, MailboxAclSession, boolean)}.
+   *
+   * @param granteeUsername the delegate
+   * @param delegation an accepted share
+   * @param store the delegate's connected store
+   * @return the rows whose mirrored mail the caller must delete, never null
+   */
+  public List<EmailFolder> discoverDelegatedFoldersIfDue(String granteeUsername, EmailDelegation delegation, Store store) {
+    EmailConnector connector = delegation == null || delegation.getConnectorId() == null ? null
+                                                                                         : emailConnectorService.getEmailConnector(delegation.getConnectorId());
+    if (connector == null) {
+      return List.of();
+    }
+    MailboxAclEngine engine = aclEngineRegistry.engineFor(connector);
+    MailboxAclSession session = new MailboxAclSession(connector, granteeUsername, delegation.getGranteeMailbox(), () -> store, null);
+    try {
+      return discoverDelegatedFolders(granteeUsername, delegation, engine, session, false);
+    } catch (MailboxAclException e) {
+      LOG.debug("The folders of shared mailbox {} could not be discovered ({}); kept as they were",
+                delegation.getOwnerMailbox(),
+                e.getCode());
+      if (MailboxAclException.SERVER_REFUSED.equals(e.getCode())) {
+        // A refusal is an answer: asked again in a quarter-hour, not every pass.
+        stampDiscovery(granteeUsername, delegation);
+      }
+      return List.of();
+    }
+  }
+
+  /**
+   * Stamps a share's INBOX row as discovered now, which is what the discovery's
+   * throttle reads.
+   *
+   * @param granteeUsername the delegate
+   * @param delegation the share
+   */
+  private void stampDiscovery(String granteeUsername, EmailDelegation delegation) {
+    emailFolderStorage.getDelegatedFolders(granteeUsername, delegation.getId())
+                      .stream()
+                      .filter(folder -> MailFolderView.TYPE_DELEGATED_INBOX.equals(folder.getType()))
+                      .findFirst()
+                      .ifPresent(inbox -> emailFolderStorage.updateDelegatedRights(granteeUsername,
+                                                                                   inbox.getId(),
+                                                                                   delegation.getId(),
+                                                                                   null,
+                                                                                   delegation.getRights(),
+                                                                                   new Date()));
+  }
+
+  /**
+   * Discovers the folders of a shared mailbox on the delegate's session and registers
+   * them as the delegate's view of it (EXO-90548, plan S1.4): every folder the server
+   * lists under the share's root, with its role in the owner's mailbox and the
+   * delegate's own MYRIGHTS letters on it.
+   * <ul>
+   * <li><b>Role</b>: the owner's role-to-folder map the grant recorded on the owner's
+   * session first -- a delegate may be shown no special-use attribute at all (Dovecot)
+   * -- then the attribute the delegate's listing shows, then the usual name of a direct
+   * child of the root. One folder per role.</li>
+   * <li><b>Letters</b>: a folder listed without {@code r} is registered greyed and never
+   * synced; one the server refuses MYRIGHTS on reads as no right.</li>
+   * <li><b>Cap</b>: {@link #MAX_FOLDERS_PROPERTY}, roles first, then by name.</li>
+   * <li><b>Reconciliation</b>, as for the user's own folders: a folder listed again is
+   * un-missed; one not listed is marked missing, then dropped at the next discovery that
+   * still does not list it -- one grace walk, for an owner's rename, which a delegate's
+   * listing may not show until the owner shares the renamed folder again (Dovecot).</li>
+   * <li><b>Adoption</b>: a row the delegate's own walk registered at the same name
+   * before EXO-90548 kept shared trees out of it is taken into the share, not
+   * duplicated (plan R-b).</li>
+   * </ul>
+   * The delegated INBOX row is stamped with the delegate's letters and the discovery's
+   * time, which is what the quarter-hour throttle reads.
+   *
+   * @param granteeUsername the delegate
+   * @param delegation an accepted share
+   * @param engine the engine
+   * @param session the delegate's session
+   * @param force whether to run inside the throttle
+   * @return the rows dropped or no longer readable, whose mirrored mail the caller must
+   *         delete; never null
+   * @throws MailboxAclException when the server cannot be reached; nothing is changed then
+   */
+  List<EmailFolder> discoverDelegatedFolders(String granteeUsername,
+                                             EmailDelegation delegation,
+                                             MailboxAclEngine engine,
+                                             MailboxAclSession session,
+                                             boolean force) {
+    if (delegation == null || delegation.getId() == null || delegation.getStatus() != DelegationStatus.ACCEPTED
+        || StringUtils.isBlank(delegation.getRemoteRoot())) {
+      return List.of();
+    }
+    List<EmailFolder> registered = emailFolderStorage.getDelegatedFolders(granteeUsername, delegation.getId());
+    EmailFolder inbox = registered.stream().filter(folder -> MailFolderView.TYPE_DELEGATED_INBOX.equals(folder.getType())).findFirst().orElse(null);
+    if (inbox == null) {
+      return List.of();
+    }
+    Date now = new Date();
+    if (!force && inbox.getRightsCheckDate() != null && now.getTime() - inbox.getRightsCheckDate().getTime() < DISCOVERY_INTERVAL_MS) {
+      return List.of();
+    }
+    String delimiter = StringUtils.defaultIfEmpty(inbox.getDelimiter(), "/");
+    List<DiscoveredFolder> listed = new ArrayList<>(engine.listFoldersUnder(session, delegation.getRemoteRoot(), delimiter)
+                                                          .stream()
+                                                          .filter(DiscoveredFolder::selectable)
+                                                          .filter(folder -> !folder.fullName().equals(inbox.getRemoteName()))
+                                                          .toList());
+    Map<String, FolderRole> roles = rolesOf(listed, delegation, delimiter);
+    listed.sort(Comparator.comparing((DiscoveredFolder folder) -> roles.containsKey(folder.fullName()) ? roles.get(folder.fullName()).ordinal() : Integer.MAX_VALUE)
+                          .thenComparing(DiscoveredFolder::fullName));
+    int cap = getMaxFolders();
+    if (listed.size() > cap) {
+      LOG.info("Shared mailbox {} lists {} folders; the first {} are shown", delegation.getOwnerMailbox(), listed.size(), cap);
+      listed = new ArrayList<>(listed.subList(0, cap));
+    }
+    Map<String, MailboxRights> rights = new HashMap<>();
+    for (DiscoveredFolder folder : listed) {
+      rights.put(folder.fullName(), rightsOf(engine, session, folder.fullName()));
+    }
+
+    Map<String, EmailFolder> byName = new HashMap<>();
+    registered.forEach(folder -> byName.put(folder.getRemoteName(), folder));
+    List<EmailFolder> purged = new ArrayList<>();
+    Set<String> seen = new HashSet<>();
+    for (DiscoveredFolder folder : listed) {
+      seen.add(folder.fullName());
+      MailboxRights letters = rights.get(folder.fullName());
+      FolderRole role = roles.get(folder.fullName());
+      EmailFolder row = byName.get(folder.fullName());
+      if (row == null) {
+        row = adoptOrCreate(granteeUsername, delegation, folder, now);
+      } else {
+        emailFolderStorage.markSeen(granteeUsername, row.getId(), folder.displayName(), folder.delimiter(), now);
+      }
+      if (row == null) {
+        continue;
+      }
+      emailFolderStorage.updateDelegatedRights(granteeUsername, row.getId(), delegation.getId(), role, letters.letters(), now);
+      if (letters.canRead() && !row.isSyncEnabled()) {
+        emailFolderStorage.updateSyncEnabled(granteeUsername, row.getId(), true, now);
+      } else if (!letters.canRead() && row.isSyncEnabled()) {
+        emailFolderStorage.updateSyncEnabled(granteeUsername, row.getId(), false, now);
+        purged.add(row);
+      }
+    }
+    for (EmailFolder row : registered) {
+      if (row == inbox || seen.contains(row.getRemoteName())) {
+        continue;
+      }
+      if (row.isMissing()) {
+        emailFolderStorage.deleteFolder(granteeUsername, row.getId());
+        purged.add(row);
+      } else {
+        emailFolderStorage.markMissing(granteeUsername, row.getId());
+      }
+    }
+    emailFolderStorage.updateDelegatedRights(granteeUsername, inbox.getId(), delegation.getId(), null, delegation.getRights(), now);
+    return purged;
+  }
+
+  /**
+   * Each listed folder's role in the owner's mailbox: the owner's own map first (read
+   * on the owner's session at the grant), then the special-use attribute the delegate's
+   * listing shows, then the usual English name of a direct child of the root. One
+   * folder per role; Drafts is recognised but was never granted by eXo.
+   *
+   * @param listed the folders under the root
+   * @param delegation the share
+   * @param delimiter the hierarchy delimiter
+   * @return the role of each folder that has one, by full name
+   */
+  private Map<String, FolderRole> rolesOf(List<DiscoveredFolder> listed, EmailDelegation delegation, String delimiter) {
+    Map<String, FolderRole> roles = new HashMap<>();
+    Set<FolderRole> taken = EnumSet.noneOf(FolderRole.class);
+    String rootPrefix = StringUtils.removeEnd(delegation.getRemoteRoot(), delimiter) + delimiter;
+    Map<FolderRole, String> owner = delegation.getOwnerRoleFolders() == null ? Map.of() : delegation.getOwnerRoleFolders();
+    owner.forEach((role, ownerName) -> {
+      String shared = rootPrefix + withoutInboxPrefix(ownerName, delimiter);
+      listed.stream().filter(folder -> folder.fullName().equals(shared)).findFirst().ifPresent(folder -> {
+        roles.put(folder.fullName(), role);
+        taken.add(role);
+      });
+    });
+    for (DiscoveredFolder folder : listed) {
+      if (roles.containsKey(folder.fullName())) {
+        continue;
+      }
+      FolderRole role = folder.attributes() == null ? null
+                                                    : folder.attributes().stream().map(FolderRole::ofAttribute).filter(r -> r != null).findFirst().orElse(null);
+      String below = folder.fullName().startsWith(rootPrefix) ? folder.fullName().substring(rootPrefix.length()) : folder.fullName();
+      if (role == null) {
+        // The path below the root, whole: only a direct child can be named "Trash".
+        role = FolderRole.ofUsualName(below);
+      }
+      if (role != null && taken.add(role)) {
+        roles.put(folder.fullName(), role);
+      }
+    }
+    return roles;
+  }
+
+  /**
+   * An owner's folder name as it appears under the shared root: a server that names the
+   * owner's folders under INBOX ({@code INBOX.Sent}) lists them under the owner's root
+   * without it.
+   *
+   * @param ownerName the name on the owner's session
+   * @param delimiter the hierarchy delimiter
+   * @return the name relative to the owner's root
+   */
+  private static String withoutInboxPrefix(String ownerName, String delimiter) {
+    String prefix = MailFolder.INBOX + delimiter;
+    return ownerName != null && ownerName.regionMatches(true, 0, prefix, 0, prefix.length()) ? ownerName.substring(prefix.length())
+                                                                                             : StringUtils.defaultString(ownerName);
+  }
+
+  /**
+   * The delegate's letters on one folder. A refusal of MYRIGHTS on a listed folder reads
+   * as no right; a lost connection stops the discovery.
+   *
+   * @param engine the engine
+   * @param session the delegate's session
+   * @param mailbox the folder's full name
+   * @return the letters
+   * @throws MailboxAclException when the server cannot be reached
+   */
+  private MailboxRights rightsOf(MailboxAclEngine engine, MailboxAclSession session, String mailbox) {
+    try {
+      return engine.myRights(session, mailbox);
+    } catch (MailboxAclException e) {
+      if (MailboxAclException.UNREACHABLE.equals(e.getCode())) {
+        throw e;
+      }
+      return MailboxRights.NONE;
+    }
+  }
+
+  /**
+   * The row of a folder discovery lists for the first time: the delegate's own row of
+   * that name adopted into the share when their walk registered one before EXO-90548 kept
+   * shared trees out, a new row otherwise (opt-in off; discovery then opts in a readable
+   * folder).
+   *
+   * @param granteeUsername the delegate
+   * @param delegation the share
+   * @param folder the listed folder
+   * @param now the sighting time
+   * @return the row, or null when it could not be written
+   */
+  private EmailFolder adoptOrCreate(String granteeUsername, EmailDelegation delegation, DiscoveredFolder folder, Date now) {
+    EmailFolder own = emailFolderStorage.getFolderByRemoteName(granteeUsername, folder.fullName());
+    if (own != null) {
+      if (own.getDelegationId() != null && !own.getDelegationId().equals(delegation.getId())) {
+        // Another share's row at the same name: not this discovery's to take.
+        return null;
+      }
+      emailFolderStorage.adoptAsDelegated(granteeUsername, own.getId(), delegation.getId(), MailFolderView.TYPE_DELEGATED);
+      // The delegate's own walk, which now leaves shared trees out, may have marked it
+      // missing: it is listed right now.
+      emailFolderStorage.markSeen(granteeUsername, own.getId(), folder.displayName(), folder.delimiter(), now);
+      return emailFolderStorage.getFolder(granteeUsername, own.getId());
+    }
+    EmailFolder created = new EmailFolder();
+    created.setUserId(granteeUsername);
+    created.setRemoteName(folder.fullName());
+    created.setDisplayName(folder.displayName());
+    created.setDelimiter(folder.delimiter());
+    created.setType(MailFolderView.TYPE_DELEGATED);
+    created.setDelegationId(delegation.getId());
+    created.setDiscoveredDate(now);
+    created.setLastSeenDate(now);
+    try {
+      return emailFolderStorage.createFolder(created);
+    } catch (RuntimeException e) {
+      LOG.debug("Folder '{}' of shared mailbox {} could not be registered", folder.fullName(), delegation.getOwnerMailbox(), e);
+      return null;
+    }
+  }
+
+  /**
+   * The cap on registered folders per shared mailbox -- see {@link #MAX_FOLDERS_PROPERTY}.
+   * A misconfigured value falls back to the default.
+   *
+   * @return the cap, at least one
+   */
+  public int getMaxFolders() {
+    String value = System.getProperty(MAX_FOLDERS_PROPERTY);
+    if (StringUtils.isBlank(value)) {
+      return DEFAULT_MAX_FOLDERS;
+    }
+    try {
+      int parsed = Integer.parseInt(value.trim());
+      return parsed > 0 ? parsed : DEFAULT_MAX_FOLDERS;
+    } catch (NumberFormatException e) {
+      return DEFAULT_MAX_FOLDERS;
+    }
+  }
+
+  /**
    * The shared mailboxes the caller is subscribed to AND currently in -- what the
    * delegated branch of their sync walks.
    * <p>
@@ -1415,11 +1795,10 @@ public class EmailDelegationService {
    * The folders of one shared mailbox that the caller asked to mirror: opted in and
    * still listed by the server.
    * <p>
-   * At accept time that is the delegated INBOX and nothing else ({@code SYNC_ENABLED}
-   * is set on it alone), which is the "INBOX only unless the delegate opts a folder in"
-   * rule -- expressed as a property of the rows rather than as a type test here, so
-   * that the day delegated sub-folders are discovered and offered, the sync needs no
-   * change to pick them up.
+   * The delegated INBOX only. Since EXO-90548 the shared mailbox's other folders are
+   * discovered and opted in too -- so that opening one refreshes it on the spot -- and
+   * they are kept out here, by type: a share the delegate uses costs one folder per
+   * period, whatever the owner's mailbox holds (plan S1.7).
    *
    * @param granteeUsername the caller
    * @param delegationId the delegation
@@ -1430,6 +1809,10 @@ public class EmailDelegationService {
                              .stream()
                              .filter(EmailFolder::isSyncEnabled)
                              .filter(folder -> !folder.isMissing())
+                             // The periodic pass keeps to the shared INBOX (plan S1.7): the
+                             // owner's other folders are opted in so that opening one
+                             // refreshes it, and cost nothing until someone does.
+                             .filter(folder -> MailFolderView.TYPE_DELEGATED_INBOX.equals(folder.getType()))
                              .toList();
   }
 
@@ -1503,13 +1886,36 @@ public class EmailDelegationService {
    * @return the rights, or null for an own folder
    */
   public MailboxRights rightsOn(String username, String folderKey) {
-    EmailDelegation delegation = delegationOf(username, folderKey);
-    return delegation == null ? null : delegation.getMailboxRights();
+    EmailFolder folder = delegatedFolderOf(username, folderKey);
+    EmailDelegation delegation = folder == null ? null : emailDelegationStorage.getAsGrantee(username, folder.getDelegationId());
+    return delegation == null ? null : folderRights(folder, delegation);
+  }
+
+  /**
+   * The registered folder a key names, when it is a folder of a shared mailbox of the
+   * caller's; null for an own folder, an unknown key or a malformed one.
+   *
+   * @param username the caller
+   * @param folderKey the {@code EMAIL_BOX.FOLDER} discriminator
+   * @return the delegated folder, or null
+   */
+  private EmailFolder delegatedFolderOf(String username, String folderKey) {
+    if (StringUtils.isBlank(username) || !MailFolder.isCustom(folderKey)) {
+      return null;
+    }
+    EmailFolder folder;
+    try {
+      folder = emailFolderStorage.getFolder(username, MailFolder.customId(folderKey));
+    } catch (IllegalArgumentException malformed) {
+      return null;
+    }
+    return folder == null || folder.getDelegationId() == null ? null : folder;
   }
 
   /**
    * <b>The guard.</b> Refuses an operation on a folder of a shared mailbox when the
-   * right it needs is not among the letters the server grants the caller there.
+   * right it needs is not among the letters the server grants the caller there -- on
+   * that folder since EXO-90548, whose letters may differ from the INBOX's.
    * <p>
    * Three things about it are deliberate.
    * <ul>
@@ -1534,20 +1940,23 @@ public class EmailDelegationService {
    * @throws DelegationRevokedException when the share is no longer accepted
    */
   public void checkRight(String username, String folderKey, char right) throws MailboxRightMissingException {
-    EmailDelegation delegation = delegationOf(username, folderKey);
+    EmailFolder folder = delegatedFolderOf(username, folderKey);
+    EmailDelegation delegation = folder == null ? null : emailDelegationStorage.getAsGrantee(username, folder.getDelegationId());
     if (delegation == null) {
       return;
     }
     if (delegation.getStatus() != DelegationStatus.ACCEPTED) {
       throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
     }
-    if (!delegation.getMailboxRights().has(right)) {
+    // THAT folder's letters (EXO-90548): an Editor holds e on INBOX and not on Trash.
+    MailboxRights rights = folderRights(folder, delegation);
+    if (!rights.has(right)) {
       LOG.debug("User {} was refused right '{}' on delegated folder {} of mailbox {} (rights {})",
                 username,
                 right,
                 folderKey,
                 delegation.getOwnerMailbox(),
-                delegation.getRights());
+                rights.letters());
       throw new MailboxRightMissingException(right);
     }
   }
