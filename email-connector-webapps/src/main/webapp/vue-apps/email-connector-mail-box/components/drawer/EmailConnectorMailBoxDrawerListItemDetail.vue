@@ -194,9 +194,15 @@ export default {
     // the confirmation, so the reader drops the mail directly: going through the
     // delete-email path would ask awaitsSharedMailboxConfirmation again, which stays
     // true when "Don't ask again" was left unticked, and the mail would stay on screen.
+    // The reader's own buttons leave closing to this yes (closeUnlessAsked): when the
+    // confirmed messages include the one on screen, the reader closes as it would have.
     this.onSharedMailboxActionConfirmed = (action, emails, folder) => {
-      if (this.emailDetailDrawer && (action === 'delete' || action === 'archive')) {
-        this.dropFromReader(emails, folder);
+      if (!this.emailDetailDrawer || !['delete', 'archive', 'junk'].includes(action)) {
+        return;
+      }
+      this.dropFromReader(emails, folder);
+      if (this.email && (emails || []).includes(this.email.mailRemoteId)) {
+        this.close();
       }
     };
     // Mirror favorite changes (and their rollback after a refused push) onto this
