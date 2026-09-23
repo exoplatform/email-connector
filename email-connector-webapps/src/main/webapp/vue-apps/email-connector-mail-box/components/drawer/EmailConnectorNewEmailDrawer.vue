@@ -2155,8 +2155,11 @@ export default {
       const send = this.draftSession.localId
         ? this.$emailConnectorMailBoxService.sendDraft(this.draftSession.localId, this.email, delegationId)
         : this.$emailConnectorMailBoxService.sendEmail(this.email, delegationId);
+      // What the notice promised when the composer opened (Q-3): a copy in the owner's
+      // Sent. Anything short of it having been filed is said.
+      const ownerCopyPromised = !!this.sharedMailbox?.sentCopy;
       send.then(result => {
-        if (result?.ownerCopy === 'FAILED') {
+        if (result?.ownerCopy === 'FAILED' || ownerCopyPromised && result?.ownerCopy !== 'FILED') {
           this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.ownerCopyFailed', { 0: owner }), 'warning');
         } else {
           this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.success'), 'success');
@@ -2172,8 +2175,15 @@ export default {
         this.$root.$emit('email-sent');
         this.$root.$emit('refresh-email-box');
         this.close();
-      }).catch(() => {
-        this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.error'), 'error');
+      }).catch(error => {
+        // A share withdrawn while composing (EXO-90551): nothing went out, and retrying
+        // cannot help -- say so rather than "try again". Whether to offer a send from
+        // the user's own mailbox instead is a PO call, not made here.
+        if (delegationId && error?.code?.startsWith?.('emailConnector.delegation.')) {
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.sharedMailboxGone', { 0: owner }), 'error');
+        } else {
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.error'), 'error');
+        }
       }).finally(() => this.loading = false);
     },
     /**

@@ -97,6 +97,7 @@ import javax.mail.MessageRemovedException;
 import javax.mail.MessagingException;
 import javax.mail.Multipart;
 import javax.mail.Part;
+import javax.mail.ReadOnlyFolderException;
 import javax.mail.Session;
 import javax.mail.Store;
 import javax.mail.Transport;
@@ -2251,7 +2252,9 @@ public class EmailBoxServiceTest {
     when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
     IMAPFolder ownerSent = mock(IMAPFolder.class);
     when(ownerSent.exists()).thenReturn(true);
-    when(ownerSent.isOpen()).thenReturn(true);
+    // A share may grant i without r: the folder cannot then be opened read-write, and
+    // the APPEND, which needs i alone, must not depend on it.
+    lenient().doThrow(new ReadOnlyFolderException(ownerSent, "Cannot open in desired mode")).when(ownerSent).open(anyInt());
     when(rig.store().getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
 
     try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
@@ -2268,7 +2271,7 @@ public class EmailBoxServiceTest {
       order.verify(ownerSent).appendMessages(filed.capture());
       assertSame(sent.getValue(), filed.getValue()[0], "the very message that went out");
       assertTrue(filed.getValue()[0].isSet(Flags.Flag.SEEN), "filed as read: it is sent mail, not new mail");
-      verify(ownerSent).close(false);
+      verify(ownerSent, never()).open(anyInt());
     }
   }
 
@@ -4771,6 +4774,23 @@ public class EmailBoxServiceTest {
     emailBoxService.refreshFolder(TEST_USER, MailFolder.TRASH, EmailBoxService.FolderRefreshCause.DELETE);
 
     verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * EXO-90551 -- the re-read of the owner's Sent after its copy is filed rides the
+   * sender's own Sent re-read switch, not the move's: turning moves' re-reads off must
+   * not silence it, turning Sent re-reads off must.
+   */
+  @Test
+  void theOwnersCopyRefreshRidesTheSentSwitch() {
+    System.setProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY, "false");
+    System.setProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY, "true");
+    try {
+      assertFalse(EmailBoxService.FolderRefreshCause.SENT_COPY.isEnabled());
+    } finally {
+      System.clearProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY);
+      System.clearProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY);
+    }
   }
 
   /**

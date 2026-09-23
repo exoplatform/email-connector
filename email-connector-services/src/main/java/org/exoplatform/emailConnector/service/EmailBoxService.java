@@ -4368,7 +4368,12 @@ public class EmailBoxService {
      * A restore, or "Not spam", put messages back into the folder -- the inbox, or
      * Sent for the user's own messages ({@link EmailBoxService#restore}).
      */
-    RESTORE(TRASH_REFRESH_ENABLED_PROPERTY, "restoring message(s) into it");
+    RESTORE(TRASH_REFRESH_ENABLED_PROPERTY, "restoring message(s) into it"),
+    /**
+     * A mail sent from a shared mailbox was filed in its owner's Sent (EXO-90551) -- on
+     * the switch of the sender's own Sent re-read, which it is the counterpart of.
+     */
+    SENT_COPY(SENT_REFRESH_ENABLED_PROPERTY, "filing the copy of a mail sent from a shared mailbox into it");
 
     private final String property;
 
@@ -7907,8 +7912,7 @@ public class EmailBoxService {
     try {
       MimeMessage message = buildOutgoingMessage(email, userEmailSetting, emailConnector, null, uploadIds, username);
       applyThreadingHeaders(message, email, username);
-      Transport.send(message);
-      afterTransmission(message, email, StringUtils.isNotEmpty(email.getMailHeaderId()), username, userEmailSetting);
+      deliver(message, email, StringUtils.isNotEmpty(email.getMailHeaderId()), username, userEmailSetting);
       if (delegationId == null) {
         return null;
       }
@@ -14915,11 +14919,14 @@ public class EmailBoxService {
         LOG.warn("The Sent folder {} of a mailbox shared with user {} is no longer there; the owner's copy was not filed", ownerSentKey, username);
         return OwnerCopy.FAILED;
       }
-      ownerSent.open(Folder.READ_WRITE);
-      // The owner's copy of mail that was sent, not new mail to them.
+      // Appended to the folder CLOSED: an APPEND needs i alone, which is the right the
+      // share was checked for, while opening it READ_WRITE would also need what a SELECT
+      // answered read-write needs -- a share granting i without r would fail here.
+      // The owner's copy of mail that was sent, not new mail to them: the flag travels
+      // with the APPEND.
       message.setFlag(Flags.Flag.SEEN, true);
       ownerSent.appendMessages(new Message[] { message });
-      scheduleFolderRefresh(username, ownerSentKey, FolderRefreshCause.MOVE);
+      scheduleFolderRefresh(username, ownerSentKey, FolderRefreshCause.SENT_COPY);
       return OwnerCopy.FILED;
     } catch (Exception e) {
       LOG.warn("A mail of user {} was sent from a shared mailbox, and its copy in the owner's Sent {} could not be filed",
