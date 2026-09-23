@@ -1536,6 +1536,56 @@ class EmailDelegationServiceTest {
     assertFalse(folders.get(0).affordances().get("delete"), "a Reader deletes nothing from the owner's Trash");
   }
 
+  /**
+   * EXO-90548 -- where a shared mailbox's delete, archive and spam file: that share's
+   * folder of the role, never a missing one; its INBOX for a restore; a folder's role.
+   */
+  @Test
+  void theSharesRoleFoldersAreFoundInTheShareOnly() {
+    EmailDelegation share = aDovecotShare();
+    EmailFolder inbox = sharedInbox(share);
+    EmailFolder oldTrash = delegated(21L, ROOT + "/Old", true);
+    oldTrash.setRole(FolderRole.TRASH);
+    oldTrash.setMissing(true);
+    EmailFolder trash = delegated(22L, ROOT + "/Corbeille", true);
+    trash.setRole(FolderRole.TRASH);
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(inbox, oldTrash, trash));
+    when(emailFolderStorage.getFolder(GRANTEE, 22L)).thenReturn(trash);
+
+    assertEquals(trash.getKey(), service.roleFolderKey(GRANTEE, 100L, FolderRole.TRASH));
+    assertNull(service.roleFolderKey(GRANTEE, 100L, FolderRole.ARCHIVE));
+    assertEquals(inbox.getKey(), service.inboxFolderKey(GRANTEE, 100L));
+    assertEquals(FolderRole.TRASH, service.roleOf(GRANTEE, trash.getKey()));
+  }
+
+  /**
+   * EXO-90548 -- after a write the server acknowledged and did not do, the folder's
+   * letters are re-read on the delegate's own store; the shared INBOX goes through the
+   * share's own re-read.
+   */
+  @Test
+  void aFolderWhoseWriteWasIgnoredHasItsLettersReRead() {
+    EmailDelegation share = aDovecotShare();
+    EmailFolder trash = delegated(22L, ROOT + "/Corbeille", true);
+    trash.setRole(FolderRole.TRASH);
+    EmailFolder inbox = sharedInbox(share);
+    when(emailFolderStorage.getFolder(GRANTEE, 22L)).thenReturn(trash);
+    when(emailFolderStorage.getFolder(GRANTEE, inbox.getId())).thenReturn(inbox);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(share);
+    when(emailConnectorService.getEmailConnector(CONNECTOR_ID)).thenReturn(connector);
+    when(engine.myRights(any(), eq(ROOT + "/Corbeille"))).thenReturn(MailboxRights.of("lrswit"));
+
+    service.refreshFolderRights(GRANTEE, trash.getKey(), store);
+
+    verify(emailFolderStorage).updateDelegatedRights(eq(GRANTEE), eq(22L), eq(100L), eq(FolderRole.TRASH), eq("lrswit"), any());
+
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(inbox));
+    when(engine.myRights(any(), eq(ROOT))).thenReturn(MailboxRights.of("lrswit"));
+    when(emailDelegationStorage.update(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    service.refreshFolderRights(GRANTEE, inbox.getKey(), store);
+    verify(engine).myRights(any(), eq(ROOT));
+  }
+
   /** The share's root on the delegate's Dovecot session: the owner's INBOX itself. */
   private static final String ROOT = "shared/alice@acme.com";
 
