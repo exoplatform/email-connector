@@ -3452,11 +3452,22 @@ export default {
     },
     /**
      * The drawer, for listNavigationMixin to tell whether it is the one on top.
+     * <p>
+     * The exo-drawer INSIDE the pinneable-drawer wrapper the ref points at: that inner
+     * drawer is the one exo-drawer pushes into `eXo.openedDrawers`, never the wrapper
+     * (EXO-90577: compared with the wrapper, the mailbox never saw itself on top, and
+     * the arrow keys did nothing in the drawer). Not a walk up the stack top's parents
+     * either: a drawer the mailbox opens over itself -- the composer, the folder picker
+     * -- may sit inside the mailbox's own component tree, and must keep the keys.
+     * Falls back to the ref itself where it is a plain exo-drawer. Depends on the
+     * `ref="drawer"` social's PinneableDrawer.vue puts on its exo-drawer: renamed, the
+     * fallback would silently bring the bug back.
      *
-     * @returns {Object} the exo-drawer
+     * @returns {Object} the exo-drawer registered in `eXo.openedDrawers` when open
      */
     navigationDrawer() {
-      return this.$refs.emailBoxDrawer;
+      const drawer = this.$refs.emailBoxDrawer;
+      return drawer?.$refs?.drawer || drawer;
     },
     /**
      * What every action that takes messages out of the listing does here (delete,
