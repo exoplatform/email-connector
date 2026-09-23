@@ -2018,6 +2018,37 @@ public class EmailDelegationService {
   }
 
   /**
+   * Where a mail the delegate sends from a shared mailbox is filed for its owner
+   * (EXO-90551): that share's Sent folder, when the delegate may insert into it. The
+   * share is resolved with the caller as grantee, so a share of somebody else -- or an
+   * unknown id -- is "no such delegation", and one no longer accepted is a revocation:
+   * a client-supplied id never selects another user's folder.
+   *
+   * @param granteeUsername the sender, who must be the share's grantee
+   * @param delegationId the share the mail is sent from
+   * @return the owner's Sent folder key, or null when the share has no Sent the sender
+   *         may file into (no Sent shared, no i there)
+   * @throws ObjectNotFoundException when no such share belongs to the sender
+   * @throws DelegationRevokedException when the share is no longer accepted
+   */
+  public String ownerSentFolderKey(String granteeUsername, long delegationId) throws ObjectNotFoundException {
+    EmailDelegation delegation = asGrantee(granteeUsername, delegationId);
+    if (delegation.getStatus() != DelegationStatus.ACCEPTED) {
+      throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
+    }
+    String key = roleFolderKey(granteeUsername, delegationId, FolderRole.SENT);
+    if (key == null) {
+      return null;
+    }
+    try {
+      checkRight(granteeUsername, key, MailboxRights.INSERT);
+      return key;
+    } catch (MailboxRightMissingException e) {
+      return null;
+    }
+  }
+
+  /**
    * The role a folder key has in the owner's mailbox, when it is a folder of a shared
    * mailbox of the caller's.
    *
