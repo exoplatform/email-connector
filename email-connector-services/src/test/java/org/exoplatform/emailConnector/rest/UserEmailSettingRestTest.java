@@ -84,6 +84,7 @@ import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.model.ReadReceiptPolicy;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
+import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
@@ -328,7 +329,14 @@ public class UserEmailSettingRestTest {
                                                                                                            MailboxRights.of("lrs")
                                                                                                                         .affordances(),
                                                                                                            "CUSTOM:12",
-                                                                                                           3)));
+                                                                                                           3,
+                                                                                                           List.of(new SharedMailboxFolder("CUSTOM:14",
+                                                                                                                                           FolderRole.TRASH,
+                                                                                                                                           "Trash",
+                                                                                                                                           "lrs",
+                                                                                                                                           MailboxRights.of("lrs")
+                                                                                                                                                        .affordances(),
+                                                                                                                                           true)))));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/mailboxes").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$[0].delegationId").value(5))
@@ -337,7 +345,12 @@ public class UserEmailSettingRestTest {
            .andExpect(jsonPath("$[0].folderKey").value("CUSTOM:12"))
            .andExpect(jsonPath("$[0].unreadCount").value(3))
            .andExpect(jsonPath("$[0].affordances.markRead").value(true))
-           .andExpect(jsonPath("$[0].affordances.delete").value(false));
+           .andExpect(jsonPath("$[0].affordances.delete").value(false))
+           // EXO-90548: the share's other folders, each with its own controls.
+           .andExpect(jsonPath("$[0].folders[0].key").value("CUSTOM:14"))
+           .andExpect(jsonPath("$[0].folders[0].role").value("TRASH"))
+           .andExpect(jsonPath("$[0].folders[0].readable").value(true))
+           .andExpect(jsonPath("$[0].folders[0].affordances.delete").value(false));
     verify(emailDelegationService).getSharedMailboxes(SIMPLE_USER);
   }
 

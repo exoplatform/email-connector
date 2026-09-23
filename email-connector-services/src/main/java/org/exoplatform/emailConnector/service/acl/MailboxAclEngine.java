@@ -21,6 +21,7 @@ import java.util.Map;
 
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.model.DelegationPreset;
+import org.exoplatform.emailConnector.model.DiscoveredFolder;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
@@ -201,6 +202,23 @@ public interface MailboxAclEngine {
    * @throws MailboxAclException when the server cannot be asked
    */
   default List<String> foldersHolding(MailboxAclSession session, String identifier) {
+    return List.of();
+  }
+
+  /**
+   * The folders of a mailbox shared with the session's user, as that session lists them
+   * under the shared mailbox's root -- the root itself excluded (EXO-90548). Each with the
+   * LIST attributes the server shows the delegate (possibly no special-use at all:
+   * Dovecot shows none on a shared folder) and whether it can hold mail. The default
+   * lists nothing, as a per-mailbox engine's discovery is its own.
+   *
+   * @param session the grantee's session
+   * @param root the shared mailbox's root in the grantee's listing
+   * @param delimiter the hierarchy delimiter, "/" when unknown
+   * @return the folders, possibly empty, never null
+   * @throws MailboxAclException when the server refuses or cannot be reached
+   */
+  default List<DiscoveredFolder> listFoldersUnder(MailboxAclSession session, String root, String delimiter) {
     return List.of();
   }
 
