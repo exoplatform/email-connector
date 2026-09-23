@@ -316,13 +316,52 @@ public class EmailBoxRestTest {
     emailIds = List.of(123L, 456L, 789L);
     // The count of remote failures is the one part of this endpoint's contract the front end
     // reads: it drives the rollback of the optimistic star. Pin the payload, not just the status.
-    when(emailBoxService.updateEmailStarredStatus(emailIds, SIMPLE_USER, true, true)).thenReturn(2);
+    when(emailBoxService.updateEmailStarredStatus(emailIds, SIMPLE_USER, MailFolder.INBOX, true, true)).thenReturn(2);
     response = mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=true").with(testSimpleUser())
                                                                               .content(asJsonString(emailIds))
                                                                               .contentType(MediaType.APPLICATION_JSON)
                                                                               .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk()).andExpect(jsonPath("$.failedUpdates").value(2));
-    verify(emailBoxService).updateEmailStarredStatus(emailIds, SIMPLE_USER, true, true);
+    verify(emailBoxService).updateEmailStarredStatus(emailIds, SIMPLE_USER, MailFolder.INBOX, true, true);
+  }
+
+  /**
+   * EXO-90550 -- the folder travels to the service, and its refusals keep their codes:
+   * a folder the star is not offered in is a 400, a missing right a 401, a share gone a
+   * 410.
+   */
+  @Test
+  void aStarInAFolderIsAddressedThereAndItsRefusalsKeepTheirCodes() throws Exception {
+    List<Long> emailIds = List.of(7L);
+    when(emailBoxService.updateEmailStarredStatus(emailIds, SIMPLE_USER, "CUSTOM:10", true, true)).thenReturn(0);
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=true&folder=CUSTOM:10").with(testSimpleUser())
+                                                                                    .content(asJsonString(emailIds))
+                                                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                                                    .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailBoxService).updateEmailStarredStatus(emailIds, SIMPLE_USER, "CUSTOM:10", true, true);
+
+    when(emailBoxService.updateEmailStarredStatus(emailIds, SIMPLE_USER, "SENT", true, true))
+        .thenThrow(new IllegalArgumentException("emailConnector.star.folderNotSupported"));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=true&folder=SENT").with(testSimpleUser())
+                                                                               .content(asJsonString(emailIds))
+                                                                               .contentType(MediaType.APPLICATION_JSON)
+                                                                               .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest());
+    when(emailBoxService.updateEmailStarredStatus(emailIds, SIMPLE_USER, "CUSTOM:11", true, true))
+        .thenThrow(new MailboxRightMissingException(MailboxRights.WRITE));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=true&folder=CUSTOM:11").with(testSimpleUser())
+                                                                                    .content(asJsonString(emailIds))
+                                                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                                                    .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isUnauthorized());
+    when(emailBoxService.updateEmailStarredStatus(emailIds, SIMPLE_USER, "CUSTOM:12", true, true))
+        .thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=true&folder=CUSTOM:12").with(testSimpleUser())
+                                                                                    .content(asJsonString(emailIds))
+                                                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                                                    .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isGone());
   }
 
   @Test
