@@ -599,8 +599,8 @@ public class EmailDelegationService {
    * @throws ObjectNotFoundException when no such row belongs to the caller as owner
    * @throws IllegalAccessException when the caller has no connected mailbox
    * @throws IllegalArgumentException {@code emailConnector.delegation.notChangeable} for a
-   *           share that is no longer on the server (by its row, or by the INBOX ACL),
-   *           was not written by eXo, has no preset, is on another mailbox than the one
+   *           share that is neither accepted nor pending, is no longer on the server (by
+   *           its row, or by the INBOX ACL), was not written by eXo, has no preset, is on another mailbox than the one
    *           connected, or is on a server that grants a whole mailbox at once; also when
    *           the share was revoked or went while the server was being asked
    * @throws MailboxAclException when the server cannot be asked, or no longer holds the
@@ -608,7 +608,9 @@ public class EmailDelegationService {
    */
   public EmailDelegation extend(String ownerUsername, long id) throws ObjectNotFoundException, IllegalAccessException {
     EmailDelegation delegation = asOwner(ownerUsername, id);
-    if (delegation.getStatus() == DelegationStatus.REVOKED || delegation.getStatus() == DelegationStatus.GONE
+    // Only a share in use or on offer (decision 3b): a declined or merely available
+    // share is extended by inviting again, a revoked or gone one not at all.
+    if ((delegation.getStatus() != DelegationStatus.ACCEPTED && delegation.getStatus() != DelegationStatus.PENDING)
         || delegation.getOrigin() != DelegationOrigin.EXO || delegation.getPreset() == null || !delegation.getPreset().isGrantable()
         || delegation.grantsWholeMailbox()) {
       throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
