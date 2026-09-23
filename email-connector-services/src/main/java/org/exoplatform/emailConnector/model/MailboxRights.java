@@ -37,10 +37,13 @@ import com.sun.mail.imap.Rights;
  * server's 4314 answer parses into a {@link Rights} without complaint, but a check
  * written as {@code rights.contains(Rights.Right.DELETE)} asks for {@code d} and is
  * <b>false</b> against a server that answers {@code t} -- which is what BlueMind's Cyrus
- * and Stalwart answer. Reading the letters directly, and folding the two RFC 2086
- * letters into their RFC 4314 pairs ({@code c} is {@code k}+{@code x}, {@code d} is
- * {@code t}+{@code e}, RFC 4314 section 2.1.1), is what makes the same code right on a
- * server of either generation. {@code MailboxRightsTest} pins this against the library.
+ * and Stalwart answer. Reading the letters directly, and reading the two RFC 2086
+ * letters by what else the string holds -- folded into their RFC 4314 pairs
+ * ({@code c} is {@code k}+{@code x}, {@code d} is {@code t}+{@code e}) from a server
+ * that speaks RFC 2086 only, dropped as RFC 4314 section 2.1.1's virtual rights beside
+ * one of their members (see {@link #of(String)}) -- is what makes the same code right
+ * on a server of either generation. {@code MailboxRightsTest} pins this against the
+ * library.
  * <p>
  * Immutable. Letters this class does not know (RFC 4314 lets a server define digits)
  * are kept for display and grant nothing.
@@ -86,10 +89,17 @@ public final class MailboxRights {
   /** {@code a} -- administer: SETACL, DELETEACL, GETACL. */
   public static final char           ADMINISTER      = 'a';
 
-  /** RFC 2086 {@code c}, which RFC 4314 reads as {@code k} + {@code x}. */
+  /**
+   * RFC 2086 {@code c}: folded into {@code k} + {@code x} from an RFC 2086-only server,
+   * dropped as a virtual right beside {@code k} or {@code x} (see {@link #of(String)}).
+   */
   static final char                  LEGACY_CREATE   = 'c';
 
-  /** RFC 2086 {@code d}, which RFC 4314 reads as {@code t} + {@code e}. */
+  /**
+   * RFC 2086 {@code d}: folded into {@code t} + {@code e} from an RFC 2086-only server,
+   * dropped as a virtual right beside {@code t}, {@code e} or {@code x} (see
+   * {@link #of(String)}).
+   */
   static final char                  LEGACY_DELETE   = 'd';
 
   /**
