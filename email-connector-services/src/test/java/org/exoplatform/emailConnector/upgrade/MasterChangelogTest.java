@@ -547,6 +547,70 @@ public class MasterChangelogTest {
   }
 
   /**
+   * EXO-90548 -- the shared-mailbox folder changesets (1.0.0-81, 1.0.0-82) apply, roll
+   * back and apply again, to a tag placed immediately before 1.0.0-81: after the
+   * rollback the five new columns are gone and the delegation schema before them
+   * (NATIVE_RIGHTS, 1.0.0-80) still stands.
+   *
+   * @throws Exception when a changeset does not apply or roll back
+   */
+  @Test
+  void theSharedMailboxFolderChangesetsRollBackAndReapply() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback81" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-81"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-shared-mailbox-folders");
+      assertFalse(columnExists(connection, "EMAIL_FOLDER", "FOLDER_ROLE"), "not there before 1.0.0-81");
+      liquibase.update("");
+      for (String column : List.of("FOLDER_ROLE", "RIGHTS", "RIGHTS_CHECK_DATE")) {
+        assertTrue(columnExists(connection, "EMAIL_FOLDER", column), "1.0.0-81 adds EMAIL_FOLDER." + column);
+      }
+      for (String column : List.of("GRANTED_ROLES", "OWNER_ROLE_FOLDERS")) {
+        assertTrue(columnExists(connection, "EMAIL_DELEGATION", column), "1.0.0-82 adds EMAIL_DELEGATION." + column);
+      }
+      liquibase.rollback("before-shared-mailbox-folders", "");
+      for (String column : List.of("FOLDER_ROLE", "RIGHTS", "RIGHTS_CHECK_DATE")) {
+        assertFalse(columnExists(connection, "EMAIL_FOLDER", column), "rolling back drops EMAIL_FOLDER." + column);
+      }
+      for (String column : List.of("GRANTED_ROLES", "OWNER_ROLE_FOLDERS")) {
+        assertFalse(columnExists(connection, "EMAIL_DELEGATION", column), "rolling back drops EMAIL_DELEGATION." + column);
+      }
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "NATIVE_RIGHTS"), "and nothing before them");
+      assertTrue(columnExists(connection, "EMAIL_FOLDER", "DELEGATION_ID"));
+      liquibase.update("");
+      assertTrue(columnExists(connection, "EMAIL_FOLDER", "FOLDER_ROLE"), "the changesets apply again after their rollback");
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "OWNER_ROLE_FOLDERS"));
+    }
+  }
+
+  /**
+   * EXO-90548 -- the shared-mailbox folder changesets as MySQL and PostgreSQL would run
+   * them: five nullable columns, and a rollback that drops each of them, 1.0.0-82 first.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theSharedMailboxFolderChangesetsOnMySqlAndPostgreSql() throws Exception {
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-81").toUpperCase(Locale.ROOT);
+      assertTrue(update.contains("ALTER TABLE EMAIL_FOLDER ADD FOLDER_ROLE VARCHAR(20)"), vendor + " unquoted: " + update);
+      for (String column : List.of("RIGHTS VARCHAR(32)", "RIGHTS_CHECK_DATE TIMESTAMP", "ALTER TABLE EMAIL_DELEGATION ADD GRANTED_ROLES VARCHAR(100)",
+                                   "OWNER_ROLE_FOLDERS VARCHAR(2000)")) {
+        assertTrue(update.contains(column), vendor + " " + column + ": " + update);
+      }
+      assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
+      assertFalse(update.contains("NOT NULL"), vendor + " every new column is nullable: " + update);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-81").toUpperCase(Locale.ROOT);
+      int ownerFolders = rollback.indexOf("DROP COLUMN OWNER_ROLE_FOLDERS");
+      int role = rollback.indexOf("DROP COLUMN FOLDER_ROLE");
+      assertTrue(ownerFolders >= 0 && role > ownerFolders, vendor + " rollback undoes 1.0.0-82, then 1.0.0-81: " + rollback);
+      for (String column : List.of("GRANTED_ROLES", "RIGHTS_CHECK_DATE", "DROP COLUMN RIGHTS")) {
+        assertTrue(rollback.contains(column), vendor + " rollback drops " + column + ": " + rollback);
+      }
+    }
+  }
+
+  /**
    * On the applied schema, the unique key refuses a second subscription of one grantee
    * to one mailbox on one preset and lets the same grantee's subscription to the same
    * mailbox on another preset, or another grantee's, through.
