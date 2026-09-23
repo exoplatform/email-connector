@@ -25,6 +25,7 @@ import org.springframework.stereotype.Component;
 import org.exoplatform.emailConnector.dao.EmailFolderDAO;
 import org.exoplatform.emailConnector.entity.EmailFolderEntity;
 import org.exoplatform.emailConnector.model.EmailFolder;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 
 /**
@@ -121,6 +122,9 @@ public class EmailFolderStorage {
     entity.setDelimiter(folder.getDelimiter());
     entity.setType(folder.getType());
     entity.setDelegationId(folder.getDelegationId());
+    entity.setRole(folder.getRole() == null ? null : folder.getRole().name());
+    entity.setRights(folder.getRights());
+    entity.setRightsCheckDate(folder.getRightsCheckDate());
     entity.setSyncEnabled(false);
     entity.setMissing(false);
     entity.setDiscoveredDate(folder.getDiscoveredDate());
@@ -305,6 +309,9 @@ public class EmailFolderStorage {
                            entity.getLastSeenDate(),
                            entity.getLastSyncDate(),
                            snapshot,
-                           entity.getDelegationId());
+                           entity.getDelegationId(),
+                           FolderRole.of(entity.getRole()),
+                           entity.getRights(),
+                           entity.getRightsCheckDate());
   }
 }

@@ -133,4 +133,14 @@ public class EmailDelegationEntity {
 
   @Column(name = "UPDATED_DATE")
   private Date    updatedDate;
+
+  // The roles eXo's grant wrote beside INBOX (comma list), MAILBOX for a per-mailbox
+  // grant, null for a share written before EXO-90548 (INBOX only).
+  @Column(name = "GRANTED_ROLES")
+  private String  grantedRoles;
+
+  // The owner's role-to-folder-name map as the grant resolved it on the owner's session
+  // (JSON): a delegate may see no special-use attribute on a shared folder (Dovecot).
+  @Column(name = "OWNER_ROLE_FOLDERS")
+  private String  ownerRoleFolders;
 }
