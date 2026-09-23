@@ -799,13 +799,18 @@ public class HttpCardDavClientTest {
   /** EXO-89649. Only a 401 counts: a 403 or a 5xx invalidates nothing. */
   @Test
   void onlyA401InvalidatesTheMaterial() throws Exception {
-    HttpResponse<String> forbidden = response(403, "");
-    when(transport.<String> send(any(), any())).thenReturn(forbidden);
+    // The retry is enabled, so it is the status alone that must stop it.
+    when(resolver.retriesAfterRefusal(PROVIDER)).thenReturn(true);
+    for (int status : new int[] { 403, 500 }) {
+      org.mockito.Mockito.clearInvocations(transport, resolver);
+      HttpResponse<String> answer = response(status, "");
+      when(transport.<String> send(any(), any())).thenReturn(answer);
 
-    assertThrows(CardDavException.class, () -> client.fetchVCard(BOOK_URL + "bob.vcf", ACCOUNT));
+      assertThrows(CardDavException.class, () -> client.fetchVCard(BOOK_URL + "bob.vcf", ACCOUNT));
 
-    verify(transport, times(1)).send(any(), any());
-    verify(resolver, never()).invalidate(any(), any(), any(), any());
+      verify(transport, times(1)).send(any(), any());
+      verify(resolver, never()).invalidate(any(), any(), any(), any());
+    }
   }
 
   /** EXO-89649. A provider carrying what the user typed is never retried on a 401. */

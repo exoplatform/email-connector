@@ -12328,10 +12328,13 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    // Two sessions: the one the message was built on, carrying the refused material,
+    // and the one built after the invalidation. Only the fresh one may transmit.
     Session session = mock(Session.class);
     when(session.getProperties()).thenReturn(new Properties());
+    Session fresh = mock(Session.class);
     Transport transport = mock(Transport.class);
-    when(session.getTransport(any(Address.class))).thenReturn(transport);
+    when(fresh.getTransport(any(Address.class))).thenReturn(transport);
     IMAPStore store = mock(IMAPStore.class);
     when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder folder = mock(Folder.class);
@@ -12339,7 +12342,7 @@ public class EmailBoxServiceTest {
     when(folder.listSubscribed("*")).thenReturn(new Folder[0]);
     try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
         MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
-      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session, fresh);
       transportMock.when(() -> Transport.send(any(Message.class))).thenThrow(new AuthenticationFailedException("535"));
       Email email = email(TEST_USER);
       EmailRecipient bob = new EmailRecipient();
@@ -12348,9 +12351,12 @@ public class EmailBoxServiceTest {
 
       emailBoxService.sendEmail(email, TEST_USER);
 
-      verify(emailCredentialsResolver, times(1)).invalidate(any(), any(), eq(TEST_USER), eq(ConnectorCredentialsChannel.SMTP));
-      verify(transport, times(1)).connect();
+      org.mockito.InOrder order = org.mockito.Mockito.inOrder(emailCredentialsResolver, transport);
+      order.verify(emailCredentialsResolver, times(1)).invalidate(any(), any(), eq(TEST_USER), eq(ConnectorCredentialsChannel.SMTP));
+      order.verify(emailCredentialsResolver).authenticator(any(), any(), eq(TEST_USER), eq(ConnectorCredentialsChannel.SMTP));
+      order.verify(transport).connect();
       verify(transport, times(1)).sendMessage(any(Message.class), any(Address[].class));
+      verify(session, never()).getTransport(any(Address.class));
     }
   }
 
@@ -12416,6 +12422,58 @@ public class EmailBoxServiceTest {
                  () -> emailBoxService.transmitAsUser(TEST_USER, (session, from) -> built));
 
     verify(smtpTransmitter, times(1)).transmit(built);
+    verify(emailCredentialsResolver, never()).invalidate(any(), any(), any(), any());
+  }
+
+  /**
+   * Round 1: the real scheduled send - sendStoredDraft - refused at CONNECT on the
+   * provider's material: one invalidation, the message rebuilt on fresh material, sent
+   * once, recorded once.
+   */
+  @Test
+  void retriesTheStoredDraftSendOnceWhenRefusedAtConnect() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    when(emailCredentialsResolver.retriesAfterRefusal(any())).thenReturn(true);
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    List<MimeMessage> attempts = new ArrayList<>();
+    doAnswer(invocation -> {
+      attempts.add(invocation.getArgument(0));
+      if (attempts.size() == 1) {
+        throw new SmtpTransmitter.TransmissionException(SmtpTransmitter.Phase.CONNECT, new AuthenticationFailedException("535"));
+      }
+      return null;
+    }).when(smtpTransmitter).transmit(any(MimeMessage.class));
+    Runnable onTransmitted = mock(Runnable.class);
+
+    emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted);
+
+    assertEquals(2, attempts.size());
+    org.junit.jupiter.api.Assertions.assertNotSame(attempts.get(0), attempts.get(1), "rebuilt on a session carrying fresh material");
+    verify(emailCredentialsResolver, times(1)).invalidate(any(), any(), eq(TEST_USER), eq(ConnectorCredentialsChannel.SMTP));
+    verify(onTransmitted, times(1)).run();
+  }
+
+  /** Round 1: a stored draft refused at SEND is never retried - the server may have accepted it. */
+  @Test
+  void neverRetriesAStoredDraftRefusedAtSend() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    when(emailCredentialsResolver.retriesAfterRefusal(any())).thenReturn(true);
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    doThrow(new SmtpTransmitter.TransmissionException(SmtpTransmitter.Phase.SEND, new AuthenticationFailedException("535")))
+        .when(smtpTransmitter).transmit(any(MimeMessage.class));
+
+    assertThrows(ScheduledSendFailure.class, () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+    }));
+
+    verify(smtpTransmitter, times(1)).transmit(any(MimeMessage.class));
     verify(emailCredentialsResolver, never()).invalidate(any(), any(), any(), any());
   }
 }

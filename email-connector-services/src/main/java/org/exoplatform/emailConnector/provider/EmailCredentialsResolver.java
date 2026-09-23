@@ -16,6 +16,12 @@
  */
 package org.exoplatform.emailConnector.provider;
 
+import java.util.ArrayDeque;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.IdentityHashMap;
+import java.util.Set;
+
 import javax.mail.AuthenticationFailedException;
 import javax.mail.Authenticator;
 
@@ -234,8 +240,8 @@ public class EmailCredentialsResolver {
    * @return true when the server refused the authentication
    */
   public static boolean isAuthenticationFailure(Throwable failure) {
-    java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-    java.util.Deque<Throwable> pending = new java.util.ArrayDeque<>();
+    Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+    Deque<Throwable> pending = new ArrayDeque<>();
     if (failure != null) {
       pending.add(failure);
     }
