@@ -245,6 +245,26 @@ class ImapAclEngineTest {
   }
 
   /**
+   * Dovecot 2.3.21 answers an Editor granted from eXo ({@code lrswit}) with RFC 4314's
+   * virtual {@code d} beside {@code t}: GETACL {@code ilrwtsd}, the delegate's MYRIGHTS
+   * {@code lrwstid} (observed on the rig, EXO-90552). Both read as exactly
+   * {@code lrswit} -- an Editor without {@code e} -- never as {@code lrswite}.
+   */
+  @Test
+  void aDovecotEditorReadsAsTheLettersGrantedWithoutAnExpunge() throws MessagingException {
+    when(inbox.getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("ilrwtsd")) });
+    when(inbox.myRights()).thenReturn(new Rights("lrwstid"));
+
+    MailboxAce entry = engine.listAcl(session(), "INBOX").get(0);
+    assertEquals("lrswit", entry.rights().letters());
+    assertEquals("lrswit", entry.nativeRights());
+    assertEquals(DelegationPreset.EDITOR, entry.preset());
+    MailboxRights mine = engine.myRights(session(), "INBOX");
+    assertEquals("lrswit", mine.letters());
+    assertFalse(mine.canExpunge());
+  }
+
+  /**
    * Only what coupling implies is forgiven: a set granting more -- administer, delete
    * the mailbox, expunge without delete-messages -- is never a preset.
    */
