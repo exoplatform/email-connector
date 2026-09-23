@@ -19,9 +19,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        in every mail client the user reads this mailbox with, and vice versa. -->
   <v-btn
     v-if="canToggle"
-    :title="favorite ?
-      $t('emailConnector.mailBox.list.drawer.detail.removeFavorite.label') :
-      $t('emailConnector.mailBox.list.drawer.detail.addFavorite.label')"
+    :title="toggleTitle"
     :width="buttonSize"
     :height="buttonSize"
     :min-width="buttonSize"
@@ -50,12 +48,18 @@ export default {
       type: Boolean,
       default: false,
     },
-    // Only INBOX messages can be toggled: the favorite endpoint pushes the IMAP
-    // \Flagged flag through the INBOX folder, so elsewhere the favorite is shown
-    // as a plain read-only indicator.
+    // Whether the star may be toggled here (canStar): an INBOX message, or one of a
+    // shared mailbox where the user holds w (EXO-90550); elsewhere the favorite is
+    // shown as a plain read-only indicator.
     canToggle: {
       type: Boolean,
       default: false,
+    },
+    // The owner's name when the message is in a mailbox shared with the user: the star
+    // is theirs too, and the button says so (EXO-90550).
+    sharedOwner: {
+      type: String,
+      default: '',
     },
     size: {
       type: Number,
@@ -63,6 +67,20 @@ export default {
     },
   },
   computed: {
+    /**
+     * The button's title: add or remove, and in a shared mailbox that the star is its
+     * owner's too -- it stars the message for them and adds it to their favorites.
+     *
+     * @returns {String} the title
+     */
+    toggleTitle() {
+      const action = this.favorite
+        ? this.$t('emailConnector.mailBox.list.drawer.detail.removeFavorite.label')
+        : this.$t('emailConnector.mailBox.list.drawer.detail.addFavorite.label');
+      return this.sharedOwner
+        ? `${action}. ${this.$t('emailConnector.mailBox.list.drawer.detail.favorite.sharedOwner', { 0: this.sharedOwner })}`
+        : action;
+    },
     // A lit favorite is amber everywhere (the color every mail client uses);
     // an unlit, toggleable one stays as quiet as the other secondary icons.
     favoriteColorClass() {

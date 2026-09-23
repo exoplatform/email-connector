@@ -854,28 +854,51 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Stars or unstars messages: the mail server's {@code \Flagged} flag, in the folder
+   * the messages are numbered in (EXO-90550).
+   *
+   * @param request the caller's request, for the acting user
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}
+   * @param starred true to star, false to unstar
+   * @param folder INBOX when omitted, or a folder of a mailbox shared with the caller
+   * @return {@code failedUpdates}: how many the mail server did not take
+   */
   @PatchMapping("/starred")
   @Secured("users")
-  @Operation(summary = "Stars or unstars emails", method = "PATCH", description = "Sets or clears the IMAP \\Flagged flag ('star') of the given emails, locally and on the mail server, so the star shows in every mail client. Returns the number of emails whose remote update failed (their local change is reverted).")
+  @Operation(summary = "Stars or unstars emails", method = "PATCH", description = "Sets or clears the IMAP \\Flagged flag ('star') of the given emails, locally and on the mail server, so the star shows in every mail client. The folder is part of the address: INBOX when omitted, or a folder of a mailbox shared with the caller where they hold w (the owner sees the star too). Returns the number of emails whose remote update failed (their local change is reverted).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "400", description = "A folder the star is not offered in (emailConnector.star.folderNotSupported)"),
+      @ApiResponse(responseCode = "401", description = "A right the caller does not hold in that shared folder (emailConnector.delegation.right.missing.w)"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
-      @ApiResponse(responseCode = "409", description = "Conflict"), })
+      @ApiResponse(responseCode = "409", description = "Conflict"),
+      @ApiResponse(responseCode = "410", description = "The mailbox is no longer shared with the caller"), })
   public Map<String, Integer> updateEmailStarredStatus(HttpServletRequest request,
                                                        @Parameter(description = "Email remote ids", required = true)
                                                        @RequestBody
                                                        List<Long> mailRemoteIds,
                                                        @RequestParam("starred")
-                                                       boolean starred) {
+                                                       boolean starred,
+                                                       @Parameter(description = "The folder those ids are numbered in: INBOX when omitted, or CUSTOM:<id> of a shared mailbox's folder")
+                                                       @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                                       String folder) {
     try {
       if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      int failedUpdates = emailBoxService.updateEmailStarredStatus(mailRemoteIds, request.getRemoteUser(), starred, true);
+      int failedUpdates = emailBoxService.updateEmailStarredStatus(mailRemoteIds, request.getRemoteUser(), folder, starred, true);
       Map<String, Integer> response = new HashMap<>();
       response.put("failedUpdates", failedUpdates);
       return response;
+    } catch (MailboxRightMissingException e) {
+      // As for the read status: 401 with the missing right named, so the interface can
+      // say which and correct a star control that went stale.
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {

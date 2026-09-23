@@ -644,6 +644,9 @@ public class EmailBoxService {
   static final String             CROSS_MAILBOX_MESSAGE                                       =
                                                                              "emailConnector.folder.crossMailbox";
 
+  /** The star is not offered in that folder (EXO-90550): 400, its message is this code. */
+  static final String             STAR_FOLDER_NOT_SUPPORTED_MESSAGE                           = "emailConnector.star.folderNotSupported";
+
   /** A delete in a shared mailbox whose owner shares no Trash with the caller (EXO-90548). */
   static final String             NO_SHARED_TRASH_MESSAGE                                     = "emailConnector.delegation.noTrash";
 
@@ -6127,6 +6130,10 @@ public class EmailBoxService {
    *
    * @param mailRemoteIds the IMAP UIDs of the emails to update
    * @param username the user acting on their own mailbox
+   * @param folder the folder those UIDs are numbered in; INBOX when blank. The user's
+   *          INBOX, or a folder of a mailbox shared with them where they hold {@code w}
+   *          (EXO-90550) -- never the user's own other folders, whose star is not a
+   *          feature yet, nor a shared Trash, Spam or Drafts, which a delegate only reads
    * @param starred {@code true} to star, {@code false} to unstar
    * @param updateRemoteStarredStatus whether the flag must also be pushed to the
    *          IMAP server (skipped, e.g., during sync where the flag comes from the
@@ -6134,9 +6141,14 @@ public class EmailBoxService {
    * @return the number of emails whose remote update failed (0 when everything
    *         succeeded or when no remote update was requested)
    * @throws IllegalAccessException if the user is not allowed to update email
+   * @throws IllegalArgumentException {@code emailConnector.star.folderNotSupported} for
+   *           a folder the star is not offered in
+   * @throws MailboxRightMissingException when a shared folder's letters lack {@code w}
+   * @throws DelegationRevokedException when the share is no longer accepted
    */
   public int updateEmailStarredStatus(List<Long> mailRemoteIds,
                                       String username,
+                                      String folder,
                                       boolean starred,
                                       boolean updateRemoteStarredStatus) throws IllegalAccessException {
     int failedEmailUpdates = 0;
@@ -6146,13 +6158,22 @@ public class EmailBoxService {
           || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
         throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_UPDATE_EMAIL_MESSAGE, username));
       }
-      emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, starred, MailFolder.INBOX);
+      String starFolder = starrableFolder(username, folder);
+      emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, starred, starFolder);
       Store store = null;
       Folder inbox = null;
       try {
         if (updateRemoteStarredStatus) {
           store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
-          inbox = store.getFolder(INBOX_FOLDER_NAME);
+          // The folder the rows were cached from, through the resolver that cached them:
+          // a UID numbers a message within ONE folder, and the same number in INBOX is
+          // another message (EXO-90550).
+          inbox = resolveCachedFolder(store, starFolder, username);
+          if (inbox == null) {
+            emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, !starred, starFolder);
+            LOG.warn("No {} folder for user {}; the star of {} message(s) could not be pushed", starFolder, username, mailRemoteIds.size());
+            return mailRemoteIds.size();
+          }
           inbox.open(Folder.READ_WRITE);
         }
         for (Long mailRemoteId : mailRemoteIds) {
@@ -6165,7 +6186,7 @@ public class EmailBoxService {
                 emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(List.of(mailRemoteId),
                                                                         username,
                                                                         !starred,
-                                                                        MailFolder.INBOX);
+                                                                        starFolder);
                 failedEmailUpdates++;
                 LOG.warn("Email {} not found on IMAP server for user {}, starred status update reverted",
                          mailRemoteId,
@@ -6178,13 +6199,13 @@ public class EmailBoxService {
             emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(List.of(mailRemoteId),
                                                                     username,
                                                                     !starred,
-                                                                    MailFolder.INBOX);
+                                                                    starFolder);
             failedEmailUpdates++;
             LOG.error("Error when updating email {} starred status for user {}", mailRemoteId, username, e);
           }
         }
       } catch (Exception e) {
-        emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, !starred, MailFolder.INBOX);
+        emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, !starred, starFolder);
         LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
         throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
       } finally {
@@ -6213,6 +6234,37 @@ public class EmailBoxService {
       emailFavoriteService.reconcileFavorites(username);
     }
     return failedEmailUpdates;
+  }
+
+  /**
+   * The folder a star is written in, checked before anything is touched (EXO-90550):
+   * the user's INBOX -- blank reads as INBOX, which every caller before folders meant --
+   * or a folder of a mailbox shared with them, where the star is the owner's flag too
+   * and needs {@code w} on that folder. Refused: the user's own other folders (Sent,
+   * Archive, their custom folders), whose star is not offered yet, and a shared Trash,
+   * Spam or Drafts, which a delegate only reads -- the same answers the interface gives.
+   *
+   * @param username the caller
+   * @param folder the folder asked for
+   * @return the folder key to write and push in
+   * @throws MailboxRightMissingException when a shared folder's letters lack {@code w}
+   * @throws DelegationRevokedException when the share is no longer accepted
+   * @throws IllegalArgumentException {@code emailConnector.star.folderNotSupported}
+   */
+  private String starrableFolder(String username, String folder) throws MailboxRightMissingException {
+    String key = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
+    if (MailFolder.INBOX.equals(key)) {
+      return key;
+    }
+    if (!MailFolder.isCustom(key) || emailDelegationService.delegationOf(username, key) == null) {
+      throw new IllegalArgumentException(STAR_FOLDER_NOT_SUPPORTED_MESSAGE);
+    }
+    FolderRole role = emailDelegationService.roleOf(username, key);
+    if (role == FolderRole.TRASH || role == FolderRole.JUNK || role == FolderRole.DRAFTS) {
+      throw new IllegalArgumentException(STAR_FOLDER_NOT_SUPPORTED_MESSAGE);
+    }
+    checkDelegatedRight(username, key, MailboxRights.WRITE);
+    return key;
   }
 
   /**

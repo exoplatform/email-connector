@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyChar;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -168,6 +169,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.FolderMessageCounts;
+import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.EmailDelegation;
@@ -1120,9 +1122,10 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
     List<Long> mailRemoteIds = List.of(1212l);
     assertThrows(IllegalAccessException.class,
-                 () -> emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, true, false));
+                 () -> emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, MailFolder.INBOX, true, false));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
-    emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, true, false);
+    // A blank folder is the INBOX every caller before folders meant (EXO-90550).
+    emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, null, true, false);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
     reset(emailBoxStorage);
     Store store = mock(Store.class);
@@ -1133,7 +1136,7 @@ public class EmailBoxServiceTest {
     when(store.isConnected()).thenReturn(true);
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
-    int failed = emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, true, true);
+    int failed = emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, MailFolder.INBOX, true, true);
     assertEquals(0, failed);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
     verify(inbox).open(Folder.READ_WRITE);
@@ -1145,7 +1148,7 @@ public class EmailBoxServiceTest {
     // must be counted as a failure and the optimistic local star reverted.
     reset(emailBoxStorage);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(null);
-    int failedWhenNotFound = emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, true, true);
+    int failedWhenNotFound = emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, MailFolder.INBOX, true, true);
     assertEquals(1, failedWhenNotFound);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212l), TEST_USER, false, "INBOX");
@@ -1168,10 +1171,117 @@ public class EmailBoxServiceTest {
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
     doThrow(new MessagingException("STORE rejected")).when(message).setFlag(Flags.Flag.FLAGGED, true);
-    int failed = emailBoxService.updateEmailStarredStatus(List.of(1212l), TEST_USER, true, true);
+    int failed = emailBoxService.updateEmailStarredStatus(List.of(1212l), TEST_USER, MailFolder.INBOX, true, true);
     assertEquals(1, failed);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212l), TEST_USER, true, "INBOX");
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212l), TEST_USER, false, "INBOX");
+  }
+
+  /**
+   * EXO-90550 -- a star in a folder of a mailbox shared with the user is written and
+   * pushed in THAT folder, not in the user's own INBOX where the same UID is another
+   * message; and it needs w there, checked before the local row is touched.
+   */
+  @Test
+  @SneakyThrows
+  void aStarInASharedFolderIsWrittenAndPushedThereWithW() {
+    givenAConnectedMailbox();
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:10")).thenReturn(aSharedMailboxRow());
+    when(emailDelegationService.roleOf(TEST_USER, "CUSTOM:10")).thenReturn(FolderRole.SENT);
+    EmailFolder sent = registeredFolder(10L, "shared/alice/Sent", true);
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(sent);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder sharedSent = mock(IMAPFolder.class);
+    when(sharedSent.exists()).thenReturn(true);
+    lenient().when(store.getFolder("shared/alice/Sent")).thenReturn(sharedSent);
+    Folder ownInbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(store.getFolder("INBOX")).thenReturn(ownInbox);
+    when(sharedSent.isOpen()).thenReturn(true);
+    Message message = mock(Message.class);
+    when(sharedSent.getMessageByUID(1212L)).thenReturn(message);
+
+    assertEquals(0, emailBoxService.updateEmailStarredStatus(List.of(1212L), TEST_USER, "CUSTOM:10", true, true));
+
+    verify(emailDelegationService).checkRight(TEST_USER, "CUSTOM:10", MailboxRights.WRITE);
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L), TEST_USER, true, "CUSTOM:10");
+    verify(message).setFlag(Flags.Flag.FLAGGED, true);
+    verify(ownInbox, never()).open(anyInt());
+    verify(emailBoxStorage, never()).updateEmailStarredStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), eq(MailFolder.INBOX));
+  }
+
+  /**
+   * EXO-90550 -- without w on that shared folder the star is refused before anything is
+   * written, locally or on the server; a share no longer accepted is a revocation.
+   */
+  @Test
+  @SneakyThrows
+  void aStarWithoutWInASharedFolderTouchesNothing() {
+    givenAConnectedMailbox();
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:10")).thenReturn(aSharedMailboxRow());
+    doThrow(new MailboxRightMissingException(MailboxRights.WRITE)).when(emailDelegationService)
+                                                                  .checkRight(TEST_USER, "CUSTOM:10", MailboxRights.WRITE);
+
+    assertEquals(MailboxRightMissingException.CODE_PREFIX + "w",
+                 assertThrows(MailboxRightMissingException.class,
+                              () -> emailBoxService.updateEmailStarredStatus(List.of(1212L), TEST_USER, "CUSTOM:10", true, true)).getMessage());
+
+    doThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED)).when(emailDelegationService)
+                                                                                .checkRight(TEST_USER, "CUSTOM:10", MailboxRights.WRITE);
+    assertThrows(DelegationRevokedException.class,
+                 () -> emailBoxService.updateEmailStarredStatus(List.of(1212L), TEST_USER, "CUSTOM:10", true, true));
+
+    verify(emailBoxStorage, never()).updateEmailStarredStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), anyString());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * EXO-90550, decisions Q1 and Q2 -- the star is not offered in the user's own folders
+   * other than INBOX (Sent, Archive, their custom folders), in an unknown key, nor in a
+   * shared Trash, Spam or Drafts: each is a 400 with the star's own code, before anything
+   * is written.
+   */
+  @Test
+  @SneakyThrows
+  void aStarOutsideTheInboxAndTheSharedFoldersIsRefused() {
+    givenAConnectedMailbox();
+    when(emailDelegationService.delegationOf(eq(TEST_USER), anyString())).thenReturn(null);
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:11")).thenReturn(aSharedMailboxRow());
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:12")).thenReturn(aSharedMailboxRow());
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:13")).thenReturn(aSharedMailboxRow());
+    when(emailDelegationService.roleOf(TEST_USER, "CUSTOM:11")).thenReturn(FolderRole.TRASH);
+    when(emailDelegationService.roleOf(TEST_USER, "CUSTOM:12")).thenReturn(FolderRole.JUNK);
+    when(emailDelegationService.roleOf(TEST_USER, "CUSTOM:13")).thenReturn(FolderRole.DRAFTS);
+
+    for (String folder : List.of(MailFolder.SENT, MailFolder.ARCHIVE, "CUSTOM:3", "NOT_A_FOLDER", "CUSTOM:11", "CUSTOM:12", "CUSTOM:13")) {
+      assertEquals(EmailBoxService.STAR_FOLDER_NOT_SUPPORTED_MESSAGE,
+                   assertThrows(IllegalArgumentException.class,
+                                () -> emailBoxService.updateEmailStarredStatus(List.of(1212L), TEST_USER, folder, true, true)).getMessage(),
+                   folder);
+    }
+    verify(emailBoxStorage, never()).updateEmailStarredStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), anyString());
+    verify(emailDelegationService, never()).checkRight(anyString(), anyString(), anyChar());
+  }
+
+  /**
+   * EXO-90550 -- a shared folder the server no longer offers: the optimistic star goes
+   * back and every id counts as failed, as for the read status.
+   */
+  @Test
+  @SneakyThrows
+  void aStarInASharedFolderTheServerNoLongerOffersIsReverted() {
+    givenAConnectedMailbox();
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:10")).thenReturn(aSharedMailboxRow());
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(null);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+
+    assertEquals(2, emailBoxService.updateEmailStarredStatus(List.of(1L, 2L), TEST_USER, "CUSTOM:10", true, true));
+
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1L, 2L), TEST_USER, true, "CUSTOM:10");
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1L, 2L), TEST_USER, false, "CUSTOM:10");
   }
 
   @Test

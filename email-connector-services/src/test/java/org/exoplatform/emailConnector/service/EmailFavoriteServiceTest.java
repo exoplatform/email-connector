@@ -22,7 +22,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -39,6 +42,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.manager.IdentityManager;
@@ -79,6 +83,35 @@ public class EmailFavoriteServiceTest {
     assertEquals("12", created.getValue().getObjectId());
     assertEquals(EmailFavoriteService.OBJECT_TYPE, created.getValue().getObjectType());
     assertEquals(IDENTITY_ID, created.getValue().getUserIdentityId());
+  }
+
+  /**
+   * EXO-90550, Benjamin's decision (a) -- a delegate's star on a shared mailbox's message
+   * is its owner's star and enters the OWNER's favorites (through her own reconcile, on
+   * her own INBOX rows), never the delegate's: the delegate's reconcile reads their own
+   * INBOX alone, so a starred row of a shared mailbox's folder never becomes their
+   * favorite.
+   */
+  @Test
+  public void aDelegatesReconcileNeverAddsASharedMailboxsRow() throws Exception {
+    givenUserIdentity();
+    givenFavoritedEmailIds();
+    Email own = new Email();
+    own.setId(11L);
+    own.setStarred(true);
+    Email shared = new Email();
+    shared.setId(99L);
+    shared.setFolder("CUSTOM:8");
+    shared.setStarred(true);
+    when(emailBoxStorage.getStarredEmails(USERNAME, MailFolder.INBOX)).thenReturn(List.of(own));
+    lenient().when(emailBoxStorage.getStarredEmails(USERNAME, "CUSTOM:8")).thenReturn(List.of(shared));
+
+    emailFavoriteService.reconcileFavorites(USERNAME);
+
+    ArgumentCaptor<Favorite> created = ArgumentCaptor.forClass(Favorite.class);
+    verify(favoriteService, times(1)).createFavorite(created.capture());
+    assertEquals("11", created.getValue().getObjectId(), "the delegate's own INBOX star only");
+    verify(emailBoxStorage, never()).getStarredEmails(eq(USERNAME), argThat(folder -> !MailFolder.INBOX.equals(folder)));
   }
 
   @Test

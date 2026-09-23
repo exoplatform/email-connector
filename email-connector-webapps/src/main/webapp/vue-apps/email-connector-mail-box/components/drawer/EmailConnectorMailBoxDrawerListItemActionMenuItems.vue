@@ -334,10 +334,10 @@ export default {
     threadFavorite() {
       return this.thread ? this.thread.emails.some(message => message.starred) : !!this.email.starred;
     },
-    // The favorite is pushed through the INBOX folder, so only inbox rows offer it —
-    // which already keeps it off a Trash row, before readOnly below has any say.
+    // The star is offered on an inbox row, and on a shared mailbox's row where the
+    // user holds w there (canStar, EXO-90550) -- never on a Trash or Spam row.
     canFavorite() {
-      return (this.email.folder || 'INBOX') === 'INBOX';
+      return this.$emailConnectorMailBoxService.canStar(this.email.folder);
     },
     /**
      * Whether this row sits in a folder the interface may only read (Trash, Spam), in
@@ -524,7 +524,8 @@ export default {
     },
     updateEmailFavoriteStatus() {
       this.$emit('close');
-      this.$root.$emit('update-email-favorite-status', !this.threadFavorite, this.threadIds);
+      // (favorite, ids, acknowledged, folder): the folder addresses the star (EXO-90550).
+      this.$root.$emit('update-email-favorite-status', !this.threadFavorite, this.threadIds, false, this.actingFolder);
     },
     deleteEmail() {
       this.$emit('close');

@@ -139,6 +139,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <email-connector-mail-box-drawer-favorite-toggle
             :favorite="!!email.starred"
             :can-toggle="canToggleFavorite"
+            :shared-owner="starSharedOwner"
             :size="18"
             @toggle="toggleFavorite" />
           <!-- Reply and the ⋮ menu (reply all, forward…) are withheld from a message
@@ -388,11 +389,22 @@ export default {
     isMobile() {
       return this.$vuetify.breakpoint.smAndDown;
     },
-    // Only an INBOX message can be toggled: the favorite endpoint pushes the IMAP
-    // \Flagged flag through the INBOX folder. A favorite Sent/Archive copy in a
+    // An INBOX message, or one of a shared mailbox where the user holds w (canStar,
+    // EXO-90550), can be toggled; a favorite Sent/Archive copy of the user's own in a
     // conversation still shows its (read-only) favorite.
     canToggleFavorite() {
-      return (this.email.folder || 'INBOX') === 'INBOX';
+      return this.$emailConnectorMailBoxService.canStar(this.email.folder);
+    },
+    /**
+     * The owner of the shared mailbox whose INBOX this message is in -- said on the star
+     * there only, where it is true: her Favorites list her INBOX stars alone (EXO-90550).
+     * Empty elsewhere, and in the user's own mailbox.
+     *
+     * @returns {String} the owner's name, or empty
+     */
+    starSharedOwner() {
+      const entry = this.$emailConnectorMailBoxService.sharedMailboxOfFolder(this.email.folder);
+      return entry && entry.folderKey === this.email.folder ? entry.ownerFullName || '' : '';
     },
   },
   methods: {
@@ -414,7 +426,7 @@ export default {
     // drawer's handler, which also rolls this very object back (through the
     // thread's own listener) if the mail server refuses the flag.
     toggleFavorite() {
-      this.$root.$emit('update-email-favorite-status', !this.email.starred, [this.email.mailRemoteId]);
+      this.$root.$emit('update-email-favorite-status', !this.email.starred, [this.email.mailRemoteId], false, this.email.folder || 'INBOX');
     },
     /**
      * Asks the drawer holding this message to read it again, through the same request

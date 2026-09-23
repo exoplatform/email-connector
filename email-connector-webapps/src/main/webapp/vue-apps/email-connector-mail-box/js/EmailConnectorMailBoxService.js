@@ -262,6 +262,22 @@ export function canMarkAsJunk(folder) {
 }
 
 /**
+ * Whether a row may be starred: in the user's INBOX, and in a folder of a mailbox shared
+ * with them where they hold w -- the owner's star too (EXO-90550, Benjamin's decision:
+ * the owner's favorites follow) -- but never in a shared Trash, Spam or Drafts, which a
+ * delegate only reads. The user's own other folders keep their star read-only.
+ *
+ * @param {String} folder the folder a row carries; blank means INBOX
+ * @returns {Boolean} true when the star may be toggled on those messages
+ */
+export function canStar(folder) {
+  if ((folder || 'INBOX') === 'INBOX') {
+    return true;
+  }
+  return isSharedMailboxFolder(folder) && !isReadOnlyFolder(folder) && sharedMailboxAllows(folder, 'star');
+}
+
+/**
  * Whether a row may be deleted -- filed into the Trash: where mail may be taken out of
  * its folder (canMoveOutOf), and in a shared mailbox only where its owner shares a Trash
  * the user may file into (EXO-90548). The one answer the row menu, the swipe, the
@@ -1689,15 +1705,18 @@ export function updateEmailsReadStatus(mailRemoteIds, readStatus, folder) {
  * assuming the push succeeded: a favorite left lit that the server rejected would
  * silently vanish at the next synchronization.
  *
- * @param {Array<Number>} mailRemoteIds the INBOX IMAP UIDs of the messages
+ * @param {Array<Number>} mailRemoteIds the IMAP UIDs of the messages, within `folder`
  * @param {Boolean} favorite true to favorite, false to unfavorite
+ * @param {String} folder the folder they are numbered in: INBOX when omitted, or a
+ *        folder of a mailbox shared with the user (EXO-90550)
  * @returns {Promise} resolves with { failedUpdates }
  */
-export function updateEmailsFavoriteStatus(mailRemoteIds, favorite) {
+export function updateEmailsFavoriteStatus(mailRemoteIds, favorite, folder) {
   // The endpoint keeps the server's own vocabulary: it pushes the IMAP \Flagged
   // flag, so its path and parameter are named after it. Only what the user reads
   // says "favorite".
-  return fetch(`/email-connector/rest/email-box/starred?starred=${favorite}`, {
+  const folderParam = folder && folder !== 'INBOX' ? `&folder=${encodeURIComponent(folder)}` : '';
+  return fetch(`/email-connector/rest/email-box/starred?starred=${favorite}${folderParam}`, {
     headers: {
       'Content-Type': 'application/json'
     },
