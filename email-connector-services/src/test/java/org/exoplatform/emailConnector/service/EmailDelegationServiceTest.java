@@ -1114,10 +1114,13 @@ class EmailDelegationServiceTest {
     EmailDelegation inboxOnly = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
     when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(inboxOnly);
     when(engine.probe(any())).thenReturn(SUPPORTED);
+    // Folders to add, so that only the INBOX check can refuse.
+    when(engine.findRoleFolders(any())).thenReturn(ownerRoleFolders());
     when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(OWNER_MAILBOX, MailboxRights.of("lrswipkxtea"))));
 
     assertEquals(EmailDelegationService.NOT_CHANGEABLE_MESSAGE,
                  assertThrows(IllegalArgumentException.class, () -> service.extend(OWNER, 100L)).getMessage());
+    verify(engine).listAcl(any(), eq(INBOX));
     verify(engine, never()).grant(any(), any(), any(), any(), any());
     verify(emailDelegationStorage, never()).update(any());
   }
@@ -1132,6 +1135,7 @@ class EmailDelegationServiceTest {
     when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(inboxOnly);
     when(engine.probe(any())).thenReturn(SUPPORTED);
     when(engine.myRights(any(), anyString())).thenReturn(MailboxRights.of("lrswipkxtea"));
+    when(engine.findRoleFolders(any())).thenReturn(ownerRoleFolders());
     when(engine.grant(any(), eq(INBOX), any(), any(), any())).thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswite")));
     when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswit"))),
                                                       List.of(MailboxAce.ofLetters(OWNER_MAILBOX, MailboxRights.of("lrswipkxtea"))));
@@ -1389,6 +1393,98 @@ class EmailDelegationServiceTest {
                                                                                                                                   MailboxRights.of("lrswite")));
     when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswite"))));
     return inboxOnly;
+  }
+
+  /**
+   * EXO-90548, live on Stalwart -- a share already extended once (INBOX, Sent, Trash)
+   * whose owner's Spam was missed: Extend adds exactly the default roles her mailbox has
+   * and the share lacks -- the Spam, never Drafts, never a role already shared -- and
+   * records them through the guarded write.
+   */
+  @Test
+  void extendAddsExactlyTheMissingDefaultRoles() throws Exception {
+    EmailDelegation extendedOnce = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    extendedOnce.setGrantedRoles("INBOX,SENT,TRASH");
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(extendedOnce);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    Map<FolderRole, String> stalwart = new EnumMap<>(FolderRole.class);
+    stalwart.put(FolderRole.SENT, "Sent Items");
+    stalwart.put(FolderRole.TRASH, "Deleted Items");
+    stalwart.put(FolderRole.JUNK, "Junk Mail");
+    stalwart.put(FolderRole.DRAFTS, "Drafts");
+    when(engine.findRoleFolders(any())).thenReturn(stalwart);
+    when(engine.myRights(any(), anyString())).thenReturn(MailboxRights.of("lrswipkxtea"));
+    when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), any()))
+                                                                                                 .thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
+                                                                                                                                  MailboxRights.of("lrswite")));
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswite"))));
+    answerTheRightsAndRolesWriteOn(extendedOnce);
+
+    EmailDelegation extended = service.extend(OWNER, 100L);
+
+    verify(engine).grant(any(), eq("Junk Mail"), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), any(), eq(FolderRole.JUNK));
+    verify(engine, never()).grant(any(), eq("Sent Items"), any(), any(), any(), any());
+    verify(engine, never()).grant(any(), eq("Deleted Items"), any(), any(), any(), any());
+    verify(engine, never()).grant(any(), eq("Drafts"), any(), any(), any(), any());
+    assertEquals(Set.of(FolderRole.SENT, FolderRole.TRASH, FolderRole.JUNK), extended.grantedRoleSet());
+  }
+
+  /**
+   * EXO-90548 -- a share that already covers every default role the owner's mailbox
+   * has is refused as not changeable before anything is written, INBOX included.
+   */
+  @Test
+  void extendWithNothingToAddWritesNothing() throws Exception {
+    EmailDelegation complete = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    complete.setGrantedRoles("INBOX,SENT,TRASH");
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(complete);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    Map<FolderRole, String> sentAndTrash = new EnumMap<>(FolderRole.class);
+    sentAndTrash.put(FolderRole.SENT, "Sent Items");
+    sentAndTrash.put(FolderRole.TRASH, "Deleted Items");
+    sentAndTrash.put(FolderRole.DRAFTS, "Drafts");
+    when(engine.findRoleFolders(any())).thenReturn(sentAndTrash);
+
+    assertEquals(EmailDelegationService.NOT_CHANGEABLE_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> service.extend(OWNER, 100L)).getMessage());
+    verify(engine, never()).grant(any(), any(), any(), any(), any());
+    verify(engine, never()).grant(any(), any(), any(), any(), any(), any());
+  }
+
+  /**
+   * EXO-90548 -- the owner's list of grantees says, for each share eXo can extend, which
+   * of her role folders an Extend would add, from one LIST of her folders; a share made
+   * in the server's own interface, or one granted a whole mailbox at once, says nothing.
+   */
+  @Test
+  void theOwnersListSaysWhatAnExtendWouldAdd() throws Exception {
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(OWNER_MAILBOX, MailboxRights.of("lrswipkxtea")),
+                                                              MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswite")),
+                                                              MailboxAce.ofLetters("erin@acme.com", MailboxRights.of("lrs"))));
+    EmailDelegation bob = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    bob.setGrantedRoles("INBOX,SENT,TRASH");
+    EmailDelegation erin = row(DelegationStatus.ACCEPTED, DelegationOrigin.SERVER);
+    erin.setId(101L);
+    erin.setGranteeId("erin");
+    erin.setGranteeMailbox("erin@acme.com");
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(bob, erin));
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER, GRANTEE, "erin"));
+    when(userEmailSettingService.getUserEmailSetting("erin")).thenReturn(setting(CONNECTOR_ID, "erin@acme.com"));
+    Map<FolderRole, String> stalwart = new EnumMap<>(FolderRole.class);
+    stalwart.put(FolderRole.SENT, "Sent Items");
+    stalwart.put(FolderRole.TRASH, "Deleted Items");
+    stalwart.put(FolderRole.JUNK, "Junk Mail");
+    stalwart.put(FolderRole.DRAFTS, "Drafts");
+    when(engine.findRoleFolders(any())).thenReturn(stalwart);
+
+    List<DelegationGrantee> grantees = service.getGrantedDelegations(OWNER).grantees();
+
+    DelegationGrantee bobs = grantees.stream().filter(grantee -> GRANTEE.equals(grantee.granteeId())).findFirst().orElseThrow();
+    DelegationGrantee erins = grantees.stream().filter(grantee -> "erin".equals(grantee.granteeId())).findFirst().orElseThrow();
+    assertEquals(List.of(FolderRole.JUNK), bobs.extendableRoles(), "the Spam her mailbox has and the share lacks, never Drafts");
+    assertEquals(List.of(), erins.extendableRoles(), "a share made on the server is never extended from eXo");
+    verify(engine, times(1)).findRoleFolders(any());
   }
 
   /**

@@ -66,7 +66,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <exo-confirm-dialog
       ref="extendConfirmDialog"
       :title="$t('UserSettings.emailConnector.sharing.extend.confirm.title')"
-      :message="$t('UserSettings.emailConnector.sharing.extend.confirm.message')"
+      :message="extendMessage"
       :ok-label="$t('UserSettings.emailConnector.sharing.extend.confirm.ok')"
       :cancel-label="$t('UserSettings.emailConnector.sharing.cancel')"
       @ok="extend" />
@@ -103,6 +103,17 @@ export default {
     extendTarget: null,
   }),
   computed: {
+    /**
+     * What the Extend confirmation says it gives: the folders it would add, by name
+     * (EXO-90548).
+     *
+     * @returns {String} the message
+     */
+    extendMessage() {
+      const roles = this.extendTarget?.extendableRoles || [];
+      const names = roles.map(role => this.$t(`UserSettings.emailConnector.sharing.role.${role}`)).join(', ');
+      return this.$t('UserSettings.emailConnector.sharing.extendRoles.confirm.message', { 0: names });
+    },
     /**
      * @returns {Boolean} whether the connected mail server can share at all
      */
@@ -292,7 +303,7 @@ export default {
         });
     },
     /**
-     * A row's "Share Sent, Archive, Trash and Spam too": asked first, with what it gives.
+     * A row's "Share ... too": asked first, with what it gives.
      *
      * @param {Object} grantee the row
      * @returns {void}

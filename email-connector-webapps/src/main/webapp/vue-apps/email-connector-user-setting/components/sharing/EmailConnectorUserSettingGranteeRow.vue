@@ -68,6 +68,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :current-preset="currentPreset"
           :disabled="disabled"
           :can-extend="canExtend"
+          :extend-label="extendLabel"
           @change-preset="$emit('change-preset', $event)"
           @extend="$emit('extend')"
           @revoke="$emit('revoke')" />
@@ -77,7 +78,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </div>
       <div class="caption text-sub-title text-wrap">{{ rightsSummary }}</div>
       <!-- What the grant covers beside the Inbox (EXO-90548). -->
-      <div v-if="canExtend" class="caption text-sub-title">{{ $t('UserSettings.emailConnector.sharing.inboxOnly') }}</div>
+      <div v-if="inboxOnlyShare" class="caption text-sub-title">{{ $t('UserSettings.emailConnector.sharing.inboxOnly') }}</div>
       <div v-if="notShared" class="caption warning--text text-wrap">{{ notShared }}</div>
       <!-- Where the access was written: a small marker, not the chip -- a share made
            in the mail server's own interface is the server's, and says so. -->
@@ -177,17 +178,44 @@ export default {
       return !!delegation?.id && delegation.status !== 'REVOKED' && delegation.status !== 'GONE';
     },
     /**
-     * Whether the share covers the Inbox alone and eXo may extend it: written by eXo
-     * before folders were shared (EXO-90548), and accepted or still on offer -- a
-     * declined or merely available share is shared again by inviting (decision 3b).
-     * A share made on the server is never rewritten from here.
+     * Whether eXo may extend the share: the owner's mailbox has role folders (Sent,
+     * Archive, Trash, Spam) the share does not cover yet -- the server says which
+     * (extendableRoles), and only for a share eXo wrote, accepted or still on offer
+     * (EXO-90548, decision 3b). A share made on the server is never rewritten from here.
      *
-     * @returns {Boolean} true when "Share Sent, Archive, Trash and Spam too" is offered
+     * @returns {Boolean} true when "Share ... too" is offered
      */
     canExtend() {
-      const delegation = this.grantee.delegation;
-      return this.actionable && !this.discovered && !!delegation.inboxOnly
-        && (delegation.status === 'ACCEPTED' || delegation.status === 'PENDING');
+      return this.actionable && !this.discovered && this.extendableRoles.length > 0;
+    },
+    /**
+     * The owner's role folders an Extend would add, as the server listed them.
+     *
+     * @returns {Array} the roles, possibly empty
+     */
+    extendableRoles() {
+      return this.grantee.extendableRoles || [];
+    },
+    /**
+     * "Share Spam too", naming what an Extend would add, as the owner reads the roles.
+     *
+     * @returns {String} the menu label, or empty
+     */
+    extendLabel() {
+      if (!this.canExtend) {
+        return '';
+      }
+      const names = this.extendableRoles.map(role => this.$t(`UserSettings.emailConnector.sharing.role.${role}`)).join(', ');
+      return this.$t('UserSettings.emailConnector.sharing.extendRoles', { 0: names });
+    },
+    /**
+     * Whether the share covers the owner's Inbox alone -- written by eXo before folders
+     * were shared (EXO-90548).
+     *
+     * @returns {Boolean} true when "Sees your Inbox only" is said
+     */
+    inboxOnlyShare() {
+      return this.actionable && !this.discovered && !!this.grantee.delegation?.inboxOnly;
     },
     /**
      * The owner's folders the grant found but the server refused to share, said on the

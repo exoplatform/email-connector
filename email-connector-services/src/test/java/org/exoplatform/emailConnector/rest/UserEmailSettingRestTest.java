@@ -66,6 +66,8 @@ import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
+import org.exoplatform.emailConnector.model.MailboxAce;
+import org.exoplatform.emailConnector.model.DelegationGrantee;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.EmailSignature;
@@ -183,13 +185,17 @@ public class UserEmailSettingRestTest {
    */
   @Test
   void delegationListings() throws Exception {
+    DelegationGrantee bob = DelegationGrantee.of(MailboxAce.ofLetters("bob@acme.com", MailboxRights.of("lrswite")), "bob", null)
+                                             .withExtendableRoles(List.of(FolderRole.JUNK));
     when(emailDelegationService.getGrantedDelegations(SIMPLE_USER)).thenReturn(new GrantedDelegations(MailboxAclCapabilities.imap(true, true),
                                                                                                     "simple@acme.com",
-                                                                                                    List.of()));
+                                                                                                    List.of(bob)));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/granted").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.capabilities.supported").value(true))
-           .andExpect(jsonPath("$.ownerMailbox").value("simple@acme.com"));
+           .andExpect(jsonPath("$.ownerMailbox").value("simple@acme.com"))
+           // EXO-90548: what an Extend would add reaches the settings row.
+           .andExpect(jsonPath("$.grantees[0].extendableRoles[0]").value("JUNK"));
 
     EmailDelegation delegation = new EmailDelegation();
     delegation.setId(5L);
