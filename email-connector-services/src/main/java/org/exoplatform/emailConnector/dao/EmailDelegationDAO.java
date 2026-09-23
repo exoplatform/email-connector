@@ -249,4 +249,72 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   Date checked, @Param("updated")
   Date updated, @Param("ended")
   List<String> ended);
+
+  /**
+   * A grantee's accept, and nothing else of the row (EXO-90548 review, finding 1): the
+   * status, where the shared tree is, the grantee's own letters, the server's words only
+   * when none were recorded, the preset only when one is given, and the stamps. The
+   * owner's columns -- the folder roles and their folders an Extend may have written
+   * while the server was being asked -- are left as they stand. Only a row of that
+   * grantee still in an acceptable status is written.
+   *
+   * @param id the row id
+   * @param granteeId the grantee, whose row it must be
+   * @param status the accepted status, as its name
+   * @param remoteRoot where the shared tree is on the grantee's session
+   * @param rights the grantee's own MYRIGHTS letters
+   * @param nativeRights the letters to keep as the server's words when none are recorded
+   * @param preset the preset to record, or null to keep the recorded one
+   * @param checked the rights check stamp
+   * @param responded the response stamp
+   * @param updated the update stamp
+   * @param acceptable the statuses an accept may leave
+   * @return the rows updated: one, or zero when the row is not that grantee's or moved on
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.status = :status, d.remoteRoot = :remoteRoot, d.rights = :rights,"
+      + " d.nativeRights = CASE WHEN d.nativeRights IS NULL OR d.nativeRights = '' THEN :nativeRights ELSE d.nativeRights END,"
+      + " d.preset = COALESCE(:preset, d.preset), d.lastRightsCheckDate = :checked, d.respondedDate = :responded,"
+      + " d.updatedDate = :updated WHERE d.id = :id AND d.granteeId = :granteeId AND d.status IN :acceptable")
+  int accept(@Param("id")
+  long id, @Param("granteeId")
+  String granteeId, @Param("status")
+  String status, @Param("remoteRoot")
+  String remoteRoot, @Param("rights")
+  String rights, @Param("nativeRights")
+  String nativeRights, @Param("preset")
+  String preset, @Param("checked")
+  Date checked, @Param("responded")
+  Date responded, @Param("updated")
+  Date updated, @Param("acceptable")
+  List<String> acceptable);
+
+  /**
+   * The letters the owner's ACL holds for a share on offer, and nothing else of the row
+   * (EXO-90548 review, finding 1): never on a share in use, whose letters are the
+   * grantee's own MYRIGHTS, nor on one that ended; an Extend's folder roles written
+   * meanwhile are left as they stand.
+   *
+   * @param id the row id
+   * @param ownerId the owner, whose row it must be
+   * @param rights the letters the owner's ACL holds
+   * @param nativeRights the server's own words for them
+   * @param checked the rights check stamp
+   * @param updated the update stamp
+   * @param excluded the statuses not written: in use, or ended
+   * @return the rows updated
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.rights = :rights, d.nativeRights = :nativeRights, d.lastRightsCheckDate = :checked,"
+      + " d.updatedDate = :updated WHERE d.id = :id AND d.ownerId = :ownerId AND d.status NOT IN :excluded")
+  int updateOfferedRights(@Param("id")
+  long id, @Param("ownerId")
+  String ownerId, @Param("rights")
+  String rights, @Param("nativeRights")
+  String nativeRights, @Param("checked")
+  Date checked, @Param("updated")
+  Date updated, @Param("excluded")
+  List<String> excluded);
 }
