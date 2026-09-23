@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -824,10 +825,32 @@ public class UserEmailSettingServiceTest {
       when(session.getStore()).thenReturn(store);
       doThrow(new MessagingException("refused")).when(store).connect();
 
-      assertThrows(IllegalStateException.class, () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+      IllegalStateException refusal = assertThrows(IllegalStateException.class,
+                                                   () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
 
+      // The cause travels with the refusal: it is the only thing that says why.
+      assertInstanceOf(MessagingException.class, refusal.getCause());
       verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
     }
+  }
+
+  /**
+   * Only a refusal becomes the connect's IllegalStateException. Any other failure
+   * propagates as it is, so a caller can tell "the server said no" from "something
+   * broke" - the login-time enrolment logs the first at INFO and the second at WARN
+   * with its stack.
+   */
+  @Test
+  @SneakyThrows
+  void letsAFailureThatIsNotARefusalPropagate() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
+    when(emailCredentialsResolver.targetAccount(1L, "bluemind-sudo", TEST_USER)).thenReturn("eric@bm.example.org");
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any()))
+        .thenThrow(new UnsupportedOperationException("boom"));
+
+    assertThrows(UnsupportedOperationException.class, () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
   }
 
   private EmailConnector providerBackedConnector() {
