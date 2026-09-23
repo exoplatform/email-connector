@@ -220,6 +220,8 @@ public class EmailScheduledSendService {
                                  long scheduledDate,
                                  String timeZone,
                                  String username) throws IllegalAccessException, ObjectNotFoundException {
+    // Access before validation, as the REST contract orders them (401 before 400)
+    requireMailbox(username);
     requireValidTimeZone(timeZone);
     Date now = now();
     Date date = requireValidDate(scheduledDate, now);
