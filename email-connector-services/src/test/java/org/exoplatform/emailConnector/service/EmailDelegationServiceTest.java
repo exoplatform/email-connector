@@ -1430,6 +1430,69 @@ class EmailDelegationServiceTest {
   }
 
   /**
+   * EXO-90548 review -- a server that refuses every folder there was to add answers a
+   * refusal: nothing is recorded, and the owner is not told the folders are shared.
+   */
+  @Test
+  void anExtendTheServerRefusesEntirelyIsARefusal() throws Exception {
+    EmailDelegation extendedOnce = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    extendedOnce.setGrantedRoles("INBOX,SENT,TRASH");
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(extendedOnce);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    Map<FolderRole, String> stalwart = new EnumMap<>(FolderRole.class);
+    stalwart.put(FolderRole.SENT, "Sent Items");
+    stalwart.put(FolderRole.TRASH, "Deleted Items");
+    stalwart.put(FolderRole.JUNK, "Junk Mail");
+    when(engine.findRoleFolders(any())).thenReturn(stalwart);
+    when(engine.myRights(any(), anyString())).thenReturn(MailboxRights.of("lrswipkxtea"));
+    when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), any()))
+                                                                                                 .thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
+                                                                                                                                  MailboxRights.of("lrswite")));
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswite"))));
+    when(engine.grant(any(), eq("Junk Mail"), any(), any(), any(), eq(FolderRole.JUNK)))
+                                                                                         .thenThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED,
+                                                                                                                            "NO"));
+
+    assertEquals(MailboxAclException.SERVER_REFUSED,
+                 assertThrows(MailboxAclException.class, () -> service.extend(OWNER, 100L)).getCode());
+    verify(emailDelegationStorage, never()).updateGrantedRights(any(), anyLong(), any(), any(), any(), any(), any(), anyString(), any());
+    verify(emailFolderStorage, never()).markDiscoveryDue(anyLong());
+  }
+
+  /**
+   * EXO-90548 review -- the owner's folders are listed only when some share could be
+   * extended on a per-folder server: never for a list of shares made on the server or
+   * declined, never on a server that grants a whole mailbox at once, and a row of
+   * another mailbox is never offered an Extend that would be refused.
+   */
+  @Test
+  void theOwnersFoldersAreListedOnlyWhenAShareCanBeExtended() throws Exception {
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(OWNER_MAILBOX, MailboxRights.of("lrswipkxtea")),
+                                                              MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswite"))));
+    lenient().when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER, GRANTEE));
+    lenient().when(engine.findRoleFolders(any())).thenReturn(ownerRoleFolders());
+
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(row(DelegationStatus.ACCEPTED, DelegationOrigin.SERVER)));
+    service.getGrantedDelegations(OWNER);
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(row(DelegationStatus.DECLINED, DelegationOrigin.EXO)));
+    service.getGrantedDelegations(OWNER);
+    // A grantee no longer connected is matched to a row by identifier alone, whatever
+    // mailbox the row was for: a row of the owner's previous mailbox is not offered.
+    EmailDelegation elsewhere = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    elsewhere.setOwnerMailbox("alice@previous.org");
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER));
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(elsewhere));
+    service.getGrantedDelegations(OWNER);
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER, GRANTEE));
+    when(engine.probe(any())).thenReturn(new MailboxAclCapabilities(true, true, true, GrantGranularity.MAILBOX, false, false, null));
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO)));
+    service.getGrantedDelegations(OWNER);
+
+    verify(engine, never()).findRoleFolders(any());
+  }
+
+  /**
    * EXO-90548 -- a share that already covers every default role the owner's mailbox
    * has is refused as not changeable before anything is written, INBOX included.
    */
