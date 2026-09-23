@@ -411,14 +411,15 @@ export default {
      * folder, like canToggleFavorite above, and the same rule the row's context menu
      * reads.
      *
-     * A mailbox somebody shared with the user takes it away too, where its rights or
-     * the phase do not let mail be taken out of it (canMoveOutOf) -- the same answer the
-     * row's context menu reads.
+     * A mailbox somebody shared with the user takes it away too, where it has neither a
+     * Trash nor an Archive to file into, or its rights do not let mail be taken out
+     * (canDelete, canArchive) -- the same answers the row's context menu reads.
      *
      * @returns {Boolean} true when the swipe must offer nothing
      */
     readOnly() {
-      return !this.$emailConnectorMailBoxService.canMoveOutOf(this.email.folder);
+      return !this.$emailConnectorMailBoxService.canDelete(this.email.folder)
+        && !this.$emailConnectorMailBoxService.canArchive(this.email.folder);
     },
     /**
      * The row's inline style: faded while its message is on its way into the mirror or
@@ -626,7 +627,11 @@ export default {
       }
       const deleteEmail = this.left > 0;
       const confirm = Math.abs(this.left) > (this.minWidth / 2);
-      if (confirm) {
+      // Each direction asks its own destination (EXO-90548): a shared mailbox with no
+      // Trash takes no delete swipe, one with no Archive no archive swipe.
+      const service = this.$emailConnectorMailBoxService;
+      const allowed = deleteEmail ? service.canDelete(this.email.folder) : service.canArchive(this.email.folder);
+      if (confirm && allowed) {
         if (deleteEmail) {
           this.emitForRow('delete-email');
         } else {

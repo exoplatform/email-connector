@@ -11601,6 +11601,33 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90548, live on Stalwart -- an Inbox-only share whose letters allow taking mail
+   * out (tewsirl): a delete, an archive or a spam of whole conversations, the path every
+   * interface control uses, is refused with the missing destination's own code before
+   * anything is read or removed -- a coded 400 for the interface, never a failure count
+   * behind a WARN, and never a filing into the delegate's own folders.
+   */
+  @Test
+  @SneakyThrows
+  void anInboxOnlyShareRefusesEachActionWithItsOwnCodeOnTheConversationPath() {
+    givenAConnectedMailbox();
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(aSharedMailboxRow());
+
+    assertEquals(EmailBoxService.NO_SHARED_TRASH_MESSAGE,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.deleteConversations(List.of(1212L), TEST_USER, "CUSTOM:8")).getMessage());
+    assertEquals(EmailBoxService.NO_SHARED_JUNK_MESSAGE,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.markConversationsAsJunk(List.of(1212L), TEST_USER, "CUSTOM:8")).getMessage());
+    assertEquals(EmailBoxService.NO_SHARED_ARCHIVE_MESSAGE,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.archiveEmail(List.of(1212L), TEST_USER, "CUSTOM:8")).getMessage());
+
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
    * A delete out of the shared INBOX of alice's mailbox into its own Trash: the rows,
    * the registry, the store and the one message.
    *

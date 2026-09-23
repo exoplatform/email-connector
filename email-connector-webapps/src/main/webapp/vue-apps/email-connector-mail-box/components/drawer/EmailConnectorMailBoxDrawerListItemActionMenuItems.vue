@@ -99,7 +99,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <!-- `restricted` is the mobile long-press drawer saying "the swipe already offers
          these two"; `canMove` is the folder saying they must not be offered at all. -->
     <v-list-item
-      v-if="!restricted && canMove"
+      v-if="!restricted && canArchive"
       class="ps-2 pe-3 height-auto"
       @click.stop="archiveEmail">
       <v-sheet
@@ -161,7 +161,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </span>
     </v-list-item>
     <v-list-item
-      v-if="!restricted && canMove"
+      v-if="inboxOnlyHint"
+      class="ps-2 pe-3 height-auto"
+      inactive>
+      <span class="caption text-sub-title">{{ inboxOnlyHint }}</span>
+    </v-list-item>
+    <v-list-item
+      v-if="!restricted && canDelete"
       class="ps-2 pe-3 height-auto"
       @click.stop="deleteEmail">
       <v-sheet
@@ -405,6 +411,35 @@ export default {
      */
     canMarkAsJunk() {
       return this.$emailConnectorMailBoxService.canMarkAsJunk(this.email.folder);
+    },
+    /**
+     * Whether Archive belongs on this row: in a shared mailbox, only where its owner
+     * shares an Archive to file into (EXO-90548).
+     *
+     * @returns {Boolean} true when Archive is offered
+     */
+    canArchive() {
+      return this.$emailConnectorMailBoxService.canArchive(this.email.folder);
+    },
+    /**
+     * Whether Delete belongs on this row: in a shared mailbox, only where its owner
+     * shares a Trash to file into (EXO-90548).
+     *
+     * @returns {Boolean} true when Delete is offered
+     */
+    canDelete() {
+      return this.$emailConnectorMailBoxService.canDelete(this.email.folder);
+    },
+    /**
+     * The owner of a shared mailbox that shares only its Inbox, when the user could
+     * otherwise take this row out of it -- said on the menu in place of the absent
+     * Delete and Archive (EXO-90548).
+     *
+     * @returns {String} the hint, or empty
+     */
+    inboxOnlyHint() {
+      const entry = this.$emailConnectorMailBoxService.inboxOnlyShareHint(this.email.folder);
+      return entry ? this.$t('emailConnector.mailBox.sharedMailbox.inboxOnlyActions', { 0: entry.ownerFullName }) : '';
     },
     /**
      * Whether this row is a draft listed in the Drafts folder — asked of the same
