@@ -262,7 +262,9 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * {@code MailFolder} alone, and the storage layer passes the constant.
    *
    * @param  userId the mailbox owner
-   * @param  folder the one folder that counts, always {@code MailFolder.INBOX}
+   * @param  folder the folder that counts: {@code MailFolder.INBOX}, or the
+   *                {@code CUSTOM:<id>} key of a shared inbox the user counts in their
+   *                badge (EXO-90546)
    * @return        the number of unread emails in that folder
    */
   @Query("SELECT COUNT(email) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND (email.read IS NULL OR email.read = FALSE)")

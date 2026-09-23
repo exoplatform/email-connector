@@ -11571,6 +11571,149 @@ public class EmailBoxServiceTest {
                                                                      anyBoolean());
   }
 
+  // ---------------------------------------------------------------------------------
+  // The shared inboxes a delegate chose to count in their badge (EXO-90546)
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * The badge sums the user's own unread INBOX and the unread of the shared inbox they
+   * chose to count -- an accepted share whose rights keep read state.
+   */
+  @Test
+  void theBadgeAddsTheSharedInboxTheUserChoseToCount() {
+    givenACountedShare(true, DelegationStatus.ACCEPTED, "lrs");
+    when(emailBoxStorage.countUnreadEmails(TEST_USER)).thenReturn(2L);
+    when(emailBoxStorage.countUnreadEmails(TEST_USER, "CUSTOM:8")).thenReturn(3L);
+
+    assertEquals(5L, emailBoxService.countUnreadEmails(TEST_USER), "own 2 + shared 3");
+  }
+
+  /**
+   * A share the user did not choose to count adds nothing, and costs no count query.
+   */
+  @Test
+  void aShareNotCountedAddsNothing() {
+    givenACountedShare(false, DelegationStatus.ACCEPTED, "lrs");
+    when(emailBoxStorage.countUnreadEmails(TEST_USER)).thenReturn(2L);
+
+    assertEquals(2L, emailBoxService.countUnreadEmails(TEST_USER));
+    verify(emailBoxStorage, never()).countUnreadEmails(eq(TEST_USER), anyString());
+  }
+
+  /**
+   * A share no longer accepted adds nothing, whatever its switch still says: the switch
+   * outlives a leave or a revoke on the row.
+   */
+  @Test
+  void aShareNoLongerAcceptedAddsNothing() {
+    givenACountedShare(true, DelegationStatus.REVOKED, "lrs");
+    when(emailBoxStorage.countUnreadEmails(TEST_USER)).thenReturn(2L);
+
+    assertEquals(2L, emailBoxService.countUnreadEmails(TEST_USER));
+    verify(emailBoxStorage, never()).countUnreadEmails(eq(TEST_USER), anyString());
+  }
+
+  /**
+   * A share whose rights do not keep read state (no s -- a BlueMind reader) adds
+   * nothing: its unread number is one the delegate can never bring down.
+   */
+  @Test
+  void aShareWithoutKeepSeenAddsNothing() {
+    givenACountedShare(true, DelegationStatus.ACCEPTED, "lrp");
+    when(emailBoxStorage.countUnreadEmails(TEST_USER)).thenReturn(2L);
+
+    assertEquals(2L, emailBoxService.countUnreadEmails(TEST_USER));
+    verify(emailBoxStorage, never()).countUnreadEmails(eq(TEST_USER), anyString());
+  }
+
+  /**
+   * The category narrowing is the user's own mail's: a user who narrowed their
+   * notifications still counts the shared inbox they chose, in full.
+   */
+  @Test
+  void theCategoryNarrowingDoesNotApplyToACountedShare() {
+    UserEmailSetting narrowed = userEmailSetting();
+    narrowed.setNotifyAllCategories(false);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(narrowed);
+    when(emailBoxStorage.getUnreadInboxCategoryIds(TEST_USER)).thenReturn(Map.of());
+    givenACountedShare(true, DelegationStatus.ACCEPTED, "lrs");
+    when(emailBoxStorage.countUnreadEmails(TEST_USER, "CUSTOM:8")).thenReturn(3L);
+
+    assertEquals(3L, emailBoxService.countUnreadEmails(TEST_USER));
+  }
+
+  /**
+   * The periodic sync announces a badge move that comes from the counted shared inbox
+   * alone -- the user's own unread did not move -- and stays silent when neither moved.
+   */
+  @Test
+  void theSyncAnnouncesAMoveOfTheCountedSharedInbox() throws Exception {
+    mockEmptySync();
+    givenACountedShare(true, DelegationStatus.ACCEPTED, "lrs");
+    when(emailBoxStorage.countUnreadEmails(TEST_USER)).thenReturn(3L);
+    when(emailBoxStorage.countUnreadEmails(TEST_USER, "CUSTOM:8")).thenReturn(1L, 2L);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(listenerService).broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, TEST_USER, null);
+  }
+
+  /**
+   * The same sync with nothing moved on either side says nothing.
+   */
+  @Test
+  void theSyncStaysSilentWhenTheCountedSharedInboxDidNotMove() throws Exception {
+    mockEmptySync();
+    givenACountedShare(true, DelegationStatus.ACCEPTED, "lrs");
+    when(emailBoxStorage.countUnreadEmails(TEST_USER)).thenReturn(3L);
+    when(emailBoxStorage.countUnreadEmails(TEST_USER, "CUSTOM:8")).thenReturn(1L);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
+  }
+
+  /**
+   * Opening a stale shared inbox refreshes it outside the periodic pass; a refresh that
+   * moved the badge announces it, one that did not stays silent.
+   */
+  @Test
+  @SneakyThrows
+  void refreshingASharedInboxOnOpenAnnouncesOnlyABadgeMove() {
+    givenAConnectedMailbox();
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    EmailFolder delegated = delegatedInbox(8L);
+    when(emailFolderStorage.getFolder(TEST_USER, 8L)).thenReturn(delegated);
+    when(emailBoxStorage.getEmails(TEST_USER, "CUSTOM:8")).thenReturn(new ArrayList<>());
+    givenACountedShare(true, DelegationStatus.ACCEPTED, "lrs");
+    when(emailBoxStorage.countUnreadEmails(TEST_USER)).thenReturn(3L);
+    when(emailBoxStorage.countUnreadEmails(TEST_USER, "CUSTOM:8")).thenReturn(1L, 1L);
+
+    emailBoxService.getEmailBox(TEST_USER, "CUSTOM:8");
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
+
+    when(emailBoxStorage.countUnreadEmails(TEST_USER, "CUSTOM:8")).thenReturn(1L, 4L);
+    emailBoxService.getEmailBox(TEST_USER, "CUSTOM:8");
+    verify(listenerService).broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, TEST_USER, null);
+  }
+
+  /**
+   * One share of alice's mailbox received by the user, its INBOX registered as
+   * {@code CUSTOM:8}.
+   *
+   * @param counted whether the user chose to count it in their badge
+   * @param status the share's state
+   * @param rights the letters the server grants
+   */
+  private void givenACountedShare(boolean counted, DelegationStatus status, String rights) {
+    EmailDelegation delegation = aSharedMailboxRow();
+    delegation.setStatus(status);
+    delegation.setRights(rights);
+    delegation.setBadgeIncluded(counted);
+    lenient().when(emailDelegationService.getReceivedDelegations(TEST_USER, false)).thenReturn(List.of(delegation));
+    lenient().when(emailDelegationService.getSyncableFolders(TEST_USER, 100L)).thenReturn(List.of(delegatedInbox(8L)));
+  }
+
   /**
    * A connected mailbox and nothing else -- the guard tests never reach the server, so
    * stubbing a folder listing for them would be dead stubbing under strict Mockito.

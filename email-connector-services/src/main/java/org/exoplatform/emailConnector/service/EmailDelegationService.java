@@ -358,6 +358,9 @@ public class EmailDelegationService {
     }
     delegation.setStatus(DelegationStatus.REVOKED);
     delegation.setRevokedDate(new Date());
+    // Back off by default (#441-1): a share taken up again must be chosen again to count
+    // in the badge, as a new one is (plan 7.7).
+    delegation.setBadgeIncluded(false);
     delegation = emailDelegationStorage.update(delegation);
     dropDelegatedFolders(delegation.getGranteeId(), delegation.getId());
     LOG.info("Mailbox delegation revoked: actor={} ownerMailbox={} grantee={} identifier={}",
@@ -423,6 +426,7 @@ public class EmailDelegationService {
     String identifier = StringUtils.isNotBlank(delegation.getGranteeMailbox()) ? delegation.getGranteeMailbox()
                                                                                 : resolveGranteeIdentifier(delegation.getGranteeId(),
                                                                                                            connector.getId());
+    boolean keptSeen = delegation.getMailboxRights().canKeepSeen();
     MailboxAclEngine engine = aclEngineRegistry.engineFor(connector);
     MailboxAce written;
     try (MailboxAclSession session = session(connector, ownerUsername, ownerMailbox)) {
@@ -452,6 +456,10 @@ public class EmailDelegationService {
              delegation.getGranteeId(),
              identifier,
              granted.letters());
+    if (keptSeen != granted.canKeepSeen()) {
+      // The grantee's badge may count this inbox only while s is held (EXO-90546).
+      publish(EmailDelegationEvent.Type.RIGHTS_CHANGED, ownerUsername, delegation);
+    }
     return delegation;
   }
 
@@ -680,6 +688,9 @@ public class EmailDelegationService {
   private EmailDelegation endShare(String granteeUsername, EmailDelegation delegation) {
     delegation.setStatus(delegation.getOrigin() == DelegationOrigin.SERVER ? DelegationStatus.AVAILABLE : DelegationStatus.DECLINED);
     delegation.setRespondedDate(new Date());
+    // Back off by default (#441-1): a share taken up again must be chosen again to count
+    // in the badge, as a new one is (plan 7.7).
+    delegation.setBadgeIncluded(false);
     EmailDelegation updated = emailDelegationStorage.update(delegation);
     dropDelegatedFolders(granteeUsername, updated.getId());
     return updated;
@@ -701,13 +712,20 @@ public class EmailDelegationService {
                                            Boolean badgeIncluded,
                                            Boolean notifyNewMail) throws ObjectNotFoundException {
     EmailDelegation delegation = asGrantee(granteeUsername, id);
+    boolean badgeChanged = badgeIncluded != null && badgeIncluded != delegation.isBadgeIncluded();
     // The two toggles alone (#432-2): a whole-row write from this read would put back a
     // status, a revoke date or rights the owner changed since -- a revoke made while
     // the grantee flipped their badge would come undone.
-    return emailDelegationStorage.updatePreferences(granteeUsername,
-                                                    id,
-                                                    badgeIncluded != null ? badgeIncluded : delegation.isBadgeIncluded(),
-                                                    notifyNewMail != null ? notifyNewMail : delegation.isNotifyNewMail());
+    EmailDelegation updated = emailDelegationStorage.updatePreferences(granteeUsername,
+                                                                       id,
+                                                                       badgeIncluded != null ? badgeIncluded : delegation.isBadgeIncluded(),
+                                                                       notifyNewMail != null ? notifyNewMail : delegation.isNotifyNewMail());
+    if (badgeChanged) {
+      // The badge counts this shared inbox, or stops counting it (EXO-90546): whoever
+      // shows the badge is told, after the commit, by the listener of this event.
+      publish(EmailDelegationEvent.Type.BADGE_PREFERENCE_CHANGED, granteeUsername, updated);
+    }
+    return updated;
   }
 
   /**
@@ -1416,10 +1434,20 @@ public class EmailDelegationService {
    * @return the row as it now stands
    */
   private EmailDelegation markRevoked(EmailDelegation delegation, DelegationStatus status) {
+    boolean wasInUse = delegation.getStatus() == DelegationStatus.ACCEPTED;
     delegation.setStatus(status);
     delegation.setRevokedDate(new Date());
+    // Back off by default (#441-1): a share taken up again must be chosen again to count
+    // in the badge, as a new one is (plan 7.7).
+    delegation.setBadgeIncluded(false);
     EmailDelegation updated = emailDelegationStorage.update(delegation);
     dropDelegatedFolders(updated.getGranteeId(), updated.getId());
+    if (wasInUse) {
+      // Found gone by a reconciliation rather than by anybody's act: no notification
+      // says so, but a grantee who counted this inbox in their badge must see it stop
+      // counting (EXO-90546). No actor: the server decided.
+      publish(EmailDelegationEvent.Type.RIGHTS_CHANGED, null, updated);
+    }
     return updated;
   }
 

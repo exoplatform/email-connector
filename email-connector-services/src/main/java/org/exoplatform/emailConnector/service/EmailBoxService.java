@@ -161,6 +161,7 @@ import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
+import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailFolder;
 import org.exoplatform.emailConnector.model.EmailRecipient;
@@ -4794,7 +4795,14 @@ public class EmailBoxService {
   private void refreshDelegatedFolderIfStale(String username, UserEmailSetting userEmailSetting, EmailFolder delegatedFolder) {
     if (delegatedFolder.isSyncEnabled() && !delegatedFolder.isMissing()
         && emailFolderService.isStale(delegatedFolder, emailConnectorService.getEmailBoxSyncPeriod(), System.currentTimeMillis())) {
+      // The shared inbox may count in the badge (EXO-90546), and this refresh runs
+      // outside the periodic pass whose before/after snapshot tells the badge: so it
+      // takes its own, through the badge's own rule, and announces only a real move.
+      long unreadBefore = countUnreadEmails(username);
       refreshCustomFolder(username, userEmailSetting, delegatedFolder);
+      if (countUnreadEmails(username) != unreadBefore) {
+        broadcastUnreadCountChanged(username);
+      }
     }
   }
 
@@ -5784,11 +5792,27 @@ public class EmailBoxService {
    * toggle, delete and archive, a category assigned or removed (for the narrowed
    * users it can move it for), and the notification preference itself being saved.
    *
+   * <p>
+   * Plus, since EXO-90546, the unread of the shared mailboxes the user chose to count
+   * ({@link #countIncludedSharedInboxUnread}): delegation plan 7.7, one summed badge.
+   *
    * @param  username the mailbox owner
    * @return          the number of unread INBOX messages the user asked to be told
-   *                  about
+   *                  about, their own and the included shared ones'
    */
   public long countUnreadEmails(String username) {
+    return countOwnUnreadEmails(username) + countIncludedSharedInboxUnread(username);
+  }
+
+  /**
+   * The user's own part of the badge: the unread INBOX messages, narrowed to the
+   * categories they opted into when they narrowed their notifications. Unchanged by
+   * the shared mailboxes.
+   *
+   * @param username the mailbox owner
+   * @return the unread own INBOX messages the user asked to be told about
+   */
+  private long countOwnUnreadEmails(String username) {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting == null || !Boolean.FALSE.equals(userEmailSetting.getNotifyAllCategories())) {
       return emailBoxStorage.countUnreadEmails(username);
@@ -5798,6 +5822,46 @@ public class EmailBoxService {
                           .stream()
                           .filter(categoryIds -> shouldNotifyForCategories(categoryIds, userEmailSetting))
                           .count();
+  }
+
+  /**
+   * The shared part of the badge (delegation plan 7.7): the unread messages of the
+   * shared INBOX of every share the user ACCEPTED, chose to count ("Count this mailbox
+   * in my unread badge", {@code BADGE_INCLUDED}), and whose rights keep read state
+   * ({@code s}) -- without it the number is one the user can never bring down, which is
+   * why the settings do not even offer the choice then.
+   * <p>
+   * Read from the user's own mirror rows only, never from the mail server: the badge is
+   * counted whenever it is refreshed. And it costs nothing to the many who share
+   * nothing: one read of their delegation rows, and no count at all when none is
+   * included.
+   * <p>
+   * Not narrowed by the category preference, and deliberately: that preference is
+   * about the user's own mail, and the categories are linked by the auto-categoriser,
+   * which never runs on a shared mailbox's rows (they are kept out of the new-mail
+   * broadcast, EXO-90499) -- narrowing would make the switch a silent no-op for every
+   * user who narrowed their notifications. Choosing to count a shared mailbox is the
+   * narrower choice already.
+   *
+   * @param username the delegate
+   * @return the unread of the included shared inboxes, 0 when none is included
+   */
+  private long countIncludedSharedInboxUnread(String username) {
+    List<EmailDelegation> included = emailDelegationService.getReceivedDelegations(username, false)
+                                                           .stream()
+                                                           .filter(delegation -> delegation.getStatus() == DelegationStatus.ACCEPTED)
+                                                           .filter(EmailDelegation::isBadgeIncluded)
+                                                           .filter(delegation -> delegation.getMailboxRights().canKeepSeen())
+                                                           .toList();
+    long unread = 0;
+    for (EmailDelegation delegation : included) {
+      for (EmailFolder folder : emailDelegationService.getSyncableFolders(username, delegation.getId())) {
+        if (MailFolderView.TYPE_DELEGATED_INBOX.equals(folder.getType())) {
+          unread += emailBoxStorage.countUnreadEmails(username, folder.getKey());
+        }
+      }
+    }
+    return unread;
   }
 
   /**
