@@ -257,13 +257,14 @@ public class EmailDelegationService {
       List<MailboxAce> acl = engine.listAcl(session, OWNER_INBOX);
       List<DelegationGrantee> grantees = merge(ownerUsername, ownerMailbox, connector, acl, rows);
       if (capabilities.grantGranularity() == GrantGranularity.FOLDER
-          && grantees.stream().anyMatch(grantee -> isExtendable(grantee.delegation()))) {
+          && grantees.stream().anyMatch(grantee -> isExtendableHere(grantee.delegation(), connector, ownerMailbox))) {
         // What an Extend would add to each share eXo wrote (EXO-90548): the owner's role
         // folders as her session names them now, one LIST for the whole list, and only
         // when some share could be extended at all.
         Set<FolderRole> ownerRoles = roleFoldersOf(engine, session).keySet();
         grantees = grantees.stream()
-                           .map(grantee -> isExtendable(grantee.delegation()) ? grantee.withExtendableRoles(missingRoles(grantee.delegation(), ownerRoles))
+                           .map(grantee -> isExtendableHere(grantee.delegation(), connector, ownerMailbox)
+                                                                              ? grantee.withExtendableRoles(missingRoles(grantee.delegation(), ownerRoles))
                                                                               : grantee)
                            .toList();
       }
@@ -619,11 +620,13 @@ public class EmailDelegationService {
    * @throws IllegalAccessException when the caller has no connected mailbox
    * @throws IllegalArgumentException {@code emailConnector.delegation.notChangeable} for a
    *           share that is neither accepted nor pending, is no longer on the server (by
-   *           its row, or by the INBOX ACL), was not written by eXo, has no preset, is on another mailbox than the one
-   *           connected, or is on a server that grants a whole mailbox at once; also when
-   *           the share was revoked or went while the server was being asked
-   * @throws MailboxAclException when the server cannot be asked, or no longer holds the
-   *           share on INBOX ({@code NOT_RECORDED})
+   *           its row, or by the INBOX ACL), was not written by eXo, has no preset, is on
+   *           another mailbox than the one connected, or is on a server that grants a whole
+   *           mailbox at once; when the owner's mailbox has no default role folder left to
+   *           add; and when the share was revoked or went while the server was being asked
+   * @throws MailboxAclException when the server cannot be asked, no longer holds the
+   *           share on INBOX ({@code NOT_RECORDED}), or refused every folder there was
+   *           to add ({@code SERVER_REFUSED})
    */
   public EmailDelegation extend(String ownerUsername, long id) throws ObjectNotFoundException, IllegalAccessException {
     EmailDelegation delegation = asOwner(ownerUsername, id);
@@ -674,7 +677,13 @@ public class EmailDelegationService {
                          session,
                          identifier,
                          engine.grant(session, OWNER_INBOX, identifier, delegation.getPreset(), engine.myRights(session, OWNER_INBOX)));
-      granted.addAll(grantRoleFolders(engine, session, identifier, delegation.getPreset(), EnumSet.copyOf(missing), roleFolders));
+      Set<FolderRole> added = grantRoleFolders(engine, session, identifier, delegation.getPreset(), EnumSet.copyOf(missing), roleFolders);
+      if (missing.stream().noneMatch(added::contains)) {
+        // The server refused every folder there was to add: said as the refusal it is,
+        // never recorded or answered as a success (EXO-90548 review).
+        throw new MailboxAclException(MailboxAclException.SERVER_REFUSED, "roles " + missing);
+      }
+      granted.addAll(added);
     }
     MailboxRights inboxRights = written.rights() == null ? MailboxRights.NONE : written.rights();
     DelegationPreset recorded = written.preset() == null || written.preset() == DelegationPreset.CUSTOM ? delegation.getPreset()
@@ -723,6 +732,20 @@ public class EmailDelegationService {
         && (delegation.getStatus() == DelegationStatus.ACCEPTED || delegation.getStatus() == DelegationStatus.PENDING)
         && delegation.getOrigin() == DelegationOrigin.EXO && delegation.getPreset() != null && delegation.getPreset().isGrantable()
         && !delegation.grantsWholeMailbox();
+  }
+
+  /**
+   * {@link #isExtendable} for the mailbox the owner is connected to now: extend refuses a
+   * row of another connector or mailbox, so the list never offers it (EXO-90548 review).
+   *
+   * @param delegation the share, or null
+   * @param connector the owner's connector
+   * @param ownerMailbox the owner's mailbox address
+   * @return true when an Extend of it can succeed on this mailbox
+   */
+  private static boolean isExtendableHere(EmailDelegation delegation, EmailConnector connector, String ownerMailbox) {
+    return isExtendable(delegation) && connector.getId().equals(delegation.getConnectorId())
+        && ownerMailbox.equalsIgnoreCase(delegation.getOwnerMailbox());
   }
 
   /**
