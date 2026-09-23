@@ -524,7 +524,13 @@ public class ReadReceiptService {
    * Whether a request may be answered at all, whatever the policy: a message received
    * by this user (never one in Sent, Drafts or the Scheduled view, never one they sent
    * themselves), not in Junk or Trash (answering spam confirms the address is read),
-   * naming at least one address to answer to.
+   * naming exactly one address to answer to.
+   * <p>
+   * Exactly one, on the manual path too: the header is written by the sender, and every
+   * address it names becomes a recipient of mail sent from the user's own account. A
+   * request naming several is never offered and never answered, so one click cannot
+   * send the user's receipt to a list the sender chose. The banner names that one
+   * address when it is not the sender's.
    *
    * @param email the message
    * @param ownAddress the user's mailbox address
@@ -539,7 +545,7 @@ public class ReadReceiptService {
         && StringUtils.equalsIgnoreCase(StringUtils.trim(email.getSender().getAddress()), ownAddress)) {
       return false;
     }
-    return requestedAddresses(email.getReadReceiptTo()).length > 0;
+    return requestedAddresses(email.getReadReceiptTo()).length == 1;
   }
 
   /**
