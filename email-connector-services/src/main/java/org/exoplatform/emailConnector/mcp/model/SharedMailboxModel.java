@@ -45,7 +45,7 @@ public class SharedMailboxModel {
   @JsonProperty("owner_username")
   private String       ownerUsername;
 
-  /** The access the owner granted: READER, CONTRIBUTOR, EDITOR or a custom set. */
+  /** The access the owner granted: READER, EDITOR or CUSTOM. */
   private String       access;
 
   /** Unread messages in the shared inbox, as the user's mirror counts them. */
