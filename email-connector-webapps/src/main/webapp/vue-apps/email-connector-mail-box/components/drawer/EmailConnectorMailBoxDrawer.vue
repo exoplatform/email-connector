@@ -739,7 +739,7 @@ export default {
     // writable folder, "Not spam" from the Spam listing; a Delete out of Spam is the
     // ordinary delete-email above, addressed to the row's own folder.
     this.onJunkEmail = (emails, folder) => this.whenSharedMailboxConfirmed(folder, 'junk',
-      () => this.applyListAction(emails, () => this.markAsJunk(emails, folder), folder));
+      () => this.applyListAction(emails, () => this.markAsJunk(emails, folder), folder), emails);
     this.onNotJunkEmail = (emails) => this.applyListAction(emails, () => this.restoreFromJunk(emails));
     this.$root.$on('junk-email', this.onJunkEmail);
     this.$root.$on('not-junk-email', this.onNotJunkEmail);
@@ -2978,8 +2978,10 @@ export default {
         return;
       }
       // An undo takes the mail back OUT of the target: never offered where that is
-      // refused -- a shared mailbox's Trash holds no e, so nothing leaves it (EXO-90548).
-      if (!this.$emailConnectorMailBoxService.sharedMailboxAllowsMoveOut(target)) {
+      // refused -- nothing leaves a shared mailbox's Trash, whatever the letters
+      // (EXO-90548, decision 3a), and elsewhere where the letters do not allow it.
+      if (this.$emailConnectorMailBoxService.sharedFolderRole(target) === 'TRASH'
+          || !this.$emailConnectorMailBoxService.sharedMailboxAllowsMoveOut(target)) {
         return;
       }
       const folderName = this.folderLabelOf(target);
