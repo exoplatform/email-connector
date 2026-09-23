@@ -12453,8 +12453,34 @@ public class EmailBoxServiceTest {
 
     assertEquals(2, attempts.size());
     org.junit.jupiter.api.Assertions.assertNotSame(attempts.get(0), attempts.get(1), "rebuilt on a session carrying fresh material");
-    verify(emailCredentialsResolver, times(1)).invalidate(any(), any(), eq(TEST_USER), eq(ConnectorCredentialsChannel.SMTP));
+    // Invalidated BEFORE the rebuild produces material again: the other order would
+    // rebuild on the very session BlueMind refused.
+    org.mockito.InOrder order = org.mockito.Mockito.inOrder(emailCredentialsResolver);
+    order.verify(emailCredentialsResolver).authenticator(any(), any(), eq(TEST_USER), eq(ConnectorCredentialsChannel.SMTP));
+    order.verify(emailCredentialsResolver, times(1)).invalidate(any(), any(), eq(TEST_USER), eq(ConnectorCredentialsChannel.SMTP));
+    order.verify(emailCredentialsResolver).authenticator(any(), any(), eq(TEST_USER), eq(ConnectorCredentialsChannel.SMTP));
     verify(onTransmitted, times(1)).run();
+  }
+
+  /** Round 2: a second refusal at CONNECT is the answer - no third attempt, nothing recorded as sent. */
+  @Test
+  void doesNotRetryAStoredDraftTwice() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    when(emailCredentialsResolver.retriesAfterRefusal(any())).thenReturn(true);
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    doThrow(new SmtpTransmitter.TransmissionException(SmtpTransmitter.Phase.CONNECT, new AuthenticationFailedException("535")))
+        .when(smtpTransmitter).transmit(any(MimeMessage.class));
+    Runnable onTransmitted = mock(Runnable.class);
+
+    assertThrows(ScheduledSendFailure.class, () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted));
+
+    verify(smtpTransmitter, times(2)).transmit(any(MimeMessage.class));
+    verify(emailCredentialsResolver, times(1)).invalidate(any(), any(), any(), any());
+    verify(onTransmitted, never()).run();
   }
 
   /** Round 1: a stored draft refused at SEND is never retried - the server may have accepted it. */
