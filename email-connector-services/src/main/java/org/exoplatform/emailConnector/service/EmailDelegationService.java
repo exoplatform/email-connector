@@ -1271,7 +1271,8 @@ public class EmailDelegationService {
                                          delegation.getAffordances(),
                                          inbox.getKey(),
                                          unreadCounts.getOrDefault(inbox.getKey(), 0),
-                                         otherFolders(folders, delegation)));
+                                         otherFolders(folders, delegation),
+                                         delegation.isInboxOnly()));
     }
     return entries;
   }
@@ -1929,22 +1930,6 @@ public class EmailDelegationService {
                              .filter(folder -> MailFolderView.TYPE_DELEGATED.equals(folder.getType()))
                              .filter(folder -> !folder.isMissing())
                              .filter(folder -> folder.getRole() == role)
-                             .map(EmailFolder::getKey)
-                             .findFirst()
-                             .orElse(null);
-  }
-
-  /**
-   * The key of a shared mailbox's INBOX -- where a restore out of its Trash goes.
-   *
-   * @param username the delegate
-   * @param delegationId the share
-   * @return the key, or null when the share has none registered
-   */
-  public String inboxFolderKey(String username, long delegationId) {
-    return emailFolderStorage.getDelegatedFolders(username, delegationId)
-                             .stream()
-                             .filter(folder -> MailFolderView.TYPE_DELEGATED_INBOX.equals(folder.getType()))
                              .map(EmailFolder::getKey)
                              .findFirst()
                              .orElse(null);
