@@ -1336,6 +1336,20 @@ class EmailDelegationServiceTest {
   }
 
   /**
+   * EXO-90548 review -- the discovery mark is best-effort: a failure to clear the
+   * throttle's stamp never turns the owner's extend, which has landed on the server and
+   * in the row, into an error.
+   */
+  @Test
+  void aFailedDiscoveryMarkNeverFailsTheOwnersChange() throws Exception {
+    EmailDelegation inboxOnly = anExtendableShare();
+    answerTheRightsAndRolesWriteOn(inboxOnly);
+    doThrow(new IllegalStateException("database away")).when(emailFolderStorage).markDiscoveryDue(100L);
+
+    assertEquals("INBOX,SENT,ARCHIVE,TRASH,JUNK", service.extend(OWNER, 100L).getGrantedRoles());
+  }
+
+  /**
    * Decision 3b: "Extend access" is offered on a share in use or on offer only. A
    * declined, available, revoked or gone share is refused before anything reaches the
    * server; a pending one is extended as an accepted one is.
@@ -1685,7 +1699,11 @@ class EmailDelegationServiceTest {
     assertFalse(folders.get(0).affordances().get("delete"), "a Reader deletes nothing from the owner's Trash");
     // What the band says is the share's own answer, not the folders found (review nit).
     share.setGrantedRoles(null);
+    share.setOrigin(DelegationOrigin.EXO);
     assertTrue(service.getSharedMailboxes(GRANTEE).get(0).inboxOnly(), "a share written before folders were shared");
+    share.setOrigin(DelegationOrigin.SERVER);
+    assertFalse(service.getSharedMailboxes(GRANTEE).get(0).inboxOnly(), "a share made in the server's own interface is not");
+    share.setOrigin(DelegationOrigin.EXO);
     share.setGrantedRoles("INBOX,TRASH");
     when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(inbox));
     assertFalse(service.getSharedMailboxes(GRANTEE).get(0).inboxOnly(), "folders granted, none discovered yet");
