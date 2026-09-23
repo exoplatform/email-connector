@@ -258,7 +258,7 @@ class ReadReceiptServiceTest {
 
   /**
    * ALWAYS still asks whenever a safety condition fails: a Return-Path that does not
-   * vouch for the address, several addresses, a mailing list (List-Id or List-Post),
+   * vouch for the address, a mailing list (List-Id or List-Post),
    * the user reached only in Bcc or through a list (not in To/Cc), or a
    * machine-generated message.
    */
@@ -266,8 +266,6 @@ class ReadReceiptServiceTest {
   void alwaysStillAsksInEveryUnsafeCase() {
     Email mismatch = incoming();
     mismatch.setReadReceiptReturnPathMatch(false);
-    Email several = incoming();
-    several.setReadReceiptTo(SENDER + ", tracker@elsewhere.example");
     Email listId = incoming();
     listId.setHasListId(true);
     Email listPost = incoming();
@@ -277,13 +275,31 @@ class ReadReceiptServiceTest {
     bccOnly.setCc(null);
     Email robot = incoming();
     robot.setAutoSubmitted(true);
-    for (Email unsafe : List.of(mismatch, several, listId, listPost, bccOnly, robot)) {
+    for (Email unsafe : List.of(mismatch, listId, listPost, bccOnly, robot)) {
       assertEquals(ReadReceiptPrompt.ASK, prompt(unsafe, ReadReceiptPolicy.ALWAYS));
     }
     Email cc = incoming();
     cc.setTo(List.of(recipient("carol@corp.example")));
     cc.setCc(List.of(recipient(OWN_ADDRESS.toUpperCase())));
     assertEquals(ReadReceiptPrompt.AUTO, prompt(cc, ReadReceiptPolicy.ALWAYS), "Cc is a direct recipient too");
+  }
+
+  /**
+   * A request naming several addresses is never offered, under any policy: the header
+   * is the sender's, and each address would receive mail from the user's own account.
+   * One address that is not the sender's is still offered; the banner names it.
+   */
+  @Test
+  void aRequestNamingSeveralAddressesIsNeverOffered() {
+    Email several = incoming();
+    several.setReadReceiptTo(SENDER + ", tracker@elsewhere.example");
+    for (ReadReceiptPolicy policy : ReadReceiptPolicy.values()) {
+      assertEquals(ReadReceiptPrompt.NONE, prompt(several, policy), "several addresses under " + policy);
+    }
+    Email elsewhere = incoming();
+    elsewhere.setReadReceiptTo("tracker@elsewhere.example");
+    elsewhere.setReadReceiptReturnPathMatch(false);
+    assertEquals(ReadReceiptPrompt.ASK, prompt(elsewhere, ReadReceiptPolicy.ASK), "one address, not the sender's");
   }
 
   /**
@@ -491,6 +507,12 @@ class ReadReceiptServiceTest {
     Email own = incoming();
     own.setSender(new EmailSender(null, OWN_ADDRESS, null, null));
     assertRefused(own, ReadReceiptAction.SEND, ReadReceiptService.NOT_ALLOWED);
+
+    // A request naming several addresses is never answered, by hand either: every one
+    // would receive mail from the user's own account (review of #434, F1)
+    Email several = incoming();
+    several.setReadReceiptTo(SENDER + ", tracker@elsewhere.example");
+    assertRefused(several, ReadReceiptAction.SEND, ReadReceiptService.NOT_ALLOWED);
 
     storedSettings(new ReadReceiptSettings(false, ReadReceiptPolicy.NEVER, false));
     assertRefused(incoming(), ReadReceiptAction.SEND, ReadReceiptService.NOT_ALLOWED);
