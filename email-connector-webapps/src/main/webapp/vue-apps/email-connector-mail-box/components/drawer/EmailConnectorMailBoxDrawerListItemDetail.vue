@@ -187,14 +187,16 @@ export default {
       if (!this.emailDetailDrawer || this.awaitsSharedMailboxConfirmation(folder)) {
         return; 
       }
-      this.refreshEmails(emails, folder);
-      this.selectEmailPlaceHolder = false;
+      this.dropFromReader(emails, folder);
     };
     // A delete or an archive in a shared mailbox is asked first (EXO-90548): the mail
-    // leaves this reader once the answer is yes, and stays on a Cancel.
+    // leaves this reader once the answer is yes, and stays on a Cancel. The answer IS
+    // the confirmation, so the reader drops the mail directly: going through the
+    // delete-email path would ask awaitsSharedMailboxConfirmation again, which stays
+    // true when "Don't ask again" was left unticked, and the mail would stay on screen.
     this.onSharedMailboxActionConfirmed = (action, emails, folder) => {
-      if (action === 'delete' || action === 'archive') {
-        this.onDeleteOrArchiveEmail(emails, folder);
+      if (this.emailDetailDrawer && (action === 'delete' || action === 'archive')) {
+        this.dropFromReader(emails, folder);
       }
     };
     // Mirror favorite changes (and their rollback after a refused push) onto this
@@ -319,6 +321,19 @@ export default {
     },
   },
   methods: {
+    /**
+     * Takes messages that left their folder out of this reader: its list loses them and
+     * no placeholder stays up. Called once the action is certain -- at once in the
+     * user's own mailbox, and on the yes in a shared one (EXO-90548).
+     *
+     * @param {Array} emails the messages that left, by IMAP UID
+     * @param {String} folder the folder they left
+     * @returns {void}
+     */
+    dropFromReader(emails, folder) {
+      this.refreshEmails(emails, folder);
+      this.selectEmailPlaceHolder = false;
+    },
     /**
      * Whether a delete or an archive in this folder waits for the user's answer before
      * the mail may leave the reader: a shared mailbox's folder whose actions were not
