@@ -1281,6 +1281,29 @@ class EmailDelegationServiceTest {
   }
 
   /**
+   * Decision 3b: "Extend access" is offered on a share in use or on offer only. A
+   * declined, available, revoked or gone share is refused before anything reaches the
+   * server; a pending one is extended as an accepted one is.
+   */
+  @Test
+  void extendIsForAcceptedAndPendingSharesOnly() throws Exception {
+    for (DelegationStatus status : new DelegationStatus[] { DelegationStatus.DECLINED, DelegationStatus.AVAILABLE,
+        DelegationStatus.REVOKED, DelegationStatus.GONE }) {
+      when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(row(status, DelegationOrigin.EXO));
+      assertEquals(EmailDelegationService.NOT_CHANGEABLE_MESSAGE,
+                   assertThrows(IllegalArgumentException.class, () -> service.extend(OWNER, 100L)).getMessage(),
+                   status.name());
+    }
+    verify(engine, never()).grant(any(), any(), any(), any(), any());
+
+    EmailDelegation pending = anExtendableShare();
+    pending.setStatus(DelegationStatus.PENDING);
+    answerTheRightsAndRolesWriteOn(pending);
+
+    assertEquals("INBOX,SENT,ARCHIVE,TRASH,JUNK", service.extend(OWNER, 100L).getGrantedRoles());
+  }
+
+  /**
    * An accepted phase-1 Editor share of INBOX only, on a per-folder server that grants
    * every folder and still names the grantee on INBOX.
    *
