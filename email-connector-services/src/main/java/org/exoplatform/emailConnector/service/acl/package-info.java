@@ -97,5 +97,11 @@
  * see {@link org.exoplatform.emailConnector.service.acl.MailboxAclEngineRegistry}. The
  * engine is a plain {@code @Service} bean implementing the interface; nothing else is
  * needed for the registry to find it.
+ * <p>
+ * <b>Servers certified for sharing, and what each requires of a deployment:</b>
+ * Stalwart (no NAMESPACE advertised -- the shared prefix is read from LIST; an Editor's
+ * {@code t} is stored with {@code e}); Dovecot 2.3 with the ACL plugin (EXO-90552) --
+ * IMAP logins must equal email addresses, and the shared namespace must carry no
+ * {@code INDEXPVT} (see {@link org.exoplatform.emailConnector.service.acl.ImapAclEngine}).
  */
 package org.exoplatform.emailConnector.service.acl;

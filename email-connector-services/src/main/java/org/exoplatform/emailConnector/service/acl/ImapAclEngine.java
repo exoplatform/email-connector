@@ -82,6 +82,18 @@ import org.exoplatform.services.log.Log;
  * {@link #findSharedMailbox} matches the whole identifier first and its local part
  * second, and says so; and Stalwart's behaviour on a current build, observed on
  * v0.11.8 only (section 13.C).
+ * <p>
+ * <b>Deployment requirements on Dovecot</b> (certified by EXO-90552, decided by the
+ * PO on 2026-09-23 -- stated here because this class is what depends on them):
+ * <ul>
+ * <li><b>IMAP logins equal email addresses.</b> Dovecot's shared namespace names the
+ * owner by login ({@code shared/%%u/}) and accepts a SETACL for any identifier
+ * without complaint, so a grantee named by an address that is not their login is
+ * granted nothing, silently.</li>
+ * <li><b>No {@code INDEXPVT} on the shared namespace.</b> This add-on mirrors one
+ * {@code \Seen} bit per mailbox, shared by owner and delegates; a per-user seen
+ * index would make the owner's unread state and the delegate's diverge.</li>
+ * </ul>
  */
 @Service
 public class ImapAclEngine implements MailboxAclEngine {
@@ -230,10 +242,11 @@ public class ImapAclEngine implements MailboxAclEngine {
    * exactly, or a preset's letters plus only what the server adds by itself because it
    * couples letters (RFC 4314 section 2.1.1). Stalwart answers {@code lrswit} as
    * {@code tewsirl}: it stores {@code e} with {@code t}, so an Editor granted from eXo
-   * read back as CUSTOM (observed on the rig, 2026-09-23). The couplings admitted are
-   * the RFC's legacy ones and nothing else -- {@code e} and {@code d} beside {@code t},
-   * {@code c} beside {@code k} -- so a set granting more than coupling implies
-   * ({@code a}, {@code x}, {@code e} without {@code t}) is never a preset.
+   * read back as CUSTOM (observed on the rig, 2026-09-23). The only coupling admitted is
+   * {@code e} beside {@code t}, so a set granting more than coupling implies
+   * ({@code a}, {@code x}, {@code e} without {@code t}) is never a preset. The virtual
+   * {@code c}/{@code d} Dovecot adds never reach here: {@link MailboxRights#of(String)}
+   * drops them (EXO-90552).
    *
    * @param rights the letters a server answered
    * @return READER or EDITOR, CUSTOM when none matches
@@ -275,8 +288,10 @@ public class ImapAclEngine implements MailboxAclEngine {
 
   /**
    * Whether a server may add a letter by itself because the granted letters couple it
-   * (RFC 4314 section 2.1.1): {@code e} and the legacy {@code d} with {@code t}, the
-   * legacy {@code c} with {@code k}.
+   * (RFC 4314 section 2.1.1): {@code e} with {@code t}. The legacy {@code d} and
+   * {@code c} are kept as a guard only: {@link MailboxRights#letters()} never holds
+   * them (folded or dropped by {@link MailboxRights#of(String)}), so those two arms are
+   * unreachable today and would only matter if a caller built rights another way.
    *
    * @param letter the extra letter observed
    * @param granted the letters granted
@@ -364,8 +379,18 @@ public class ImapAclEngine implements MailboxAclEngine {
    * namespace lists is still not settled. Phase 0 ran on BlueMind and on Stalwart
    * (2026-09-21/22) but did not record either the SETACL identifier or the segment
    * letters side by side ("not in the record" -- plan, sections 13.C.1 and 13.D); the
-   * Stalwart segment was the owner's full address. Until a re-run of the phase-0
-   * scripts captures both, both spellings are tried and neither is assumed.
+   * Stalwart segment was the owner's full address. Dovecot 2.3.21 (EXO-90552) answers
+   * with the <b>login</b> on both sides, observed with a user whose login
+   * ({@code carol}) is not her address: an owner {@code carol} is listed as
+   * {@code shared/carol}, and SETACL takes any identifier verbatim with no error -- a
+   * grant to {@code carol@dovecot.local} is accepted, shows in GETACL, and gives the
+   * user {@code carol} nothing (no LIST entry, MYRIGHTS {@code NONEXISTENT}); the same
+   * grant to {@code carol} works. So on a Dovecot whose logins are not addresses, eXo's
+   * address-based identifier ({@code mailboxIdentifier} is the setting's email address)
+   * grants nothing, silently, and this lookup finds the owner only through the local
+   * part, when the login happens to be it. Both spellings are tried here and neither is
+   * assumed; the grant side is a deployment requirement (logins = addresses) until the
+   * identifier eXo sends becomes the login.
    *
    * @param session the grantee's session
    * @param ownerIdentifier the owner's mailbox identifier

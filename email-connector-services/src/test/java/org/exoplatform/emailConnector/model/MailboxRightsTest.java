@@ -31,7 +31,8 @@ import com.sun.mail.imap.Rights;
  * add-on resolves: {@code com.sun.mail:javax.mail:1.6.2} exposes the RFC 2086 constant
  * set, and a check written through {@link Rights.Right#DELETE} ({@code d}) is false on a
  * server that answers RFC 4314's {@code t}. Every affordance here is read from the
- * letters, and the two legacy letters fold into their 4314 pairs.
+ * letters, and the two legacy letters fold into their 4314 pairs -- from an RFC 2086
+ * server only; from an RFC 4314 one they are virtual and dropped.
  */
 class MailboxRightsTest {
 
@@ -88,6 +89,30 @@ class MailboxRightsTest {
     assertTrue(legacy.has('c'), "and asked the old way, both halves answer");
     assertTrue(legacy.has('d'));
     assertFalse(MailboxRights.of("t").has('d'), "t alone is not d");
+  }
+
+  /**
+   * THE Dovecot pin (EXO-90552): a server speaking RFC 4314 reports {@code c} and
+   * {@code d} as section 2.1.1's virtual rights, present as soon as <b>one</b> member is
+   * set. Dovecot 2.3.21 answers an Editor granted {@code lrswit} as {@code ilrwtsd}
+   * (GETACL) and {@code lrwstid} (MYRIGHTS), and {@code lrswitek} as {@code keilrwtscd}
+   * (all observed on the rig, 2026-09-23). Those virtual letters say nothing the members
+   * do not, and are dropped -- folded, the {@code d} read as an {@code e} nobody granted.
+   */
+  @Test
+  void theVirtualLettersOfAnRfc4314ServerAreDroppedNotFolded() {
+    MailboxRights editor = MailboxRights.fromRights(new Rights("ilrwtsd"));
+    assertEquals("lrswit", editor.letters());
+    assertFalse(editor.canExpunge(), "Dovecot's d beside t alone is not an e");
+    assertEquals("lrswit", MailboxRights.fromRights(new Rights("lrwstid")).letters(), "MYRIGHTS of that Editor");
+    assertEquals("lrswite", MailboxRights.fromRights(new Rights("eilrwtsd")).letters(), "an Editor with e");
+    MailboxRights createOnly = MailboxRights.fromRights(new Rights("keilrwtscd"));
+    assertEquals("lrswikte", createOnly.letters());
+    assertFalse(createOnly.canDeleteMailbox(), "Dovecot's c beside k alone is not an x");
+    assertEquals("lrswipkxtea", MailboxRights.fromRights(new Rights("lrwstipekxacd")).letters(), "the owner");
+    assertEquals("lrs", MailboxRights.of("lrs").letters(), "a Reader carries no virtual letter");
+    assertEquals("lrsx", MailboxRights.of("lrsxd").letters(), "x is a member of d (RFC 4314's t+e+x grouping)");
+    assertEquals("lrsx", MailboxRights.of("lrsxc").letters(), "x is a member of c");
   }
 
   /**

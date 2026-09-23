@@ -37,10 +37,13 @@ import com.sun.mail.imap.Rights;
  * server's 4314 answer parses into a {@link Rights} without complaint, but a check
  * written as {@code rights.contains(Rights.Right.DELETE)} asks for {@code d} and is
  * <b>false</b> against a server that answers {@code t} -- which is what BlueMind's Cyrus
- * and Stalwart answer. Reading the letters directly, and folding the two RFC 2086
- * letters into their RFC 4314 pairs ({@code c} is {@code k}+{@code x}, {@code d} is
- * {@code t}+{@code e}, RFC 4314 section 2.1.1), is what makes the same code right on a
- * server of either generation. {@code MailboxRightsTest} pins this against the library.
+ * and Stalwart answer. Reading the letters directly, and reading the two RFC 2086
+ * letters by what else the string holds -- folded into their RFC 4314 pairs
+ * ({@code c} is {@code k}+{@code x}, {@code d} is {@code t}+{@code e}) from a server
+ * that speaks RFC 2086 only, dropped as RFC 4314 section 2.1.1's virtual rights beside
+ * one of their members (see {@link #of(String)}) -- is what makes the same code right
+ * on a server of either generation. {@code MailboxRightsTest} pins this against the
+ * library.
  * <p>
  * Immutable. Letters this class does not know (RFC 4314 lets a server define digits)
  * are kept for display and grant nothing.
@@ -86,10 +89,17 @@ public final class MailboxRights {
   /** {@code a} -- administer: SETACL, DELETEACL, GETACL. */
   public static final char           ADMINISTER      = 'a';
 
-  /** RFC 2086 {@code c}, which RFC 4314 reads as {@code k} + {@code x}. */
+  /**
+   * RFC 2086 {@code c}: folded into {@code k} + {@code x} from an RFC 2086-only server,
+   * dropped as a virtual right beside {@code k} or {@code x} (see {@link #of(String)}).
+   */
   static final char                  LEGACY_CREATE   = 'c';
 
-  /** RFC 2086 {@code d}, which RFC 4314 reads as {@code t} + {@code e}. */
+  /**
+   * RFC 2086 {@code d}: folded into {@code t} + {@code e} from an RFC 2086-only server,
+   * dropped as a virtual right beside {@code t}, {@code e} or {@code x} (see
+   * {@link #of(String)}).
+   */
   static final char                  LEGACY_DELETE   = 'd';
 
   /**
@@ -120,10 +130,23 @@ public final class MailboxRights {
   }
 
   /**
-   * Parses a rights string as a server or a preset spells it. The RFC 2086 letters are
-   * folded into their RFC 4314 pairs, repeats are dropped, and the known letters are
-   * put in canonical order, followed by any letter this class does not know, in the
-   * order met.
+   * Parses a rights string as a server or a preset spells it. Repeats are dropped, and
+   * the known letters are put in canonical order, followed by any letter this class
+   * does not know, in the order met.
+   * <p>
+   * <b>The RFC 2086 letters are read two ways, depending on what else the string
+   * holds.</b> From a server that speaks only RFC 2086 ({@code c} and {@code d} with
+   * none of their RFC 4314 members), {@code c} is folded into {@code k}+{@code x} and
+   * {@code d} into {@code t}+{@code e}. From a server that speaks RFC 4314 they are
+   * RFC 4314 section 2.1.1's <i>virtual</i> rights, which that server "MUST also
+   * include" when <b>any</b> member is set: they then say nothing the members do not
+   * already say, and are dropped. Dovecot 2.3 answers an Editor granted {@code lrswit}
+   * as {@code ilrwtsd} (GETACL) and {@code lrwstid} (MYRIGHTS): folding that {@code d}
+   * read an {@code e} the grant never gave, i.e. "this delegate can finish a move" on a
+   * server that answers the delegate's {@code UID EXPUNGE} with
+   * {@code OK Expunge ignored: Permission denied} (EXO-90552, observed 2026-09-23).
+   * The members are {@code k}, {@code x} for {@code c} and {@code t}, {@code e},
+   * {@code x} for {@code d} -- the widest of the two groupings the RFC allows a server.
    *
    * @param rights the letters, possibly null or blank
    * @return the rights, never null
@@ -131,16 +154,22 @@ public final class MailboxRights {
   public static MailboxRights of(String rights) {
     Set<Character> parsed = new LinkedHashSet<>();
     if (rights != null) {
+      boolean speaksCreateMembers = containsAny(rights, CREATE_MAILBOX, DELETE_MAILBOX);
+      boolean speaksDeleteMembers = containsAny(rights, DELETE_MESSAGES, EXPUNGE, DELETE_MAILBOX);
       for (char letter : rights.toCharArray()) {
         if (Character.isWhitespace(letter)) {
           continue;
         }
         if (letter == LEGACY_CREATE) {
-          parsed.add(CREATE_MAILBOX);
-          parsed.add(DELETE_MAILBOX);
+          if (!speaksCreateMembers) {
+            parsed.add(CREATE_MAILBOX);
+            parsed.add(DELETE_MAILBOX);
+          }
         } else if (letter == LEGACY_DELETE) {
-          parsed.add(DELETE_MESSAGES);
-          parsed.add(EXPUNGE);
+          if (!speaksDeleteMembers) {
+            parsed.add(DELETE_MESSAGES);
+            parsed.add(EXPUNGE);
+          }
         } else {
           parsed.add(letter);
         }
@@ -154,6 +183,22 @@ public final class MailboxRights {
     }
     ordered.addAll(parsed);
     return new MailboxRights(ordered);
+  }
+
+  /**
+   * Whether a rights string holds at least one of some letters.
+   *
+   * @param rights the rights string
+   * @param letters the letters looked for
+   * @return true when one of them is present
+   */
+  private static boolean containsAny(String rights, char... letters) {
+    for (char letter : letters) {
+      if (rights.indexOf(letter) >= 0) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
