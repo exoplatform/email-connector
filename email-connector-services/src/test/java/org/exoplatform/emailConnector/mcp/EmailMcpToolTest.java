@@ -35,6 +35,7 @@ import static org.mockito.Mockito.when;
 
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -60,7 +61,13 @@ import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.mcp.model.SharedMailboxModel;
+import org.exoplatform.emailConnector.model.DelegationPreset;
+import org.exoplatform.emailConnector.model.SharedMailboxEntry;
+import org.exoplatform.emailConnector.exception.DelegationRevokedException;
+import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.service.EmailBoxService;
+import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
 
 class EmailMcpToolTest {
@@ -75,13 +82,16 @@ class EmailMcpToolTest {
 
   private UserEmailSettingService userEmailSettingService;
 
+  private EmailDelegationService  emailDelegationService;
+
   private EmailMcpTool            emailMcpTool;
 
   @BeforeEach
   void setUp() {
     emailBoxService = Mockito.mock(EmailBoxService.class);
     userEmailSettingService = Mockito.mock(UserEmailSettingService.class);
-    emailMcpTool = new EmailMcpTool(emailBoxService, userEmailSettingService) {
+    emailDelegationService = Mockito.mock(EmailDelegationService.class);
+    emailMcpTool = new EmailMcpTool(emailBoxService, userEmailSettingService, emailDelegationService) {
       @Override
       public String getCurrentUserName() {
         return USERNAME;
@@ -109,7 +119,7 @@ class EmailMcpToolTest {
   void getEmailById() throws Exception {
     when(emailBoxService.getOwnMailboxEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(buildEmail(EMAIL_ID));
 
-    EmailModel model = emailMcpTool.getEmailById(EMAIL_ID);
+    EmailModel model = emailMcpTool.getEmailById(EMAIL_ID, null);
 
     assertNotNull(model);
     assertEquals(EMAIL_ID, model.getId());
@@ -123,7 +133,7 @@ class EmailMcpToolTest {
   @Test
   void getEmailByIdNotFoundFails() throws Exception {
     when(emailBoxService.getOwnMailboxEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(null);
-    assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.getEmailById(EMAIL_ID));
+    assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.getEmailById(EMAIL_ID, null));
   }
 
   /**
@@ -134,7 +144,7 @@ class EmailMcpToolTest {
   @Test
   void getEmailByIdRefusesSomebodyElsesEmail() throws Exception {
     when(emailBoxService.getOwnMailboxEmailById(eq(EMAIL_ID), eq(USERNAME))).thenThrow(new IllegalAccessException("not yours"));
-    assertThrows(IllegalAccessException.class, () -> emailMcpTool.getEmailById(EMAIL_ID));
+    assertThrows(IllegalAccessException.class, () -> emailMcpTool.getEmailById(EMAIL_ID, null));
     verify(emailBoxService, never()).getEmailById(anyLong(), any());
   }
 
@@ -149,7 +159,7 @@ class EmailMcpToolTest {
     email.setThreadId("thread-1");
     when(emailBoxService.getOwnMailboxEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(email);
 
-    EmailModel model = emailMcpTool.getEmailById(EMAIL_ID);
+    EmailModel model = emailMcpTool.getEmailById(EMAIL_ID, null);
 
     assertEquals("thread-1", model.getThreadId());
     // And it must reach the agent under the name the tool definition promises.
@@ -162,9 +172,9 @@ class EmailMcpToolTest {
   void listEmails() throws Exception {
     EmailBox emailBox = new EmailBox();
     emailBox.setEmails(List.of(buildEmail(1L), buildEmail(2L)));
-    when(emailBoxService.getEmailBox(eq(USERNAME))).thenReturn(emailBox);
+    when(emailBoxService.getEmailBox(USERNAME, MailFolder.INBOX)).thenReturn(emailBox);
 
-    List<EmailModel> emails = emailMcpTool.listEmails(null, null, null);
+    List<EmailModel> emails = emailMcpTool.listEmails(null, null, null, null, null);
 
     assertNotNull(emails);
     assertEquals(2, emails.size());
@@ -239,7 +249,7 @@ class EmailMcpToolTest {
                                                                                                                                                                                cachedHit),
                                                                                                                                                                        90));
 
-    EmailSearchResultsModel results = emailMcpTool.searchEmails("invoice", null, null, null, null, null);
+    EmailSearchResultsModel results = emailMcpTool.searchEmails("invoice", null, null, null, null, null, null);
 
     // The count is what keeps the agent honest: it saw two of ninety.
     assertEquals(90, results.getTotalMatches());
@@ -260,7 +270,7 @@ class EmailMcpToolTest {
                                                                                                                         .thenReturn(new EmailSearchResultPage(List.of(),
                                                                                                                                                               0));
 
-    emailMcpTool.searchEmails("invoice", null, null, null, "archive", null);
+    emailMcpTool.searchEmails("invoice", null, null, null, "archive", null, null);
 
     verify(emailBoxService).searchEmails(eq(USERNAME), eq("invoice"), isNull(), eq(false), isNull(), eq(MailFolder.ARCHIVE), anyInt());
   }
@@ -271,7 +281,7 @@ class EmailMcpToolTest {
                                                                                                        .thenThrow(new IllegalArgumentException("emailConnector.search.criteriaRequired"));
 
     IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                                                   () -> emailMcpTool.searchEmails(null, null, null, null, null, null));
+                                                   () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null));
     // A message code tells a model nothing about what to change.
     assertFalse(thrown.getMessage().contains("emailConnector."));
     assertTrue(thrown.getMessage().contains("query"));
@@ -292,7 +302,7 @@ class EmailMcpToolTest {
                                                                                                                                                        0));
 
     IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                                                   () -> emailMcpTool.searchEmails("invoice", null, null, null, "CUSTOM:42", null));
+                                                   () -> emailMcpTool.searchEmails("invoice", null, null, null, "CUSTOM:42", null, null));
 
     assertTrue(thrown.getMessage().contains("INBOX, SENT or ARCHIVE"), thrown.getMessage());
     verify(emailBoxService, never()).searchEmails(any(), any(), any(), anyBoolean(), any(), any(), anyInt());
@@ -308,8 +318,8 @@ class EmailMcpToolTest {
                                                                                                                       .thenReturn(new EmailSearchResultPage(List.of(),
                                                                                                                                                             0));
 
-    emailMcpTool.searchEmails("invoice", null, null, null, null, null);
-    emailMcpTool.searchEmails("invoice", null, null, null, "  ", null);
+    emailMcpTool.searchEmails("invoice", null, null, null, null, null, null);
+    emailMcpTool.searchEmails("invoice", null, null, null, "  ", null, null);
 
     verify(emailBoxService, times(2)).searchEmails(eq(USERNAME),
                                                    eq("invoice"),
@@ -332,7 +342,7 @@ class EmailMcpToolTest {
                                                                                                        .thenThrow(new NumberFormatException("For input string: \"abc\""));
 
     IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                                                   () -> emailMcpTool.searchEmails("invoice", null, null, null, null, null));
+                                                   () -> emailMcpTool.searchEmails("invoice", null, null, null, null, null, null));
     assertFalse(thrown.getMessage().contains("For input string"));
     assertNotNull(thrown.getCause());
 
@@ -341,7 +351,7 @@ class EmailMcpToolTest {
     when(emailBoxService.searchEmails(eq(USERNAME), any(), any(), anyBoolean(), any(), any(), anyInt()))
                                                                                                        .thenThrow(new IllegalArgumentException(new IllegalStateException("boom")));
     IllegalArgumentException blank = assertThrows(IllegalArgumentException.class,
-                                                  () -> emailMcpTool.searchEmails("invoice", null, null, null, null, null));
+                                                  () -> emailMcpTool.searchEmails("invoice", null, null, null, null, null, null));
     assertNotNull(blank.getMessage());
   }
 
@@ -357,7 +367,7 @@ class EmailMcpToolTest {
                                                                                                            + USERNAME));
 
     IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                                                () -> emailMcpTool.searchEmails("invoice", null, null, null, null, null));
+                                                () -> emailMcpTool.searchEmails("invoice", null, null, null, null, null, null));
     assertFalse(thrown.getMessage().contains("synchroniz"));
     assertTrue(thrown.getMessage().contains("could not be reached"));
     assertNotNull(thrown.getCause());
@@ -372,15 +382,16 @@ class EmailMcpToolTest {
     email.getContent().setAttachments(List.of(attachment));
     when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(false), eq(false), eq(false))).thenReturn(email);
 
-    List<EmailAttachmentModel> attachments = emailMcpTool.listAttachments(REMOTE_ID);
+    List<EmailAttachmentModel> attachments = emailMcpTool.listAttachments(REMOTE_ID, null);
 
     assertEquals(1, attachments.size());
     EmailAttachmentModel model = attachments.get(0);
     assertEquals("invoice.pdf", model.getName());
     assertEquals("application/pdf", model.getMimeType());
     assertEquals("1.2", model.getAttachmentId());
-    // download_url is the existing authenticated EmailBoxRest endpoint
-    assertEquals("/portal/rest/email-box/attachments/" + REMOTE_ID + "/1.2", model.getDownloadUrl());
+    // download_url is the existing authenticated EmailBoxRest endpoint, under the add-on's
+    // own REST context: /portal/rest never served it (EXO-90555 review of the tool)
+    assertEquals("/email-connector/rest/email-box/attachments/" + REMOTE_ID + "/1.2", model.getDownloadUrl());
     // No attachment bytes ever leave the tool: the model must have no data field
     String json = new ObjectMapper().writeValueAsString(model);
     assertFalse(json.toLowerCase().contains("data"), "Attachment payload must not carry bytes");
@@ -392,7 +403,7 @@ class EmailMcpToolTest {
     email.getContent().setAttachments(null);
     when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(false), eq(false), eq(false))).thenReturn(email);
 
-    assertTrue(emailMcpTool.listAttachments(REMOTE_ID).isEmpty());
+    assertTrue(emailMcpTool.listAttachments(REMOTE_ID, null).isEmpty());
   }
 
   // --- mark_read / mark_unread ---------------------------------------------
@@ -400,7 +411,7 @@ class EmailMcpToolTest {
   @Test
   void markReadDelegatesToService() throws Exception {
     when(emailBoxService.updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(true))).thenReturn(0);
-    String message = emailMcpTool.markRead(List.of(REMOTE_ID));
+    String message = emailMcpTool.markRead(List.of(REMOTE_ID), null);
     verify(emailBoxService).updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(true));
     assertEquals("Marked 1 email(s) as read.", message);
   }
@@ -408,7 +419,7 @@ class EmailMcpToolTest {
   @Test
   void markUnreadDelegatesToService() throws Exception {
     when(emailBoxService.updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX), eq(false), eq(true))).thenReturn(0);
-    String message = emailMcpTool.markUnread(List.of(REMOTE_ID));
+    String message = emailMcpTool.markUnread(List.of(REMOTE_ID), null);
     verify(emailBoxService).updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX), eq(false), eq(true));
     assertEquals("Marked 1 email(s) as unread.", message);
   }
@@ -416,7 +427,7 @@ class EmailMcpToolTest {
   @Test
   void markReadReportsAllFailuresAsFailure() throws Exception {
     when(emailBoxService.updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(true))).thenReturn(1);
-    String message = emailMcpTool.markRead(List.of(REMOTE_ID));
+    String message = emailMcpTool.markRead(List.of(REMOTE_ID), null);
     // When every email fails, the message must be phrased as a clear failure and
     // must not claim any success.
     assertTrue(message.startsWith("Failed to mark 1 email(s) as read"), message);
@@ -427,7 +438,7 @@ class EmailMcpToolTest {
   void markReadReportsPartialFailure() throws Exception {
     List<Long> ids = List.of(REMOTE_ID, 888L);
     when(emailBoxService.updateEmailReadStatus(eq(ids), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(true))).thenReturn(1);
-    String message = emailMcpTool.markRead(ids);
+    String message = emailMcpTool.markRead(ids, null);
     assertEquals("Marked 1 of 2 email(s) as read; 1 failed (message not found on server or IMAP write denied).", message);
   }
 
@@ -439,7 +450,7 @@ class EmailMcpToolTest {
                            "Hi",
                            "<p>Body</p>",
                            List.of("carol@example.com"),
-                           List.of("dan@example.com"));
+                           List.of("dan@example.com"), null);
 
     ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxService).sendEmail(captor.capture(), eq(USERNAME));
@@ -453,7 +464,7 @@ class EmailMcpToolTest {
 
   @Test
   void sendEmailFailsWithoutRecipient() {
-    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.sendEmail(List.of(), "Hi", "<p>Body</p>", null, null));
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.sendEmail(List.of(), "Hi", "<p>Body</p>", null, null, null));
   }
 
   // --- reply_email ---------------------------------------------------------
@@ -466,7 +477,7 @@ class EmailMcpToolTest {
     original.setSender(new EmailSender("Alice", "alice@example.com", null, null));
     when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), eq(MailFolder.INBOX), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(original);
 
-    emailMcpTool.replyEmail(REMOTE_ID, "<p>My answer</p>");
+    emailMcpTool.replyEmail(REMOTE_ID, "<p>My answer</p>", null);
 
     ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxService).sendEmail(captor.capture(), eq(USERNAME));
@@ -494,7 +505,7 @@ class EmailMcpToolTest {
     setting.setEmailAddress("testuser1@example.com");
     when(userEmailSettingService.getUserEmailSetting(eq(USERNAME))).thenReturn(setting);
 
-    emailMcpTool.replyAll(REMOTE_ID, "<p>Reply all body</p>");
+    emailMcpTool.replyAll(REMOTE_ID, "<p>Reply all body</p>", null);
 
     ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxService).sendEmail(captor.capture(), eq(USERNAME));
@@ -526,7 +537,7 @@ class EmailMcpToolTest {
                                                                                                    "gianni@example.org",
                                                                                                    "<p>Thursday?</p>")));
 
-    List<EmailThreadMessageModel> thread = emailMcpTool.getEmailThread("thread-1");
+    List<EmailThreadMessageModel> thread = emailMcpTool.getEmailThread("thread-1", null);
 
     assertEquals(2, thread.size());
     assertEquals("Véronika", thread.get(0).getSenderName());
@@ -550,7 +561,7 @@ class EmailMcpToolTest {
                                                                                                   "<p>The contract</p>"),
                                                                                     draft));
 
-    List<EmailThreadMessageModel> thread = emailMcpTool.getEmailThread("thread-1");
+    List<EmailThreadMessageModel> thread = emailMcpTool.getEmailThread("thread-1", null);
 
     assertEquals(1, thread.size(), "the draft is not one of the conversation's messages");
     assertEquals("Véronika", thread.get(0).getSenderName());
@@ -569,7 +580,7 @@ class EmailMcpToolTest {
     }
     when(emailBoxService.getThread(eq("thread-1"), eq(USERNAME))).thenReturn(longThread);
 
-    List<EmailThreadMessageModel> thread = emailMcpTool.getEmailThread("thread-1");
+    List<EmailThreadMessageModel> thread = emailMcpTool.getEmailThread("thread-1", null);
 
     assertEquals(25, thread.size());
     assertEquals("message 15", thread.get(0).getBody(), "the kept slice starts where the last twenty-five begin");
@@ -589,7 +600,7 @@ class EmailMcpToolTest {
                                                                                    "veronika@example.org",
                                                                                    "<p>" + longBody + "</p>")));
 
-    String body = emailMcpTool.getEmailThread("thread-1").get(0).getBody();
+    String body = emailMcpTool.getEmailThread("thread-1", null).get(0).getBody();
 
     assertTrue(body.length() < longBody.length(), "a whole thread of whole bodies is not what this tool answers");
     assertTrue(body.endsWith("[truncated]"), "a message the reader has only partly been given must say so");
@@ -606,7 +617,7 @@ class EmailMcpToolTest {
     message.getContent().setAttachments(List.of(attachment));
     when(emailBoxService.getThread(eq("thread-1"), eq(USERNAME))).thenReturn(List.of(message));
 
-    assertEquals(List.of("contract.pdf"), emailMcpTool.getEmailThread("thread-1").get(0).getAttachmentNames());
+    assertEquals(List.of("contract.pdf"), emailMcpTool.getEmailThread("thread-1", null).get(0).getAttachmentNames());
   }
 
   /**
@@ -615,7 +626,7 @@ class EmailMcpToolTest {
    */
   @Test
   void getEmailThreadWithoutAThreadIdIsRefused() {
-    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.getEmailThread(" "));
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.getEmailThread(" ", null));
   }
 
   /**
@@ -633,7 +644,7 @@ class EmailMcpToolTest {
     message.setFolder(MailFolder.INBOX);
     when(emailBoxService.getThread(eq("thread-1"), eq(USERNAME))).thenReturn(List.of(message));
 
-    EmailThreadMessageModel model = emailMcpTool.getEmailThread("thread-1").get(0);
+    EmailThreadMessageModel model = emailMcpTool.getEmailThread("thread-1", null).get(0);
 
     assertEquals(EMAIL_ID, model.getEmailId(), "the handle get_email_by_id takes");
     assertEquals(REMOTE_ID, model.getMailRemoteId(), "the handle reply_email and the other write tools take");
@@ -662,7 +673,7 @@ class EmailMcpToolTest {
     sent.setFolder(MailFolder.SENT);
     when(emailBoxService.getThread(eq("thread-1"), eq(USERNAME))).thenReturn(List.of(received, sent));
 
-    List<EmailThreadMessageModel> thread = emailMcpTool.getEmailThread("thread-1");
+    List<EmailThreadMessageModel> thread = emailMcpTool.getEmailThread("thread-1", null);
 
     assertEquals(MailFolder.INBOX, thread.get(0).getFolder());
     assertEquals(MailFolder.SENT, thread.get(1).getFolder(), "a sent message must report SENT, not the reader's default");
@@ -683,7 +694,7 @@ class EmailMcpToolTest {
     message.setFolder(null);
     when(emailBoxService.getThread(eq("thread-1"), eq(USERNAME))).thenReturn(List.of(message));
 
-    EmailThreadMessageModel model = emailMcpTool.getEmailThread("thread-1").get(0);
+    EmailThreadMessageModel model = emailMcpTool.getEmailThread("thread-1", null).get(0);
 
     assertNull(model.getFolder());
     assertFalse(new ObjectMapper().writeValueAsString(model).contains("folder"));
@@ -715,7 +726,7 @@ class EmailMcpToolTest {
   @Test
   void archiveEmailDelegatesToService() throws Exception {
     when(emailBoxService.archiveEmail(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX))).thenReturn(0);
-    String result = emailMcpTool.archiveEmail(List.of(REMOTE_ID));
+    String result = emailMcpTool.archiveEmail(List.of(REMOTE_ID), null);
     verify(emailBoxService).archiveEmail(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX));
     assertTrue(result.contains("Archived 1 of 1"));
   }
@@ -723,8 +734,276 @@ class EmailMcpToolTest {
   @Test
   void deleteEmailDelegatesToService() throws Exception {
     when(emailBoxService.deleteEmail(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX))).thenReturn(0);
-    String result = emailMcpTool.deleteEmail(List.of(REMOTE_ID));
+    String result = emailMcpTool.deleteEmail(List.of(REMOTE_ID), null);
     verify(emailBoxService).deleteEmail(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX));
     assertTrue(result.contains("Deleted 1 of 1"));
+  }
+
+  // --- shared mailboxes (EXO-90555) -----------------------------------------
+
+  /** The shared mailbox's address, as an agent names it. */
+  private static final String OWNER_MAILBOX = "alice@acme.com";
+
+  /** The shared mailbox's registered inbox. */
+  private static final String SHARED_INBOX  = "CUSTOM:5";
+
+  /**
+   * An accepted Editor share of Alice's mailbox, as the switcher reads it.
+   *
+   * @return the entry
+   */
+  private SharedMailboxEntry aliceShare() {
+    return new SharedMailboxEntry(100L,
+                                  "alice",
+                                  "Alice Martin",
+                                  OWNER_MAILBOX,
+                                  DelegationPreset.EDITOR,
+                                  "lrswite",
+                                  Map.of(),
+                                  SHARED_INBOX,
+                                  3,
+                                  List.of(),
+                                  false,
+                                  true);
+  }
+
+  /**
+   * Alice's mailbox resolves for the caller.
+   *
+   * @return the entry
+   * @throws Exception never
+   */
+  private SharedMailboxEntry givenAliceShares() throws Exception {
+    SharedMailboxEntry share = aliceShare();
+    when(emailDelegationService.getSharedMailbox(USERNAME, OWNER_MAILBOX)).thenReturn(share);
+    return share;
+  }
+
+  /**
+   * The shared mailboxes are listed from the mirror alone: no mailbox service call, so
+   * no mail server is reached, however many shares there are.
+   */
+  @Test
+  void listSharedMailboxesReadsTheMirrorOnly() {
+    SharedMailboxEntry share = aliceShare();
+    when(emailDelegationService.getSharedMailboxes(USERNAME)).thenReturn(List.of(share));
+    when(emailDelegationService.getMirroredFolders(USERNAME, share)).thenReturn(List.of("INBOX", "SENT"));
+
+    List<SharedMailboxModel> mailboxes = emailMcpTool.listSharedMailboxes();
+
+    assertEquals(1, mailboxes.size());
+    SharedMailboxModel alice = mailboxes.get(0);
+    assertEquals("Alice Martin", alice.getOwnerName());
+    assertEquals(OWNER_MAILBOX, alice.getMailbox());
+    assertEquals("alice", alice.getOwnerUsername());
+    assertEquals("EDITOR", alice.getAccess());
+    assertEquals(3, alice.getUnreadCount());
+    assertEquals(List.of("INBOX", "SENT"), alice.getFolders());
+    assertTrue(alice.isSentCopy());
+    Mockito.verifyNoInteractions(emailBoxService);
+  }
+
+  /**
+   * A mailbox argument that resolves to nothing is not found, on every tool that takes
+   * one -- and never falls back to the user's own mailbox: nothing is read, sent or
+   * changed anywhere.
+   */
+  @Test
+  void aMailboxThatIsNotSharedIsNotFoundAndNeverTheUsersOwn() throws Exception {
+    when(emailDelegationService.getSharedMailbox(eq(USERNAME), any())).thenThrow(new ObjectNotFoundException("emailConnector.delegation.sharedMailboxNotFound"));
+    String nobody = "carol@acme.com";
+    List<org.junit.jupiter.api.function.Executable> calls =
+                                                          List.of(() -> emailMcpTool.getEmailById(EMAIL_ID, nobody),
+                                                                  () -> emailMcpTool.listEmails(null, null, null, null, nobody),
+                                                                  () -> emailMcpTool.getUnreadCount(nobody),
+                                                                  () -> emailMcpTool.searchEmails("x", null, null, null, null, null, nobody),
+                                                                  () -> emailMcpTool.getEmailFull(REMOTE_ID, nobody),
+                                                                  () -> emailMcpTool.listAttachments(REMOTE_ID, nobody),
+                                                                  () -> emailMcpTool.getEmailThread("thread-1", nobody),
+                                                                  () -> emailMcpTool.markRead(List.of(REMOTE_ID), nobody),
+                                                                  () -> emailMcpTool.markUnread(List.of(REMOTE_ID), nobody),
+                                                                  () -> emailMcpTool.sendEmail(List.of("bob@acme.com"), "Hi", "<p>x</p>", null, null, nobody),
+                                                                  () -> emailMcpTool.replyEmail(REMOTE_ID, "<p>x</p>", nobody),
+                                                                  () -> emailMcpTool.replyAll(REMOTE_ID, "<p>x</p>", nobody),
+                                                                  () -> emailMcpTool.forwardEmail(REMOTE_ID, List.of("bob@acme.com"), "<p>x</p>", null, nobody),
+                                                                  () -> emailMcpTool.archiveEmail(List.of(REMOTE_ID), nobody),
+                                                                  () -> emailMcpTool.deleteEmail(List.of(REMOTE_ID), nobody));
+    for (org.junit.jupiter.api.function.Executable call : calls) {
+      ObjectNotFoundException refused = assertThrows(ObjectNotFoundException.class, call);
+      assertTrue(refused.getMessage().contains(nobody), refused.getMessage());
+    }
+    Mockito.verifyNoInteractions(emailBoxService);
+  }
+
+  /** A blank mailbox is the user's own, without asking the delegation service anything. */
+  @Test
+  void aBlankMailboxIsTheUsersOwn() throws Exception {
+    when(emailBoxService.getOwnMailboxEmailById(EMAIL_ID, USERNAME)).thenReturn(buildEmail(EMAIL_ID));
+
+    assertNotNull(emailMcpTool.getEmailById(EMAIL_ID, "  "));
+
+    verify(emailBoxService, never()).getSharedMailboxEmailById(anyLong(), any(), anyLong());
+    Mockito.verifyNoInteractions(emailDelegationService);
+  }
+
+  /**
+   * An id read with a mailbox is read in that shared mailbox only: a row the service
+   * does not place in that share is not found, and the user's own mailbox is not asked.
+   */
+  @Test
+  void anEmailIdIsReadInTheMailboxNamed() throws Exception {
+    givenAliceShares();
+    when(emailBoxService.getSharedMailboxEmailById(EMAIL_ID, USERNAME, 100L)).thenReturn(buildEmail(EMAIL_ID));
+
+    assertEquals(EMAIL_ID, emailMcpTool.getEmailById(EMAIL_ID, OWNER_MAILBOX).getId());
+    assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.getEmailById(43L, OWNER_MAILBOX), "not in that share");
+    verify(emailBoxService, never()).getOwnMailboxEmailById(anyLong(), any());
+  }
+
+  /**
+   * A shared mailbox's folder that is not in the mirror is said, never listed or
+   * searched as an empty one; one that is, is read by its key, and a hit names the
+   * folder, not the key.
+   */
+  @Test
+  void aSharedFolderOutsideTheMirrorIsSaidNotAnsweredEmpty() throws Exception {
+    SharedMailboxEntry share = givenAliceShares();
+    when(emailDelegationService.getMirroredFolderKey(USERNAME, share, "SENT")).thenReturn(null);
+
+    IllegalArgumentException listed = assertThrows(IllegalArgumentException.class,
+                                                   () -> emailMcpTool.listEmails(null, null, null, "sent", OWNER_MAILBOX));
+    assertTrue(listed.getMessage().contains("not available") && listed.getMessage().contains("Alice Martin"), listed.getMessage());
+    IllegalArgumentException searched = assertThrows(IllegalArgumentException.class,
+                                                     () -> emailMcpTool.searchEmails("x", null, null, null, "SENT", null, OWNER_MAILBOX));
+    assertTrue(searched.getMessage().contains("not an empty folder"), searched.getMessage());
+    Mockito.verifyNoInteractions(emailBoxService);
+
+    when(emailDelegationService.getMirroredFolderKey(USERNAME, share, "ARCHIVE")).thenReturn("CUSTOM:7");
+    EmailBox archive = new EmailBox();
+    archive.setEmails(List.of());
+    when(emailBoxService.getEmailBox(USERNAME, "CUSTOM:7")).thenReturn(archive);
+    assertTrue(emailMcpTool.listEmails(null, null, null, "ARCHIVE", OWNER_MAILBOX).isEmpty());
+
+    EmailSearchResult hit = new EmailSearchResult(9L, "CUSTOM:7", "Budget", null, new Date(), false, false, true, null);
+    when(emailBoxService.searchSharedMailboxMirror(USERNAME, "CUSTOM:7", "budget", null, false, null, 20))
+                                                                                                          .thenReturn(new EmailSearchResultPage(List.of(hit), 1));
+    EmailSearchResultsModel results = emailMcpTool.searchEmails("budget", null, null, null, "ARCHIVE", null, OWNER_MAILBOX);
+    assertEquals(1, results.getTotalMatches());
+    assertEquals("ARCHIVE", results.getResults().get(0).getFolder(), "the folder's name, never a shared folder's key");
+    verify(emailBoxService, never()).searchEmails(any(), any(), any(), anyBoolean(), any(), any(), anyInt());
+  }
+
+  /** The unread count of a shared inbox is the mirror's, reaching no mail server. */
+  @Test
+  void aSharedUnreadCountReadsTheMirror() throws Exception {
+    givenAliceShares();
+
+    String count = emailMcpTool.getUnreadCount(OWNER_MAILBOX);
+
+    assertTrue(count.startsWith("3 unread") && count.contains("Alice Martin (alice@acme.com)"), count);
+    Mockito.verifyNoInteractions(emailBoxService);
+  }
+
+  /** sync_now refuses a mailbox rather than syncing the user's own instead. */
+  @Test
+  void syncNowRefusesAMailbox() throws Exception {
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.syncNow(OWNER_MAILBOX));
+    Mockito.verifyNoInteractions(emailBoxService);
+  }
+
+  /**
+   * A reply-all from a shared mailbox reads the original in that mailbox's inbox, sends
+   * from the share, leaves both the user and the owner out of the Cc, and says what
+   * became of the owner's copy.
+   */
+  @Test
+  void aReplyAllFromASharedMailboxReadsTheOriginalThere() throws Exception {
+    givenAliceShares();
+    Email original = buildEmail(EMAIL_ID);
+    original.setSender(new EmailSender("Carol", "carol@acme.com", null, null));
+    original.setTo(List.of(new EmailRecipient(null, OWNER_MAILBOX, null, false), new EmailRecipient(null, "dave@acme.com", null, false)));
+    original.setCc(List.of(new EmailRecipient(null, "testuser1@example.com", null, false)));
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(REMOTE_ID, USERNAME, SHARED_INBOX, false, true, false, false)).thenReturn(original);
+    UserEmailSetting setting = new UserEmailSetting();
+    setting.setEmailAddress("testuser1@example.com");
+    when(userEmailSettingService.getUserEmailSetting(USERNAME)).thenReturn(setting);
+    when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(EmailBoxService.OwnerCopy.FILED);
+
+    String result = emailMcpTool.replyAll(REMOTE_ID, "<p>Noted</p>", OWNER_MAILBOX);
+
+    ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService).sendEmail(sent.capture(), eq(USERNAME), eq(100L));
+    assertEquals(List.of("dave@acme.com"), sent.getValue().getCc().stream().map(EmailRecipient::getAddress).toList());
+    assertTrue(result.contains("from the mailbox of Alice Martin") && result.contains("A copy was filed"), result);
+    verify(emailBoxService, never()).getEmailByMailRemoteIdAndUserId(anyLong(), any(), eq(MailFolder.INBOX), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean());
+    verify(emailBoxService, never()).sendEmail(any(Email.class), eq(USERNAME));
+  }
+
+  /**
+   * A forward from a shared mailbox reads the original in that mailbox's inbox too, and
+   * an original that is not there is not found -- never looked up in the user's own.
+   */
+  @Test
+  void aForwardFromASharedMailboxReadsTheOriginalThere() throws Exception {
+    givenAliceShares();
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(REMOTE_ID, USERNAME, SHARED_INBOX, false, true, false, false)).thenReturn(buildEmail(EMAIL_ID));
+    when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(EmailBoxService.OwnerCopy.SKIPPED);
+
+    String result = emailMcpTool.forwardEmail(REMOTE_ID, List.of("bob@acme.com"), null, null, OWNER_MAILBOX);
+
+    assertTrue(result.contains("No copy was filed"), result);
+    assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.forwardEmail(888L, List.of("bob@acme.com"), null, null, OWNER_MAILBOX));
+    verify(emailBoxService, never()).getEmailByMailRemoteIdAndUserId(anyLong(), any(), eq(MailFolder.INBOX), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean());
+  }
+
+  /** A send from a shared mailbox whose owner's copy failed says so; the mail went out. */
+  @Test
+  void aSendFromASharedMailboxSaysTheOwnersCopyFailed() throws Exception {
+    givenAliceShares();
+    when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(EmailBoxService.OwnerCopy.FAILED);
+
+    String result = emailMcpTool.sendEmail(List.of("bob@acme.com"), "Hi", "<p>x</p>", null, null, OWNER_MAILBOX);
+
+    assertTrue(result.startsWith("Email sent to bob@acme.com") && result.contains("could not be filed"), result);
+  }
+
+  /**
+   * A write the share does not allow, or a share withdrawn meanwhile, is refused in
+   * words that name the owner.
+   */
+  @Test
+  void aRefusedWriteInASharedMailboxNamesTheOwner() throws Exception {
+    givenAliceShares();
+    when(emailBoxService.updateEmailReadStatus(List.of(REMOTE_ID), USERNAME, SHARED_INBOX, true, true)).thenThrow(new MailboxRightMissingException('s'));
+    when(emailBoxService.archiveEmail(List.of(REMOTE_ID), USERNAME, SHARED_INBOX)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    when(emailBoxService.deleteEmail(List.of(REMOTE_ID), USERNAME, SHARED_INBOX)).thenReturn(0);
+
+    IllegalAccessException marked = assertThrows(IllegalAccessException.class, () -> emailMcpTool.markRead(List.of(REMOTE_ID), OWNER_MAILBOX));
+    assertTrue(marked.getMessage().contains("does not allow you to change the read state") && marked.getMessage().contains("Alice Martin"),
+               marked.getMessage());
+    IllegalAccessException archived = assertThrows(IllegalAccessException.class, () -> emailMcpTool.archiveEmail(List.of(REMOTE_ID), OWNER_MAILBOX));
+    assertTrue(archived.getMessage().contains("no longer shared with you"), archived.getMessage());
+    assertTrue(emailMcpTool.deleteEmail(List.of(REMOTE_ID), OWNER_MAILBOX).contains("in the mailbox of Alice Martin"));
+  }
+
+  /**
+   * A conversation and an attachment read with a mailbox are read in that shared
+   * mailbox: the thread from its inbox, the download address naming its folder.
+   */
+  @Test
+  void aThreadAndAttachmentsAreReadInTheMailboxNamed() throws Exception {
+    givenAliceShares();
+    when(emailBoxService.getThread("thread-1", USERNAME, SHARED_INBOX)).thenReturn(List.of());
+    Email withAttachment = buildEmail(EMAIL_ID);
+    EmailAttachment attachment = new EmailAttachment();
+    attachment.setName("invoice.pdf");
+    attachment.setAttachmentRemoteId("1.2");
+    withAttachment.getContent().setAttachments(List.of(attachment));
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(REMOTE_ID, USERNAME, SHARED_INBOX, true, false, false, false)).thenReturn(withAttachment);
+
+    assertTrue(emailMcpTool.getEmailThread("thread-1", OWNER_MAILBOX).isEmpty());
+    verify(emailBoxService, never()).getThread("thread-1", USERNAME);
+    assertEquals("/email-connector/rest/email-box/attachments/" + REMOTE_ID + "/1.2?folder=CUSTOM%3A5",
+                 emailMcpTool.listAttachments(REMOTE_ID, OWNER_MAILBOX).get(0).getDownloadUrl());
   }
 }
