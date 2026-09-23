@@ -24,13 +24,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <div
     :style="styles.anchor"
     class="flex-grow-0 flex-shrink-0 position-relative">
-    <v-divider
-      :style="styles.line"
-      vertical
-      class="position-absolute" />
-    <div :style="styles.grip" class="position-absolute"></div>
-    <!-- A focusable separator is a widget in WAI-ARIA 1.2 (the window splitter pattern),
-         which the lint rule, reading every separator as static, does not know. -->
+    <!-- A focusable separator is a WAI-ARIA 1.2 widget (window splitter); the rule reads it as static. -->
     <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -->
     <div
       :aria-valuenow="Math.round(value)"
@@ -54,11 +48,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       @mouseenter="hover = true"
       @mouseleave="hover = false"
       @focus="focused = true"
-      @blur="focused = false"></div>
+      @blur="focused = false">
+      <v-divider
+        :style="styles.line"
+        vertical
+        class="position-absolute" />
+      <div :style="styles.grip" class="position-absolute"></div>
+    </div>
   </div>
 </template>
 <script>
-import { separatorKeyWidth, separatorStyles } from '../../js/EmailConnectorMailBoxColumnWidths.js';
+import { observeHeight, separatorKeyWidth, separatorStyles } from '../../js/EmailConnectorMailBoxColumnWidths.js';
 
 export default {
   props: {
@@ -101,10 +101,7 @@ export default {
    * @returns {void}
    */
   mounted() {
-    if (this.placement === 'end' && window.ResizeObserver) {
-      this.resizeObserver = new window.ResizeObserver(() => this.height = this.$el.clientHeight);
-      this.resizeObserver.observe(this.$el);
-    }
+    this.stopObserving = this.placement === 'end' ? observeHeight(this.$el, height => this.height = height) : null;
   },
   /**
    * Stops following the columns' height.
@@ -112,14 +109,14 @@ export default {
    * @returns {void}
    */
   beforeDestroy() {
-    this.resizeObserver?.disconnect();
+    this.stopObserving?.();
   },
   computed: {
     /**
      * The inline styles of the hit area, the line and the grip, for this divider's
      * placement, the reading direction and whether it is pointed at, held or focused.
      *
-     * @returns {Object} `{ hit, line, grip }`
+     * @returns {Object} `{ anchor, hit, line, grip }`
      */
     styles() {
       return separatorStyles(this.placement, this.$vuetify.rtl, this.hover || this.focused || !!this.dragStart, this.height);
