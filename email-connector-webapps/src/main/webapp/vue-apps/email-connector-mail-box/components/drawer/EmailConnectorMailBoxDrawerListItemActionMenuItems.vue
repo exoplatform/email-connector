@@ -204,7 +204,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          "Not spam" back to the inbox, and a Delete that files into the Trash exactly
          as the ordinary delete does (the backend allows that one move out of Junk). -->
     <v-list-item
-      v-if="junkActions"
+      v-if="junkActions && canRestoreFromJunk"
       class="ps-2 pe-3 height-auto"
       @click.stop="restoreFromJunk">
       <v-sheet
@@ -373,6 +373,15 @@ export default {
      */
     junkActions() {
       return this.$emailConnectorMailBoxService.hasJunkActions(this.email.folder);
+    },
+    /**
+     * Whether "Not spam" belongs on this row: in the user's own Spam only -- out of a
+     * shared mailbox's it would file into another mailbox (EXO-90548).
+     *
+     * @returns {Boolean} true when "Not spam" is offered
+     */
+    canRestoreFromJunk() {
+      return this.$emailConnectorMailBoxService.canRestoreFromJunk(this.email.folder);
     },
     /**
      * Whether delete, archive and mark-as-spam may be offered on this row at all. On
