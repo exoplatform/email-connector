@@ -16,6 +16,13 @@
  */
 package org.exoplatform.emailConnector.provider;
 
+import java.util.ArrayDeque;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.IdentityHashMap;
+import java.util.Set;
+
+import javax.mail.AuthenticationFailedException;
 import javax.mail.Authenticator;
 
 import org.springframework.stereotype.Component;
@@ -28,6 +35,8 @@ import org.exoplatform.services.connector.credentials.ConnectorCredentialsExcept
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
 import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
 import org.exoplatform.services.connector.credentials.MailConnectorCredentials;
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
 
 /**
  * The email connector's side of the shared credentials contract: the one place
@@ -48,6 +57,8 @@ import org.exoplatform.services.connector.credentials.MailConnectorCredentials;
  */
 @Component
 public class EmailCredentialsResolver {
+
+  private static final Log LOG = ExoLogger.getLogger(EmailCredentialsResolver.class);
 
   /**
    * The kind this connector is known by platform-wide, which is how a provider
@@ -187,6 +198,77 @@ public class EmailCredentialsResolver {
                                                                      providerName,
                                                                      username,
                                                                      ConnectorCredentialsChannel.SMTP));
+  }
+
+  /**
+   * Tells the provider that material it produced for this account was refused by the
+   * server, so the next production does not hand it out again (EXO-89649). The
+   * contract's rule: once, then one more attempt with fresh material - never a loop.
+   * A provider that keeps nothing (Personal) does nothing. Never throws: callers run it
+   * inside failure handling, where an exception of its own would be misread (a
+   * scheduled send would report a mail never transmitted as "maybe sent"); an
+   * invalidation that cannot be delivered leaves the entry to expire.
+   *
+   * @param connectorId the connector the material was produced for
+   * @param providerName the connector's provider
+   * @param username the eXo login the material was produced for
+   * @param channel the channel the material was refused on
+   */
+  public void invalidate(Long connectorId, String providerName, String username, ConnectorCredentialsChannel channel) {
+    try {
+      connectorCredentialsService.invalidate(context(connectorId, providerName, username, channel));
+    } catch (RuntimeException e) {
+      LOG.debug("Nothing invalidated for user {} on provider {}", username, providerName, e);
+    }
+  }
+
+  /**
+   * Whether a refused credential is worth one more attempt after invalidating it: only
+   * for a provider that produces its material itself (no user action), whose
+   * invalidation can yield something new. A provider carrying what the user typed would
+   * hand the same password back, and the second refusal would count against the user's
+   * account in the mail server's lockout policy.
+   *
+   * @param providerName the connector's provider
+   * @return true when a retry on fresh material makes sense
+   */
+  public boolean retriesAfterRefusal(String providerName) {
+    try {
+      return !connectorCredentialsService.requiresUserAction(providerName);
+    } catch (ConnectorCredentialsException | RuntimeException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Whether a mail failure is the server refusing the credentials - IMAP's or SMTP's
+   * AUTHENTICATIONFAILED - as opposed to anything else. Only that one is worth
+   * invalidating material for: a network error proves nothing about the material.
+   * Walks the cause chain; JavaMail's {@code MessagingException.getCause()} returns its
+   * next exception, so a refusal {@code Transport.send} wrapped is found too.
+   *
+   * @param failure what the mail layer threw
+   * @return true when the server refused the authentication
+   */
+  public static boolean isAuthenticationFailure(Throwable failure) {
+    Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+    Deque<Throwable> pending = new ArrayDeque<>();
+    if (failure != null) {
+      pending.add(failure);
+    }
+    while (!pending.isEmpty()) {
+      Throwable current = pending.poll();
+      if (!seen.add(current)) {
+        continue;
+      }
+      if (current instanceof AuthenticationFailedException) {
+        return true;
+      }
+      if (current.getCause() != null) {
+        pending.add(current.getCause());
+      }
+    }
+    return false;
   }
 
   /**

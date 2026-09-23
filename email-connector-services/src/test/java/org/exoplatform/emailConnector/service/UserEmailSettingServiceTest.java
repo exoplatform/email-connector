@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import static org.mockito.Mockito.times;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -933,5 +934,98 @@ public class UserEmailSettingServiceTest {
 
     assertEquals("No email connector 42", refused.getMessage());
     verifyNoInteractions(emailCredentialsResolver);
+  }
+
+  /**
+   * EXO-89649. A mailbox that refuses the provider's material once - a kept BlueMind
+   * session BlueMind has since dropped - is opened on the second attempt, after exactly
+   * one invalidation, with material produced again.
+   */
+  @Test
+  @SneakyThrows
+  void retriesTheMailboxOnceWithFreshMaterialAfterARefusal() {
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.retriesAfterRefusal("bluemind-sudo")).thenReturn(true);
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any())).thenReturn(mock(Authenticator.class));
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+      doThrow(new javax.mail.AuthenticationFailedException("AUTHENTICATIONFAILED")).doNothing().when(store).connect();
+
+      assertSame(store, userEmailSettingService.connect("1", TEST_USER));
+
+      verify(emailCredentialsResolver, times(1)).invalidate(1L, "bluemind-sudo", TEST_USER, ConnectorCredentialsChannel.IMAP);
+      verify(emailCredentialsResolver, times(2)).authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any());
+      verify(store, times(2)).connect();
+    }
+  }
+
+  /** EXO-89649. A second refusal is the answer: no third attempt, no second invalidation. */
+  @Test
+  @SneakyThrows
+  void doesNotLoopOnAMailboxThatKeepsRefusing() {
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.retriesAfterRefusal("bluemind-sudo")).thenReturn(true);
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any())).thenReturn(mock(Authenticator.class));
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+      doThrow(new javax.mail.AuthenticationFailedException("AUTHENTICATIONFAILED")).when(store).connect();
+
+      assertThrows(javax.mail.AuthenticationFailedException.class, () -> userEmailSettingService.connect("1", TEST_USER));
+
+      verify(emailCredentialsResolver, times(1)).invalidate(any(), any(), any(), any());
+      verify(store, times(2)).connect();
+    }
+  }
+
+  /** EXO-89649. A network failure proves nothing about the material: nothing is invalidated. */
+  @Test
+  @SneakyThrows
+  void aNetworkFailureInvalidatesNothing() {
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any())).thenReturn(mock(Authenticator.class));
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+      doThrow(new MessagingException("Connection timed out")).when(store).connect();
+
+      assertThrows(MessagingException.class, () -> userEmailSettingService.connect("1", TEST_USER));
+
+      verify(emailCredentialsResolver, never()).invalidate(any(), any(), any(), any());
+      verify(store, times(1)).connect();
+    }
+  }
+
+  /**
+   * EXO-89649. A provider carrying what the user typed is never retried: it would hand
+   * the same password back, a second refusal against the user's own account.
+   */
+  @Test
+  @SneakyThrows
+  void neverRetriesWithAProviderThatCannotRefreshItsMaterial() {
+    EmailConnector personal = providerBackedConnector();
+    personal.setAuthProviderName("personal");
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(personal);
+    when(emailCredentialsResolver.retriesAfterRefusal("personal")).thenReturn(false);
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("personal"), eq(TEST_USER), any())).thenReturn(mock(Authenticator.class));
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+      doThrow(new javax.mail.AuthenticationFailedException("AUTHENTICATIONFAILED")).when(store).connect();
+
+      assertThrows(javax.mail.AuthenticationFailedException.class, () -> userEmailSettingService.connect("1", TEST_USER));
+
+      verify(store, times(1)).connect();
+      verify(emailCredentialsResolver, never()).invalidate(any(), any(), any(), any());
+    }
   }
 }
