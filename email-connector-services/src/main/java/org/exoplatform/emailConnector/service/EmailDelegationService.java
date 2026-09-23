@@ -2082,7 +2082,9 @@ public class EmailDelegationService {
    * same answer: not found. Nothing distinguishes "not yours" from "does not exist".
    * <p>
    * A blank name resolves to nothing either: "the user's own mailbox" is the caller's
-   * decision to make by not naming one, never this method's fallback.
+   * decision to make by not naming one, never this method's fallback. And nothing
+   * resolves while the caller's own mail access is switched off
+   * ({@link #getUsableSharedMailboxes}).
    *
    * @param granteeUsername the caller
    * @param mailbox the owner's mailbox address or eXo username
@@ -2094,11 +2096,30 @@ public class EmailDelegationService {
     if (wanted == null) {
       throw new ObjectNotFoundException(SHARED_MAILBOX_NOT_FOUND_MESSAGE);
     }
-    return getSharedMailboxes(granteeUsername).stream()
+    return getUsableSharedMailboxes(granteeUsername).stream()
                                               .filter(entry -> wanted.equalsIgnoreCase(entry.ownerMailbox())
                                                   || wanted.equalsIgnoreCase(entry.ownerId()))
                                               .findFirst()
                                               .orElseThrow(() -> new ObjectNotFoundException(SHARED_MAILBOX_NOT_FOUND_MESSAGE));
+  }
+
+  /**
+   * The shared mailboxes an agent may work in (EXO-90555): {@link #getSharedMailboxes},
+   * while the caller may use mail at all -- the email feature on, their connector active
+   * and theirs ({@code UserEmailSettingService.canConnect}, the switch every one of the
+   * caller's own mailbox reads is behind) -- and none otherwise. A shared mailbox is
+   * reached through the caller's own session, so it is switched off with it.
+   *
+   * @param granteeUsername the caller
+   * @return the entries, empty when the caller's mail access is switched off
+   */
+  public List<SharedMailboxEntry> getUsableSharedMailboxes(String granteeUsername) {
+    UserEmailSetting setting = StringUtils.isBlank(granteeUsername) ? null : userEmailSettingService.getUserEmailSetting(granteeUsername);
+    if (setting == null || StringUtils.isBlank(setting.getEmailConnectorId())
+        || !userEmailSettingService.canConnect(Long.parseLong(setting.getEmailConnectorId()), granteeUsername)) {
+      return List.of();
+    }
+    return getSharedMailboxes(granteeUsername);
   }
 
   /**

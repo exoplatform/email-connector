@@ -1590,6 +1590,7 @@ class EmailDelegationServiceTest {
    */
   @Test
   void anAgentsMailboxIsOneOfTheCallersAcceptedShares() throws Exception {
+    when(userEmailSettingService.canConnect(CONNECTOR_ID, GRANTEE)).thenReturn(true);
     EmailDelegation share = aDovecotShare();
     when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(sharedInbox(share)));
     when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(share));
@@ -1614,6 +1615,23 @@ class EmailDelegationServiceTest {
   }
 
   /**
+   * EXO-90555 -- while the caller's own mail access is switched off (the email feature,
+   * their connector), no shared mailbox is offered to an agent or resolves for one: a
+   * shared mailbox is reached through the caller's own session.
+   */
+  @Test
+  void aSwitchedOffMailAccessResolvesNoSharedMailbox() throws Exception {
+    EmailDelegation share = aDovecotShare();
+    lenient().when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(sharedInbox(share)));
+    lenient().when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(share));
+    when(userEmailSettingService.canConnect(CONNECTOR_ID, GRANTEE)).thenReturn(false);
+
+    assertTrue(service.getUsableSharedMailboxes(GRANTEE).isEmpty());
+    assertThrows(ObjectNotFoundException.class, () -> service.getSharedMailbox(GRANTEE, OWNER_MAILBOX));
+    assertEquals(1, service.getSharedMailboxes(GRANTEE).size(), "the switcher's own list is not what changes");
+  }
+
+  /**
    * EXO-90555 -- a shared mailbox's folder is available to an agent only when it is in
    * the caller's mirror: the right kind, still listed, opted in, synced at least once,
    * and readable. A folder that is shared but never synced is "not available", never an
@@ -1621,6 +1639,7 @@ class EmailDelegationServiceTest {
    */
   @Test
   void aSharedFolderIsAvailableOnlyWhenItIsInTheMirror() throws Exception {
+    when(userEmailSettingService.canConnect(CONNECTOR_ID, GRANTEE)).thenReturn(true);
     EmailDelegation share = aDovecotShare();
     EmailFolder inbox = sharedInbox(share);
     inbox.setSyncEnabled(true);
