@@ -350,13 +350,28 @@ export default {
      * the push lands for a draft that HAS been uploaded, and only fails — silently, one
      * more uncounted failure — for one that has not.) What Drafts gets is Discard.
      *
-     * @returns {Boolean} true when archive/delete/read-status may be offered
+     * In a mailbox somebody shared with the user, what the rights and the phase allow
+     * decides as well (canMoveOutOf): absent right, absent button.
+     *
+     * @returns {Boolean} true when archive/delete may be offered
      */
     canMutateSelection() {
-      return !this.selectedEmails.some(emailId => {
+      return this.selectedEmails.every(emailId =>
+        this.$emailConnectorMailBoxService.canMoveOutOf(this.emailsMap[emailId]?.folder));
+    },
+    /**
+     * Whether the selection's read state may be changed: the rows canMutateSelection
+     * would take -- no read-only row, no draft -- except that it is the right to keep
+     * read state that decides in a shared mailbox, not the right to take mail out of it
+     * (canMarkReadIn).
+     *
+     * @returns {Boolean} true when read/unread may be offered
+     */
+    canMarkSelectionRead() {
+      return this.selectedEmails.every(emailId => {
         const folder = this.emailsMap[emailId]?.folder;
-        return this.$emailConnectorMailBoxService.isReadOnlyFolder(folder)
-          || this.$emailConnectorMailBoxService.isDraftsFolder(folder);
+        return this.$emailConnectorMailBoxService.canMarkReadIn(folder)
+          && !this.$emailConnectorMailBoxService.isDraftsFolder(folder);
       });
     },
     /**
@@ -517,7 +532,7 @@ export default {
      * @returns {Boolean} true when the button should be shown
      */
     canUpdateEmailsReadStatus(read) {
-      if (!this.canMutateSelection) {
+      if (!this.canMarkSelectionRead) {
         return false;
       }
       return this.selectedEmails.some(emailId => {

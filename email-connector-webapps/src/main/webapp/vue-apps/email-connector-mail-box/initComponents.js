@@ -67,6 +67,10 @@ import EmailConnectorMailBoxPopup from './components/drawer/EmailConnectorMailBo
 import EmailConnectorReadReceiptBanner from './components/drawer/EmailConnectorReadReceiptBanner.vue';
 import EmailConnectorMailBoxScheduledList from './components/drawer/EmailConnectorMailBoxScheduledList.vue';
 import EmailConnectorMailBoxScheduledListItem from './components/drawer/EmailConnectorMailBoxScheduledListItem.vue';
+import EmailConnectorMailBoxSwitcher from './components/drawer/EmailConnectorMailBoxSwitcher.vue';
+import EmailConnectorSharedMailboxBand from './components/drawer/EmailConnectorSharedMailboxBand.vue';
+import EmailConnectorSharedMailboxConfirmPopup from './components/drawer/EmailConnectorSharedMailboxConfirmPopup.vue';
+import EmailConnectorNewEmailSharedMailboxNotice from './components/drawer/EmailConnectorNewEmailSharedMailboxNotice.vue';
 
 const components = {
   'email-connector-mail-box-app': EmailConnectorMailBoxApp,
@@ -115,6 +119,10 @@ const components = {
   'email-connector-new-email-drawer-attachments': EmailConnectorNewEmailDrawerAttachments,
   'email-connector-new-email-drawer-no-subject-confirm-popup': EmailConnectorNewEmailDrawerNoSubjectConfirmPopup,
   'email-connector-mail-box-purge-confirm-popup': EmailConnectorMailBoxPurgeConfirmPopup,
+  'email-connector-mail-box-switcher': EmailConnectorMailBoxSwitcher,
+  'email-connector-shared-mailbox-band': EmailConnectorSharedMailboxBand,
+  'email-connector-shared-mailbox-confirm-popup': EmailConnectorSharedMailboxConfirmPopup,
+  'email-connector-new-email-shared-mailbox-notice': EmailConnectorNewEmailSharedMailboxNotice,
   'email-connector-mail-box-discard-drafts-confirm-popup': EmailConnectorMailBoxDiscardDraftsConfirmPopup,
   'email-connector-mail-box-move-to-folder-drawer': EmailConnectorMailBoxMoveToFolderDrawer,
   'email-connector-schedule-picker': EmailConnectorScheduleSendPicker,
