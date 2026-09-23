@@ -367,14 +367,18 @@ public class ImapAclEngine implements MailboxAclEngine {
    * namespace lists is still not settled. Phase 0 ran on BlueMind and on Stalwart
    * (2026-09-21/22) but did not record either the SETACL identifier or the segment
    * letters side by side ("not in the record" -- plan, sections 13.C.1 and 13.D); the
-   * Stalwart segment was the owner's full address. On Dovecot 2.3.21 (EXO-90552) the
-   * segment is the owner's full address too, and SETACL was observed to accept any
-   * identifier verbatim -- {@code bob}, and an unknown {@code nobody@dovecot.local} --
-   * with no error. The rig's logins equal the addresses, so what follows is reasoned
-   * from Dovecot's {@code shared/%%u/} semantics, not observed: the segment is the
-   * owner's <b>login</b>, and a grantee named by an address that is not their login
-   * would be granted nothing, silently. Until a server with login != address is
-   * recorded, both spellings are tried here and neither is assumed.
+   * Stalwart segment was the owner's full address. Dovecot 2.3.21 (EXO-90552) answers
+   * with the <b>login</b> on both sides, observed with a user whose login
+   * ({@code carol}) is not her address: an owner {@code carol} is listed as
+   * {@code shared/carol}, and SETACL takes any identifier verbatim with no error -- a
+   * grant to {@code carol@dovecot.local} is accepted, shows in GETACL, and gives the
+   * user {@code carol} nothing (no LIST entry, MYRIGHTS {@code NONEXISTENT}); the same
+   * grant to {@code carol} works. So on a Dovecot whose logins are not addresses, eXo's
+   * address-based identifier ({@code mailboxIdentifier} is the setting's email address)
+   * grants nothing, silently, and this lookup finds the owner only through the local
+   * part, when the login happens to be it. Both spellings are tried here and neither is
+   * assumed; the grant side is a deployment requirement (logins = addresses) until the
+   * identifier eXo sends becomes the login.
    *
    * @param session the grantee's session
    * @param ownerIdentifier the owner's mailbox identifier
