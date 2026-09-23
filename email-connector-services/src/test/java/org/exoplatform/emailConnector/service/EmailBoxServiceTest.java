@@ -12331,6 +12331,107 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90555 -- an agent that named a shared mailbox is handed a row by id only when
+   * the row sits in a folder registered for THAT share (read by DELEGATION_ID): a row
+   * of the user's own mailbox, or of another share, is not found.
+   */
+  @Test
+  void anAgentThatNamedASharedMailboxIsHandedOnlyItsRows() throws Exception {
+    Email ofTheShare = email(TEST_USER);
+    ofTheShare.setFolder("CUSTOM:8");
+    Email own = email(TEST_USER);
+    own.setFolder(MailFolder.INBOX);
+    Email ofAnotherShare = email(TEST_USER);
+    ofAnotherShare.setFolder("CUSTOM:9");
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(emailBoxStorage.getEmailById(eq(5L), eq(TEST_USER), any())).thenReturn(ofTheShare);
+    when(emailBoxStorage.getEmailById(eq(6L), eq(TEST_USER), any())).thenReturn(own);
+    when(emailBoxStorage.getEmailById(eq(7L), eq(TEST_USER), any())).thenReturn(ofAnotherShare);
+    when(emailDelegationService.getMailboxFolderKeys(TEST_USER, 100L)).thenReturn(List.of("CUSTOM:8", "CUSTOM:10"));
+
+    assertSame(ofTheShare, emailBoxService.getSharedMailboxEmailById(5L, TEST_USER, 100L));
+    assertNull(emailBoxService.getSharedMailboxEmailById(6L, TEST_USER, 100L), "the user's own row");
+    assertNull(emailBoxService.getSharedMailboxEmailById(7L, TEST_USER, 100L), "another share's row");
+  }
+
+  /**
+   * EXO-90555 -- an agent's search of a shared mailbox reads the mirror of that folder:
+   * subject or sender, a sender filter, unread, an age window, newest first, capped --
+   * and refuses a key that is not a shared mailbox's folder, and a search with no
+   * criteria.
+   */
+  @Test
+  void anAgentsSearchOfASharedMailboxReadsItsMirror() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(aSharedMailboxRow());
+    Email budget = mirrored(1L, "Budget 2027", "carol@acme.com", false, 1);
+    Email invoice = mirrored(2L, "Invoice", "budget-office@acme.com", true, 2);
+    Email old = mirrored(3L, "Old budget", "dave@acme.com", false, 40);
+    Email other = mirrored(4L, "Lunch", "erin@acme.com", false, 1);
+    when(emailBoxStorage.getEmails(TEST_USER, "CUSTOM:8")).thenReturn(List.of(old, other, invoice, budget));
+
+    EmailSearchResultPage page = emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", "budget", null, false, null, 10);
+    assertEquals(3, page.getTotalMatches(), "subject or sender");
+    assertEquals(List.of(1L, 2L, 3L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList(), "newest first");
+    assertEquals("CUSTOM:8", page.getResults().get(0).getFolder());
+
+    assertEquals(List.of(1L, 3L),
+                 emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", "budget", null, true, null, 10)
+                                .getResults()
+                                .stream()
+                                .map(EmailSearchResult::getMailRemoteId)
+                                .toList(),
+                 "unread only");
+    assertEquals(List.of(1L, 2L),
+                 emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", "budget", null, false, 7, 10)
+                                .getResults()
+                                .stream()
+                                .map(EmailSearchResult::getMailRemoteId)
+                                .toList(),
+                 "the last 7 days");
+    assertEquals(List.of(2L),
+                 emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", null, "budget-office", false, null, 10)
+                                .getResults()
+                                .stream()
+                                .map(EmailSearchResult::getMailRemoteId)
+                                .toList(),
+                 "the sender only");
+    assertEquals(1, emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", "budget", null, false, null, 1).getResults().size());
+
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", " ", null, false, null, 10),
+                 "no criteria");
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:3", "budget", null, false, null, 10),
+                 "not a shared mailbox's folder");
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailBoxService.searchSharedMailboxMirror(TEST_USER, MailFolder.INBOX, "budget", null, false, null, 10),
+                 "the user's own inbox is not searched here");
+  }
+
+  /**
+   * One mirrored message of a shared mailbox's folder.
+   *
+   * @param uid its UID
+   * @param subject its subject
+   * @param from its sender's address
+   * @param read whether it is read
+   * @param daysAgo how many days ago it was received
+   * @return the row
+   */
+  private Email mirrored(long uid, String subject, String from, boolean read, int daysAgo) {
+    Email email = email(TEST_USER);
+    email.setMailRemoteId(uid);
+    email.setFolder("CUSTOM:8");
+    email.setSubject(subject);
+    email.setSender(new EmailSender(null, from, null, null));
+    email.setRead(read);
+    email.setReceivedDate(new Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(daysAgo)));
+    return email;
+  }
+
+  /**
    * The cached search leaves the shared mailboxes out -- phase 1 offers them nowhere in
    * the unified search -- and a user who shares nothing reads exactly as before.
    */

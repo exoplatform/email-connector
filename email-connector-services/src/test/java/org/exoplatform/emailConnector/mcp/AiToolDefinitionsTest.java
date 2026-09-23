@@ -93,11 +93,45 @@ class AiToolDefinitionsTest {
       assertTrue(tool != null && tool.path("require_approval").asBoolean(false),
                  "Tool " + name + " must carry require_approval: true");
     }
-    for (String name : Set.of("search_contacts", "get_contact", "suggest_recipients")) {
+    for (String name : Set.of("search_contacts", "get_contact", "suggest_recipients", "list_shared_mailboxes")) {
       JsonNode tool = definitions.get(name);
       assertFalse(tool == null || tool.path("require_approval").asBoolean(false),
                   "Read tool " + name + " must not be approval-gated");
     }
+  }
+
+  /**
+   * EXO-90555 -- a tool that takes a {@code mailbox} declares it, and a tool that
+   * declares one takes it: an undeclared parameter is never sent by an agent, so the
+   * tool would silently act on the user's own mailbox; a declared one the method lacks
+   * is dropped, with the same effect. And the one new tool is a read, flagged as such.
+   */
+  @Test
+  void aMailboxParameterIsDeclaredWhereverAToolTakesIt() throws Exception {
+    Map<String, JsonNode> definitions = readDefinitions();
+    Set<String> taking = new TreeSet<>();
+    for (Method method : EmailMcpTool.class.getDeclaredMethods()) {
+      if (!Modifier.isPublic(method.getModifiers()) || method.isSynthetic()) {
+        continue;
+      }
+      for (java.lang.reflect.Parameter parameter : method.getParameters()) {
+        assertTrue(parameter.isNamePresent(), "compiled with -parameters, or tool arguments bind to null");
+        if ("mailbox".equals(parameter.getName())) {
+          taking.add(toSnakeCase(method.getName()));
+        }
+      }
+    }
+    Set<String> declaring = new TreeSet<>();
+    definitions.forEach((name, tool) -> {
+      if (tool.path("input_schema").path("properties").has("mailbox")) {
+        declaring.add(name);
+      }
+    });
+    assertEquals(declaring, taking);
+    assertEquals(16, taking.size(), "every email tool but the account, the categories and the listing of shares");
+    JsonNode listing = definitions.get("list_shared_mailboxes");
+    assertTrue(listing.path("annotations").path("readOnlyHint").asBoolean(false), "a read");
+    assertFalse(listing.path("annotations").path("destructiveHint").asBoolean(true), "not destructive");
   }
 
   /**

@@ -5534,6 +5534,117 @@ public class EmailBoxService {
   }
 
   /**
+   * One message of a mailbox shared with the user by its local id -- what an agent that
+   * named that mailbox is handed (EXO-90555), the counterpart of
+   * {@link #getOwnMailboxEmailById}. The row must be the user's (its mirror) AND sit in
+   * a folder registered for THAT share, which is read by DELEGATION_ID
+   * ({@link EmailDelegationService#getMailboxFolderKeys}) rather than inferred from the
+   * folder key: a row of the user's own mailbox, or of another share, is answered as not
+   * found, like an id that is not theirs.
+   *
+   * @param id the local id
+   * @param username the reader
+   * @param delegationId the share the agent named, as the delegation service resolved it
+   * @return the message, null when it is not in that shared mailbox
+   * @throws IllegalAccessException if the row belongs to somebody else
+   */
+  // Transactional on its own account, for the reason getOwnMailboxEmailById is.
+  @Transactional(noRollbackFor = IllegalAccessException.class)
+  public Email getSharedMailboxEmailById(long id, String username, long delegationId) throws IllegalAccessException {
+    Email email = getOwnedEmailById(id, username);
+    if (email == null || !emailDelegationService.getMailboxFolderKeys(username, delegationId).contains(email.getFolder())) {
+      return null;
+    }
+    return email;
+  }
+
+  /**
+   * Searches one folder of a mailbox shared with the user in the user's mirror of it
+   * (EXO-90555) -- what an agent's search of a shared mailbox reads. The mirror, not the
+   * mail server: the rows are the ones the shared mailbox's sync brought in, so an
+   * answer covers what that folder's mirror holds and says so through its caller.
+   * <p>
+   * The same criteria as {@link #searchEmails}: free text over the subject or the
+   * sender, a sender filter, unread only, an age window -- at least one of them.
+   *
+   * @param username the reader
+   * @param folderKey the shared folder's key, as
+   *          {@link EmailDelegationService#getMirroredFolderKey} resolved it
+   * @param query free text matched against the subject or the sender, may be blank
+   * @param from text matched against the sender only, may be blank
+   * @param unreadOnly only unread messages
+   * @param sinceDays only messages received in the last N days, null for all
+   * @param limit how many hits to return, newest first
+   * @return the newest matching mirrored messages and how many matched
+   * @throws IllegalAccessException if the user may not read their mailbox
+   * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for a key
+   *           that is not a folder of a mailbox shared with the user, and the codes
+   *           {@link #searchEmails} raises for its criteria
+   */
+  public EmailSearchResultPage searchSharedMailboxMirror(String username,
+                                                         String folderKey,
+                                                         String query,
+                                                         String from,
+                                                         boolean unreadOnly,
+                                                         Integer sinceDays,
+                                                         int limit) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEARCH_EMAIL_MESSAGE, username));
+    }
+    if (emailDelegationService.delegationOf(username, folderKey) == null) {
+      throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
+    }
+    if (sinceDays != null && sinceDays < 0) {
+      throw new IllegalArgumentException("emailConnector.search.invalidSinceDays");
+    }
+    String term = StringUtils.trimToNull(query);
+    String sender = StringUtils.trimToNull(from);
+    if (term == null && sender == null && !unreadOnly && sinceDays == null) {
+      throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
+    }
+    Date since = sinceDays == null ? null : new Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(sinceDays));
+    List<Email> matches = emailBoxStorage.getEmails(username, folderKey)
+                                         .stream()
+                                         .filter(email -> !unreadOnly || !email.isRead())
+                                         .filter(email -> since == null
+                                             || email.getReceivedDate() != null && !email.getReceivedDate().before(since))
+                                         .filter(email -> sender == null || senderMatches(email, sender))
+                                         .filter(email -> term == null || StringUtils.containsIgnoreCase(email.getSubject(), term)
+                                             || senderMatches(email, term))
+                                         .sorted(Comparator.comparing(Email::getReceivedDate,
+                                                                      Comparator.nullsLast(Comparator.reverseOrder())))
+                                         .toList();
+    List<EmailSearchResult> results = matches.stream()
+                                             .limit(Math.min(Math.max(limit, 1), SEARCH_MAX_RESULTS))
+                                             .map(email -> new EmailSearchResult(email.getMailRemoteId(),
+                                                                                 folderKey,
+                                                                                 email.getSubject(),
+                                                                                 email.getSender(),
+                                                                                 email.getReceivedDate(),
+                                                                                 email.isRead(),
+                                                                                 email.isStarred(),
+                                                                                 true,
+                                                                                 null))
+                                             .toList();
+    return new EmailSearchResultPage(results, matches.size());
+  }
+
+  /**
+   * Whether a message's sender -- name or address -- contains a text, ignoring case.
+   *
+   * @param email the message
+   * @param text the text
+   * @return true when it does
+   */
+  private static boolean senderMatches(Email email, String text) {
+    EmailSender sender = email.getSender();
+    return sender != null
+        && (StringUtils.containsIgnoreCase(sender.getName(), text) || StringUtils.containsIgnoreCase(sender.getAddress(), text));
+  }
+
+  /**
    * Marks the scheduled drafts among some rows of a user (EXO-90434): each draft with a
    * schedule row gets {@code scheduled}, its date, zone and status, so every read that
    * shows a draft can show it as scheduled and read-only. One read of the schedule table

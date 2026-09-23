@@ -1583,6 +1583,80 @@ class EmailDelegationServiceTest {
   }
 
   /**
+   * EXO-90555 -- an agent's mailbox argument resolves among the caller's own accepted
+   * shares, by address or owner username, whatever the case -- and to nothing else: the
+   * same mailbox shared but pending, declined, revoked or gone, a blank name and a name
+   * nobody shared are all the same "not found".
+   */
+  @Test
+  void anAgentsMailboxIsOneOfTheCallersAcceptedShares() throws Exception {
+    EmailDelegation share = aDovecotShare();
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(sharedInbox(share)));
+    when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(share));
+
+    assertEquals(100L, service.getSharedMailbox(GRANTEE, OWNER_MAILBOX).delegationId());
+    assertEquals(100L, service.getSharedMailbox(GRANTEE, " ALICE@acme.com ").delegationId(), "the address, any case");
+    assertEquals(100L, service.getSharedMailbox(GRANTEE, OWNER).delegationId(), "the owner's username");
+    assertThrows(ObjectNotFoundException.class, () -> service.getSharedMailbox(GRANTEE, "carol@acme.com"));
+    assertThrows(ObjectNotFoundException.class, () -> service.getSharedMailbox(GRANTEE, "  "), "blank is never a mailbox");
+    assertThrows(ObjectNotFoundException.class, () -> service.getSharedMailbox(GRANTEE, GRANTEE_MAILBOX), "the caller's own is not a share");
+
+    for (DelegationStatus status : List.of(DelegationStatus.PENDING,
+                                           DelegationStatus.DECLINED,
+                                           DelegationStatus.REVOKED,
+                                           DelegationStatus.GONE,
+                                           DelegationStatus.AVAILABLE)) {
+      share.setStatus(status);
+      assertThrows(ObjectNotFoundException.class,
+                   () -> service.getSharedMailbox(GRANTEE, OWNER_MAILBOX),
+                   "a share that is " + status + " is not found");
+    }
+  }
+
+  /**
+   * EXO-90555 -- a shared mailbox's folder is available to an agent only when it is in
+   * the caller's mirror: the right kind, still listed, opted in, synced at least once,
+   * and readable. A folder that is shared but never synced is "not available", never an
+   * empty folder.
+   */
+  @Test
+  void aSharedFolderIsAvailableOnlyWhenItIsInTheMirror() throws Exception {
+    EmailDelegation share = aDovecotShare();
+    EmailFolder inbox = sharedInbox(share);
+    inbox.setSyncEnabled(true);
+    inbox.setLastSyncDate(new Date());
+    EmailFolder sent = delegated(22L, ROOT + "/Sent", true);
+    sent.setRole(FolderRole.SENT);
+    sent.setRightsCheckDate(new Date());
+    sent.setRights("lrs");
+    EmailFolder archive = delegated(23L, ROOT + "/Archive", true);
+    archive.setRole(FolderRole.ARCHIVE);
+    archive.setLastSyncDate(new Date());
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(inbox, sent, archive));
+    when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(share));
+    SharedMailboxEntry entry = service.getSharedMailbox(GRANTEE, OWNER_MAILBOX);
+
+    assertEquals(inbox.getKey(), service.getMirroredFolderKey(GRANTEE, entry, null), "the synced shared inbox");
+    assertNull(service.getMirroredFolderKey(GRANTEE, entry, "SENT"), "shared, never synced: not available");
+    assertEquals(archive.getKey(), service.getMirroredFolderKey(GRANTEE, entry, "ARCHIVE"));
+    assertEquals(List.of("INBOX", "ARCHIVE"), service.getMirroredFolders(GRANTEE, entry));
+
+    sent.setLastSyncDate(new Date());
+    assertEquals(sent.getKey(), service.getMirroredFolderKey(GRANTEE, entry, "SENT"), "synced once");
+    sent.setRights("l");
+    assertNull(service.getMirroredFolderKey(GRANTEE, entry, "SENT"), "no r on it");
+    sent.setRights("lrs");
+    sent.setMissing(true);
+    assertNull(service.getMirroredFolderKey(GRANTEE, entry, "SENT"), "no longer listed");
+    sent.setMissing(false);
+    sent.setSyncEnabled(false);
+    assertNull(service.getMirroredFolderKey(GRANTEE, entry, "SENT"), "opted out");
+    inbox.setLastSyncDate(null);
+    assertNull(service.getMirroredFolderKey(GRANTEE, entry, "INBOX"), "an inbox not synced yet");
+    assertThrows(IllegalArgumentException.class, () -> service.getMirroredFolderKey(GRANTEE, entry, "TRASH"));
+  }
+
+  /**
    * EXO-90551 -- where a mail sent from a shared mailbox is filed for its owner: the
    * share is the sender's own (another's, or an unknown id, is "not found"), accepted (or
    * a revocation), and the answer is that share's Sent when the sender holds i there --
