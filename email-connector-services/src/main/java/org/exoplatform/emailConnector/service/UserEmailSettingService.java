@@ -218,11 +218,15 @@ public class UserEmailSettingService {
       connected.setEmailAddress(address);
       setUserEmailSetting(connected, username, true);
       eventPublisher.publishEvent(new EmailBoxSyncEvent(username));
-    } catch (IllegalArgumentException e) {
-      throw e;
-    } catch (Exception e) {
-      LOG.error("Error when connecting store for user {} through its provider", username, e);
-      throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+    } catch (ConnectorCredentialsException | MessagingException e) {
+      // A refusal: the provider produced no material for this user, or the mail
+      // server would not open the mailbox with it. Routine, not an incident -
+      // since EXO-89653 it happens at every attempt for every unattached managed
+      // user - so the stack goes to debug and the cause travels with the
+      // exception, for the caller to say why. Anything else is not a refusal and
+      // propagates as it is.
+      LOG.debug("Error when connecting store for user {} through its provider", username, e);
+      throw new IllegalStateException(String.format("Error when connecting store for user %s", username), e);
     } finally {
       try {
         if (store != null && store.isConnected()) {
