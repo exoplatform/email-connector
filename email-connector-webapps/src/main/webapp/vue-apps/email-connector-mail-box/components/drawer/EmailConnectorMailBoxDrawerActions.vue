@@ -93,7 +93,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="error--text">fa-trash</v-icon>
       </v-btn>
       <v-btn
-        v-if="canApplyJunkActions"
+        v-if="canApplyNotJunk"
         :title="$t('emailConnector.mailBox.list.drawer.detail.notJunk.label')"
         @click="restoreFromJunk()"
         icon>
@@ -209,7 +209,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <span class="error--text"> {{ $t('emailConnector.mailBox.list.drawer.detail.discard.label') }} </span>
       </v-btn>
       <v-btn
-        v-if="canApplyJunkActions"
+        v-if="canApplyNotJunk"
         @click="restoreFromJunk()"
         outlined
         class="btn btn-primary font-weight-bold">
@@ -435,6 +435,18 @@ export default {
       return this.hasSelectedEmails
         && this.selectedEmails.every(emailId =>
           this.$emailConnectorMailBoxService.hasJunkActions(this.emailsMap[emailId]?.folder));
+    },
+    /**
+     * Whether "Not spam" may be offered on the selection: the Spam actions apply, and
+     * every row is in the user's own Spam -- out of a shared mailbox's it would file
+     * into another mailbox (EXO-90548).
+     *
+     * @returns {Boolean} true when "Not spam" may be offered
+     */
+    canApplyNotJunk() {
+      return this.canApplyJunkActions
+        && this.selectedEmails.every(emailId =>
+          this.$emailConnectorMailBoxService.canRestoreFromJunk(this.emailsMap[emailId]?.folder));
     },
     /**
      * Whether the selection may be reported as spam: every selected row must be one
