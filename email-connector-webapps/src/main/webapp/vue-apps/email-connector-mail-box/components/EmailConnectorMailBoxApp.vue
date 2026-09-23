@@ -45,10 +45,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <!-- Taking mail out of a mailbox somebody shared with the user, asked once per
          session per mailbox (delegation plan 7.6), from wherever it was asked. -->
     <email-connector-shared-mailbox-confirm-popup />
-    <!-- The settings' "Shared with you" drawer, reused whole, opened by the mailbox
-         switcher's "Manage shared mailboxes" (plan 7.3); registered by the user-setting
-         bundle, like the folders drawers above. -->
-    <email-connector-user-setting-shared-with-me-drawer />
+    <!-- The settings' "Mailbox sharing" drawer, reused whole, opened on its "Shared with
+         me" tab by the mailbox switcher's "Manage shared mailboxes" (plan 7.3), with the
+         invite drawer its other tab's Share button opens; both registered by the
+         user-setting bundle, like the folders drawers above. -->
+    <email-connector-user-setting-mailbox-sharing-drawer />
+    <email-connector-user-setting-sharing-invite-drawer />
     <email-connector-mail-box-move-to-folder-drawer />
     <email-connector-mail-box-drawer-attachments-drawer />
     <email-connector-mail-box-drawer-list-item-action-menu-drawer />
