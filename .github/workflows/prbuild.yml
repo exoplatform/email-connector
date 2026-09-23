@@ -6,6 +6,7 @@ on:
       - stable/*
       - feature/maintenance
       - feature/mips
+      - feature/ai-contribution
 concurrency:
   group: pr-${{ github.ref }}
   cancel-in-progress: true
