@@ -170,6 +170,39 @@ public class EmailFolderStorageTest {
   }
 
   /**
+   * EXO-90548, live on Stalwart -- after the owner extends a share, its discovery is due
+   * at once: the stamp of that share's INBOX row (the throttle's clock) is cleared for
+   * every grantee, and nothing else moves -- not its other folders' letters and stamps,
+   * not another share's INBOX.
+   */
+  @Test
+  void anOwnersChangeMakesThatSharesDiscoveryDueAndNothingElse() {
+    EmailFolder inbox = newFolder("gina", "Shared Folders/alice@stalwart.local/Inbox", "Inbox");
+    inbox.setType(MailFolderView.TYPE_DELEGATED_INBOX);
+    inbox.setDelegationId(7L);
+    inbox.setRightsCheckDate(new Date(1_000L));
+    EmailFolder sent = newFolder("gina", "Shared Folders/alice@stalwart.local/Sent Items", "Sent Items");
+    sent.setType(MailFolderView.TYPE_DELEGATED);
+    sent.setDelegationId(7L);
+    sent.setRights("lrswite");
+    sent.setRightsCheckDate(new Date(2_000L));
+    EmailFolder otherInbox = newFolder("gina", "Shared Folders/carol@stalwart.local/Inbox", "Inbox");
+    otherInbox.setType(MailFolderView.TYPE_DELEGATED_INBOX);
+    otherInbox.setDelegationId(8L);
+    otherInbox.setRightsCheckDate(new Date(3_000L));
+    long inboxId = emailFolderStorage.createFolder(inbox).getId();
+    long sentId = emailFolderStorage.createFolder(sent).getId();
+    long otherId = emailFolderStorage.createFolder(otherInbox).getId();
+
+    emailFolderStorage.markDiscoveryDue(7L);
+
+    assertNull(emailFolderStorage.getFolder("gina", inboxId).getRightsCheckDate(), "that share's discovery is due");
+    assertEquals(2_000L, emailFolderStorage.getFolder("gina", sentId).getRightsCheckDate().getTime(), "its folders' letters stand");
+    assertEquals("lrswite", emailFolderStorage.getFolder("gina", sentId).getRights());
+    assertEquals(3_000L, emailFolderStorage.getFolder("gina", otherId).getRightsCheckDate().getTime(), "another share is not touched");
+  }
+
+  /**
    * The sync job's writes are guarded by the opt-in at the statement level: a
    * checkpoint or a snapshot written after an opt-out changes nothing, so a sync that
    * was in flight when the user switched the folder off cannot re-plant the memory the

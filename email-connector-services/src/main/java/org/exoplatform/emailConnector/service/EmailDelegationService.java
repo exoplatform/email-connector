@@ -364,6 +364,11 @@ public class EmailDelegationService {
     delegation.setRevokedDate(null);
     delegation.setLastRightsCheckDate(now);
     delegation = existing == null ? emailDelegationStorage.create(delegation) : emailDelegationStorage.update(delegation);
+    if (existing != null) {
+      // A re-grant of a row the grantee may still have registered: their folders follow
+      // at the next pass.
+      emailFolderStorage.markDiscoveryDue(delegation.getId());
+    }
     LOG.info("Mailbox delegation granted: actor={} ownerMailbox={} grantee={} identifier={} rights={} folders={}",
              ownerUsername,
              ownerMailbox,
@@ -563,6 +568,8 @@ public class EmailDelegationService {
       // and offers the share again if this grant landed after the revoke.
       throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
     }
+    // The grantee's folders follow at their next pass, not a quarter-hour later.
+    emailFolderStorage.markDiscoveryDue(id);
     LOG.info("Mailbox delegation changed: actor={} ownerMailbox={} grantee={} identifier={} rights={}",
              ownerUsername,
              delegation.getOwnerMailbox(),
@@ -672,6 +679,9 @@ public class EmailDelegationService {
       // Revoked or gone meanwhile: the owner's next reconcile reads the server's ACL.
       throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
     }
+    // The folders just shared show at the grantee's next pass, not a quarter-hour later
+    // (live on Stalwart: an Extend left the delegate on the Inbox alone).
+    emailFolderStorage.markDiscoveryDue(id);
     if (keptSeen != inboxRights.canKeepSeen()) {
       publish(EmailDelegationEvent.Type.RIGHTS_CHANGED, ownerUsername, delegation);
     }
