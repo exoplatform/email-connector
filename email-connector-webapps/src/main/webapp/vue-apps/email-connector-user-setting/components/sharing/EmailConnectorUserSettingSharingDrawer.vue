@@ -56,57 +56,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ $t('UserSettings.emailConnector.sharing.none') }}
         </div>
         <v-list class="pa-0">
-          <v-list-item
+          <email-connector-user-setting-grantee-row
             v-for="grantee in grantees"
             :key="grantee.identifier"
-            class="height-auto">
-            <v-list-item-content class="py-2">
-              <!-- The platform's own avatar component resolves the person from the
-                   username: this screen has a username and nothing else, and it is
-                   not the place to learn how to look somebody up. An ACL identifier
-                   that maps to no eXo user is written out as the server holds it. -->
-              <user-avatar
-                v-if="grantee.granteeId"
-                :profile-id="grantee.granteeId"
-                avatar
-                fullname
-                class="mb-1" />
-              <template v-else>
-                <v-list-item-title>{{ grantee.identifier }}</v-list-item-title>
-                <v-list-item-subtitle class="caption text-sub-title text-wrap">
-                  {{ $t('UserSettings.emailConnector.sharing.notAnExoUser') }}
-                </v-list-item-subtitle>
-              </template>
-              <email-connector-delegation-rights
-                :preset="grantee.preset"
-                :rights="grantee.rights"
-                :native-rights="grantee.nativeRights"
-                :affordances="grantee.affordances"
-                class="my-1" />
-              <!-- A share the mail server holds and eXo never wrote is said to be
-                   exactly that. Presenting it as something eXo granted would invite
-                   the owner to reason about it with eXo's two presets, which is the
-                   one thing it may not be. -->
-              <v-list-item-subtitle v-if="discovered(grantee)" class="caption text-sub-title text-wrap">
-                {{ $t('UserSettings.emailConnector.sharing.origin.SERVER') }}
-              </v-list-item-subtitle>
-              <v-list-item-subtitle v-if="statusLabel(grantee)" class="caption text-sub-title">
-                {{ statusLabel(grantee) }}
-              </v-list-item-subtitle>
-            </v-list-item-content>
-            <v-list-item-action>
-              <!-- Only a row eXo can name has a Remove button: revoking goes through
-                   the delegation id, and a raw ACL identifier has none. -->
-              <v-btn
-                v-if="grantee.delegation && grantee.delegation.id"
-                :title="$t('UserSettings.emailConnector.sharing.revoke')"
-                icon
-                :disabled="revokingId !== null"
-                @click="openRevoke(grantee)">
-                <v-icon size="16">fas fa-trash</v-icon>
-              </v-btn>
-            </v-list-item-action>
-          </v-list-item>
+            :grantee="grantee"
+            :disabled="revokingId !== null || changingId !== null"
+            @change-preset="askChangePreset(grantee, $event)"
+            @revoke="openRevoke(grantee)" />
         </v-list>
       </template>
       <!-- Inside the content slot: exo-drawer renders named slots only, and anything
@@ -118,6 +74,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :ok-label="$t('UserSettings.emailConnector.sharing.revoke')"
         :cancel-label="$t('UserSettings.emailConnector.sharing.cancel')"
         @ok="doRevoke" />
+      <!-- Setting a preset REPLACES the person's entry on the mail server. On an access
+           written there (or with letters no preset names) that drops whatever else it
+           held, so it is asked first, saying so. -->
+      <exo-confirm-dialog
+        ref="replaceConfirmDialog"
+        :title="$t('UserSettings.emailConnector.sharing.replace.confirm.title')"
+        :message="$t('UserSettings.emailConnector.sharing.replace.confirm.message')"
+        :ok-label="$t('UserSettings.emailConnector.sharing.replace.confirm.ok')"
+        :cancel-label="$t('UserSettings.emailConnector.sharing.cancel')"
+        @ok="confirmChangePreset" />
     </template>
     <template #footer>
       <div class="d-flex align-center">
@@ -131,7 +97,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+// The row is this drawer's own part, registered here: nothing else shows it.
+import EmailConnectorUserSettingGranteeRow from './EmailConnectorUserSettingGranteeRow.vue';
+
 export default {
+  components: {
+    'email-connector-user-setting-grantee-row': EmailConnectorUserSettingGranteeRow,
+  },
   data: () => ({
     drawer: false,
     loading: false,
@@ -140,6 +112,9 @@ export default {
     grantees: [],
     revokingId: null,
     revokeTarget: null,
+    changingId: null,
+    // The change of access waiting for the replace confirmation: {grantee, preset}.
+    pendingChange: null,
   }),
   computed: {
     /**
@@ -211,7 +186,7 @@ export default {
           this.capabilities = null;
           this.grantees = [];
           this.loaded = false;
-          this.$root.$emit('alert-message', this.messageOf(error, 'UserSettings.emailConnector.sharing.error'), 'error');
+          this.showAlert(this.messageOf(error, 'UserSettings.emailConnector.sharing.error'), 'error');
         })
         .finally(() => this.loading = false);
     },
@@ -282,10 +257,10 @@ export default {
       }
       this.revokingId = id;
       this.$emailConnectorUserSettingService.revokeDelegation(id)
-        .then(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.sharing.revoked'), 'success'))
+        .then(() => this.showAlert(this.$t('UserSettings.emailConnector.sharing.revoked'), 'success'))
         .catch(error => {
           const message = this.messageOf(error, 'UserSettings.emailConnector.sharing.revoke.error');
-          this.$root.$emit('alert-message', message, 'error');
+          this.showAlert(message, 'error');
         })
         .finally(() => {
           this.revokingId = null;
@@ -293,6 +268,71 @@ export default {
           this.load();
           this.$root.$emit('email-delegations-updated');
         });
+    },
+    /**
+     * A row's "Change access": at once for an access eXo wrote as a preset; after a
+     * confirmation for one written on the mail server or reading as no preset, whose
+     * entry the change replaces -- rights eXo never names included.
+     *
+     * @param {Object} grantee the row
+     * @param {String} preset READER or EDITOR
+     * @returns {void}
+     */
+    askChangePreset(grantee, preset) {
+      const serverMade = !grantee?.delegation || grantee.delegation.origin === 'SERVER';
+      const custom = grantee?.preset !== 'READER' && grantee?.preset !== 'EDITOR';
+      if (serverMade || custom) {
+        this.pendingChange = { grantee, preset };
+        this.$refs.replaceConfirmDialog.open();
+        return;
+      }
+      this.changePreset(grantee, preset);
+    },
+    /**
+     * Makes the change the replace confirmation was asked for.
+     *
+     * @returns {void}
+     */
+    confirmChangePreset() {
+      const change = this.pendingChange;
+      this.pendingChange = null;
+      if (change) {
+        this.changePreset(change.grantee, change.preset);
+      }
+    },
+    /**
+     * Changes a person's access to another preset, on the mail server, and shows the
+     * list as the server now holds it.
+     *
+     * @param {Object} grantee the row
+     * @param {String} preset READER or EDITOR
+     * @returns {void}
+     */
+    changePreset(grantee, preset) {
+      const id = grantee?.delegation?.id;
+      if (!id) {
+        return;
+      }
+      this.changingId = id;
+      this.$emailConnectorUserSettingService.changeDelegationPreset(id, preset)
+        .then(() => this.showAlert(this.$t('UserSettings.emailConnector.sharing.changed'), 'success'))
+        .catch(error => this.showAlert(this.messageOf(error, 'UserSettings.emailConnector.sharing.change.error'), 'error'))
+        .finally(() => {
+          this.changingId = null;
+          this.load();
+          this.$root.$emit('email-delegations-updated');
+        });
+    },
+    /**
+     * Shows a message on the platform's toast, through the document event it listens
+     * to.
+     *
+     * @param {String} message the message
+     * @param {String} type success or error
+     * @returns {void}
+     */
+    showAlert(message, type) {
+      document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: type, alertMessage: message}}));
     },
     /**
      * The server's own message code in the user's words when the bundle has it, the
