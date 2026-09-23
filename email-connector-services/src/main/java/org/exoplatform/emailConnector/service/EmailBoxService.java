@@ -5422,6 +5422,11 @@ public class EmailBoxService {
    * @return the message, null when it is not in the user's own mailbox
    * @throws IllegalAccessException if the row belongs to somebody else
    */
+  // Transactional on its own account, as getOwnedEmailById is: the call below is on
+  // this instance, so it bypasses the proxy and runs without that method's transaction,
+  // and an agent's thread has no request session to fall back on -- the message's lazy
+  // attachments then fail to load (live regression, MCP get_email_by_id).
+  @Transactional(noRollbackFor = IllegalAccessException.class)
   public Email getOwnMailboxEmailById(long id, String username) throws IllegalAccessException {
     Email email = getOwnedEmailById(id, username);
     if (email != null && emailDelegationService.delegationOf(username, email.getFolder()) != null) {
