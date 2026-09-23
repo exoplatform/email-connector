@@ -153,6 +153,23 @@ do not, because turning one off only stops a READ (see their subtitles).
               @change="onCustomFoldersChange" />
           </v-list-item-action>
         </v-list-item>
+        <v-list-item dense class="px-0 height-auto mt-6">
+          <v-list-item-content class="py-0">
+            <v-list-item-title>
+              {{ $t('emailConnector.admin.syncSettings.sharedMailboxSentCopy.title') }}
+            </v-list-item-title>
+            <v-list-item-subtitle class="text-wrap text-light-color">
+              {{ $t('emailConnector.admin.syncSettings.sharedMailboxSentCopy.subtitle') }}
+            </v-list-item-subtitle>
+          </v-list-item-content>
+          <v-list-item-action class="my-0">
+            <v-switch
+              :input-value="sharedMailboxSentCopyEnabled"
+              :loading="savingSharedMailboxSentCopy"
+              :disabled="savingSharedMailboxSentCopy"
+              @change="onSharedMailboxSentCopyChange" />
+          </v-list-item-action>
+        </v-list-item>
       </div>
       <confirm-dialog
         ref="cacheSizeConfirmDialog"
@@ -198,6 +215,8 @@ export default {
       savingDraftsServer: false,
       customFoldersEnabled: true,
       savingCustomFolders: false,
+      sharedMailboxSentCopyEnabled: true,
+      savingSharedMailboxSentCopy: false,
     };
   },
   created() {
@@ -255,6 +274,8 @@ export default {
         .then(enabled => this.draftsServerEnabled = enabled);
       this.$emailConnectorAdministrationService.getCustomFoldersEnabled()
         .then(enabled => this.customFoldersEnabled = enabled);
+      this.$emailConnectorAdministrationService.getSharedMailboxSentCopyEnabled()
+        .then(enabled => this.sharedMailboxSentCopyEnabled = enabled);
     },
     /**
      * Opens the confirmation before applying a cache size change — every
@@ -368,6 +389,21 @@ export default {
         .then(() => this.customFoldersEnabled = enabled)
         .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error'))
         .finally(() => this.savingCustomFolders = false);
+    },
+    /**
+     * Saves the switch of the copy into a shared mailbox owner's Sent folder on change
+     * (EXO-90551). Nothing already filed is touched either way, so it saves on change,
+     * like the custom-folders switch.
+     *
+     * @param {Boolean} enabled the new switch value
+     * @returns {void}
+     */
+    onSharedMailboxSentCopyChange(enabled) {
+      this.savingSharedMailboxSentCopy = true;
+      this.$emailConnectorAdministrationService.updateSharedMailboxSentCopyEnabled(enabled)
+        .then(() => this.sharedMailboxSentCopyEnabled = enabled)
+        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error'))
+        .finally(() => this.savingSharedMailboxSentCopy = false);
     },
   },
 };

@@ -294,6 +294,7 @@ public class UserEmailSettingRestTest {
                                                                                                                                            MailboxRights.of("lrs")
                                                                                                                                                         .affordances(),
                                                                                                                                            true)),
+                                                                                                           true,
                                                                                                            true)));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/mailboxes").with(testSimpleUser()))
            .andExpect(status().isOk())
@@ -310,7 +311,9 @@ public class UserEmailSettingRestTest {
            .andExpect(jsonPath("$[0].folders[0].readable").value(true))
            .andExpect(jsonPath("$[0].folders[0].affordances.delete").value(false))
            // What the band says: from the share, not from the folders found.
-           .andExpect(jsonPath("$[0].inboxOnly").value(true));
+           .andExpect(jsonPath("$[0].inboxOnly").value(true))
+           // EXO-90551: whether the composer's copy into the owner's Sent will be filed.
+           .andExpect(jsonPath("$[0].sentCopy").value(true));
     verify(emailDelegationService).getSharedMailboxes(SIMPLE_USER);
   }
 

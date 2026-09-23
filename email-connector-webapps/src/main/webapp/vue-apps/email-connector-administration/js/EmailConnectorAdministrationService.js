@@ -453,6 +453,49 @@ export function updateCustomFoldersEnabled(enabled) {
   });
 }
 
+/**
+ * Whether a mail sent from a shared mailbox is also filed in its owner's Sent folder,
+ * administration-wide (EXO-90551).
+ *
+ * @returns {Promise<Boolean>} the switch
+ */
+export function getSharedMailboxSentCopyEnabled() {
+  return fetch('/email-connector/rest/connectors/shared-mailbox-sent-copy', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the shared mailbox Sent copy switch');
+    }
+  });
+}
+
+/**
+ * Switches the copy of a shared mailbox's sent mail into its owner's Sent folder on or
+ * off, administration-wide (EXO-90551).
+ *
+ * @param {Boolean} enabled whether the copy should be filed
+ * @returns {Promise} resolved once saved
+ */
+export function updateSharedMailboxSentCopyEnabled(enabled) {
+  return fetch(`/email-connector/rest/connectors/shared-mailbox-sent-copy?enabled=${enabled}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PATCH'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating the shared mailbox Sent copy switch');
+    }
+  });
+}
+
 export function deleteEmailConnector(emailConnectorId) {
   return fetch(`/email-connector/rest/connectors/${emailConnectorId}`, {
     headers: {
