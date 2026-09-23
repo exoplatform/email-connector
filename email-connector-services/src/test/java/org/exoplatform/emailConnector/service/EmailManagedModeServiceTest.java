@@ -142,6 +142,23 @@ public class EmailManagedModeServiceTest {
     assertFalse(mode.managedForMe());
   }
 
+  /**
+   * The login-time read: the designated id when the choice applies to this user, null
+   * otherwise - commons-exo's verdict passed through, the kind fixed. An anonymous
+   * caller gets null without commons-exo being asked.
+   */
+  @Test
+  public void namesTheConnectorToAttachAUserToAtLogin() {
+    designated(700);
+    when(managedConnectorService.designatedConnectorFor(KIND, USER)).thenReturn(700L);
+    when(managedConnectorService.designatedConnectorFor(KIND, "excluded")).thenReturn(null);
+
+    assertEquals(700L, emailManagedModeService.designatedConnectorFor(USER));
+    assertNull(emailManagedModeService.designatedConnectorFor("excluded"));
+    assertNull(emailManagedModeService.designatedConnectorFor(" "));
+    verify(managedConnectorService, never()).designatedConnectorFor(KIND, " ");
+  }
+
   /** Managed mode is deliberately ON here: the refusal comes from having no user. */
   @Test
   public void anAnonymousCallerIsNeverManaged() {
