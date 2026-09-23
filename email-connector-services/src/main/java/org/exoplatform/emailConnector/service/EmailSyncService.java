@@ -125,6 +125,13 @@ public class EmailSyncService {
    * straight past a {@code RuntimeException} guard, and silently ended every one of
    * its runs mid-pass. A pass that dispatches mailboxes on everyone's behalf cannot
    * let one mailbox end the pass.
+   * <p>
+   * <b>No transaction here, on purpose</b> (EXO-90573): each claim is a DAO update
+   * that commits on its own before its mailbox reaches a pool thread, whose release
+   * is conditioned on it; a tick-wide transaction would hold every claim until the
+   * tick ends. {@link #runClaimed} is called on {@code this} from the pool thread and
+   * still gets its container, because {@link ContainerTransactional} is woven by ajc
+   * into the method body, not applied by the Spring proxy.
    *
    * @return how many mailboxes were claimed and handed to the executor
    */
