@@ -1381,7 +1381,7 @@ export default {
       }
       // The switcher's entries, read on every opening: a share accepted since the last
       // one is offered. Awaited only when the opening names a shared mailbox (the
-      // App Center shortcut's deep link, plan 7.4) -- that entry is what the band and
+      // mailbox= deep link, plan 7.4) -- that entry is what the band and
       // the listing need, and it is there before the list is asked for.
       const sharedMailboxes = loadSharedMailboxes();
       const sharedMailbox = mailbox ? sharedMailboxById(mailbox)

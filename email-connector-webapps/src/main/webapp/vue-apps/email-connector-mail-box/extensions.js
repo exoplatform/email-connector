@@ -200,9 +200,9 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
   const urlParams = new URLSearchParams(window.location.search);
   const shouldOpenEmailBox = urlParams.get('openEmailBox') === 'true';
   if (shouldOpenEmailBox) {
-    // mailbox=<delegationId> opens a mailbox somebody shared with the user, the App
-    // Center shortcut's link (delegation plan 7.4): the switcher is on it, and its band
-    // shows, before its list has loaded.
+    // mailbox=<delegationId> opens a mailbox somebody shared with the user -- the
+    // mailbox= deep link the notifications carry (delegation plan 7.4): the switcher is
+    // on it, and its band shows, before its list has loaded.
     const mailbox = urlParams.get('mailbox');
     window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, mailbox ? {mailbox} : null));
   }
