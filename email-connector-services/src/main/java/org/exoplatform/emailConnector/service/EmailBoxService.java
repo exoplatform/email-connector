@@ -849,6 +849,9 @@ public class EmailBoxService {
   // the connection's even before the collector looks.
   private final Map<Store, Rediscovery>          rediscoveries         = Collections.synchronizedMap(new WeakHashMap<>());
 
+  /** The shared roots each store lists, computed once per store (EXO-90548). */
+  private final Map<Store, Set<String>>          sharedRootsByStore    = Collections.synchronizedMap(new WeakHashMap<>());
+
   // Mailboxes with a synchronization running right now in THIS JVM, so two can never
   // overlap and cache the same message twice.
   //
@@ -2366,12 +2369,42 @@ public class EmailBoxService {
    * account), and the user's own folders are exactly the ones most likely to be
    * unsubscribed. Paid once per rediscovery, never per sync -- see
    * {@link #walkFoldersIfDue}.
+   * <p>
+   * The walk is the user's own folders only: every folder under a root where the store
+   * lists somebody else's mailbox -- by namespace, by shape, or by the user's own
+   * delegation rows ({@link #sharedRoots}) -- is dropped before anything classifies or
+   * registers it (EXO-90557, EXO-90548).
    *
    * @param store the connected store
    * @return the walk, never null
    * @throws MessagingException if the folder list cannot be read
    */
   private FolderWalk walkFolders(Store store) throws MessagingException {
+    FolderWalk walk = listFolders(store);
+    // The mailboxes other people share with this user are in the same listing, and are
+    // not this user's folders (EXO-90557): kept out before anything classifies or
+    // registers them -- by namespace, by shape, and by the roots of the user's own
+    // delegation rows (EXO-90548).
+    List<DiscoveredFolder> own = emailFolderService.withoutOtherUsersFolders(walk.descriptors(), sharedRoots(store, walk.descriptors()));
+    if (own.size() != walk.descriptors().size()) {
+      Set<DiscoveredFolder> kept = Collections.newSetFromMap(new IdentityHashMap<>());
+      kept.addAll(own);
+      walk.descriptors().removeIf(descriptor -> !kept.contains(descriptor));
+      walk.handles().keySet().removeIf(descriptor -> !kept.contains(descriptor));
+    }
+    return walk;
+  }
+
+  /**
+   * The mailbox's folder listing, unfiltered: the subscribed listing and the full one,
+   * merged as {@link #walkFolders} describes. The full one is needed by the shape rule
+   * too, whose {@code \Noselect} container a subscribed listing may leave out.
+   *
+   * @param store the connected store
+   * @return the listing, never null
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private FolderWalk listFolders(Store store) throws MessagingException {
     Folder defaultFolder = store.getDefaultFolder();
     FolderWalk walk = new FolderWalk(new ArrayList<>(), new IdentityHashMap<>());
     Set<String> seenNames = new HashSet<>();
@@ -2383,17 +2416,47 @@ public class EmailBoxService {
     for (Folder folder : all == null ? new Folder[0] : all) {
       describe(folder, false, walk, seenNames);
     }
-    // The mailboxes other people share with this user are in the same listing, and are
-    // not this user's folders (EXO-90557): kept out before anything classifies or
-    // registers them.
-    List<DiscoveredFolder> own = emailFolderService.withoutOtherUsersFolders(walk.descriptors(), otherUsersNamespaceRoots(store));
-    if (own.size() != walk.descriptors().size()) {
-      Set<DiscoveredFolder> kept = Collections.newSetFromMap(new IdentityHashMap<>());
-      kept.addAll(own);
-      walk.descriptors().removeIf(descriptor -> !kept.contains(descriptor));
-      walk.handles().keySet().removeIf(descriptor -> !kept.contains(descriptor));
-    }
     return walk;
+  }
+
+  /**
+   * Every root under which a store lists somebody else's mailbox, so nothing under it is
+   * ever taken for the connected user's own folder (EXO-90557, EXO-90548): the Other
+   * Users and Shared namespaces the server advertises; on a server that advertises none,
+   * the shape its listing shows ({@link EmailFolderService#sharedRootsByShape}); and,
+   * always, the {@code REMOTE_ROOT} of every delegation row of the account the store was
+   * connected for -- which covers a server whose namespace is not advertised or cannot
+   * be read and whose shared root has no INBOX child (Dovecot's {@code shared/<owner>}
+   * when NAMESPACE fails).
+   * <p>
+   * Computed once per store: the Trash and Archive finders ask on every delete and
+   * archive, and on a server with no namespace the shape costs a listing of its own
+   * ({@code LSUB} and {@code LIST}).
+   *
+   * @param store the connected store
+   * @param listing the store's full listing when the caller already has it, else null
+   * @return the roots, possibly empty, never null
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private Set<String> sharedRoots(Store store, List<DiscoveredFolder> listing) throws MessagingException {
+    Set<String> cached = sharedRootsByStore.get(store);
+    if (cached != null) {
+      return cached;
+    }
+    Set<String> roots = new HashSet<>(otherUsersNamespaceRoots(store));
+    if (roots.isEmpty()) {
+      roots.addAll(emailFolderService.sharedRootsByShape(listing != null ? listing : listFolders(store).descriptors()));
+    }
+    UserEmailSettingService.ConnectedAccount account = userEmailSettingService.getConnectedAccount(store);
+    if (account != null) {
+      roots.addAll(emailDelegationService.getSharedMailboxRoots(account.username(), account.connectorId()));
+    } else {
+      // Every store that walks or files today is connected through the path that
+      // records its account; one that is not would lose this guard silently otherwise.
+      LOG.warn("A folder listing ran on a store with no recorded account: only its namespaces and shape keep shared mailboxes out");
+    }
+    sharedRootsByStore.put(store, roots);
+    return roots;
   }
 
   /**
@@ -14404,13 +14467,14 @@ public class EmailBoxService {
    * @throws MessagingException if the folder list cannot be read
    */
   private IMAPFolder findTrashFolder(Store store) throws MessagingException {
-    List<String> sharedRoots = otherUsersNamespaceRoots(store);
+    // Never a folder of a mailbox somebody shared with this user, on a server with or
+    // without namespaces (EXO-90557, EXO-90548).
+    Set<String> sharedRoots = sharedRoots(store, null);
     for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
       if (!(folder instanceof IMAPFolder)) {
         continue;
       }
       IMAPFolder imapFolder = (IMAPFolder) folder;
-      // Never a folder of a mailbox somebody shared with this user (EXO-90557).
       if (EmailFolderService.isUnderAnyRoot(imapFolder.getFullName(), String.valueOf(imapFolder.getSeparator()), sharedRoots)) {
         continue;
       }
@@ -14470,13 +14534,14 @@ public class EmailBoxService {
    * @throws MessagingException if the folder list cannot be read
    */
   private IMAPFolder findArchiveFolder(Store store) throws MessagingException {
-    List<String> sharedRoots = otherUsersNamespaceRoots(store);
+    // Never a folder of a mailbox somebody shared with this user, on a server with or
+    // without namespaces (EXO-90557, EXO-90548).
+    Set<String> sharedRoots = sharedRoots(store, null);
     for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
       if (!(folder instanceof IMAPFolder)) {
         continue;
       }
       IMAPFolder imapFolder = (IMAPFolder) folder;
-      // Never a folder of a mailbox somebody shared with this user (EXO-90557).
       if (EmailFolderService.isUnderAnyRoot(imapFolder.getFullName(), String.valueOf(imapFolder.getSeparator()), sharedRoots)) {
         continue;
       }

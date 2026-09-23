@@ -17,11 +17,14 @@
 package org.exoplatform.emailConnector.service;
 
 import java.lang.reflect.UndeclaredThrowableException;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.stream.Collectors;
 
 import javax.mail.Authenticator;
@@ -107,6 +110,9 @@ public class UserEmailSettingService {
 
   private static final Log          LOG                                                =
                                         ExoLogger.getLogger(UserEmailSettingService.class);
+
+  /** Whose account each store was connected for; weak, so a closed store is forgotten with it. */
+  private final Map<Store, ConnectedAccount> connectedAccounts = Collections.synchronizedMap(new WeakHashMap<>());
 
   @Autowired
   private SettingService            settingService;
@@ -532,7 +538,36 @@ public class UserEmailSettingService {
   public Store connect(String emailConnectorId,
                        String username) throws MessagingException, ConnectorCredentialsException {
     EmailConnector emailConnector = emailConnectorService.getEmailConnector(Long.parseLong(emailConnectorId));
-    return connect(emailConnector, authenticatorFor(emailConnector, username));
+    Store store = connect(emailConnector, authenticatorFor(emailConnector, username));
+    if (store != null) {
+      connectedAccounts.put(store, new ConnectedAccount(username, emailConnector.getId()));
+    }
+    return store;
+  }
+
+  /**
+   * The account a store was connected for by {@link #connect(String, String)}: the eXo
+   * user and the connector preset. Asked by the code that is handed only a store and
+   * must know whose mailbox it is -- the folder walk and the Trash and Archive finders,
+   * which keep out the folders of the mailboxes shared with that user on that server
+   * (EXO-90548). A store reached another way answers null, and that code says so
+   * (it warns) rather than guessing. Held weakly: a store nobody holds any more is
+   * forgotten with it.
+   *
+   * @param store a connected store
+   * @return the account, or null for a store not connected through that method
+   */
+  public ConnectedAccount getConnectedAccount(Store store) {
+    return store == null ? null : connectedAccounts.get(store);
+  }
+
+  /**
+   * Whose account a store is on.
+   *
+   * @param username the eXo user the store was connected for
+   * @param connectorId the connector preset the account is bound to
+   */
+  public record ConnectedAccount(String username, Long connectorId) {
   }
 
   /**

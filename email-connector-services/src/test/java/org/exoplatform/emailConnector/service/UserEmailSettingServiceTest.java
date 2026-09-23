@@ -689,6 +689,31 @@ public class UserEmailSettingServiceTest {
     }
   }
 
+  /**
+   * EXO-90548 -- a store remembers whose account (user and server) it was connected for, so the folder walk
+   * and the Trash and Archive finders, handed only the store, can keep out the mailboxes
+   * shared with that user. A store not connected here answers nobody.
+   */
+  @Test
+  void aConnectedStoreRemembersItsAccount() throws MessagingException, ConnectorCredentialsException {
+    EmailConnector connector = emailConnector();
+    connector.setId(1L);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(connector);
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any())).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+
+      Store connected = userEmailSettingService.connect(userEmailSetting().getEmailConnectorId(), TEST_USER);
+
+      assertEquals(new UserEmailSettingService.ConnectedAccount(TEST_USER, 1L),
+                   userEmailSettingService.getConnectedAccount(connected));
+      assertNull(userEmailSettingService.getConnectedAccount(mock(Store.class)));
+      assertNull(userEmailSettingService.getConnectedAccount(null));
+    }
+  }
+
   @Test
   void canConnect() throws TokenServiceInitializationException {
     SettingValue userEmailSettingValue = mock(SettingValue.class);

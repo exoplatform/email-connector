@@ -11855,6 +11855,70 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90548 (F6) -- on a server that advertises no namespace (Stalwart), the Trash and
+   * Archive finders still skip a subscribed shared tree, recognised by its shape:
+   * {@code Shared Folders/allan/INBOX} contains "all", {@code Shared Folders/anne/Trash}
+   * is named Trash, and both are listed before the user's own folders.
+   */
+  @Test
+  @SneakyThrows
+  void theLooseFindersSkipASharedTreeOnAServerWithoutNamespaces() {
+    IMAPStore store = mock(IMAPStore.class);
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    IMAPFolder container = listedFolder("Shared Folders", false);
+    IMAPFolder allan = listedFolder("Shared Folders/allan", false);
+    IMAPFolder allanInbox = listedFolder("Shared Folders/allan/INBOX", true);
+    IMAPFolder anne = listedFolder("Shared Folders/anne", false);
+    IMAPFolder anneTrash = listedFolder("Shared Folders/anne/Trash", true);
+    IMAPFolder ownArchive = listedFolder("Archive", true);
+    IMAPFolder ownTrash = listedFolder("Trash", true);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.listSubscribed("*")).thenReturn(new Folder[] { allanInbox, anneTrash, ownArchive, ownTrash });
+    when(root.list("*")).thenReturn(new Folder[] { container, allan, allanInbox, anne, anneTrash, ownArchive, ownTrash });
+
+    assertSame(ownArchive, ReflectionTestUtils.invokeMethod(emailBoxService, "findArchiveFolder", store));
+    assertSame(ownTrash, ReflectionTestUtils.invokeMethod(emailBoxService, "findTrashFolder", store));
+    // The shape costs a listing once per store, not once per delete or archive.
+    verify(root, times(1)).list("*");
+  }
+
+  /**
+   * EXO-90548 -- a shared root no namespace and no shape reveals is still kept out, from
+   * the user's own delegation rows: Dovecot's {@code shared/alice@dovecot.local} holds the
+   * owner's INBOX mail itself and has no INBOX child, so when NAMESPACE cannot be read
+   * only its row names it. Neither the finders nor the walk take its Trash, Archive or
+   * root for the user's own.
+   */
+  @Test
+  @SneakyThrows
+  void aSharedRootOnlyItsDelegationNamesIsKeptOut() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    IMAPFolder sharedRoot = listedFolder("shared", false);
+    IMAPFolder aliceInbox = listedFolder("shared/alice@dovecot.local", true);
+    IMAPFolder aliceTrash = listedFolder("shared/alice@dovecot.local/Trash", true);
+    IMAPFolder aliceArchive = listedFolder("shared/alice@dovecot.local/Archive", true);
+    IMAPFolder factures = listedFolder("Factures", true);
+    IMAPFolder ownArchive = listedFolder("Archive", true);
+    IMAPFolder ownTrash = listedFolder("Trash", true);
+    givenAMailboxListing(sharedRoot, aliceInbox, aliceTrash, aliceArchive, factures, ownArchive, ownTrash);
+    when(userEmailSettingService.getConnectedAccount(any())).thenReturn(new UserEmailSettingService.ConnectedAccount(TEST_USER, 1L));
+    when(emailDelegationService.getSharedMailboxRoots(TEST_USER, 1L)).thenReturn(Set.of("shared/alice@dovecot.local"));
+
+    Store store = userEmailSettingService.connect("1", TEST_USER);
+    assertSame(ownArchive, ReflectionTestUtils.invokeMethod(emailBoxService, "findArchiveFolder", store));
+    assertSame(ownTrash, ReflectionTestUtils.invokeMethod(emailBoxService, "findTrashFolder", store));
+
+    emailBoxService.getFolders(TEST_USER, true);
+
+    ArgumentCaptor<EmailFolder> created = ArgumentCaptor.forClass(EmailFolder.class);
+    verify(emailFolderStorage, atLeastOnce()).createFolder(created.capture());
+    assertEquals(List.of("Factures"), created.getAllValues().stream().map(EmailFolder::getRemoteName).toList(),
+                 "the user's own folder, and none of alice's");
+  }
+
+  /**
    * The Trash and Archive finders skip a folder under an advertised Other Users root,
    * whatever its name says: {@code Other Users/allan/INBOX} contains "all" and was taken
    * for the user's archive, {@code Other Users/anne/Trash} for their Trash.
