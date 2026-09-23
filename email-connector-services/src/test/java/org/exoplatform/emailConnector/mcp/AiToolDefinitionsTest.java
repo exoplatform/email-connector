@@ -31,6 +31,7 @@ import java.util.TreeSet;
 
 import org.junit.jupiter.api.Test;
 
+import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -129,6 +130,9 @@ class AiToolDefinitionsTest {
     });
     assertEquals(declaring, taking);
     assertEquals(16, taking.size(), "every email tool but the account, the categories and the listing of shares");
+    String search = definitions.get("search_emails").path("description").asText();
+    assertTrue(search.contains("folder INBOX AND cached true") && search.contains("With mailbox"),
+               "the chaining rule and the mailbox sentence are the description the model reads");
     JsonNode listing = definitions.get("list_shared_mailboxes");
     assertTrue(listing.path("annotations").path("readOnlyHint").asBoolean(false), "a read");
     assertFalse(listing.path("annotations").path("destructiveHint").asBoolean(true), "not destructive");
@@ -141,7 +145,11 @@ class AiToolDefinitionsTest {
    * @throws Exception when the resource is missing or unparsable
    */
   private Map<String, JsonNode> readDefinitions() throws Exception {
-    JsonNode root = new ObjectMapper().readTree(getClass().getResourceAsStream("/ai-tool-definitions.json"));
+    // Duplicate keys refused (EXO-90555 review): the MCP server's plain ObjectMapper keeps
+    // the LAST of two "description" keys silently, so a sentence added to the first never
+    // reaches the model -- search_emails carried two for months.
+    JsonNode root = new ObjectMapper().enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+                                      .readTree(getClass().getResourceAsStream("/ai-tool-definitions.json"));
     Map<String, JsonNode> byName = new HashMap<>();
     root.path("tools").forEach(tool -> byName.put(tool.path("name").asText(), tool));
     return byName;
