@@ -14,14 +14,12 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
-<!-- A draggable divider between two full-screen columns (EXO-90575): a line with a grip,
-     dragged with the mouse or a finger, moved by the arrow keys once focused, reset by a
-     double-click. It asks for a width and the drawer decides: it never sizes anything
-     itself. A press does not take the focus -- the list keeps it, and the arrow keys with
-     it -- and only the keys it answers are its own.
-     Its line sits on the column edge, its hit area off the columns' scrollbars: between
-     two columns it takes no room, a zero-wide anchor on the boundary; at the end of the
-     left pane it takes its hit area's width (separatorStyles). -->
+<!-- A draggable divider between two full-screen columns (EXO-90575): dragged with the
+     mouse or a finger, moved by the arrow keys once focused, reset by a double-click. It
+     asks for a width and the drawer decides. A press leaves the focus, and the list's
+     arrow keys, where they were. It takes no room: a zero-wide anchor on the boundary,
+     its line on the column edge, its hit area off the columns' scrollbars
+     (separatorStyles). -->
 <template>
   <div
     :style="styles.anchor"
@@ -44,7 +42,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       role="separator"
       aria-orientation="vertical"
       tabindex="0"
-      class="col-resize-cursor position-absolute"
+      class="col-resize-cursor"
       @pointerdown="startDrag"
       @pointermove="drag"
       @pointerup="endDrag"
@@ -94,7 +92,28 @@ export default {
     // The drag under way: its pointer, where it started and the width then; null when
     // there is none.
     dragStart: null,
+    // The columns' height: the anchor's, which the hit area at the pane's end follows.
+    height: 0,
   }),
+  /**
+   * Follows the columns' height at the pane's end, whose hit area sits outside the row.
+   *
+   * @returns {void}
+   */
+  mounted() {
+    if (this.placement === 'end' && window.ResizeObserver) {
+      this.resizeObserver = new window.ResizeObserver(() => this.height = this.$el.clientHeight);
+      this.resizeObserver.observe(this.$el);
+    }
+  },
+  /**
+   * Stops following the columns' height.
+   *
+   * @returns {void}
+   */
+  beforeDestroy() {
+    this.resizeObserver?.disconnect();
+  },
   computed: {
     /**
      * The inline styles of the hit area, the line and the grip, for this divider's
@@ -103,7 +122,7 @@ export default {
      * @returns {Object} `{ hit, line, grip }`
      */
     styles() {
-      return separatorStyles(this.placement, this.$vuetify.rtl, this.hover || this.focused || !!this.dragStart);
+      return separatorStyles(this.placement, this.$vuetify.rtl, this.hover || this.focused || !!this.dragStart, this.height);
     },
   },
   methods: {
