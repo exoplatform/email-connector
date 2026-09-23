@@ -212,7 +212,7 @@ public class UserEmailSettingService {
       if (StringUtils.isBlank(address)) {
         throw new IllegalArgumentException("The provider of this connector names no mailbox for this user");
       }
-      store = connect(emailConnector, authenticatorFor(emailConnector, username));
+      store = connectThroughProviderMaterial(emailConnector, username);
       UserEmailSetting connected = new UserEmailSetting();
       connected.setEmailConnectorId(String.valueOf(emailConnectorId));
       connected.setEmailAddress(address);
@@ -512,7 +512,40 @@ public class UserEmailSettingService {
     if (emailConnector == null) {
       throw new MessagingException("No email connector " + emailConnectorId);
     }
-    return connect(emailConnector, authenticatorFor(emailConnector, username));
+    return connectThroughProviderMaterial(emailConnector, username);
+  }
+
+  /**
+   * Opens the mailbox with the provider's material, and once more with fresh material
+   * when the server refuses the first (EXO-89649): material can go stale between being
+   * produced and being used - a BlueMind session kept by the provider and dropped by a
+   * BlueMind restart - and one retry turns that into a transparent recovery. Only an
+   * authentication refusal is retried, and only once: a network error proves nothing
+   * about the material, and a loop on genuinely wrong credentials would hammer the
+   * server and could lock the shared technical account out.
+   *
+   * @param emailConnector the connector preset, holding the provider name
+   * @param username the eXo login the session is authenticated for
+   * @return the connected store
+   * @throws MessagingException when the mailbox cannot be opened, or refuses fresh material too
+   * @throws ConnectorCredentialsException when the provider cannot produce material
+   */
+  private Store connectThroughProviderMaterial(EmailConnector emailConnector,
+                                               String username) throws MessagingException, ConnectorCredentialsException {
+    try {
+      return connect(emailConnector, authenticatorFor(emailConnector, username));
+    } catch (MessagingException e) {
+      if (!EmailCredentialsResolver.isAuthenticationFailure(e)
+          || !emailCredentialsResolver.retriesAfterRefusal(emailConnector.getAuthProviderName())) {
+        throw e;
+      }
+      LOG.debug("The mail server refused the credentials of user {}; retrying once with fresh ones", username, e);
+      emailCredentialsResolver.invalidate(emailConnector.getId(),
+                                          emailConnector.getAuthProviderName(),
+                                          username,
+                                          ConnectorCredentialsChannel.IMAP);
+      return connect(emailConnector, authenticatorFor(emailConnector, username));
+    }
   }
 
   /**
