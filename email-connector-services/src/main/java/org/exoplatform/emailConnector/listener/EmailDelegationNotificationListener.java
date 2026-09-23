@@ -126,8 +126,8 @@ public class EmailDelegationNotificationListener {
   }
 
   /**
-   * Tells the owner how the grantee answered. Never gated on
-   * {@link org.exoplatform.emailConnector.service.EmailDelegationService#serverNotifiesOwner}
+   * Tells the owner how the grantee answered. Never gated on the engine's
+   * {@code serverNotifiesOwner}
    * -- and the reason is worth keeping, because the opposite was written first and is
    * the easy mistake to repeat.
    * <p>
