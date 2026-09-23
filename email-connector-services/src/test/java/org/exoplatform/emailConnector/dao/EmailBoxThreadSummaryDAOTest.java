@@ -184,6 +184,29 @@ public class EmailBoxThreadSummaryDAOTest {
   }
 
   /**
+   * EXO-90557 -- a conversation counted inside a shared mailbox's folders only: the
+   * delegate's own copy of it and their own draft answering it are left out, so no row
+   * of the shared mailbox reads "Draft" or counts the delegate's reply.
+   */
+  @Test
+  void aSharedMailboxsConversationIsCountedInsideItsFolders() {
+    persist(mail("<asked@example.org>", "CUSTOM:16", 1L, "thread-shared"));
+    persist(mail("<answer@example.org>", MailFolder.SENT, 2L, "thread-shared"));
+    persist(draft("<draft@example.org>", "draft-1", "thread-shared"));
+
+    Object[] inside = null;
+    for (Object[] row : emailBoxDAO.summarizeThreadsByUserIdInFolders(USERNAME, List.of("CUSTOM:16"))) {
+      if ("thread-shared".equals(row[0])) {
+        inside = row;
+      }
+    }
+    assertTrue(inside != null, "the shared mailbox's conversation is summarised");
+    assertEquals(1, count(inside), "its own message only");
+    assertEquals(0, ((Number) inside[2]).intValue(), "no draft of the delegate's");
+    assertEquals(3, count(summaryOf("thread-shared")), "the whole mirror still counts all three");
+  }
+
+  /**
    * A conversation with nothing but an unsent draft in it — a mail the user started
    * from scratch and has not sent.
    * <p>
