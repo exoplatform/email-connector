@@ -11855,6 +11855,33 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90548 -- the periodic pass discovers a share's folders (throttled inside the
+   * service) and deletes the mirror of each folder the discovery dropped or can no
+   * longer read; a discovery that fails costs the pass nothing else.
+   */
+  @Test
+  void thePassDeletesTheMirrorOfAFolderTheDiscoveryDropped() throws Exception {
+    mockEmptySync();
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    EmailDelegation share = aSharedMailboxRow();
+    when(emailDelegationService.getActiveDelegations(eq(TEST_USER), any())).thenReturn(List.of(share));
+    when(emailDelegationService.refreshGranteeRights(eq(TEST_USER), any(), any())).thenReturn(share);
+    EmailFolder dropped = new EmailFolder();
+    dropped.setId(21L);
+    when(emailDelegationService.discoverDelegatedFoldersIfDue(eq(TEST_USER), eq(share), any())).thenReturn(List.of(dropped));
+    when(emailBoxStorage.getEmails(TEST_USER, "CUSTOM:21")).thenReturn(new ArrayList<>());
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(emailBoxStorage).getEmails(TEST_USER, "CUSTOM:21");
+    verify(emailDelegationService).getSyncableFolders(TEST_USER, 100L);
+
+    when(emailDelegationService.discoverDelegatedFoldersIfDue(eq(TEST_USER), eq(share), any())).thenThrow(new IllegalStateException("boom"));
+    emailBoxService.synchronize(TEST_USER);
+    verify(emailDelegationService, times(2)).getSyncableFolders(TEST_USER, 100L);
+  }
+
+  /**
    * EXO-90548 (F6) -- on a server that advertises no namespace (Stalwart), the Trash and
    * Archive finders still skip a subscribed shared tree, recognised by its shape:
    * {@code Shared Folders/allan/INBOX} contains "all", {@code Shared Folders/anne/Trash}

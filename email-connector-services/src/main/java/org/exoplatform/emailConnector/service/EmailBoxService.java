@@ -1873,6 +1873,16 @@ public class EmailBoxService {
       if (delegation == null) {
         continue;
       }
+      // The share's other folders, at most every quarter-hour (EXO-90548): a folder the
+      // owner no longer shares, or no longer lets the delegate read, takes its mirror
+      // with it.
+      try {
+        for (EmailFolder dropped : emailDelegationService.discoverDelegatedFoldersIfDue(username, delegation, store)) {
+          deleteUserEmails(username, dropped.getKey());
+        }
+      } catch (RuntimeException e) {
+        LOG.warn("Could not discover the folders of shared mailbox {} for user {}", delegation.getOwnerMailbox(), username, e);
+      }
       for (EmailFolder delegatedFolder : emailDelegationService.getSyncableFolders(username, delegation.getId())) {
         try {
           syncDelegatedFolder(store, delegatedFolder, username, userEmailSetting);

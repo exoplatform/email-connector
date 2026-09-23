@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
@@ -38,10 +39,12 @@ import static org.mockito.Mockito.when;
 
 import java.util.Date;
 import java.util.EnumMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import javax.mail.MessagingException;
 import javax.mail.Store;
@@ -69,6 +72,7 @@ import org.exoplatform.emailConnector.model.DelegationGrantee;
 import org.exoplatform.emailConnector.model.DelegationOrigin;
 import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
+import org.exoplatform.emailConnector.model.DiscoveredFolder;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailFolder;
@@ -82,6 +86,7 @@ import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
+import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngine;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngineRegistry;
@@ -198,6 +203,7 @@ class EmailDelegationServiceTest {
   @AfterEach
   void clearTheTunables() {
     System.clearProperty(EmailDelegationService.MAX_PER_USER_PROPERTY);
+    System.clearProperty(EmailDelegationService.MAX_FOLDERS_PROPERTY);
   }
 
   // ---------------------------------------------------------------------------------
@@ -1303,6 +1309,331 @@ class EmailDelegationServiceTest {
   }
 
   // ---------------------------------------------------------------------------------
+  // The delegate's discovery of a shared mailbox's folders (EXO-90548)
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * Discovery registers every folder listed under the share's root, with its role and
+   * the delegate's own letters: the role from the owner's map first -- the delegate's
+   * Dovecot listing shows no special-use -- then the attribute shown, then the usual name
+   * of a direct child only; a folder listed without {@code r} is registered but never
+   * synced; the root's INBOX is not registered again and is stamped.
+   */
+  @Test
+  void discoveryRegistersEachFolderWithItsRoleAndItsOwnLetters() {
+    EmailDelegation share = aDovecotShare();
+    EmailFolder inbox = sharedInbox(share);
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(inbox));
+    when(engine.listFoldersUnder(any(), eq(ROOT), eq("/"))).thenReturn(List.of(listed(ROOT),
+                                                                               listed(ROOT + "/Corbeille"),
+                                                                               listed(ROOT + "/Sent"),
+                                                                               listed(ROOT + "/Old", "\\Archive"),
+                                                                               listed(ROOT + "/Projects/Spam"),
+                                                                               listed(ROOT + "/Private")));
+    when(engine.myRights(any(), anyString())).thenReturn(MailboxRights.of("lrswite"));
+    when(engine.myRights(any(), eq(ROOT + "/Corbeille"))).thenReturn(MailboxRights.of("lrswit"));
+    when(engine.myRights(any(), eq(ROOT + "/Private"))).thenReturn(MailboxRights.of("l"));
+    Map<String, EmailFolder> created = givenCreatedFolders();
+
+    List<EmailFolder> purged = service.discoverDelegatedFolders(GRANTEE, share, engine, session(), true);
+
+    assertEquals(Set.of(ROOT + "/Corbeille", ROOT + "/Sent", ROOT + "/Old", ROOT + "/Projects/Spam", ROOT + "/Private"), created.keySet(),
+                 "the root is the INBOX, registered already");
+    verify(emailFolderStorage).updateDelegatedRights(eq(GRANTEE), eq(id(created, "Corbeille")), eq(100L), eq(FolderRole.TRASH), eq("lrswit"), any());
+    verify(emailFolderStorage).updateDelegatedRights(eq(GRANTEE), eq(id(created, "Sent")), eq(100L), eq(FolderRole.SENT), eq("lrswite"), any());
+    verify(emailFolderStorage).updateDelegatedRights(eq(GRANTEE), eq(id(created, "Old")), eq(100L), eq(FolderRole.ARCHIVE), any(), any());
+    verify(emailFolderStorage).updateDelegatedRights(eq(GRANTEE), eq(id(created, "Projects/Spam")), eq(100L), isNull(), any(), any());
+    verify(emailFolderStorage).updateDelegatedRights(eq(GRANTEE), eq(id(created, "Private")), eq(100L), isNull(), eq("l"), any());
+    verify(emailFolderStorage, never()).updateSyncEnabled(eq(GRANTEE), eq(id(created, "Private")), eq(true), any());
+    verify(emailFolderStorage).updateSyncEnabled(eq(GRANTEE), eq(id(created, "Sent")), eq(true), any());
+    verify(emailFolderStorage).updateDelegatedRights(eq(GRANTEE), eq(inbox.getId()), eq(100L), isNull(), eq("lrswite"), any());
+    assertEquals(List.of(), purged);
+  }
+
+  /**
+   * A folder the owner no longer shares is marked missing at the first discovery that
+   * does not list it and dropped at the second -- its mirror with it; a folder whose
+   * letters lost {@code r} stops syncing and loses its mirror; one the delegate's own
+   * walk registered before shared trees were kept out of it is adopted, not duplicated.
+   */
+  @Test
+  void discoveryRetiresAFolderAfterOneGraceWalkAndAdoptsAMisregisteredOne() {
+    EmailDelegation share = aDovecotShare();
+    EmailFolder inbox = sharedInbox(share);
+    EmailFolder goneOnce = delegated(21L, ROOT + "/Archive", false);
+    EmailFolder goneTwice = delegated(22L, ROOT + "/Old", false);
+    goneTwice.setMissing(true);
+    EmailFolder unreadable = delegated(23L, ROOT + "/Sent", true);
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(inbox, goneOnce, goneTwice, unreadable));
+    when(engine.listFoldersUnder(any(), eq(ROOT), eq("/"))).thenReturn(List.of(listed(ROOT + "/Sent"), listed(ROOT + "/Trash")));
+    when(engine.myRights(any(), eq(ROOT + "/Sent"))).thenReturn(MailboxRights.of("l"));
+    when(engine.myRights(any(), eq(ROOT + "/Trash"))).thenReturn(MailboxRights.of("lrs"));
+    EmailFolder ownRow = new EmailFolder();
+    ownRow.setId(30L);
+    ownRow.setRemoteName(ROOT + "/Trash");
+    when(emailFolderStorage.getFolderByRemoteName(GRANTEE, ROOT + "/Trash")).thenReturn(ownRow);
+    EmailFolder adopted = delegated(30L, ROOT + "/Trash", false);
+    when(emailFolderStorage.getFolder(GRANTEE, 30L)).thenReturn(adopted);
+
+    List<EmailFolder> purged = service.discoverDelegatedFolders(GRANTEE, share, engine, session(), true);
+
+    verify(emailFolderStorage).markMissing(GRANTEE, 21L);
+    verify(emailFolderStorage, never()).deleteFolder(GRANTEE, 21L);
+    verify(emailFolderStorage).deleteFolder(GRANTEE, 22L);
+    verify(emailFolderStorage).updateSyncEnabled(eq(GRANTEE), eq(23L), eq(false), any());
+    verify(emailFolderStorage).adoptAsDelegated(GRANTEE, 30L, 100L, MailFolderView.TYPE_DELEGATED);
+    verify(emailFolderStorage, never()).createFolder(any());
+    verify(emailFolderStorage).updateDelegatedRights(eq(GRANTEE), eq(30L), eq(100L), eq(FolderRole.TRASH), eq("lrs"), any());
+    assertEquals(Set.of(22L, 23L), purged.stream().map(EmailFolder::getId).collect(Collectors.toSet()));
+  }
+
+  /**
+   * The periodic pass discovers at most every quarter-hour per share, and a lost
+   * connection changes nothing.
+   */
+  @Test
+  void discoveryIsThrottledAndALostConnectionChangesNothing() {
+    EmailDelegation share = aDovecotShare();
+    EmailFolder inbox = sharedInbox(share);
+    inbox.setRightsCheckDate(new Date(System.currentTimeMillis() - 60_000L));
+    EmailFolder sent = delegated(21L, ROOT + "/Sent", true);
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(inbox, sent));
+
+    assertEquals(List.of(), service.discoverDelegatedFolders(GRANTEE, share, engine, session(), false));
+    verify(engine, never()).listFoldersUnder(any(), any(), any());
+
+    inbox.setRightsCheckDate(new Date(System.currentTimeMillis() - EmailDelegationService.DISCOVERY_INTERVAL_MS - 1));
+    when(engine.listFoldersUnder(any(), eq(ROOT), eq("/"))).thenReturn(List.of(listed(ROOT + "/Sent")));
+    when(engine.myRights(any(), anyString())).thenThrow(new MailboxAclException(MailboxAclException.UNREACHABLE, "down"));
+    assertThrows(MailboxAclException.class, () -> service.discoverDelegatedFolders(GRANTEE, share, engine, session(), false));
+    verify(emailFolderStorage, never()).markMissing(any(), anyLong());
+    verify(emailFolderStorage, never()).updateDelegatedRights(any(), anyLong(), anyLong(), any(), any(), any());
+  }
+
+  /**
+   * The cap keeps the roles first, then the rest by name.
+   */
+  @Test
+  void discoveryKeepsTheRolesFirstUnderTheCap() {
+    System.setProperty(EmailDelegationService.MAX_FOLDERS_PROPERTY, "2");
+    EmailDelegation share = aDovecotShare();
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(sharedInbox(share)));
+    when(engine.listFoldersUnder(any(), eq(ROOT), eq("/"))).thenReturn(List.of(listed(ROOT + "/Aardvark"),
+                                                                               listed(ROOT + "/Corbeille"),
+                                                                               listed(ROOT + "/Sent")));
+    when(engine.myRights(any(), anyString())).thenReturn(MailboxRights.of("lrs"));
+    Map<String, EmailFolder> created = givenCreatedFolders();
+
+    service.discoverDelegatedFolders(GRANTEE, share, engine, session(), true);
+
+    assertEquals(Set.of(ROOT + "/Corbeille", ROOT + "/Sent"), created.keySet());
+  }
+
+  /**
+   * The guard reads THAT folder's letters: an Editor may delete from the shared INBOX
+   * ({@code e}) and not expunge the owner's Trash; a Reader's Trash is read-only.
+   */
+  @Test
+  void theGuardReadsTheFoldersOwnLetters() throws Exception {
+    EmailDelegation share = aDovecotShare();
+    share.setRights("lrswite");
+    EmailFolder inbox = sharedInbox(share);
+    EmailFolder trash = delegated(21L, ROOT + "/Corbeille", true);
+    trash.setRole(FolderRole.TRASH);
+    trash.setRights("lrswit");
+    trash.setRightsCheckDate(new Date());
+    when(emailFolderStorage.getFolder(GRANTEE, inbox.getId())).thenReturn(inbox);
+    when(emailFolderStorage.getFolder(GRANTEE, 21L)).thenReturn(trash);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(share);
+
+    service.checkRight(GRANTEE, inbox.getKey(), 'e');
+    service.checkRight(GRANTEE, trash.getKey(), 't');
+    assertThrows(MailboxRightMissingException.class, () -> service.checkRight(GRANTEE, trash.getKey(), 'e'));
+    assertEquals("lrswit", service.rightsOn(GRANTEE, trash.getKey()).letters());
+    assertEquals("lrswite", service.rightsOn(GRANTEE, inbox.getKey()).letters());
+  }
+
+  /**
+   * A folder discovery read with no letter at all holds no right -- on Oracle the empty
+   * letters come back null, and must not read as the share's own; a folder discovery has
+   * not read yet knows no better than the share.
+   */
+  @Test
+  void aFolderReadWithNoLetterHoldsNoRightOnEveryDatabase() {
+    EmailDelegation share = aDovecotShare();
+    EmailFolder read = delegated(21L, ROOT + "/Private", false);
+    read.setRights(null);
+    read.setRightsCheckDate(new Date());
+    EmailFolder unread = delegated(22L, ROOT + "/New", false);
+    when(emailFolderStorage.getFolder(GRANTEE, 21L)).thenReturn(read);
+    when(emailFolderStorage.getFolder(GRANTEE, 22L)).thenReturn(unread);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(share);
+
+    assertEquals("", service.rightsOn(GRANTEE, read.getKey()).letters());
+    assertThrows(MailboxRightMissingException.class, () -> service.checkRight(GRANTEE, read.getKey(), 'r'));
+    assertEquals("lrswite", service.rightsOn(GRANTEE, unread.getKey()).letters());
+  }
+
+  /**
+   * An adopted row is listed right now: seen, whatever the delegate's own walk marked.
+   * And a server that refuses the listing is asked again in a quarter-hour, not every
+   * pass; one that cannot be reached is asked again next pass.
+   */
+  @Test
+  void anAdoptedRowIsSeenAndARefusedListingHoldsTheThrottle() {
+    EmailDelegation share = aDovecotShare();
+    EmailFolder inbox = sharedInbox(share);
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(inbox));
+    when(engine.listFoldersUnder(any(), eq(ROOT), eq("/"))).thenReturn(List.of(listed(ROOT + "/Trash")));
+    when(engine.myRights(any(), anyString())).thenReturn(MailboxRights.of("lrs"));
+    EmailFolder ownRow = new EmailFolder();
+    ownRow.setId(30L);
+    when(emailFolderStorage.getFolderByRemoteName(GRANTEE, ROOT + "/Trash")).thenReturn(ownRow);
+    when(emailFolderStorage.getFolder(GRANTEE, 30L)).thenReturn(delegated(30L, ROOT + "/Trash", false));
+
+    service.discoverDelegatedFolders(GRANTEE, share, engine, session(), true);
+    verify(emailFolderStorage).markSeen(eq(GRANTEE), eq(30L), eq("Trash"), eq("/"), any());
+
+    when(emailConnectorService.getEmailConnector(CONNECTOR_ID)).thenReturn(connector);
+    when(engine.listFoldersUnder(any(), eq(ROOT), eq("/"))).thenThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED, "NO"));
+    clearInvocations(emailFolderStorage);
+    assertEquals(List.of(), service.discoverDelegatedFoldersIfDue(GRANTEE, share, store));
+    verify(emailFolderStorage).updateDelegatedRights(eq(GRANTEE), eq(inbox.getId()), eq(100L), isNull(), eq("lrswite"), any());
+
+    clearInvocations(emailFolderStorage);
+    when(engine.listFoldersUnder(any(), eq(ROOT), eq("/"))).thenThrow(new MailboxAclException(MailboxAclException.UNREACHABLE, "down"));
+    service.discoverDelegatedFoldersIfDue(GRANTEE, share, store);
+    verify(emailFolderStorage, never()).updateDelegatedRights(any(), anyLong(), anyLong(), any(), any(), any());
+  }
+
+  /**
+   * The periodic pass mirrors the shared INBOX only; the other folders, opted in so that
+   * opening one refreshes it, cost nothing until then. The switcher lists them, roles
+   * first, missing ones left out, each with its own controls.
+   */
+  @Test
+  void onlyTheInboxIsPeriodicAndTheSwitcherListsTheOthers() {
+    EmailDelegation share = aDovecotShare();
+    share.setRights("lrs");
+    EmailFolder inbox = sharedInbox(share);
+    inbox.setSyncEnabled(true);
+    EmailFolder custom = delegated(20L, ROOT + "/Aardvark", true);
+    custom.setDisplayName("Aardvark");
+    EmailFolder trash = delegated(21L, ROOT + "/Corbeille", true);
+    trash.setDisplayName("Corbeille");
+    trash.setRole(FolderRole.TRASH);
+    trash.setRights("lrs");
+    trash.setRightsCheckDate(new Date());
+    EmailFolder missing = delegated(22L, ROOT + "/Old", true);
+    missing.setMissing(true);
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(custom, inbox, trash, missing));
+    when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(share));
+
+    assertEquals(List.of(inbox), service.getSyncableFolders(GRANTEE, 100L));
+    List<SharedMailboxFolder> folders = service.getSharedMailboxes(GRANTEE).get(0).folders();
+    assertEquals(List.of(trash.getKey(), custom.getKey()), folders.stream().map(SharedMailboxFolder::key).toList());
+    assertEquals(FolderRole.TRASH, folders.get(0).role());
+    assertFalse(folders.get(0).affordances().get("delete"), "a Reader deletes nothing from the owner's Trash");
+  }
+
+  /** The share's root on the delegate's Dovecot session: the owner's INBOX itself. */
+  private static final String ROOT = "shared/alice@acme.com";
+
+  /**
+   * An accepted Editor share on Dovecot, whose owner map names the owner's Trash
+   * "Corbeille" and Sent "Sent".
+   *
+   * @return the row
+   */
+  private EmailDelegation aDovecotShare() {
+    EmailDelegation share = accepted("lrswite");
+    share.setRemoteRoot(ROOT);
+    share.setGrantedRoles("INBOX,SENT,TRASH");
+    Map<FolderRole, String> owner = new EnumMap<>(FolderRole.class);
+    owner.put(FolderRole.TRASH, "Corbeille");
+    owner.put(FolderRole.SENT, "INBOX/Sent");
+    share.setOwnerRoleFolders(owner);
+    return share;
+  }
+
+  /**
+   * The share's registered INBOX: the root itself.
+   *
+   * @param share the share
+   * @return the row
+   */
+  private EmailFolder sharedInbox(EmailDelegation share) {
+    EmailFolder inbox = delegatedFolder(12L);
+    inbox.setRemoteName(ROOT);
+    inbox.setDelimiter("/");
+    inbox.setDelegationId(share.getId());
+    return inbox;
+  }
+
+  /**
+   * A registered folder of the share, besides INBOX.
+   *
+   * @param id the row id
+   * @param remoteName its full name
+   * @param syncEnabled whether it is opted in
+   * @return the row
+   */
+  private EmailFolder delegated(long id, String remoteName, boolean syncEnabled) {
+    EmailFolder folder = delegatedFolder(id);
+    folder.setType(MailFolderView.TYPE_DELEGATED);
+    folder.setRemoteName(remoteName);
+    folder.setSyncEnabled(syncEnabled);
+    return folder;
+  }
+
+  /**
+   * One folder as the delegate's listing shows it, holding mail.
+   *
+   * @param fullName the full name
+   * @param attributes its LIST attributes
+   * @return the folder
+   */
+  private static DiscoveredFolder listed(String fullName, String... attributes) {
+    return new DiscoveredFolder(fullName, fullName.substring(fullName.lastIndexOf('/') + 1), "/", Set.of(attributes), false, true);
+  }
+
+  /**
+   * Every registration made from here on, by remote name, each given the next id.
+   *
+   * @return the live map
+   */
+  private Map<String, EmailFolder> givenCreatedFolders() {
+    Map<String, EmailFolder> created = new LinkedHashMap<>();
+    when(emailFolderStorage.createFolder(any())).thenAnswer(invocation -> {
+      EmailFolder folder = invocation.getArgument(0);
+      folder.setId(40L + created.size());
+      created.put(folder.getRemoteName(), folder);
+      return folder;
+    });
+    return created;
+  }
+
+  /**
+   * The id a registration was given.
+   *
+   * @param created the registrations
+   * @param relative the name under the root
+   * @return the id
+   */
+  private static long id(Map<String, EmailFolder> created, String relative) {
+    return created.get(ROOT + "/" + relative).getId();
+  }
+
+  /**
+   * A session over the mocked store.
+   *
+   * @return the session
+   */
+  private MailboxAclSession session() {
+    return new MailboxAclSession(connector, GRANTEE, GRANTEE_MAILBOX, () -> store, null);
+  }
+
+  // ---------------------------------------------------------------------------------
   // Change access (the owner's "Change access")
   // ---------------------------------------------------------------------------------
 
@@ -1548,7 +1879,7 @@ class EmailDelegationServiceTest {
     verify(emailFolderStorage).deleteDelegatedFolders(GRANTEE, 100L);
 
     EmailDelegation revokedMeanwhile = accepted("lrs");
-    org.mockito.Mockito.clearInvocations(emailDelegationStorage);
+    clearInvocations(emailDelegationStorage);
     org.mockito.Mockito.reset(engine);
     when(engine.myRights(any(), any())).thenReturn(MailboxRights.of("lrsw"));
     when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(row(DelegationStatus.REVOKED, DelegationOrigin.EXO));

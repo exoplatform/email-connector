@@ -22,6 +22,7 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import javax.mail.Folder;
 import javax.mail.FolderClosedException;
@@ -40,6 +41,7 @@ import com.sun.mail.imap.Rights;
 
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.model.DelegationPreset;
+import org.exoplatform.emailConnector.model.DiscoveredFolder;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailboxAce;
@@ -351,6 +353,54 @@ public class ImapAclEngine implements MailboxAclEngine {
   }
 
   /**
+   * {@code LIST "" "<root><delimiter>*"} from the default folder -- by pattern, for the
+   * reason {@link #listSharedMailboxes} explains (Stalwart answers a namespace folder's
+   * own list with nothing). Each folder is read off the listing alone: name, attributes,
+   * separator and whether it can hold mail, no {@code exists()} probe. A failure of the
+   * connection is {@code UNREACHABLE}, a refusal {@code SERVER_REFUSED}.
+   *
+   * @param session the grantee's session
+   * @param root the shared mailbox's root
+   * @param delimiter the hierarchy delimiter, "/" when unknown
+   * @return the folders under the root, never null
+   * @throws MailboxAclException when the server refuses or cannot be reached
+   */
+  @Override
+  public List<DiscoveredFolder> listFoldersUnder(MailboxAclSession session, String root, String delimiter) {
+    List<DiscoveredFolder> folders = new ArrayList<>();
+    if (StringUtils.isBlank(root)) {
+      return folders;
+    }
+    String separator = StringUtils.defaultIfEmpty(delimiter, "/");
+    try {
+      Folder[] listed = session.store().getDefaultFolder().list(StringUtils.removeEnd(root, separator) + separator + "*");
+      for (Folder folder : listed == null ? new Folder[0] : listed) {
+        if (!(folder instanceof IMAPFolder imapFolder) || StringUtils.isBlank(imapFolder.getFullName())) {
+          continue;
+        }
+        String[] attributes = imapFolder.getAttributes();
+        Set<String> attributeSet = attributes == null ? Set.of() : Set.of(attributes);
+        boolean selectable = attributeSet.stream()
+                                         .noneMatch(attribute -> "\\Noselect".equalsIgnoreCase(attribute)
+                                             || "\\NonExistent".equalsIgnoreCase(attribute));
+        char listedSeparator = imapFolder.getSeparator();
+        folders.add(new DiscoveredFolder(imapFolder.getFullName(),
+                                         imapFolder.getName(),
+                                         listedSeparator == 0 ? separator : String.valueOf(listedSeparator),
+                                         attributeSet,
+                                         false,
+                                         selectable));
+      }
+      return folders;
+    } catch (MessagingException e) {
+      if (isConnectionFailure(e)) {
+        throw new MailboxAclException(MailboxAclException.UNREACHABLE, e);
+      }
+      throw refused("LIST", root, e);
+    }
+  }
+
+  /**
    * The folders of the session's own mailbox: {@code LIST "*"}, minus every folder that
    * cannot hold mail and every folder under another user's or a shared namespace.
    *
@@ -416,14 +466,7 @@ public class ImapAclEngine implements MailboxAclEngine {
       return null;
     }
     for (String attribute : attributes == null ? new String[0] : attributes) {
-      FolderRole role = switch (attribute.toLowerCase(Locale.ROOT)) {
-      case "\\sent" -> FolderRole.SENT;
-      case "\\archive" -> FolderRole.ARCHIVE;
-      case "\\trash" -> FolderRole.TRASH;
-      case "\\junk" -> FolderRole.JUNK;
-      case "\\drafts" -> FolderRole.DRAFTS;
-      default -> null;
-      };
+      FolderRole role = FolderRole.ofAttribute(attribute);
       if (role != null) {
         return role;
       }
@@ -439,17 +482,7 @@ public class ImapAclEngine implements MailboxAclEngine {
    * @return the role, or null
    */
   private static FolderRole roleOfName(String name) {
-    if (name == null) {
-      return null;
-    }
-    return switch (name.trim().toLowerCase(Locale.ROOT)) {
-    case "sent", "sent items", "sent messages", "sent mail" -> FolderRole.SENT;
-    case "archive", "archives" -> FolderRole.ARCHIVE;
-    case "trash", "deleted items", "deleted messages" -> FolderRole.TRASH;
-    case "junk", "spam", "junk e-mail", "junk email" -> FolderRole.JUNK;
-    case "drafts" -> FolderRole.DRAFTS;
-    default -> null;
-    };
+    return FolderRole.ofUsualName(name);
   }
 
   /**

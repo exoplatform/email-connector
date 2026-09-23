@@ -144,6 +144,32 @@ public class EmailFolderStorageTest {
   }
 
   /**
+   * EXO-90548 -- discovery's targeted write gives a delegated folder its role and letters
+   * and touches nothing else (the opt-in stays); scoped to the delegation, it never gives
+   * letters to a folder of the user's own mailbox.
+   */
+  @Test
+  void discoveryWritesOnlyTheRoleAndLettersOfADelegatedFolder() {
+    EmailFolder sent = newFolder("frank", "shared/alice/Sent", "Sent");
+    sent.setType(MailFolderView.TYPE_DELEGATED);
+    sent.setDelegationId(4L);
+    EmailFolder created = emailFolderStorage.createFolder(sent);
+    emailFolderStorage.updateSyncEnabled("frank", created.getId(), true, new Date(1_000L));
+    EmailFolder own = emailFolderStorage.createFolder(newFolder("frank", "Sent", "Sent"));
+
+    emailFolderStorage.updateDelegatedRights("frank", created.getId(), 4L, FolderRole.SENT, "lrswite", new Date(2_000L));
+    emailFolderStorage.updateDelegatedRights("frank", own.getId(), 4L, FolderRole.SENT, "lrswite", new Date(2_000L));
+    emailFolderStorage.updateDelegatedRights("frank", created.getId(), 5L, FolderRole.TRASH, "l", new Date(3_000L));
+
+    EmailFolder read = emailFolderStorage.getFolder("frank", created.getId());
+    assertEquals(FolderRole.SENT, read.getRole());
+    assertEquals("lrswite", read.getRights());
+    assertEquals(2_000L, read.getRightsCheckDate().getTime(), "another delegation's write did not land");
+    assertTrue(read.isSyncEnabled(), "the opt-in is left as it was");
+    assertNull(emailFolderStorage.getFolder("frank", own.getId()).getRights(), "an own folder never gets letters");
+  }
+
+  /**
    * The sync job's writes are guarded by the opt-in at the statement level: a
    * checkpoint or a snapshot written after an opt-out changes nothing, so a sync that
    * was in flight when the user switched the folder off cannot re-plant the memory the

@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.model;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * What a folder of a shared mailbox is in its owner's mailbox (EXO-90548): the role a
@@ -61,5 +62,48 @@ public enum FolderRole {
       }
     }
     return null;
+  }
+
+  /**
+   * The role a special-use LIST attribute names (RFC 6154), compared case-insensitively.
+   *
+   * @param attribute the attribute, backslash included
+   * @return the role, or null
+   */
+  public static FolderRole ofAttribute(String attribute) {
+    if (attribute == null) {
+      return null;
+    }
+    return switch (attribute.toLowerCase(Locale.ROOT)) {
+    case "\\sent" -> SENT;
+    case "\\archive" -> ARCHIVE;
+    case "\\trash" -> TRASH;
+    case "\\junk" -> JUNK;
+    case "\\drafts" -> DRAFTS;
+    default -> null;
+    };
+  }
+
+  /**
+   * The role a name names by its usual English name, exactly -- never a substring:
+   * "Trash notes" is not the Trash. The fallback for a server that shows no special-use
+   * attribute where it is read. Handed a path below a shared root rather than a last
+   * segment, it therefore only ever matches a direct child: "Archive/2024" names nothing.
+   *
+   * @param name the name
+   * @return the role, or null
+   */
+  public static FolderRole ofUsualName(String name) {
+    if (name == null) {
+      return null;
+    }
+    return switch (name.trim().toLowerCase(Locale.ROOT)) {
+    case "sent", "sent items", "sent messages", "sent mail" -> SENT;
+    case "archive", "archives" -> ARCHIVE;
+    case "trash", "deleted items", "deleted messages" -> TRASH;
+    case "junk", "spam", "junk e-mail", "junk email" -> JUNK;
+    case "drafts" -> DRAFTS;
+    default -> null;
+    };
   }
 }

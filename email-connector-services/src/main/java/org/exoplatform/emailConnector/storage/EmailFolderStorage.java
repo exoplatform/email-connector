@@ -268,6 +268,21 @@ public class EmailFolderStorage {
   }
 
   /**
+   * Discovery's write on a folder of a shared mailbox: its role and the delegate's own
+   * letters on it, stamped (EXO-90548). A row of the user's own mailbox is never touched.
+   *
+   * @param userId the grantee
+   * @param id the registry id
+   * @param delegationId the delegation the row belongs to
+   * @param role the role in the owner's mailbox, null for none
+   * @param rights the delegate's letters on it
+   * @param when the check time
+   */
+  public void updateDelegatedRights(String userId, long id, long delegationId, FolderRole role, String rights, Date when) {
+    emailFolderDAO.updateDelegatedRights(id, userId, delegationId, role == null ? null : role.name(), rights, when);
+  }
+
+  /**
    * Drops every registered folder of one shared mailbox. The mirrored rows those
    * folders keyed are the caller's to delete, as for {@link #deleteFolder}.
    *
