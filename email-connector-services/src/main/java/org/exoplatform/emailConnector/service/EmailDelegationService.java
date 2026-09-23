@@ -1017,21 +1017,31 @@ public class EmailDelegationService {
       markRevoked(delegation, DelegationStatus.REVOKED);
       throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
     }
-    Date now = new Date();
-    delegation.setStatus(DelegationStatus.ACCEPTED);
-    delegation.setRemoteRoot(shared.remoteRoot());
-    delegation.setRights(rights.letters());
-    if (StringUtils.isBlank(delegation.getNativeRights())) {
-      // MYRIGHTS answers letters on every engine; the server's own words, where they
-      // differ, were recorded by the owner's side and are kept.
-      delegation.setNativeRights(rights.letters());
+    // Only accept's own columns (EXO-90548 review, finding 1): the row read above is as
+    // old as the server calls, and an owner's Extend of this pending share may have
+    // written its folder roles meanwhile. The server's own words are kept where the
+    // owner's side recorded them -- MYRIGHTS answers letters on every engine.
+    DelegationPreset preset = delegation.getOrigin() == DelegationOrigin.SERVER || delegation.getPreset() == null ? engine.presetOf(rights)
+                                                                                                                 : null;
+    EmailDelegation accepted = emailDelegationStorage.accept(granteeUsername,
+                                                             id,
+                                                             shared.remoteRoot(),
+                                                             rights.letters(),
+                                                             preset,
+                                                             new Date());
+    if (accepted == null) {
+      // Moved on while the server was asked: accepted already by another request, or
+      // revoked, gone or reopened by the owner.
+      EmailDelegation current = asGrantee(granteeUsername, id);
+      if (current.getStatus() == DelegationStatus.REVOKED || current.getStatus() == DelegationStatus.GONE) {
+        throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
+      }
+      if (current.getStatus() != DelegationStatus.ACCEPTED) {
+        throw new IllegalArgumentException(NOT_ACCEPTABLE_MESSAGE);
+      }
+      accepted = current;
     }
-    delegation.setLastRightsCheckDate(now);
-    delegation.setRespondedDate(now);
-    if (delegation.getOrigin() == DelegationOrigin.SERVER || delegation.getPreset() == null) {
-      delegation.setPreset(engine.presetOf(rights));
-    }
-    delegation = emailDelegationStorage.update(delegation);
+    delegation = accepted;
     registerDelegatedInbox(granteeUsername, delegation, shared);
     // The mailbox's other folders, at once: the delegate opens it now. Best-effort -- the
     // share stands on its INBOX, and the next periodic pass discovers them otherwise. The
@@ -2228,10 +2238,13 @@ public class EmailDelegationService {
         // MYRIGHTS answered at their last sync (refreshGranteeRights) -- what their
         // mailbox's controls and guards read -- and the owner's ACE, which a server may
         // spell differently, is shown to the owner from the ACL itself, not from the row.
-        row.setRights(ace.rights().letters());
-        row.setNativeRights(ace.nativeRights());
-        row.setLastRightsCheckDate(new Date());
-        row = emailDelegationStorage.update(row);
+        // Targeted (EXO-90548 review, finding 1): an Extend of a pending share may have
+        // written its folder roles since these rows were read.
+        EmailDelegation refreshed = emailDelegationStorage.updateOfferedRights(ownerUsername,
+                                                                              row.getId(),
+                                                                              ace.rights().letters(),
+                                                                              ace.nativeRights());
+        row = refreshed == null ? row : refreshed;
       }
       if (row != null) {
         seenGrantees.add(row.getGranteeId());

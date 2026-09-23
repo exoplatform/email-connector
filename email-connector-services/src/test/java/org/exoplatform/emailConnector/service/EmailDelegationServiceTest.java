@@ -50,6 +50,7 @@ import javax.mail.MessagingException;
 import javax.mail.Store;
 
 import org.junit.jupiter.api.AfterEach;
+import org.apache.commons.lang3.StringUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -188,6 +189,24 @@ class EmailDelegationServiceTest {
       return created;
     });
     lenient().when(emailDelegationStorage.update(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    // The grantee's targeted accept (EXO-90548 review, finding 1), answered as the
+    // storage does: accept's own columns on the row the grantee reads, the rest as it is.
+    lenient().when(emailDelegationStorage.accept(anyString(), anyLong(), any(), any(), any(), any())).thenAnswer(invocation -> {
+      EmailDelegation row = emailDelegationStorage.getAsGrantee(invocation.getArgument(0), invocation.getArgument(1));
+      if (row == null) {
+        return null;
+      }
+      row.setStatus(DelegationStatus.ACCEPTED);
+      row.setRemoteRoot(invocation.getArgument(2));
+      row.setRights(invocation.getArgument(3));
+      if (StringUtils.isBlank(row.getNativeRights())) {
+        row.setNativeRights(invocation.getArgument(3));
+      }
+      if (invocation.getArgument(4) != null) {
+        row.setPreset(invocation.getArgument(4));
+      }
+      return row;
+    });
     lenient().when(engine.presetOf(any())).thenAnswer(invocation -> DelegationPreset.fromRights(invocation.getArgument(0)));
     // By default the ACL cannot be read back after a grant, so a grant keeps what it
     // wrote; the tests of the read-back (EXO-90548) stub it.
@@ -657,6 +676,7 @@ class EmailDelegationServiceTest {
     assertEquals("Other Users/alice", delegation.getRemoteRoot());
     assertEquals("lrswit", delegation.getRights());
     assertEquals(DelegationPreset.EDITOR, delegation.getPreset());
+    verify(emailDelegationStorage, never()).update(any());
     ArgumentCaptor<EmailFolder> folder = ArgumentCaptor.forClass(EmailFolder.class);
     verify(emailFolderStorage).createFolder(folder.capture());
     assertEquals(GRANTEE, folder.getValue().getUserId());
@@ -668,6 +688,35 @@ class EmailDelegationServiceTest {
     // own mailbox, wrong for one you just asked for), so the opt-in is a write of its
     // own. The INBOX alone -- every other folder of the shared mailbox stays out.
     verify(emailFolderStorage).updateSyncEnabled(eq(GRANTEE), eq(77L), eq(true), any());
+  }
+
+  /**
+   * EXO-90548 review, finding 1: accept writes its own columns through the targeted
+   * write, never the row it read before the server calls. A row the owner revoked while
+   * the server was asked is a revocation; one another request accepted meanwhile is
+   * answered as it stands; one that went elsewhere is not acceptable.
+   */
+  @Test
+  void anAcceptWhoseRowMovedOnIsAnsweredFromTheRowAsItStands() throws Exception {
+    EmailDelegation pending = row(DelegationStatus.PENDING, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(pending);
+    when(emailDelegationStorage.count(GRANTEE, DelegationStatus.ACCEPTED)).thenReturn(0L);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    SharedMailbox shared = new SharedMailbox("alice", "Other Users/alice", "Other Users/alice/INBOX", "/");
+    when(engine.findSharedMailbox(any(), eq(OWNER_MAILBOX))).thenReturn(shared);
+    when(engine.myRights(any(), eq("Other Users/alice/INBOX"))).thenReturn(MailboxRights.of("lrs"));
+    when(emailDelegationStorage.accept(eq(GRANTEE), eq(100L), any(), any(), any(), any())).thenReturn(null);
+
+    EmailDelegation revoked = row(DelegationStatus.REVOKED, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(pending, revoked);
+    assertThrows(DelegationRevokedException.class, () -> service.accept(GRANTEE, 100L));
+
+    EmailDelegation declinedElsewhere = row(DelegationStatus.PENDING, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(pending, declinedElsewhere);
+    assertEquals(EmailDelegationService.NOT_ACCEPTABLE_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> service.accept(GRANTEE, 100L)).getMessage());
+
+    verify(emailDelegationStorage, never()).update(any());
   }
 
   /**
@@ -2183,6 +2232,12 @@ class EmailDelegationServiceTest {
     when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER, GRANTEE, "carol", "erin"));
     when(userEmailSettingService.getUserEmailSetting("carol")).thenReturn(setting(CONNECTOR_ID, "Carol@Acme.com"));
     when(userEmailSettingService.getUserEmailSetting("erin")).thenReturn(setting(CONNECTOR_ID, "erin@acme.com"));
+    // The targeted refresh of a share on offer (EXO-90548 review, finding 1).
+    when(emailDelegationStorage.updateOfferedRights(eq(OWNER), eq(100L), eq("lrswit"), any())).thenAnswer(invocation -> {
+      bobRow.setRights(invocation.getArgument(2));
+      bobRow.setNativeRights(invocation.getArgument(3));
+      return bobRow;
+    });
 
     GrantedDelegations granted = service.getGrantedDelegations(OWNER);
 
