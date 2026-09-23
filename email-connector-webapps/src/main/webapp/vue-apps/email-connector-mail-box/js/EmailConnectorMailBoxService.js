@@ -22,7 +22,7 @@ export * from './EmailConnectorScheduledSendService.js';
 export * from './EmailConnectorReadReceiptService.js';
 // The mailboxes shared with the user, and what their rights let the interface offer.
 export * from './EmailConnectorSharedMailboxes.js';
-import { isSharedMailboxFolder, sharedMailboxAllows, sharedMailboxAllowsMoveOut, sharedMailboxOfFolder } from './EmailConnectorSharedMailboxes.js';
+import { isSharedMailboxFolder, sharedMailboxAllows, sharedMailboxAllowsMoveOut, sharedMailboxHasRole, sharedMailboxOfFolder } from './EmailConnectorSharedMailboxes.js';
 import { refusal } from './EmailConnectorScheduledSendService.js';
 
 const presentation = {
@@ -230,7 +230,8 @@ export function isDraftsFolder(folder) {
  * @returns {Boolean} true when "Mark as spam" may be offered on those messages
  */
 export function canMarkAsJunk(folder) {
-  return canMoveOutOf(folder);
+  // In a shared mailbox, only where its owner shares a Spam folder (EXO-90548).
+  return canMoveOutOf(folder) && sharedMailboxHasRole(folder, 'JUNK');
 }
 
 /**
@@ -288,6 +289,11 @@ export function folderLabel(folder, translate) {
   if (folder.type === SHARED_INBOX_TYPE) {
     return translate('emailConnector.mailBox.list.drawer.folder.inbox');
   }
+  // Its other folders (EXO-90548): a role folder under the name the user knows it by --
+  // the owner's "Corbeille" is the Trash -- and any other under its own name.
+  if (folder.type === SHARED_FOLDER_TYPE) {
+    return folder.role ? translate(`emailConnector.mailBox.list.drawer.folder.${folder.role.toLowerCase()}`) : (folder.displayName || '');
+  }
   return translate(`emailConnector.mailBox.list.drawer.folder.${(folder.key || 'INBOX').toLowerCase()}`);
 }
 
@@ -296,6 +302,12 @@ export function folderLabel(folder, translate) {
  * server's MailFolderView.TYPE_DELEGATED_INBOX.
  */
 export const SHARED_INBOX_TYPE = 'DELEGATED_INBOX';
+
+/**
+ * The type a shared mailbox's other folders are listed under (EXO-90548) -- the server's
+ * MailFolderView.TYPE_DELEGATED.
+ */
+export const SHARED_FOLDER_TYPE = 'DELEGATED';
 
 /**
  * Whether one of the user's own folders bears the name of the "Scheduled" view: in
@@ -356,6 +368,9 @@ const BUILT_IN_FOLDER_ICONS = {
 export function folderIcon(folder) {
   if (folder?.type === SHARED_INBOX_TYPE) {
     return BUILT_IN_FOLDER_ICONS.INBOX;
+  }
+  if (folder?.type === SHARED_FOLDER_TYPE) {
+    return (folder.role && BUILT_IN_FOLDER_ICONS[folder.role]) || 'fa-folder';
   }
   if (!folder || folder.type === 'CUSTOM') {
     return 'fa-folder';
