@@ -207,6 +207,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :min="listColumnRange.min"
           :max="listColumnRange.max"
           :label="$t('emailConnector.mailBox.list.drawer.columnSeparator.list')"
+          placement="end"
           @resize="resizeListColumn"
           @commit="rememberColumnWidths"
           @reset="resetListColumn" />
