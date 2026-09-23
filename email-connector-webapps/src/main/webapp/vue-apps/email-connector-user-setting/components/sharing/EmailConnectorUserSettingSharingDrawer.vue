@@ -101,6 +101,9 @@ export default {
     pendingChange: null,
     // The share whose "Share ... too" is being confirmed.
     extendTarget: null,
+    // The folders the Extend being confirmed adds, by name: kept apart from extendTarget,
+    // which the confirmation clears as it closes, so its text does not empty on the way out.
+    extendNames: '',
   }),
   computed: {
     /**
@@ -110,9 +113,7 @@ export default {
      * @returns {String} the message
      */
     extendMessage() {
-      const roles = this.extendTarget?.extendableRoles || [];
-      const names = roles.map(role => this.$t(`UserSettings.emailConnector.sharing.role.${role}`)).join(', ');
-      return this.$t('UserSettings.emailConnector.sharing.extendRoles.confirm.message', { 0: names });
+      return this.$t('UserSettings.emailConnector.sharing.extendRoles.confirm.message', { 0: this.extendNames });
     },
     /**
      * @returns {Boolean} whether the connected mail server can share at all
@@ -310,6 +311,7 @@ export default {
      */
     askExtend(grantee) {
       this.extendTarget = grantee;
+      this.extendNames = (grantee?.extendableRoles || []).map(role => this.$t(`UserSettings.emailConnector.sharing.role.${role}`)).join(', ');
       this.$refs.extendConfirmDialog.open();
     },
     /**
