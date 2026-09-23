@@ -15,80 +15,122 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- The two sides of mailbox delegation (EXO-90503), each a row over a drawer, like
-       the folders row above: who may read YOUR mailbox, and whose mailbox you may read.
-       Two rows and not one because they are two different decisions with two different
-       risks — giving access away, and taking somebody else's on. -->
-  <div>
-    <v-list-item>
-      <v-list-item-content>
-        <v-list-item-title class="text-color">
-          {{ $t('UserSettings.emailConnector.sharing.title') }}
-        </v-list-item-title>
-        <v-list-item-subtitle class="text-wrap">
-          {{ $t('UserSettings.emailConnector.sharing.description') }}
-        </v-list-item-subtitle>
-      </v-list-item-content>
-      <v-list-item-action>
-        <v-btn
-          icon
-          :title="$t('UserSettings.emailConnector.sharing.edit.tooltip')"
-          @click="$root.$emit('open-email-sharing-drawer')">
-          <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
-        </v-btn>
-      </v-list-item-action>
-    </v-list-item>
-    <v-list-item>
-      <v-list-item-content>
-        <v-list-item-title class="text-color">
-          {{ $t('UserSettings.emailConnector.sharedWithMe.title') }}
-        </v-list-item-title>
-        <v-list-item-subtitle class="text-wrap">
-          {{ $t('UserSettings.emailConnector.sharedWithMe.description') }}
-        </v-list-item-subtitle>
-        <!-- The one number worth a row: invitations waiting for an answer. Read
-             WITHOUT discovery, so opening the settings screen costs no connection to
-             the mail server; the drawer is where the server is walked. -->
-        <v-list-item-subtitle v-if="pendingCount" class="caption primary--text mt-1">
-          {{ $t('UserSettings.emailConnector.sharedWithMe.pending', { 0: pendingCount }) }}
-        </v-list-item-subtitle>
-        <v-list-item-subtitle v-else-if="loaded && acceptedCount" class="caption text-sub-title mt-1">
-          {{ $t('UserSettings.emailConnector.sharedWithMe.accepted', { 0: acceptedCount }) }}
-        </v-list-item-subtitle>
-      </v-list-item-content>
-      <v-list-item-action>
-        <v-btn
-          icon
-          :title="$t('UserSettings.emailConnector.sharedWithMe.edit.tooltip')"
-          @click="$root.$emit('open-email-shared-with-me-drawer')">
-          <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
-        </v-btn>
-      </v-list-item-action>
-    </v-list-item>
-  </div>
+  <!-- Mailbox sharing (EXO-90503, EXO-90559): one row for both sides of delegation --
+       who can open YOUR mailbox, and the mailboxes shared with you -- summarised in one
+       line and managed in one drawer with a tab each. The invitations waiting for an
+       answer get their own line: they are the only part of this that asks something of
+       the user. -->
+  <v-list-item class="height-auto">
+    <v-list-item-content>
+      <v-list-item-title class="text-color">
+        {{ $t('UserSettings.emailConnector.sharing.title') }}
+      </v-list-item-title>
+      <v-list-item-subtitle class="text-wrap">
+        {{ summary }}
+      </v-list-item-subtitle>
+      <v-list-item-subtitle v-if="pendingCount" class="caption primary--text mt-1">
+        {{ $t('UserSettings.emailConnector.sharedWithMe.pending', { 0: pendingCount }) }}
+      </v-list-item-subtitle>
+    </v-list-item-content>
+    <v-list-item-action>
+      <v-btn
+        icon
+        :title="$t('UserSettings.emailConnector.sharing.edit.tooltip')"
+        @click="open">
+        <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
+      </v-btn>
+    </v-list-item-action>
+  </v-list-item>
 </template>
 
 <script>
 export default {
   data: () => ({
-    loaded: false,
+    // Null until known: an unread count shows nothing rather than a wrong "nobody".
+    granteeCount: null,
+    acceptedCount: null,
     pendingCount: 0,
-    acceptedCount: 0,
   }),
+  computed: {
+    /**
+     * The row's one-line account of both sides, from what could be read. A side that
+     * could not be read (or a mail server that cannot share) is left out rather than
+     * shown as zero.
+     *
+     * @returns {String} the localized summary
+     */
+    summary() {
+      const sharedWithMe = this.acceptedCount
+        ? this.plural('UserSettings.emailConnector.sharing.summary.sharedWithMe', this.acceptedCount)
+        : null;
+      // Who can open the user's mailbox is known only once the drawer read it (see
+      // readCounters): until then the row speaks of the other side alone, in whole
+      // sentences.
+      if (this.granteeCount === null) {
+        if (sharedWithMe) {
+          return sharedWithMe;
+        }
+        return this.acceptedCount === 0
+          ? this.$t('UserSettings.emailConnector.sharedWithMe.none')
+          : this.$t('UserSettings.emailConnector.sharing.description');
+      }
+      const mine = this.plural('UserSettings.emailConnector.sharing.summary.mine', this.granteeCount);
+      // The received side unread: the owner side alone, never a zero nobody read.
+      if (this.acceptedCount === null) {
+        return mine;
+      }
+      // Both sides known and both empty: one plain sentence rather than two negatives.
+      if (this.granteeCount === 0 && this.acceptedCount === 0 && !this.pendingCount) {
+        return this.$t('UserSettings.emailConnector.sharing.summary.empty');
+      }
+      return [
+        mine,
+        sharedWithMe || this.$t('UserSettings.emailConnector.sharing.summary.sharedWithMe.none'),
+      ].join(' · ');
+    },
+  },
   created() {
     this.readCounters();
-    // The drawers behind these rows are what the counters summarise.
+    // The drawer is what this row summarises: it says when it changed something.
     this.$root.$on('email-delegations-updated', this.readCounters);
+    this.$root.$on('email-sharing-grantees-read', this.setGranteeCount);
   },
   beforeDestroy() {
     this.$root.$off('email-delegations-updated', this.readCounters);
+    this.$root.$off('email-sharing-grantees-read', this.setGranteeCount);
   },
   methods: {
     /**
-     * Reads how many shares wait for an answer and how many are in use. Failing is
-     * silent, like the folders counter above: an unreadable count is not worth an
-     * error banner over the whole settings screen, and the drawer says what happened
-     * when the user actually opens it.
+     * Opens the drawer on the tab that needs the user: "Shared with me" while an
+     * invitation waits for an answer, "Who can open mine" otherwise.
+     *
+     * @returns {void}
+     */
+    open() {
+      this.$root.$emit(this.pendingCount ? 'open-email-shared-with-me-drawer' : 'open-email-sharing-drawer');
+    },
+    /**
+     * A counted sentence: the ".none", ".one" or plain key for zero, one or more.
+     *
+     * @param {String} key the sentence's key
+     * @param {Number} count the count
+     * @returns {String} the localized sentence
+     */
+    plural(key, count) {
+      if (!count) {
+        return this.$t(`${key}.none`);
+      }
+      return count === 1 ? this.$t(`${key}.one`) : this.$t(key, { 0: count });
+    },
+    /**
+     * Reads how many shares wait for an answer and how many are in use, WITHOUT
+     * discovery, so it costs no connection to the mail server. Who can open the user's
+     * mailbox is deliberately not read here: that list exists only on the mail server,
+     * and reading it reconciles eXo's rows with it (creating, updating and revoking
+     * them), which must stay the owner's act of opening the drawer, not a side effect
+     * of viewing the settings. The drawer's read fills it in (setGranteeCount).
+     * Failing is silent: an unreadable count is not worth an error banner over the
+     * whole settings screen, and the drawer says what happened when it is opened.
      *
      * @returns {void}
      */
@@ -98,9 +140,18 @@ export default {
           const rows = delegations || [];
           this.pendingCount = rows.filter(row => row.status === 'PENDING').length;
           this.acceptedCount = rows.filter(row => row.status === 'ACCEPTED').length;
-          this.loaded = true;
         })
         .catch(() => null);
+    },
+    /**
+     * Takes the count of people who can open the user's mailbox from the drawer's own
+     * read of it.
+     *
+     * @param {Number} count the count, null when the mail server cannot share
+     * @returns {void}
+     */
+    setGranteeCount(count) {
+      this.granteeCount = typeof count === 'number' ? count : null;
     },
   },
 };
