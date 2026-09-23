@@ -274,6 +274,8 @@ public class EmailBoxServiceTest {
     disableCustomFolders();
     grantTheSyncClaim();
     defaultTheAdministrationWideSyncSettingsOn();
+    theSyncResolvesAnAuthenticatorForItsWorkers();
+    theProviderAnswersTheStoredAccount();
   }
 
   /**
@@ -335,18 +337,18 @@ public class EmailBoxServiceTest {
    * Lenient because most tests here never reach a send; the ones that do assert
    * what was asked for rather than relying on this default.
    */
-  @BeforeEach
+  // Called from setUp: one @BeforeEach per class (Sonar S8745).
   @SneakyThrows
-  void theSyncResolvesAnAuthenticatorForItsWorkers() {
+  private void theSyncResolvesAnAuthenticatorForItsWorkers() {
     // The prefetch resolves this once on the sync thread and hands it to workers that
     // must not read the database; unstubbed it answers null, which no worker could use.
     lenient().when(userEmailSettingService.authenticatorFor(any(), any())).thenReturn(new Authenticator() {
     });
   }
 
-  @BeforeEach
+  // Called from setUp: one @BeforeEach per class (Sonar S8745).
   @SneakyThrows
-  void theProviderAnswersTheStoredAccount() {
+  private void theProviderAnswersTheStoredAccount() {
     lenient().when(emailCredentialsResolver.authenticator(any(), any(), any(), any())).thenReturn(new Authenticator() {
     });
     lenient().when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(null);
