@@ -7229,6 +7229,36 @@ public class EmailBoxService {
   }
 
   /**
+   * Whether an SMTP refusal of the sender's material is worth one retry on fresh
+   * material: only for a provider that produces its own (EXO-89649).
+   *
+   * @param userEmailSetting the sender's connector binding
+   * @return true when a retry makes sense
+   */
+  private boolean retriesAfterRefusal(UserEmailSetting userEmailSetting) {
+    EmailConnector emailConnector =
+                                  emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+    return emailConnector != null && credentialsResolver().retriesAfterRefusal(emailConnector.getAuthProviderName());
+  }
+
+  /**
+   * Whether a scheduled transmission failure is the one the credentials contract lets
+   * us retry (EXO-89649): an authentication refusal at CONNECT - before the server
+   * accepted a byte of the message, so sending again cannot duplicate it - of material
+   * a provider produced itself. A failure at SEND is never retried: the server may
+   * already have accepted the message.
+   *
+   * @param failure the transmission failure
+   * @param emailConnector the sender's connector
+   * @return true when one retry on fresh material is allowed
+   */
+  private boolean isRetriableScheduledRefusal(SmtpTransmitter.TransmissionException failure, EmailConnector emailConnector) {
+    return failure.getPhase() == SmtpTransmitter.Phase.CONNECT
+        && EmailCredentialsResolver.isAuthenticationFailure(failure.getCause())
+        && credentialsResolver().retriesAfterRefusal(emailConnector.getAuthProviderName());
+  }
+
+  /**
    * The one retry the credentials contract allows after the SMTP server refused the
    * provider's material (EXO-89649): the material is invalidated, a session is built
    * on fresh material, and the same message goes out through it. The refusal happened
@@ -7241,12 +7271,6 @@ public class EmailBoxService {
    * @param refusal the first attempt's failure, kept when the retry cannot be built
    * @throws MessagingException when the retry fails too
    */
-  private boolean retriesAfterRefusal(UserEmailSetting userEmailSetting) {
-    EmailConnector emailConnector =
-                                  emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
-    return emailConnector != null && credentialsResolver().retriesAfterRefusal(emailConnector.getAuthProviderName());
-  }
-
   private void resendWithFreshCredentials(MimeMessage message,
                                           String username,
                                           UserEmailSetting userEmailSetting,
@@ -7266,7 +7290,7 @@ public class EmailBoxService {
       throw refusal;
     }
     message.saveChanges();
-    javax.mail.Address[] recipients = message.getAllRecipients();
+    Address[] recipients = message.getAllRecipients();
     if (recipients == null || recipients.length == 0) {
       throw refusal;
     }
@@ -7370,8 +7394,7 @@ public class EmailBoxService {
       // CONNECT: the server refused the provider's material before accepting a byte
       // of the message, so sending it again cannot duplicate it. A refusal at SEND,
       // or a second one, is the answer.
-      if (e.getPhase() != SmtpTransmitter.Phase.CONNECT || !EmailCredentialsResolver.isAuthenticationFailure(e.getCause())
-          || !credentialsResolver().retriesAfterRefusal(emailConnector.getAuthProviderName())) {
+      if (!isRetriableScheduledRefusal(e, emailConnector)) {
         throw e;
       }
       LOG.debug("The SMTP server refused the credentials of user {}; retrying the scheduled send once with fresh ones",
@@ -8635,7 +8658,25 @@ public class EmailBoxService {
       removeLeftoverServerCopy(stored, username, userEmailSetting);
       MimeMessage message = buildScheduledMessage(stored, storedAttachments, username, userEmailSetting, emailConnector);
       try {
-        smtpTransmitter.transmit(message);
+        try {
+          smtpTransmitter.transmit(message);
+        } catch (SmtpTransmitter.TransmissionException refused) {
+          if (!isRetriableScheduledRefusal(refused, emailConnector)) {
+            throw refused;
+          }
+          // The one retry the credentials contract allows (EXO-89649), still under the
+          // draft's lock: the message is rebuilt, because the session - and so the
+          // refused material - is baked into it.
+          LOG.debug("The SMTP server refused the credentials of user {}; retrying the scheduled send once with fresh ones",
+                    username,
+                    refused);
+          credentialsResolver().invalidate(emailConnector.getId(),
+                                           emailConnector.getAuthProviderName(),
+                                           username,
+                                           ConnectorCredentialsChannel.SMTP);
+          message = buildScheduledMessage(stored, storedAttachments, username, userEmailSetting, emailConnector);
+          smtpTransmitter.transmit(message);
+        }
       } catch (SmtpTransmitter.TransmissionException e) {
         ScheduledSendFailure failure = classifyTransmissionFailure(e);
         LOG.warn("The scheduled send of a draft of user {} through {}:{} failed ({}, {})",
