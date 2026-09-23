@@ -1211,6 +1211,7 @@ class EmailDelegationServiceTest {
                                                                                                                                   MailboxRights.of("lrswite")));
     when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswite"))));
     assertTrue(inboxOnly.isInboxOnly());
+    answerTheRightsAndRolesWriteOn(inboxOnly);
 
     EmailDelegation extended = service.extend(OWNER, 100L);
 
@@ -1221,7 +1222,7 @@ class EmailDelegationServiceTest {
       verify(engine).grant(any(), eq(ownerRoleFolders().get(role)), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), any(), eq(role));
     }
     assertEquals("INBOX,SENT,ARCHIVE,TRASH,JUNK", extended.getGrantedRoles());
-    verify(emailDelegationStorage).update(inboxOnly);
+    verify(emailDelegationStorage, never()).update(any());
 
     when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(row(DelegationStatus.ACCEPTED, DelegationOrigin.SERVER));
     assertEquals(EmailDelegationService.NOT_CHANGEABLE_MESSAGE,
@@ -1234,6 +1235,68 @@ class EmailDelegationServiceTest {
                  "a per-mailbox grant already covers every folder");
     when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(null);
     assertThrows(ObjectNotFoundException.class, () -> service.extend(OWNER, 100L));
+  }
+
+  /**
+   * Stack review N-1 on "Extend access": the grantee leaves while the owner's grants are
+   * on the wire. Only what the grants wrote is recorded, so the leave stands -- the
+   * answer is the row as it now is, never the pre-grant read written back over it.
+   */
+  @Test
+  void aLeaveDuringAnExtendStandsAfterIt() throws Exception {
+    EmailDelegation inboxOnly = anExtendableShare();
+    EmailDelegation left = row(DelegationStatus.DECLINED, DelegationOrigin.EXO);
+    left.setBadgeIncluded(false);
+    when(emailDelegationStorage.updateGrantedRights(eq(OWNER),
+                                                    eq(100L),
+                                                    eq(DelegationPreset.EDITOR),
+                                                    eq("lrswite"),
+                                                    any(),
+                                                    eq(GRANTEE_MAILBOX),
+                                                    any(),
+                                                    eq("INBOX,SENT,ARCHIVE,TRASH,JUNK"),
+                                                    any())).thenReturn(left);
+
+    EmailDelegation extended = service.extend(OWNER, 100L);
+
+    assertEquals(DelegationStatus.DECLINED, extended.getStatus(), "the leave stands");
+    assertFalse(extended.isBadgeIncluded());
+    assertEquals(DelegationStatus.ACCEPTED, inboxOnly.getStatus(), "the stale read is not what was written");
+    verify(emailDelegationStorage, never()).update(any());
+  }
+
+  /**
+   * A share revoked or gone while the owner's grants were on the wire is not written,
+   * and the owner is told it is not changeable.
+   */
+  @Test
+  void aShareThatEndedDuringAnExtendIsRefused() throws Exception {
+    anExtendableShare();
+    when(emailDelegationStorage.updateGrantedRights(any(), anyLong(), any(), any(), any(), any(), any(), anyString(), any()))
+                                                                                                                         .thenReturn(null);
+
+    assertEquals(EmailDelegationService.NOT_CHANGEABLE_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> service.extend(OWNER, 100L)).getMessage());
+    verify(emailDelegationStorage, never()).update(any());
+  }
+
+  /**
+   * An accepted phase-1 Editor share of INBOX only, on a per-folder server that grants
+   * every folder and still names the grantee on INBOX.
+   *
+   * @return the row the owner extends
+   */
+  private EmailDelegation anExtendableShare() throws Exception {
+    EmailDelegation inboxOnly = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(inboxOnly);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.findRoleFolders(any())).thenReturn(ownerRoleFolders());
+    when(engine.myRights(any(), anyString())).thenReturn(MailboxRights.of("lrswipkxtea"));
+    when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), any()))
+                                                                                                 .thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
+                                                                                                                                  MailboxRights.of("lrswite")));
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswite"))));
+    return inboxOnly;
   }
 
   /**
@@ -1274,8 +1337,16 @@ class EmailDelegationServiceTest {
     when(engine.myRights(any(), anyString())).thenReturn(MailboxRights.of("lrswipkxtea"));
     when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), any(), any())).thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
                                                                                                            MailboxRights.of("lrs")));
-    // The targeted rights-and-roles write (stack review N-1), answered as the storage
-    // does: the written columns on the row, the rest of it as it stands.
+    answerTheRightsAndRolesWriteOn(row);
+  }
+
+  /**
+   * The targeted rights-and-roles write (stack review N-1), answered as the storage
+   * does: the written columns on the row, the rest of it as it stands.
+   *
+   * @param row the row the write lands on
+   */
+  private void answerTheRightsAndRolesWriteOn(EmailDelegation row) {
     lenient().when(emailDelegationStorage.updateGrantedRights(eq(OWNER),
                                                               eq(100L),
                                                               any(),
