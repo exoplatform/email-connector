@@ -16,15 +16,16 @@
  */
 package org.exoplatform.emailConnector.service;
 
-import static org.mockito.ArgumentMatchers.eq;
-import org.exoplatform.emailConnector.model.MailFolder;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -41,6 +42,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.manager.IdentityManager;
@@ -102,14 +104,14 @@ public class EmailFavoriteServiceTest {
     shared.setFolder("CUSTOM:8");
     shared.setStarred(true);
     when(emailBoxStorage.getStarredEmails(USERNAME, MailFolder.INBOX)).thenReturn(List.of(own));
-    org.mockito.Mockito.lenient().when(emailBoxStorage.getStarredEmails(USERNAME, "CUSTOM:8")).thenReturn(List.of(shared));
+    lenient().when(emailBoxStorage.getStarredEmails(USERNAME, "CUSTOM:8")).thenReturn(List.of(shared));
 
     emailFavoriteService.reconcileFavorites(USERNAME);
 
     ArgumentCaptor<Favorite> created = ArgumentCaptor.forClass(Favorite.class);
     verify(favoriteService, times(1)).createFavorite(created.capture());
     assertEquals("11", created.getValue().getObjectId(), "the delegate's own INBOX star only");
-    verify(emailBoxStorage, never()).getStarredEmails(eq(USERNAME), org.mockito.ArgumentMatchers.argThat(folder -> !MailFolder.INBOX.equals(folder)));
+    verify(emailBoxStorage, never()).getStarredEmails(eq(USERNAME), argThat(folder -> !MailFolder.INBOX.equals(folder)));
   }
 
   @Test

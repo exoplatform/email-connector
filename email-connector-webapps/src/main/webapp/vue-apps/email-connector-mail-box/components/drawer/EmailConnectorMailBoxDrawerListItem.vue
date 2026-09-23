@@ -540,9 +540,9 @@ export default {
     // matching how the row's read/unread action treats a conversation.
     toggleThreadFavorite() {
       const folder = this.email.folder || 'INBOX';
-      // In a shared mailbox, the conversation's messages in the row's own folder: the ids
-      // are numbered there, and the star is addressed to it (EXO-90550).
-      const ids = folder === 'INBOX' ? this.threadIds : this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread);
+      // The conversation's messages in the row's own folder, as the ⋮ menu takes them:
+      // the ids are numbered there, and the star is addressed to it (EXO-90550).
+      const ids = this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread);
       this.$root.$emit('update-email-favorite-status', !this.threadFavorite, ids, false, folder);
     },
     openDetail() {
