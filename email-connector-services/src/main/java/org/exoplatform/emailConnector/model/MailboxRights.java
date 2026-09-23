@@ -394,6 +394,10 @@ public final class MailboxRights {
     affordances.put("createFolder", canCreateMailbox());
     affordances.put("deleteFolder", canDeleteMailbox());
     affordances.put("delete", canDeleteMessages());
+    // Taking mail OUT of a folder -- delete, archive, spam, move -- is a copy, then
+    // \Deleted AND an expunge: without e a server keeps the original, silently on
+    // Dovecot (EXO-90548), so the chrome offers it only with both.
+    affordances.put("moveOut", canDeleteMessages() && canExpunge());
     affordances.put("expunge", canExpunge());
     affordances.put("administer", canAdminister());
     return affordances;
