@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.dao;
 
+import java.util.Date;
 import java.util.List;
 
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -110,15 +111,22 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   String status);
 
   /**
-   * Drops every row a user appears on, as grantee or as owner -- the disconnect wipe's
-   * companion. The owner's rows go because eXo can no longer act on that mailbox; the
-   * server's ACLs are not touched, by design.
+   * The grantee's two toggles, and nothing else of the row (#432-2).
    *
-   * @param userId the username
+   * @param id the row id
+   * @param granteeId the grantee, whose row it must be
+   * @param badgeIncluded the badge toggle
+   * @param notifyNewMail the notification toggle
+   * @param updated the update stamp
+   * @return the rows updated: one, or zero when no such row belongs to that grantee
    */
   @Transactional
   @Modifying(clearAutomatically = true, flushAutomatically = true)
-  @Query("DELETE FROM EmailDelegationEntity d WHERE d.granteeId = :userId OR d.ownerId = :userId")
-  void deleteByUserId(@Param("userId")
-  String userId);
+  @Query("UPDATE EmailDelegationEntity d SET d.badgeIncluded = :badgeIncluded, d.notifyNewMail = :notifyNewMail, d.updatedDate = :updated WHERE d.id = :id AND d.granteeId = :granteeId")
+  int updatePreferences(@Param("id")
+  long id, @Param("granteeId")
+  String granteeId, @Param("badgeIncluded")
+  boolean badgeIncluded, @Param("notifyNewMail")
+  boolean notifyNewMail, @Param("updated")
+  Date updated);
 }

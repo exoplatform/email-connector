@@ -124,19 +124,28 @@ public class EmailDelegationDAOTest {
   }
 
   /**
-   * The wipe drops the rows a user appears on either side of, and nobody else's.
+   * #432-2 -- the grantee's toggles are written alone, in SQL: a revoke committed since
+   * the grantee's read stays revoked, and only that grantee's row is touched.
    */
   @Test
-  void theWipeDropsBothSidesOfAUser() {
-    persist(GRANTEE, OWNER, "alice@acme.com", 7L, "ACCEPTED");
-    persist(OWNER, OTHER, "carol@acme.com", 7L, "ACCEPTED");
-    persist(GRANTEE, OTHER, "carol@acme.com", 7L, "PENDING");
+  void thePreferencesWriteTouchesTheTwoTogglesOnly() {
+    Long id = persist(GRANTEE, OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    entityManager.clear();
+    EmailDelegationEntity revoked = emailDelegationDAO.findById(id).orElseThrow();
+    revoked.setStatus("REVOKED");
+    revoked.setRevokedDate(new Date(5_000L));
+    emailDelegationDAO.saveAndFlush(revoked);
     entityManager.clear();
 
-    emailDelegationDAO.deleteByUserId(OWNER);
+    assertEquals(1, emailDelegationDAO.updatePreferences(id, GRANTEE, true, true, new Date(6_000L)));
+    assertEquals(0, emailDelegationDAO.updatePreferences(id, OTHER, false, false, new Date(7_000L)), "somebody else's row");
+    entityManager.clear();
 
-    assertEquals(1, emailDelegationDAO.findAll().size());
-    assertEquals(1, emailDelegationDAO.findByGranteeId(GRANTEE).size());
+    EmailDelegationEntity read = emailDelegationDAO.findById(id).orElseThrow();
+    assertEquals("REVOKED", read.getStatus(), "the owner's revoke stands");
+    assertEquals(5_000L, read.getRevokedDate().getTime());
+    assertTrue(read.isBadgeIncluded());
+    assertTrue(read.isNotifyNewMail());
   }
 
   /**

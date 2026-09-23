@@ -28,6 +28,7 @@ import java.util.Set;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
@@ -521,16 +522,57 @@ public class EmailDelegationService {
     if (delegation.getStatus() != DelegationStatus.ACCEPTED) {
       throw new IllegalArgumentException(NOT_ACCEPTED_MESSAGE);
     }
-    delegation.setStatus(delegation.getOrigin() == DelegationOrigin.SERVER ? DelegationStatus.AVAILABLE : DelegationStatus.DECLINED);
-    delegation.setRespondedDate(new Date());
-    delegation = emailDelegationStorage.update(delegation);
-    emailFolderStorage.deleteDelegatedFolders(granteeUsername, delegation.getId());
+    delegation = endShare(granteeUsername, delegation);
     unsubscribeBestEffort(granteeUsername, delegation);
     LOG.info("Mailbox delegation left: actor={} ownerMailbox={} (the server ACL is left in place)",
              granteeUsername,
              delegation.getOwnerMailbox());
     publish(EmailDelegationEvent.Type.LEFT, granteeUsername, delegation);
     return delegation;
+  }
+
+  /**
+   * Ends every share the caller is using, as a leave would, when the caller's own mailbox
+   * is disconnected from eXo or bound to another account (#432-3, decision 4): the
+   * shared mailboxes were read with that account's credentials, and their folders and
+   * mirrored mail are wiped with the account's own. Each goes back to what a leave leaves
+   * -- DECLINED, or AVAILABLE for one discovered on the server -- so it can be taken up
+   * again once a mailbox is connected, and its owner is told as for a leave. The ACLs on
+   * the server are left in place, as for a leave. No server-side unsubscription: the
+   * account that would make it is the one just disconnected.
+   *
+   * @param granteeUsername the user whose mailbox was disconnected or rebound
+   */
+  public void endReceivedShares(String granteeUsername) {
+    if (StringUtils.isBlank(granteeUsername)) {
+      return;
+    }
+    for (EmailDelegation delegation : emailDelegationStorage.getReceived(granteeUsername)) {
+      if (delegation.getStatus() != DelegationStatus.ACCEPTED) {
+        continue;
+      }
+      EmailDelegation ended = endShare(granteeUsername, delegation);
+      LOG.info("Mailbox delegation ended by a mailbox disconnect: grantee={} ownerMailbox={}",
+               granteeUsername,
+               ended.getOwnerMailbox());
+      publish(EmailDelegationEvent.Type.LEFT, granteeUsername, ended);
+    }
+  }
+
+  /**
+   * A leave's own write: the row back to DECLINED (AVAILABLE for a share discovered on
+   * the server), answered now, and the caller's folders of the mailbox dropped.
+   *
+   * @param granteeUsername the grantee
+   * @param delegation an accepted row
+   * @return the row as it now stands
+   */
+  private EmailDelegation endShare(String granteeUsername, EmailDelegation delegation) {
+    delegation.setStatus(delegation.getOrigin() == DelegationOrigin.SERVER ? DelegationStatus.AVAILABLE : DelegationStatus.DECLINED);
+    delegation.setRespondedDate(new Date());
+    EmailDelegation updated = emailDelegationStorage.update(delegation);
+    emailFolderStorage.deleteDelegatedFolders(granteeUsername, updated.getId());
+    return updated;
   }
 
   /**
@@ -549,13 +591,13 @@ public class EmailDelegationService {
                                            Boolean badgeIncluded,
                                            Boolean notifyNewMail) throws ObjectNotFoundException {
     EmailDelegation delegation = asGrantee(granteeUsername, id);
-    if (badgeIncluded != null) {
-      delegation.setBadgeIncluded(badgeIncluded);
-    }
-    if (notifyNewMail != null) {
-      delegation.setNotifyNewMail(notifyNewMail);
-    }
-    return emailDelegationStorage.update(delegation);
+    // The two toggles alone (#432-2): a whole-row write from this read would put back a
+    // status, a revoke date or rights the owner changed since -- a revoke made while
+    // the grantee flipped their badge would come undone.
+    return emailDelegationStorage.updatePreferences(granteeUsername,
+                                                    id,
+                                                    badgeIncluded != null ? badgeIncluded : delegation.isBadgeIncluded(),
+                                                    notifyNewMail != null ? notifyNewMail : delegation.isNotifyNewMail());
   }
 
   /**
@@ -707,7 +749,7 @@ public class EmailDelegationService {
         row.setStatus(DelegationStatus.AVAILABLE);
         row.setOrigin(DelegationOrigin.SERVER);
         row.setLastRightsCheckDate(new Date());
-        row = emailDelegationStorage.create(row);
+        row = createOrReread(row);
       } else if (row != null && (!ace.rights().letters().equals(row.getRights())
                                  || !StringUtils.equals(ace.nativeRights(), row.getNativeRights()))) {
         row.setRights(ace.rights().letters());
@@ -827,7 +869,7 @@ public class EmailDelegationService {
         row.setStatus(DelegationStatus.AVAILABLE);
         row.setOrigin(DelegationOrigin.SERVER);
         row.setLastRightsCheckDate(new Date());
-        emailDelegationStorage.create(row);
+        createOrReread(row);
       }
       for (EmailDelegation row : rows) {
         if (row.getStatus() == DelegationStatus.ACCEPTED && connector.getId().equals(row.getConnectorId())
@@ -839,9 +881,26 @@ public class EmailDelegationService {
   }
 
   /**
+   * Creates a row a listing found, or answers the one a concurrent listing -- another
+   * tab, another node -- created first under the same key (#432-6): the unique key
+   * refuses the second insert, and the share is the same share either way.
+   *
+   * @param row the row to create
+   * @return the row as stored, or null when neither could be read
+   */
+  private EmailDelegation createOrReread(EmailDelegation row) {
+    try {
+      return emailDelegationStorage.create(row);
+    } catch (DataIntegrityViolationException raced) {
+      LOG.debug("A concurrent listing created the share of {} on {} first", row.getGranteeId(), row.getOwnerMailbox());
+      return emailDelegationStorage.getByKey(row.getGranteeId(), row.getConnectorId(), row.getOwnerMailbox());
+    }
+  }
+
+  /**
    * The row of a listed shared mailbox among the caller's rows, matched the way
-   * {@link MailboxAclEngine#findSharedMailbox} matches: whole identifier, then local
-   * part.
+   * {@link MailboxAclEngine#findSharedMailbox} matches: remote root, whole identifier,
+   * then local part -- that one only when a single row has it.
    *
    * @param rows the caller's rows
    * @param connectorId the preset
@@ -850,6 +909,8 @@ public class EmailDelegationService {
    */
   private EmailDelegation rowFor(List<EmailDelegation> rows, long connectorId, SharedMailbox mailbox) {
     String segment = StringUtils.trimToEmpty(mailbox.ownerIdentifier()).toLowerCase(Locale.ROOT);
+    EmailDelegation byLocalPart = null;
+    boolean ambiguous = false;
     for (EmailDelegation row : rows) {
       if (!Long.valueOf(connectorId).equals(row.getConnectorId())) {
         continue;
@@ -858,16 +919,22 @@ public class EmailDelegationService {
         return row;
       }
       String owner = StringUtils.trimToEmpty(row.getOwnerMailbox()).toLowerCase(Locale.ROOT);
-      String localPart = owner.contains("@") ? owner.substring(0, owner.indexOf('@')) : owner;
-      if (segment.equals(owner) || segment.equals(localPart)) {
+      if (segment.equals(owner)) {
         return row;
       }
+      String localPart = owner.contains("@") ? owner.substring(0, owner.indexOf('@')) : owner;
+      if (segment.equals(localPart)) {
+        // Only when it is the one row with that local part (#432-5).
+        ambiguous = byLocalPart != null;
+        byLocalPart = row;
+      }
     }
-    return null;
+    return ambiguous ? null : byLocalPart;
   }
 
   /**
-   * The eXo user a namespace segment maps to, whole identifier then local part.
+   * The eXo user a namespace segment maps to, whole identifier then local part -- that
+   * one only when a single connected user has it.
    *
    * @param connected identifier (lower-case) to username
    * @param ownerIdentifier the segment
@@ -879,14 +946,20 @@ public class EmailDelegationService {
     if (owner != null) {
       return owner;
     }
+    // The local part only when exactly one connected user has it (#432-5): on a preset
+    // serving several domains, "anne" is nobody in particular.
+    String byLocalPart = null;
     for (Map.Entry<String, String> entry : connected.entrySet()) {
       String key = entry.getKey();
       String localPart = key.contains("@") ? key.substring(0, key.indexOf('@')) : key;
       if (localPart.equals(segment)) {
-        return entry.getValue();
+        if (byLocalPart != null && !byLocalPart.equals(entry.getValue())) {
+          return null;
+        }
+        byLocalPart = entry.getValue();
       }
     }
-    return null;
+    return byLocalPart;
   }
 
   /**
