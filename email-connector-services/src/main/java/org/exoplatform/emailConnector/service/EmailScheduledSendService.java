@@ -364,6 +364,14 @@ public class EmailScheduledSendService {
    * Sends a scheduled mail now, or retries a failed or uncertain one, on the caller's
    * thread: the same claim as the dispatcher's, so of the two racing one sends and the
    * other is refused.
+   * <p>
+   * <b>No transaction here, on purpose</b> (EXO-90573): the claim must commit before
+   * the SMTP session, and the {@code markSent} callback the moment the server
+   * accepts, which only the DAOs' own short transactions give; an outer one would
+   * hold both until the send ends and could roll the SENT mark back after the mail
+   * went out. The call to {@link #runClaimed} keeps its aspect although it does not go
+   * through the Spring proxy: {@link ContainerTransactional} is woven by ajc into the
+   * method body (an {@code execution} join point), not applied by a proxy.
    *
    * @param draftLocalId the draft's handle
    * @param username the owner
@@ -455,6 +463,14 @@ public class EmailScheduledSendService {
    * A lost claim (another node won the row) is the mechanism working, logged at DEBUG.
    * Each row is guarded on its own, {@code RuntimeException} and {@code LinkageError}
    * both: a pass that sends on everyone's behalf cannot let one row end it.
+   * <p>
+   * <b>No transaction here, on purpose</b> (EXO-90573): every claim commits on its own
+   * before its row reaches a pool thread, whose run conditions its writes on that
+   * claim; a tick-wide transaction would hold every claimed row's lock until the tick
+   * ends, and one DAO failure caught in the loop would roll back claims whose mails
+   * are already going out. The job's {@link ContainerTransactional} supplies the container,
+   * and {@link #runClaimed}/{@link #runCheck} keep theirs on the pool thread because
+   * ajc weaves the aspect into their bodies, not through the Spring proxy.
    *
    * @return how many mails were claimed for sending
    */
