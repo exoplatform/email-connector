@@ -5565,7 +5565,9 @@ public class EmailBoxService {
    * answer covers what that folder's mirror holds and says so through its caller.
    * <p>
    * The same criteria as {@link #searchEmails}: free text over the subject or the
-   * sender, a sender filter, unread only, an age window -- at least one of them.
+   * sender, a sender filter, unread only, an age window -- at least one of them. The
+   * folder's mirrored rows are read and filtered here, which the mirror's own size
+   * bounds (the sync keeps a recent window, not a mailbox's history).
    *
    * @param username the reader
    * @param folderKey the shared folder's key, as

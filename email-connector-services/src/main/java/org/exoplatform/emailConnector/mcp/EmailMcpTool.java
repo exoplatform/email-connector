@@ -48,6 +48,7 @@ import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.SyncStatus;
@@ -141,13 +142,14 @@ public class EmailMcpTool implements McpToolPlugin {
    * List the mailboxes other people shared with the user: whose, the name to pass as
    * {@code mailbox} to the email tools, the access granted, the unread count of the
    * shared inbox and which folders are available to read. Read from the user's mirror
-   * alone, with no connection to any mail server.
+   * alone, with no connection to any mail server; none while the user's own mail access
+   * is switched off, as every other tool is then.
    *
    * @return the shared mailboxes, most recently changed first; empty when none
    */
   public List<SharedMailboxModel> listSharedMailboxes() {
     String username = getCurrentUserName();
-    return emailDelegationService.getSharedMailboxes(username)
+    return emailDelegationService.getUsableSharedMailboxes(username)
                                  .stream()
                                  .map(share -> new SharedMailboxModel(share.ownerFullName(),
                                                                       share.ownerMailbox(),
@@ -283,6 +285,9 @@ public class EmailMcpTool implements McpToolPlugin {
   public String getUnreadCount(String mailbox) throws ObjectNotFoundException, IllegalAccessException {
     SharedMailboxEntry share = sharedMailbox(mailbox);
     if (share != null) {
+      // An inbox not in the mirror yet has no count to give: "0 unread" would be the
+      // same "no mail" pretence the listing refuses.
+      mirroredFolderOrFail(share, MailFolder.INBOX);
       return String.format("%d unread email(s) in the inbox of %s, shared with you.", share.unreadCount(), ownerOf(share));
     }
     EmailBox emailBox = emailBoxService.getEmailBox(getCurrentUserName());
@@ -538,7 +543,7 @@ public class EmailMcpTool implements McpToolPlugin {
     if (messages.size() > THREAD_MAX_MESSAGES) {
       messages = messages.subList(messages.size() - THREAD_MAX_MESSAGES, messages.size());
     }
-    return messages.stream().map(this::toThreadMessageModel).toList();
+    return messages.stream().map(email -> toThreadMessageModel(email, share)).toList();
   }
 
   /**
@@ -924,14 +929,21 @@ public class EmailMcpTool implements McpToolPlugin {
    * about; a message that cannot say where it lives should say nothing, and the tool's
    * description tells the caller not to act on the UID of one that does not.
    *
+   * <p>
+   * In a shared mailbox (EXO-90555) the folder is given by name -- INBOX, SENT or
+   * ARCHIVE, through the share's own folder roles -- never as a {@code CUSTOM:<id>} key,
+   * so the same rule applies there: a UID is chainable only from a message whose folder
+   * is INBOX. A folder of the share with no such role says nothing.
+   *
    * @param email the cached message
+   * @param share the shared mailbox read, null for the user's own
    * @return its conversation-reading shape
    */
-  private EmailThreadMessageModel toThreadMessageModel(Email email) {
+  private EmailThreadMessageModel toThreadMessageModel(Email email, SharedMailboxEntry share) {
     EmailSender sender = email.getSender();
     return new EmailThreadMessageModel(email.getId(),
                                        email.getMailRemoteId(),
-                                       email.getFolder(),
+                                       share == null ? email.getFolder() : folderNameIn(share, email.getFolder()),
                                        sender == null ? null : sender.getName(),
                                        sender == null ? null : sender.getAddress(),
                                        email.getReceivedDate(),
@@ -1199,6 +1211,30 @@ public class EmailMcpTool implements McpToolPlugin {
           + "This is not an empty folder; list_shared_mailboxes says which folders are available.", folderName, ownerOf(share)));
     }
     return key;
+  }
+
+  /**
+   * The name of a shared mailbox's folder -- INBOX, SENT or ARCHIVE -- from its key.
+   *
+   * @param share the shared mailbox
+   * @param folderKey the folder's key
+   * @return the name, null for a folder with none of those roles
+   */
+  private static String folderNameIn(SharedMailboxEntry share, String folderKey) {
+    if (folderKey == null) {
+      return null;
+    }
+    if (folderKey.equals(share.folderKey())) {
+      return MailFolder.INBOX;
+    }
+    return share.folders()
+                .stream()
+                .filter(folder -> folderKey.equals(folder.key()))
+                .map(folder -> folder.role() == FolderRole.SENT ? MailFolder.SENT
+                                                                : folder.role() == FolderRole.ARCHIVE ? MailFolder.ARCHIVE : null)
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElse(null);
   }
 
   /**
