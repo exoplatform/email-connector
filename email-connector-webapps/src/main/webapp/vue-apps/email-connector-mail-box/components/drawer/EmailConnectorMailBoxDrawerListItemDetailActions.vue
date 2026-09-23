@@ -42,13 +42,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          against the inbox — so a message opened out of a read-only folder offers
          none of them. The extension seam above stays: it is somebody else's toolbar
          and its actions are not this one's to withdraw. -->
-    <template v-if="!readOnly">
-      <v-btn
-        :title="$t('emailConnector.mailBox.list.drawer.detail.unread.label')"
-        @click="updateEmailReadStatus()"
-        icon>
-        <v-icon size="20" class="icon-default-color">fa-mail-bulk</v-icon>
-      </v-btn>
+    <v-btn
+      v-if="canMarkRead"
+      :title="$t('emailConnector.mailBox.list.drawer.detail.unread.label')"
+      @click="updateEmailReadStatus()"
+      icon>
+      <v-icon size="20" class="icon-default-color">fa-mail-bulk</v-icon>
+    </v-btn>
+    <!-- Taking the mail out of its folder: withheld where canMoveOutOf says so -- a
+         read-only folder, a draft, and a shared mailbox whose rights or phase do not
+         allow it (absent right, absent button). -->
+    <template v-if="canMoveOut">
       <v-btn
         :title="$t('emailConnector.mailBox.list.drawer.detail.archive.label')"
         @click="archiveEmail()"
@@ -190,6 +194,24 @@ export default {
      */
     readOnly() {
       return this.$emailConnectorMailBoxService.isReadOnlyFolder(this.email?.folder);
+    },
+    /**
+     * Whether "Mark as unread" may be offered on the opened message: not in a
+     * read-only folder, and in a shared mailbox only with the right to keep read state.
+     *
+     * @returns {Boolean} true when the button belongs here
+     */
+    canMarkRead() {
+      return this.$emailConnectorMailBoxService.canMarkReadIn(this.email?.folder);
+    },
+    /**
+     * Whether archive and delete (and, with their own checks, spam and move) may be
+     * offered on the opened message (canMoveOutOf).
+     *
+     * @returns {Boolean} true when those buttons belong here
+     */
+    canMoveOut() {
+      return this.$emailConnectorMailBoxService.canMoveOutOf(this.email?.folder);
     },
     /**
      * Whether the opened message is a trashed one, in which case this toolbar offers
