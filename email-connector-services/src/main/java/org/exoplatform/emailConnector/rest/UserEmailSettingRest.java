@@ -49,6 +49,7 @@ import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.GrantedDelegations;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
+import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.rest.model.DelegationInviteRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationPreferencesRequest;
@@ -391,6 +392,23 @@ public class UserEmailSettingRest {
   }
 
   /**
+   * The shared mailboxes the caller can switch to from the mail drawer's header.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @return the switcher's entries, one per accepted share
+   */
+  @GetMapping("/delegations/mailboxes")
+  @Secured("users")
+  @Operation(summary = "Lists the shared mailboxes the caller can open in the mail drawer",
+             method = "GET",
+             description = "One entry per ACCEPTED share whose INBOX is registered: the owner, the rights the server last granted and the affordances they unlock, the CUSTOM:<id> key the shared INBOX is listed under in GET /email-box?folder=, and its unread count in the caller's mirror. Read from eXo's rows, no connection to the mail server. Empty when nothing is shared with the caller, which is what hides the switcher.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public List<SharedMailboxEntry> getSharedMailboxes(HttpServletRequest request) {
+    return emailDelegationService.getSharedMailboxes(request.getRemoteUser());
+  }
+
+  /**
    * Shares the caller's mailbox with an eXo user.
    *
    * @param request the HTTP request, carrying the authenticated user
@@ -445,6 +463,43 @@ public class UserEmailSettingRest {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (MailboxAclException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getCode());
+    }
+  }
+
+  /**
+   * Changes the access a grantee holds on the caller's own mailbox to another preset.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param id the delegation id, resolved with the caller as owner
+   * @param body the preset to set
+   * @return the delegation as it now stands
+   */
+  @PutMapping("/delegations/{id}/preset")
+  @Secured("users")
+  @Operation(summary = "Changes a grantee's access to the caller's own mailbox",
+             method = "PUT",
+             description = "Writes the preset (READER or EDITOR) for the grantee on the caller's INBOX, on the caller's own session, through the same engine call as the grant -- it replaces the grantee's entry (RFC 4314 SETACL), capped by the caller's own rights -- and records what the server holds. The status is unchanged. Owner only: a delegation that is not the caller's own is answered 404.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Invalid preset, or a share no longer on the server (emailConnector.delegation.*)"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "404", description = "No such delegation of the caller's mailbox"),
+      @ApiResponse(responseCode = "502", description = "The mail server refused the change (emailConnector.delegation.*)") })
+  public EmailDelegation changeDelegationPreset(HttpServletRequest request,
+                                                @Parameter(description = "The delegation id", required = true)
+                                                @PathVariable("id")
+                                                long id,
+                                                @RequestBody
+                                                DelegationInviteRequest body) {
+    try {
+      return emailDelegationService.changePreset(request.getRemoteUser(), id, body == null ? null : body.getPreset());
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (MailboxAclException e) {
       throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getCode());
     }

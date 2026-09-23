@@ -20,6 +20,9 @@
 export * from './EmailConnectorScheduledSendService.js';
 // Read receipts (EXO-90435), reached the same way.
 export * from './EmailConnectorReadReceiptService.js';
+// The mailboxes shared with the user, and what their rights let the interface offer.
+export * from './EmailConnectorSharedMailboxes.js';
+import { isSharedMailboxFolder, sharedMailboxAllows, sharedMailboxAllowsMoveOut, sharedMailboxOfFolder } from './EmailConnectorSharedMailboxes.js';
 import { refusal } from './EmailConnectorScheduledSendService.js';
 
 const presentation = {
@@ -227,7 +230,33 @@ export function isDraftsFolder(folder) {
  * @returns {Boolean} true when "Mark as spam" may be offered on those messages
  */
 export function canMarkAsJunk(folder) {
-  return !isReadOnlyFolder(folder) && !isDraftsFolder(folder);
+  return canMoveOutOf(folder);
+}
+
+/**
+ * Whether mail may be taken OUT of a folder -- deleted into the Trash, archived,
+ * reported as spam or moved elsewhere: a writable folder's rows, minus the drafts, and
+ * in a mailbox somebody shared with the user only what its rights and the phase allow
+ * (sharedMailboxAllowsMoveOut). The one answer the row menu, the swipe, the reader's
+ * toolbar and the bulk toolbar ask, so no control can offer what another withholds.
+ *
+ * @param {String} folder the folder a row carries; blank means INBOX
+ * @returns {Boolean} true when those actions may be offered on those messages
+ */
+export function canMoveOutOf(folder) {
+  return !isReadOnlyFolder(folder) && !isDraftsFolder(folder) && sharedMailboxAllowsMoveOut(folder);
+}
+
+/**
+ * Whether a folder's read state may be changed from the interface: not in a read-only
+ * folder, and in a shared mailbox only with the right that keeps read state, s (plan
+ * 7.5) -- the read state of a shared mailbox is its owner's too, so it is a write.
+ *
+ * @param {String} folder the folder a row carries; blank means INBOX
+ * @returns {Boolean} true when read/unread may be offered, and a read pushed
+ */
+export function canMarkReadIn(folder) {
+  return !isReadOnlyFolder(folder) && sharedMailboxAllows(folder, 'markRead');
 }
 
 /**
@@ -254,8 +283,19 @@ export function folderLabel(folder, translate) {
       ? translate('emailConnector.mailBox.list.drawer.folder.custom.serverScheduled', { 0: name })
       : name;
   }
+  // A shared mailbox's INBOX is keyed CUSTOM:<id> like a folder of the user's own, and
+  // is named like the user's own inbox: whose inbox it is, the header and the band say.
+  if (folder.type === SHARED_INBOX_TYPE) {
+    return translate('emailConnector.mailBox.list.drawer.folder.inbox');
+  }
   return translate(`emailConnector.mailBox.list.drawer.folder.${(folder.key || 'INBOX').toLowerCase()}`);
 }
+
+/**
+ * The type the folder column and the menus list a shared mailbox's INBOX under -- the
+ * server's MailFolderView.TYPE_DELEGATED_INBOX.
+ */
+export const SHARED_INBOX_TYPE = 'DELEGATED_INBOX';
 
 /**
  * Whether one of the user's own folders bears the name of the "Scheduled" view: in
@@ -314,6 +354,9 @@ const BUILT_IN_FOLDER_ICONS = {
  * @returns {String} the icon class
  */
 export function folderIcon(folder) {
+  if (folder?.type === SHARED_INBOX_TYPE) {
+    return BUILT_IN_FOLDER_ICONS.INBOX;
+  }
   if (!folder || folder.type === 'CUSTOM') {
     return 'fa-folder';
   }
@@ -392,6 +435,17 @@ export function isListedFolder(folder) {
  */
 export function moveTargets(folders, sourceFolder) {
   const source = sourceFolder || 'INBOX';
+  // A move never crosses from one mailbox to another (EmailBoxService
+  // #checkDelegatedMove): out of a shared mailbox, only that mailbox's own folders the
+  // user may insert into -- none in phase 1, which registers its INBOX alone -- and out
+  // of the user's own, never a shared mailbox's folder.
+  const sourceMailbox = sharedMailboxOfFolder(source);
+  if (sourceMailbox) {
+    return (folders || []).filter(folder => folder.key !== source
+                                            && !folder.missing
+                                            && sharedMailboxOfFolder(folder.key)?.delegationId === sourceMailbox.delegationId
+                                            && sharedMailboxAllows(folder.key, 'moveTarget'));
+  }
   // Inbox and Archive are destinations too, not only the user's own folders: filing a
   // message must be reversible, and a picker that only ever pointed deeper made "Move
   // to..." a one-way trip -- a message put in "Invoices" could never come back.
@@ -401,6 +455,7 @@ export function moveTargets(folders, sourceFolder) {
   const builtInTargets = ['INBOX', 'ARCHIVE'];
   return (folders || []).filter(folder => folder.key !== source
                                           && !folder.missing
+                                          && !isSharedMailboxFolder(folder.key)
                                           && (builtInTargets.includes(folder.key)
                                               || (folder.type === 'CUSTOM' && folder.syncEnabled)));
 }
@@ -597,7 +652,11 @@ export function getEmailBox(folder, favoriteOnly) {
     if (resp?.ok) {
       return resp.json();
     } else {
-      throw new Error('Error when getting email box');
+      // The status travels with the error, for whoever needs to tell a refusal from a
+      // hiccup.
+      const error = new Error('Error when getting email box');
+      error.status = resp?.status;
+      throw error;
     }
   }).then((box) => {
     // Decorate each listed email with what its conversation looks like from outside

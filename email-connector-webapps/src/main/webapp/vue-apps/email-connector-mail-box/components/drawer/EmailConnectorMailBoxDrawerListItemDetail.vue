@@ -61,6 +61,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-btn>
     </template>
     <template v-if="emailDetailDrawer && !waitingForEmail" #content>
+      <!-- A mail of a shared mailbox says whose it is here too (plan 7.6). -->
+      <email-connector-shared-mailbox-band
+        v-if="sharedMailbox"
+        :entry="sharedMailbox" />
       <email-connector-mail-box-drawer-no-email v-if="emails.length === 0" />
       <template v-else>
         <email-connector-mail-box-drawer-select-email v-if="selectEmailPlaceHolder" />
@@ -166,7 +170,7 @@ export default {
         // turn read here would show a state nothing is saving — and opening a mail
         // is enough to get here, so every trashed mail merely LOOKED at would have
         // lost its unread mark until the list next reloaded.
-        if (email && !this.$emailConnectorMailBoxService.isReadOnlyFolder(email.folder) && email.read !== read) {
+        if (email && this.$emailConnectorMailBoxService.canMarkReadIn(email.folder) && email.read !== read) {
           this.$set(email, 'read', read);
         }
       });
@@ -252,6 +256,15 @@ export default {
     this.$root.$off('apply-email-favorite-status', this.onApplyEmailFavoriteStatus);
   },
   computed: {
+    /**
+     * The shared mailbox the opened mail belongs to, for the identity band, or null
+     * for a mail of the user's own mailbox.
+     *
+     * @returns {Object} the switcher entry, or null
+     */
+    sharedMailbox() {
+      return this.$emailConnectorMailBoxService.sharedMailboxOfFolder(this.email?.folder);
+    },
     // Nothing to open the reader on yet: the message was not found in the list the
     // drawer was handed (a search hit, a favorite), so the reader waits for the
     // server's copy of it, under the loading bar.

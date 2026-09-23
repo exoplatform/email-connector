@@ -48,6 +48,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         text>
         {{ scheduledEditBanner }}
       </v-alert>
+      <email-connector-new-email-shared-mailbox-notice
+        v-if="sharedMailbox"
+        :entry="sharedMailbox"
+        :reply="sharedMailboxReply"
+        :copy-owner="ownerCopied"
+        :owner-is-recipient="ownerInTo"
+        @update:copy-owner="setOwnerCopied" />
       <email-connector-recipient-field
         ref="toField"
         v-model="to"
@@ -354,6 +361,11 @@ export default {
       to: [],
       cc: [],
       bcc: [],
+      // The mailbox somebody shared with the user that this composer was opened from
+      // (delegation plan 7.8), as the switcher had it at that moment, or null; and
+      // whether the composer answers a message there, for the band's wording.
+      sharedMailbox: null,
+      sharedMailboxReply: false,
       // What is typed into each field but not yet a chip. Send stays reachable
       // while To holds something, so clicking Send can blur the field into
       // committing it. After that blur, anything still pending is text the field
@@ -479,6 +491,27 @@ export default {
     },
   },
   computed: {
+    /**
+     * Whether the shared mailbox's owner is among the copied (or direct) recipients --
+     * what the band's "Copy the owner" box shows, read off the chips so that removing
+     * the owner's chip by hand unticks it.
+     *
+     * @returns {Boolean} true when the owner gets the mail
+     */
+    ownerCopied() {
+      const owner = this.sharedMailbox?.ownerMailbox?.trim().toLowerCase();
+      return !!owner && [...this.to, ...this.cc].some(recipient => recipient.address?.trim().toLowerCase() === owner);
+    },
+    /**
+     * Whether the shared mailbox's owner is a direct recipient -- a reply to a mail the
+     * owner sent -- in which case "Copy the owner" has nothing to take away.
+     *
+     * @returns {Boolean} true when the owner is in To
+     */
+    ownerInTo() {
+      const owner = this.sharedMailbox?.ownerMailbox?.trim().toLowerCase();
+      return !!owner && this.to.some(recipient => recipient.address?.trim().toLowerCase() === owner);
+    },
     /**
      * Switches the drawer's own container focus off, so the cursor can land in a
      * field instead.
@@ -618,6 +651,7 @@ export default {
       this.readReceiptRequested = readReceiptDefault;
       this.title = this.drawerTitle(email, forward);
       this.seedRecipients(email, forward, replyAll, prefill);
+      this.seedSharedMailbox(email, forward);
       // A subject and a body, seeded the same way the recipients are. Opening
       // the composer from elsewhere was only ever half an offer: an add-on with
       // something to send -- a visio room's link, a document, a note -- could
@@ -1280,6 +1314,44 @@ export default {
       return this.$t('emailConnector.mailBox.newEmail.drawer.title');
     },
     /**
+     * Notes the shared mailbox the composer is opened from, and copies its owner by
+     * default (delegation plan 7.8): the mail goes out as the user, through their own
+     * mail server, and lands in their own Sent, so without the copy the owner has no
+     * trace that their mail was answered. Notes too whether the composer answers a
+     * message (a reply) or starts one (a new mail or a forward), for the band's wording.
+     * Nothing in the user's own mailbox.
+     *
+     * @param {object} email - the message being answered, null for a new mail
+     * @param {boolean} forward - whether this is a forward
+     * @returns {void}
+     */
+    seedSharedMailbox(email, forward) {
+      this.sharedMailbox = this.$emailConnectorMailBoxService.sharedMailboxState().current;
+      this.sharedMailboxReply = !!this.sharedMailbox && !!email && !forward;
+      if (this.sharedMailbox) {
+        this.setOwnerCopied(true);
+      }
+    },
+    /**
+     * Copies the shared mailbox's owner, or stops copying them: a Cc chip added or
+     * removed. An owner who is already a direct recipient stays one either way.
+     *
+     * @param {boolean} copied - whether the owner should get the mail
+     * @returns {void}
+     */
+    setOwnerCopied(copied) {
+      const owner = this.sharedMailbox?.ownerMailbox?.trim();
+      if (!owner) {
+        return;
+      }
+      const isOwner = recipient => recipient.address?.trim().toLowerCase() === owner.toLowerCase();
+      if (copied && !this.ownerCopied) {
+        this.cc = [...this.cc, { name: this.sharedMailbox.ownerFullName, address: owner }];
+      } else if (!copied) {
+        this.cc = this.cc.filter(recipient => !isOwner(recipient));
+      }
+    },
+    /**
      * Fills To and Cc for the way the composer was opened: a new mail takes the
      * prefill hand-off, a reply answers the sender (everyone, on reply-all), and
      * a forward addresses nobody — the user chooses.
@@ -1435,6 +1507,8 @@ export default {
       this.to = [];
       this.cc = [];
       this.bcc = [];
+      this.sharedMailbox = null;
+      this.sharedMailboxReply = false;
       // Reset with its siblings: the content template is v-if'd, so the field is
       // destroyed here and rebuilt with term '' -- an initial value, which the
       // watcher does not report. Left behind, a stale pending term would render
