@@ -12476,8 +12476,12 @@ public class EmailBoxServiceTest {
         .when(smtpTransmitter).transmit(any(MimeMessage.class));
     Runnable onTransmitted = mock(Runnable.class);
 
-    assertThrows(ScheduledSendFailure.class, () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted));
+    ScheduledSendFailure failure = assertThrows(ScheduledSendFailure.class,
+                                                () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted));
 
+    // Classified as the refusal it is, never as "maybe sent": nothing was transmitted.
+    assertEquals(ScheduledSendFailure.Kind.PERMANENT, failure.getKind());
+    assertEquals(ScheduledSendError.AUTHENTICATION, failure.getError());
     verify(smtpTransmitter, times(2)).transmit(any(MimeMessage.class));
     verify(emailCredentialsResolver, times(1)).invalidate(any(), any(), any(), any());
     verify(onTransmitted, never()).run();
