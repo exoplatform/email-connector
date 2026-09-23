@@ -378,8 +378,11 @@ public class EmailDelegationService {
    * sets the rights, it does not add to them), expands the preset into the server's own
    * vocabulary and caps it by the owner's rights -- no letters are written here, which
    * keeps a per-mailbox engine (BlueMind, phase 1b) a matter of its own grant. What is
-   * recorded is what the engine says it wrote. The status is left as it is: an accepted
-   * share stays accepted, a pending invitation stays pending with its new rights.
+   * recorded is what the engine says it wrote, and only that: the status, the dates and
+   * the grantee's toggles are left as they stand -- an accepted share stays accepted, a
+   * pending invitation stays pending with its new rights, and a leave made while the
+   * server was asked stays a leave. A share revoked or gone meanwhile is refused as
+   * not changeable.
    * <p>
    * Owner only, and only the owner's own rows: the row is resolved with the caller as
    * owner, so a delegate -- or anybody else -- asking gets "no such delegation", which
@@ -396,7 +399,7 @@ public class EmailDelegationService {
    * @throws IllegalAccessException when the caller has no connected mailbox
    * @throws IllegalArgumentException {@code emailConnector.delegation.presetInvalid} for a
    *           preset that is not grantable, {@code emailConnector.delegation.notChangeable}
-   *           for a share that is no longer on the server
+   *           for a share that is no longer on the server, before the write or after it
    * @throws MailboxAclException when the server refuses or cannot be asked
    */
   public EmailDelegation changePreset(String ownerUsername, long id, DelegationPreset preset) throws ObjectNotFoundException,
@@ -427,12 +430,22 @@ public class EmailDelegationService {
       written = engine.grant(session, OWNER_INBOX, identifier, preset, engine.myRights(session, OWNER_INBOX));
     }
     MailboxRights granted = written.rights() == null ? MailboxRights.NONE : written.rights();
-    delegation.setPreset(written.preset() == null || written.preset() == DelegationPreset.CUSTOM ? preset : written.preset());
-    delegation.setRights(granted.letters());
-    delegation.setNativeRights(written.nativeRights());
-    delegation.setGranteeMailbox(identifier);
-    delegation.setLastRightsCheckDate(new Date());
-    delegation = emailDelegationStorage.update(delegation);
+    DelegationPreset recorded = written.preset() == null || written.preset() == DelegationPreset.CUSTOM ? preset : written.preset();
+    // Only what was written on the server, and not over a share that ended while the
+    // server was asked: the row read above is as old as the SETACL round-trip, and a
+    // whole-row write from it would undo a leave made meanwhile (stack review N-1).
+    delegation = emailDelegationStorage.updateGrantedRights(ownerUsername,
+                                                           id,
+                                                           recorded,
+                                                           granted.letters(),
+                                                           written.nativeRights(),
+                                                           identifier,
+                                                           new Date());
+    if (delegation == null) {
+      // Revoked or gone meanwhile. The owner's next reconcile reads the server's ACL
+      // and offers the share again if this grant landed after the revoke.
+      throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
+    }
     LOG.info("Mailbox delegation changed: actor={} ownerMailbox={} grantee={} identifier={} rights={}",
              ownerUsername,
              delegation.getOwnerMailbox(),
