@@ -206,7 +206,26 @@ const JUNK_ACTION_FOLDERS = ['JUNK'];
  * @returns {Boolean} true when the Junk actions may be offered on those messages
  */
 export function hasJunkActions(folder) {
-  return JUNK_ACTION_FOLDERS.includes(folder || 'INBOX');
+  if (JUNK_ACTION_FOLDERS.includes(folder || 'INBOX')) {
+    return true;
+  }
+  // A shared mailbox's Spam (EXO-90548 review): its Delete files into that mailbox's
+  // own Trash, so it is offered where the letters allow taking mail out and a Trash is
+  // shared -- the reversible delete every Spam folder keeps. "Not spam" is not
+  // (canRestoreFromJunk): it would file into the user's own INBOX, another mailbox.
+  return sharedFolderRole(folder) === 'JUNK' && sharedMailboxAllowsMoveOut(folder) && sharedMailboxHasRole(folder, 'TRASH');
+}
+
+/**
+ * Whether "Not spam" may be offered on a Spam message: in the user's own Spam folder
+ * only. Out of a shared mailbox's Spam it would put the owner's mail into the user's
+ * own INBOX -- a move between two mailboxes, which the server refuses (EXO-90548).
+ *
+ * @param {String} folder the folder a row carries; blank means INBOX
+ * @returns {Boolean} true when "Not spam" may be offered on those messages
+ */
+export function canRestoreFromJunk(folder) {
+  return (folder || 'INBOX') === 'JUNK';
 }
 
 /**
