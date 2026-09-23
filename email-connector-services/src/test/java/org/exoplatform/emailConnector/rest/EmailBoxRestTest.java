@@ -364,6 +364,40 @@ public class EmailBoxRestTest {
            .andExpect(status().isGone());
   }
 
+  /**
+   * EXO-90551 -- a send from a shared mailbox names its share and answers what became of
+   * the owner's copy; a share that is not the caller's is a 404 and one gone a 410,
+   * nothing sent; a send from the caller's own mailbox answers no ownerCopy at all.
+   */
+  @Test
+  void aSendFromASharedMailboxAnswersTheOwnersCopy() throws Exception {
+    Email email = new Email();
+    email.setTo(List.of(new EmailRecipient()));
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(5L))).thenReturn(EmailBoxService.OwnerCopy.FILED);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=5").with(testSimpleUser())
+                                                                 .content(asJsonString(email))
+                                                                 .contentType(MediaType.APPLICATION_JSON)
+                                                                 .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.ownerCopy").value("FILED"));
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(6L))).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=6").with(testSimpleUser())
+                                                                 .content(asJsonString(email))
+                                                                 .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isNotFound());
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(7L))).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=7").with(testSimpleUser())
+                                                                 .content(asJsonString(email))
+                                                                 .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isGone());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/send").with(testSimpleUser())
+                                                  .content(asJsonString(email))
+                                                  .contentType(MediaType.APPLICATION_JSON)
+                                                  .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.ownerCopy").doesNotExist());
+  }
+
   @Test
   void deleteEmail() throws Exception {
     ResultActions response = mockMvc.perform(delete(EMAIL_BOX_PATH).with(testSimpleUser()));
@@ -1420,7 +1454,7 @@ public class EmailBoxRestTest {
                                                   .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isOk());
     ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
-    verify(emailBoxService).sendEmail(sent.capture(), eq(SIMPLE_USER));
+    verify(emailBoxService).sendEmail(sent.capture(), eq(SIMPLE_USER), isNull());
     org.junit.jupiter.api.Assertions.assertTrue(sent.getValue().isReadReceiptRequested());
     org.junit.jupiter.api.Assertions.assertNull(sent.getValue().getReadReceiptTo(), "read-only: never from a payload");
     org.junit.jupiter.api.Assertions.assertNull(sent.getValue().getReadReceiptPrompt());

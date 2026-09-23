@@ -109,6 +109,9 @@ public class EmailConnectorService {
   /** Administration-wide custom-folders master-switch key. */
   public static final String        CUSTOM_FOLDERS_ENABLED_KEY                   = "customFoldersEnabled";
 
+  /** Administration-wide kill switch of the copy into a shared mailbox owner's Sent (EXO-90551). */
+  public static final String        SHARED_MAILBOX_SENT_COPY_ENABLED_KEY         = "sharedMailboxSentCopyEnabled";
+
   private static final int          MIN_EMAIL_BOX_CACHE_SIZE                     = 1;
 
   private static final int          MAX_EMAIL_BOX_CACHE_SIZE                     = 5000;
@@ -634,6 +637,40 @@ public class EmailConnectorService {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNC_SETTINGS_MESSAGE, username));
     }
     settingService.set(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, CUSTOM_FOLDERS_ENABLED_KEY, SettingValue.create(String.valueOf(enabled)));
+  }
+
+  /**
+   * Whether a mail sent from a mailbox shared with the sender is also filed in that
+   * mailbox owner's Sent folder, administration-wide (EXO-90551) -- see
+   * {@link #isCustomFoldersEnabled()} for the shape. Turning it off stops the copies
+   * only: nothing already filed is touched, and the composer then offers to copy the
+   * owner by default instead. Falls back to the
+   * {@code email.connector.sharedMailboxSentCopy.enabled} JVM property (default
+   * {@code true}).
+   *
+   * @return true when the owner's Sent copy is filed
+   */
+  public boolean isSharedMailboxSentCopyEnabled() {
+    SettingValue<?> settingValue = settingService.get(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, SHARED_MAILBOX_SENT_COPY_ENABLED_KEY);
+    if (settingValue != null && settingValue.getValue() != null) {
+      return Boolean.parseBoolean(settingValue.getValue().toString());
+    }
+    return Boolean.parseBoolean(System.getProperty("email.connector.sharedMailboxSentCopy.enabled", "true"));
+  }
+
+  /**
+   * Save the administration-wide switch of the copy into a shared mailbox owner's Sent
+   * folder (EXO-90551). Administrators only.
+   *
+   * @param enabled whether the copy should be filed
+   * @param username user updating the switch
+   * @throws IllegalAccessException if the user is not allowed to update it
+   */
+  public void saveSharedMailboxSentCopyEnabled(boolean enabled, String username) throws IllegalAccessException {
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNC_SETTINGS_MESSAGE, username));
+    }
+    settingService.set(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, SHARED_MAILBOX_SENT_COPY_ENABLED_KEY, SettingValue.create(String.valueOf(enabled)));
   }
 
   /**

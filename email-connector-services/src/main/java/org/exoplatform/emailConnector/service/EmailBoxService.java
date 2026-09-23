@@ -7865,6 +7865,40 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not send from their mailbox
    */
   public void sendEmail(Email email, String username) throws IllegalAccessException {
+    try {
+      sendEmail(email, username, null);
+    } catch (ObjectNotFoundException e) {
+      // No share was named, so none can be missing.
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /**
+   * {@link #sendEmail(Email, String)}, from a mailbox shared with the sender when a share
+   * is named (EXO-90551): the mail goes out from the sender's own account as before, and
+   * once the mail server has accepted it, a copy is also filed in the owner's Sent folder
+   * -- the same message, same Message-ID and references, marked read -- on the sender's
+   * own session, after their own Sent copy. The share is resolved with the sender as
+   * grantee before anything is sent, so a share of somebody else is "not found" and one
+   * no longer accepted is a revocation: the client-supplied id never selects another
+   * user's folder. A copy that cannot be filed never makes the send fail.
+   *
+   * @param email the composed email
+   * @param username the sender
+   * @param delegationId the share the mail is sent from, null for the sender's own mailbox
+   * @return what became of the owner's copy: FILED, FAILED or SKIPPED (no Sent shared, no
+   *         i there, or switched off by an administrator); null when no share is named
+   * @throws IllegalAccessException if the user may not send from their mailbox
+   * @throws ObjectNotFoundException when the named share is not the sender's
+   * @throws DelegationRevokedException when the named share is no longer accepted
+   */
+  public OwnerCopy sendEmail(Email email, String username, Long delegationId) throws IllegalAccessException,
+                                                                                  ObjectNotFoundException {
+    // Before anything is sent: a refusal must never follow a delivered mail.
+    String ownerSentKey = delegationId == null ? null : emailDelegationService.ownerSentFolderKey(username, delegationId);
+    if (ownerSentKey != null && !emailConnectorService.isSharedMailboxSentCopyEnabled()) {
+      ownerSentKey = null;
+    }
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -7876,7 +7910,12 @@ public class EmailBoxService {
     try {
       MimeMessage message = buildOutgoingMessage(email, userEmailSetting, emailConnector, null, uploadIds, username);
       applyThreadingHeaders(message, email, username);
-      deliver(message, email, StringUtils.isNotEmpty(email.getMailHeaderId()), username, userEmailSetting);
+      Transport.send(message);
+      afterTransmission(message, email, StringUtils.isNotEmpty(email.getMailHeaderId()), username, userEmailSetting);
+      if (delegationId == null) {
+        return null;
+      }
+      return ownerSentKey == null ? OwnerCopy.SKIPPED : copyToOwnerSent(message, username, userEmailSetting, ownerSentKey);
     } catch (MessagingException | UnsupportedEncodingException | ConnectorCredentialsException e) {
       logSendFailure(username, emailConnector, e);
       throw new IllegalStateException(String.format("Error when sending email for user %s", username));
@@ -14789,6 +14828,73 @@ public class EmailBoxService {
       }
     }
     return null;
+  }
+
+  /**
+   * What became of the copy of a shared-mailbox send in its owner's Sent folder
+   * (EXO-90551), as the send answers it.
+   */
+  public enum OwnerCopy {
+    /** Filed in the owner's Sent. */
+    FILED,
+    /** The mail went out; the copy could not be filed. */
+    FAILED,
+    /** Not filed by design: no Sent shared, no i there, or switched off. */
+    SKIPPED
+  }
+
+  /**
+   * Files the copy of a mail just sent from a shared mailbox in its owner's Sent folder
+   * (EXO-90551): an APPEND of the very message that went out, marked read, on the
+   * sender's own session, into the folder the registry names for that share's Sent --
+   * never a name the client sent. Fenced like the sender's own copy: the mail is out by
+   * then, and a copy that cannot be filed is said, never turned into "not sent". No
+   * retry: a duplicate on retry is worse than a missing copy.
+   *
+   * @param message the message that went out
+   * @param username the sender
+   * @param userEmailSetting the sender's connector binding
+   * @param ownerSentKey the owner's Sent folder key, as {@link EmailDelegationService#ownerSentFolderKey} resolved it
+   * @return FILED, or FAILED
+   */
+  private OwnerCopy copyToOwnerSent(MimeMessage message, String username, UserEmailSetting userEmailSetting, String ownerSentKey) {
+    Store store = null;
+    IMAPFolder ownerSent = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      ownerSent = resolveCachedImapFolder(store, ownerSentKey, username);
+      if (ownerSent == null) {
+        LOG.warn("The Sent folder {} of a mailbox shared with user {} is no longer there; the owner's copy was not filed", ownerSentKey, username);
+        return OwnerCopy.FAILED;
+      }
+      ownerSent.open(Folder.READ_WRITE);
+      // The owner's copy of mail that was sent, not new mail to them.
+      message.setFlag(Flags.Flag.SEEN, true);
+      ownerSent.appendMessages(new Message[] { message });
+      scheduleFolderRefresh(username, ownerSentKey, FolderRefreshCause.MOVE);
+      return OwnerCopy.FILED;
+    } catch (Exception e) {
+      LOG.warn("A mail of user {} was sent from a shared mailbox, and its copy in the owner's Sent {} could not be filed",
+               username,
+               ownerSentKey,
+               e);
+      return OwnerCopy.FAILED;
+    } finally {
+      try {
+        if (ownerSent != null && ownerSent.isOpen()) {
+          ownerSent.close(false);
+        }
+      } catch (MessagingException e) {
+        LOG.debug("Error when closing the owner's Sent folder", e);
+      }
+      try {
+        if (store != null && store.isConnected()) {
+          store.close();
+        }
+      } catch (MessagingException e) {
+        LOG.debug(STORE_CLOSE_ERROR_MESSAGE, e);
+      }
+    }
   }
 
   /**
