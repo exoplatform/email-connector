@@ -22,7 +22,7 @@ export * from './EmailConnectorScheduledSendService.js';
 export * from './EmailConnectorReadReceiptService.js';
 // The mailboxes shared with the user, and what their rights let the interface offer.
 export * from './EmailConnectorSharedMailboxes.js';
-import { isSharedMailboxFolder, sharedFolderRole, sharedMailboxAllows, sharedMailboxAllowsMoveOut, sharedMailboxHasRole, sharedMailboxOfFolder } from './EmailConnectorSharedMailboxes.js';
+import { inboxOnlyShareOf, isSharedMailboxFolder, sharedFolderRole, sharedMailboxAllows, sharedMailboxAllowsMoveOut, sharedMailboxCanFileInto, sharedMailboxOfFolder } from './EmailConnectorSharedMailboxes.js';
 import { refusal } from './EmailConnectorScheduledSendService.js';
 
 const presentation = {
@@ -213,7 +213,7 @@ export function hasJunkActions(folder) {
   // own Trash, so it is offered where the letters allow taking mail out and a Trash is
   // shared -- the reversible delete every Spam folder keeps. "Not spam" is not
   // (canRestoreFromJunk): it would file into the user's own INBOX, another mailbox.
-  return sharedFolderRole(folder) === 'JUNK' && sharedMailboxAllowsMoveOut(folder) && sharedMailboxHasRole(folder, 'TRASH');
+  return sharedFolderRole(folder) === 'JUNK' && sharedMailboxAllowsMoveOut(folder) && sharedMailboxCanFileInto(folder, 'TRASH');
 }
 
 /**
@@ -258,7 +258,59 @@ export function isDraftsFolder(folder) {
  */
 export function canMarkAsJunk(folder) {
   // In a shared mailbox, only where its owner shares a Spam folder (EXO-90548).
-  return canMoveOutOf(folder) && sharedMailboxHasRole(folder, 'JUNK');
+  return canMoveOutOf(folder) && sharedMailboxCanFileInto(folder, 'JUNK');
+}
+
+/**
+ * Whether a row may be deleted -- filed into the Trash: where mail may be taken out of
+ * its folder (canMoveOutOf), and in a shared mailbox only where its owner shares a Trash
+ * the user may file into (EXO-90548). The one answer the row menu, the swipe, the
+ * reader's toolbar, the bulk toolbar and a drop on the Trash ask.
+ *
+ * @param {String} folder the folder a row carries; blank means INBOX
+ * @returns {Boolean} true when Delete may be offered on those messages
+ */
+export function canDelete(folder) {
+  return canMoveOutOf(folder) && sharedMailboxCanFileInto(folder, 'TRASH');
+}
+
+/**
+ * Whether a row may be archived: where mail may be taken out of its folder, and in a
+ * shared mailbox only where its owner shares an Archive the user may file into -- and
+ * never out of that Archive itself, a copy into the folder the message is in
+ * (EXO-90548). A server with no Archive (Stalwart has none by default) offers none,
+ * even after the owner extends the share.
+ *
+ * @param {String} folder the folder a row carries; blank means INBOX
+ * @returns {Boolean} true when Archive may be offered on those messages
+ */
+export function canArchive(folder) {
+  return canMoveOutOf(folder) && sharedFolderRole(folder) !== 'ARCHIVE' && sharedMailboxCanFileInto(folder, 'ARCHIVE');
+}
+
+/**
+ * Whether "Move to..." may be offered on a row: where mail may be taken out of its
+ * folder and there is somewhere to move it (moveTargets) -- in a shared mailbox, another
+ * folder of that mailbox the user may insert into.
+ *
+ * @param {Array} folders the folder list as the server sent it
+ * @param {String} folder the folder a row carries; blank means INBOX
+ * @returns {Boolean} true when "Move to..." may be offered
+ */
+export function canMoveTo(folders, folder) {
+  return canMoveOutOf(folder) && moveTargets(folders, folder).length > 0;
+}
+
+/**
+ * The shared mailbox whose owner shares only the Inbox, for the hint shown where Delete
+ * and Archive would be: the user may take mail out of that Inbox, but there is no Trash
+ * or Archive of that mailbox to file into until the owner extends the share (EXO-90548).
+ *
+ * @param {String} folder the folder a row carries
+ * @returns {Object} the switcher entry ({ownerFullName, ...}), or null
+ */
+export function inboxOnlyShareHint(folder) {
+  return inboxOnlyShareOf(folder, canMoveOutOf(folder));
 }
 
 /**
