@@ -367,7 +367,7 @@ public class EmailDelegationService {
     if (existing != null) {
       // A re-grant of a row the grantee may still have registered: their folders follow
       // at the next pass.
-      emailFolderStorage.markDiscoveryDue(delegation.getId());
+      markDiscoveryDue(delegation.getId());
     }
     LOG.info("Mailbox delegation granted: actor={} ownerMailbox={} grantee={} identifier={} rights={} folders={}",
              ownerUsername,
@@ -569,7 +569,7 @@ public class EmailDelegationService {
       throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
     }
     // The grantee's folders follow at their next pass, not a quarter-hour later.
-    emailFolderStorage.markDiscoveryDue(id);
+    markDiscoveryDue(id);
     LOG.info("Mailbox delegation changed: actor={} ownerMailbox={} grantee={} identifier={} rights={}",
              ownerUsername,
              delegation.getOwnerMailbox(),
@@ -681,7 +681,7 @@ public class EmailDelegationService {
     }
     // The folders just shared show at the grantee's next pass, not a quarter-hour later
     // (live on Stalwart: an Extend left the delegate on the Inbox alone).
-    emailFolderStorage.markDiscoveryDue(id);
+    markDiscoveryDue(id);
     if (keptSeen != inboxRights.canKeepSeen()) {
       publish(EmailDelegationEvent.Type.RIGHTS_CHANGED, ownerUsername, delegation);
     }
@@ -1282,7 +1282,11 @@ public class EmailDelegationService {
                                          inbox.getKey(),
                                          unreadCounts.getOrDefault(inbox.getKey(), 0),
                                          otherFolders(folders, delegation),
-                                         delegation.isInboxOnly()));
+                                         // What an Extend can change (EXO-90548 review): a share
+                                         // eXo wrote before folders were shared. One made in the
+                                         // mail server's interface records no roles either, and
+                                         // may well cover its Trash.
+                                         delegation.isInboxOnly() && delegation.getOrigin() == DelegationOrigin.EXO));
     }
     return entries;
   }
@@ -2693,6 +2697,22 @@ public class EmailDelegationService {
       throw new ObjectNotFoundException(NOT_FOUND_MESSAGE);
     }
     return delegation;
+  }
+
+  /**
+   * Makes a share's discovery due at the grantee's next pass, best-effort (EXO-90548
+   * review): the owner's change has landed on the server and in the row by then, and
+   * clearing a throttle's stamp must not turn it into an error -- at worst the grantee
+   * waits for the quarter-hour.
+   *
+   * @param delegationId the share
+   */
+  private void markDiscoveryDue(long delegationId) {
+    try {
+      emailFolderStorage.markDiscoveryDue(delegationId);
+    } catch (RuntimeException e) {
+      LOG.warn("The discovery of shared mailbox {} could not be made due; its folders follow within the quarter-hour", delegationId, e);
+    }
   }
 
   /**
