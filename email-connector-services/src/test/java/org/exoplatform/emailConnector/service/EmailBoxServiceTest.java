@@ -334,8 +334,10 @@ public class EmailBoxServiceTest {
    * tests that are ABOUT the refresh turn it back on explicitly, or drive
    * {@link EmailBoxService#refreshSentFolder} on this thread instead.
    * <p>
-   * The post-undo and post-move folder refreshes are switched off here too, for the
-   * same reason: each is a real timer firing a second after any undo or move. The
+   * The post-undo, post-move and post-Trash/Junk/restore folder refreshes are switched
+   * off here too, for the same reason: each is a real timer firing a second after any
+   * undo, move, delete, spam or restore -- left on, one queued by an earlier test fires
+   * inside a later one and breaks its {@code never()} on {@code connect}. The
    * tests that are ABOUT those refreshes mock their scheduler
    * ({@link #mockFolderRefreshScheduler}) or drive {@link EmailBoxService#refreshFolder}
    * on this thread instead.
@@ -344,6 +346,7 @@ public class EmailBoxServiceTest {
     System.setProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY, "false");
     System.setProperty(EmailBoxService.UNDO_REFRESH_ENABLED_PROPERTY, "false");
     System.setProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY, "false");
+    System.setProperty(EmailBoxService.TRASH_REFRESH_ENABLED_PROPERTY, "false");
   }
 
   /**
@@ -400,7 +403,7 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * Puts back what this class swaps on the shared service -- the three refresh
+   * Puts back what this class swaps on the shared service -- the four refresh
    * switches, the two refresh schedulers a test may have replaced by a mock
    * ({@link #mockFolderRefreshScheduler}, {@link #mockSentRefreshScheduler}), the event
    * publisher a test may have pinned, and the two coalescing maps' leftover entries --
@@ -412,6 +415,7 @@ public class EmailBoxServiceTest {
     System.clearProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY);
     System.clearProperty(EmailBoxService.UNDO_REFRESH_ENABLED_PROPERTY);
     System.clearProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY);
+    System.clearProperty(EmailBoxService.TRASH_REFRESH_ENABLED_PROPERTY);
     if (realFolderRefreshScheduler != null) {
       ReflectionTestUtils.setField(emailBoxService, "folderRefreshScheduler", realFolderRefreshScheduler);
       realFolderRefreshScheduler = null;
@@ -11120,6 +11124,7 @@ public class EmailBoxServiceTest {
   private ScheduledExecutorService mockFolderRefreshScheduler() {
     System.setProperty(EmailBoxService.UNDO_REFRESH_ENABLED_PROPERTY, "true");
     System.setProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY, "true");
+    System.setProperty(EmailBoxService.TRASH_REFRESH_ENABLED_PROPERTY, "true");
     pendingFolderRefreshes().clear();
     ScheduledExecutorService scheduler = mock(ScheduledExecutorService.class);
     lenient().when(scheduler.schedule(any(Runnable.class), anyLong(), any(TimeUnit.class)))
