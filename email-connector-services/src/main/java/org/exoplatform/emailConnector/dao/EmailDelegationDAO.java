@@ -215,4 +215,38 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   Date checked, @Param("updated")
   Date updated, @Param("ended")
   List<String> ended);
+
+  /**
+   * {@link #updateGrantedRights} for a share recorded per folder: the same columns, and
+   * the folder roles the grant now covers with the owner's folders it was written on,
+   * under the same guards -- that owner's row, and not a share that ended meanwhile.
+   *
+   * @param id the row id
+   * @param ownerId the owner, whose row it must be
+   * @param preset the preset recorded, as its name
+   * @param rights the letters the server holds
+   * @param nativeRights the server's own words for them
+   * @param granteeMailbox the identifier the entries were written for
+   * @param grantedRoles the folder roles the share covers, as stored
+   * @param ownerRoleFolders the owner's folder per role, as stored
+   * @param checked the rights check stamp
+   * @param updated the update stamp
+   * @param ended the statuses of a share no longer on the server
+   * @return the rows updated: one, or zero when the row is not that owner's or ended
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.preset = :preset, d.rights = :rights, d.nativeRights = :nativeRights, d.granteeMailbox = :granteeMailbox, d.grantedRoles = :grantedRoles, d.ownerRoleFolders = :ownerRoleFolders, d.lastRightsCheckDate = :checked, d.updatedDate = :updated WHERE d.id = :id AND d.ownerId = :ownerId AND d.status NOT IN :ended")
+  int updateGrantedRightsAndRoles(@Param("id")
+  long id, @Param("ownerId")
+  String ownerId, @Param("preset")
+  String preset, @Param("rights")
+  String rights, @Param("nativeRights")
+  String nativeRights, @Param("granteeMailbox")
+  String granteeMailbox, @Param("grantedRoles")
+  String grantedRoles, @Param("ownerRoleFolders")
+  String ownerRoleFolders, @Param("checked")
+  Date checked, @Param("updated")
+  Date updated, @Param("ended")
+  List<String> ended);
 }

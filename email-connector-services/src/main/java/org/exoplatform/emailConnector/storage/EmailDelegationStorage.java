@@ -238,6 +238,50 @@ public class EmailDelegationStorage {
   }
 
   /**
+   * {@link #updateGrantedRights(String, long, DelegationPreset, String, String, String, Date)}
+   * for a share recorded per folder, which also records the folder roles the grant now
+   * covers and the owner's folder each was written on -- in the same statement, under
+   * the same guards. With no roles given, the roles stay as they are.
+   *
+   * @param ownerId the owner, whose row it must be
+   * @param id the row id
+   * @param preset the preset recorded
+   * @param rights the letters the server holds
+   * @param nativeRights the server's own words for them
+   * @param granteeMailbox the identifier the entries were written for
+   * @param checked the rights check stamp
+   * @param grantedRoles the folder roles the share covers, or null to leave them
+   * @param ownerRoleFolders the owner's folder per role; ignored when no roles are given
+   * @return the row as it now stands, null when it is not that owner's or has ended
+   */
+  public EmailDelegation updateGrantedRights(String ownerId,
+                                             long id,
+                                             DelegationPreset preset,
+                                             String rights,
+                                             String nativeRights,
+                                             String granteeMailbox,
+                                             Date checked,
+                                             String grantedRoles,
+                                             Map<FolderRole, String> ownerRoleFolders) {
+    if (grantedRoles == null) {
+      return updateGrantedRights(ownerId, id, preset, rights, nativeRights, granteeMailbox, checked);
+    }
+    int updated = emailDelegationDAO.updateGrantedRightsAndRoles(id,
+                                                                 ownerId,
+                                                                 preset == null ? null : preset.name(),
+                                                                 rights,
+                                                                 nativeRights,
+                                                                 granteeMailbox,
+                                                                 grantedRoles,
+                                                                 roleFoldersToJson(ownerRoleFolders),
+                                                                 checked,
+                                                                 new Date(),
+                                                                 List.of(DelegationStatus.REVOKED.name(),
+                                                                         DelegationStatus.GONE.name()));
+    return updated == 0 ? null : getAsOwner(ownerId, id);
+  }
+
+  /**
    * DTO to entity, every column but the two stamps.
    *
    * @param delegation the source

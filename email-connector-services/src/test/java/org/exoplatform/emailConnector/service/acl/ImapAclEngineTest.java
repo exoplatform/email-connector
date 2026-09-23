@@ -26,12 +26,15 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.Map;
 
 import javax.mail.Folder;
 import javax.mail.FolderNotFoundException;
@@ -57,6 +60,7 @@ import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.GrantGranularity;
 import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 
@@ -316,8 +320,9 @@ class ImapAclEngineTest {
 
   /**
    * SETACL carries the preset's letters, capped by the allowlist -- never {@code a},
-   * though the owner holds it -- no widening, no constant; the answer is the entry as
-   * written.
+   * {@code x}, {@code k} or {@code p}, though the owner holds them -- no widening, no
+   * constant; the answer is the entry as written. An Editor on INBOX holds {@code e},
+   * the right to expunge, since EXO-90548 (PO decision Q-1).
    */
   @Test
   void grantExpandsThePresetAndCapsItByTheAllowlist() throws MessagingException {
@@ -326,12 +331,12 @@ class ImapAclEngineTest {
     ArgumentCaptor<ACL> acl = ArgumentCaptor.forClass(ACL.class);
     verify(inbox).addACL(acl.capture());
     assertEquals(IDENTIFIER, acl.getValue().getName());
-    // The library renders a Rights alphabetically ("ilrstw"); the letters are what matter.
-    assertEquals(MailboxRights.of("lrswit"), MailboxRights.fromRights(acl.getValue().getRights()));
-    assertEquals(6, acl.getValue().getRights().getRights().length, "exactly the six, nothing widened");
-    assertEquals("lrswit", written.rights().letters());
-    assertEquals("lrswit", written.nativeRights());
-    assertEquals(DelegationPreset.EDITOR, written.preset());
+    // The library renders a Rights alphabetically ("eilrstw"); the letters are what matter.
+    assertEquals(MailboxRights.of("lrswite"), MailboxRights.fromRights(acl.getValue().getRights()));
+    assertEquals(7, acl.getValue().getRights().getRights().length, "exactly the seven, nothing widened");
+    assertEquals("lrswite", written.rights().letters());
+    assertEquals("lrswite", written.nativeRights());
+    assertEquals(DelegationPreset.EDITOR, written.preset(), "an explicit e reads as Editor");
   }
 
   /**
@@ -556,6 +561,130 @@ class ImapAclEngineTest {
                  "then the local part");
     assertNull(engine.findSharedMailbox(session(), "nobody@acme.com"));
     assertNull(engine.findSharedMailbox(session(), " "));
+  }
+
+  // ---------------------------------------------------------------------------------
+  // A shared mailbox's folders (EXO-90548)
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * The rule a reviewer checks (PO decision Q-1): an Editor holds {@code e} on every
+   * folder mail leaves from and never on Trash, where it would be permanent deletion; a
+   * Reader holds {@code lrs} everywhere; the owner's own rights cap every one.
+   */
+  @Test
+  void anEditorNeverHoldsExpungeOnTrash() throws MessagingException {
+    IMAPFolder trash = mock(IMAPFolder.class);
+    IMAPFolder sent = mock(IMAPFolder.class);
+    when(store.getFolder("Trash")).thenReturn(trash);
+    when(store.getFolder("Sent")).thenReturn(sent);
+    MailboxRights owner = MailboxRights.of("lrswipkxtea");
+
+    assertEquals("lrswit", engine.grant(session(), "Trash", IDENTIFIER, DelegationPreset.EDITOR, owner, FolderRole.TRASH).rights().letters());
+    assertEquals("lrswite", engine.grant(session(), "Sent", IDENTIFIER, DelegationPreset.EDITOR, owner, FolderRole.SENT).rights().letters());
+    assertEquals("lrs", engine.grant(session(), "Trash", IDENTIFIER, DelegationPreset.READER, owner, FolderRole.TRASH).rights().letters());
+    assertEquals("lrswit",
+                 engine.grant(session(), "Sent", IDENTIFIER, DelegationPreset.EDITOR, MailboxRights.of("lrswit"), FolderRole.SENT)
+                       .rights()
+                       .letters(),
+                 "never more than the owner holds");
+    ArgumentCaptor<ACL> onTrash = ArgumentCaptor.forClass(ACL.class);
+    verify(trash, times(2)).addACL(onTrash.capture());
+    assertFalse(onTrash.getAllValues().stream().anyMatch(acl -> MailboxRights.fromRights(acl.getRights()).letters().contains("e")),
+                "no SETACL on Trash ever carries e");
+  }
+
+  /**
+   * Two locks on {@code e} over Trash, each pinned on its own: the letters an Editor
+   * stands for on Trash, and the allowlist a grant on Trash is capped by -- which still
+   * holds for an engine whose letters would carry {@code e} there.
+   */
+  @Test
+  void trashIsCappedWithoutExpungeWhateverTheLettersSay() throws MessagingException {
+    assertEquals("lrswit", engine.lettersFor(DelegationPreset.EDITOR, FolderRole.TRASH).letters());
+    assertEquals("lrswite", engine.lettersFor(DelegationPreset.EDITOR, null).letters());
+    assertEquals("lrs", engine.lettersFor(DelegationPreset.READER, FolderRole.SENT).letters());
+    ImapAclEngine generous = new ImapAclEngine() {
+      @Override
+      public MailboxRights lettersFor(DelegationPreset preset, FolderRole role) {
+        return MailboxRights.of("lrswite");
+      }
+    };
+    IMAPFolder trash = mock(IMAPFolder.class);
+    when(store.getFolder("Trash")).thenReturn(trash);
+
+    assertEquals("lrswit",
+                 generous.grant(session(), "Trash", IDENTIFIER, DelegationPreset.EDITOR, MailboxRights.of("lrswipkxtea"), FolderRole.TRASH)
+                         .rights()
+                         .letters());
+  }
+
+  /**
+   * The owner's folders by role, on the owner's session: the special-use attribute
+   * first, the usual name for a role no attribute names -- exactly, never by substring
+   * -- and never a folder under another user's namespace or one that cannot hold mail.
+   */
+  @Test
+  void theOwnersRoleFoldersComeFromTheirAttributesThenTheirNames() throws MessagingException {
+    Folder otherUsers = mock(Folder.class);
+    when(otherUsers.getFullName()).thenReturn("shared/");
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[] { otherUsers });
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    Folder sent = listed("Sent", "Sent", "\\Sent");
+    Folder corbeille = listed("Corbeille", "Corbeille", "\\Trash");
+    Folder namedTrash = listed("Trash", "Trash");
+    Folder archives = listed("Archives", "Archives");
+    Folder spam = listed("Spam", "Spam");
+    Folder trashNotes = listed("Trash notes", "Trash notes");
+    Folder alicesTrash = listed("Trash", "shared/alice@dovecot.local/Trash", "\\Trash");
+    Folder container = folder("Junk", "Junk", '/');
+    when(root.list("*")).thenReturn(new Folder[] { alicesTrash, container, namedTrash, sent, corbeille, archives, trashNotes, spam });
+
+    Map<FolderRole, String> roles = engine.findRoleFolders(session());
+
+    assertEquals(Map.of(FolderRole.SENT, "Sent", FolderRole.TRASH, "Corbeille", FolderRole.ARCHIVE, "Archives", FolderRole.JUNK, "Spam"),
+                 roles);
+  }
+
+  /**
+   * "Remove access" finds every folder of the owner whose ACL names the grantee, however
+   * the identifier is cased, and skips a folder whose ACL cannot be read.
+   */
+  @Test
+  void foldersHoldingNamesEveryFolderWhoseAclListsTheGrantee() throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    IMAPFolder listedInbox = (IMAPFolder) listed("INBOX", "INBOX");
+    IMAPFolder sent = (IMAPFolder) listed("Sent", "Sent");
+    IMAPFolder projects = (IMAPFolder) listed("Projects", "Projects");
+    IMAPFolder locked = (IMAPFolder) listed("Locked", "Locked");
+    when(root.list("%")).thenReturn(new Folder[0]);
+    when(root.list("*")).thenReturn(new Folder[] { listedInbox, sent, projects, locked });
+    when(listedInbox.getACL()).thenReturn(new ACL[] { new ACL("BOB@acme.com", new Rights("lrs")) });
+    when(sent.getACL()).thenReturn(new ACL[] { new ACL("carol@acme.com", new Rights("lrs")) });
+    when(projects.getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("lr")) });
+    when(locked.getACL()).thenThrow(new MessagingException("NO"));
+
+    assertEquals(List.of("INBOX", "Projects"), engine.foldersHolding(session(), IDENTIFIER));
+  }
+
+  /**
+   * A mocked folder the listing shows, that holds mail, with its LIST attributes.
+   *
+   * @param name the last segment
+   * @param fullName the full name
+   * @param attributes the attributes
+   * @return the folder
+   * @throws MessagingException never
+   */
+  private Folder listed(String name, String fullName, String... attributes) throws MessagingException {
+    Folder folder = folder(name, fullName, '/', Folder.HOLDS_MESSAGES);
+    lenient().when(((IMAPFolder) folder).getAttributes()).thenReturn(attributes);
+    return folder;
   }
 
   /**
