@@ -692,6 +692,23 @@ class ImapAclEngineTest {
   }
 
   /**
+   * EXO-90548 review -- a top-level role folder wins over a same-role child of INBOX,
+   * whatever the LIST order: a user's "INBOX/Spam" listed first never beats the server's
+   * own "Junk Mail".
+   */
+  @Test
+  void aTopLevelRoleFolderWinsOverAnInboxChild() throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    Folder[] listing = new Folder[] { listed("Spam", "INBOX/Spam"), listed("Junk Mail", "Junk Mail") };
+    when(root.list("*")).thenReturn(listing);
+
+    assertEquals(Map.of(FolderRole.JUNK, "Junk Mail"), engine.findRoleFolders(session()));
+  }
+
+  /**
    * "Remove access" finds every folder of the owner whose ACL names the grantee, however
    * the identifier is cased, and skips a folder whose ACL cannot be read.
    */
