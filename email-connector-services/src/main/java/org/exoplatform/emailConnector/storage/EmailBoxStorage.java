@@ -1426,6 +1426,16 @@ public class EmailBoxStorage {
   }
 
   /**
+   * The custom and shared-mailbox folder keys a user's cache holds mail under.
+   *
+   * @param userId the user
+   * @return the distinct keys, never null
+   */
+  public List<String> getCustomFolderKeys(String userId) {
+    return emailBoxDao.findCustomFolderKeysByUserId(userId);
+  }
+
+  /**
    * The highest UID cached in one folder.
    *
    * @param userId the mailbox owner
