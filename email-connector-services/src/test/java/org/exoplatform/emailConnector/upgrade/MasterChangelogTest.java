@@ -584,6 +584,83 @@ public class MasterChangelogTest {
   }
 
   /**
+   * EXO-90548, decision 3d -- 1.0.0-83 widens EMAIL_DELEGATION.RIGHTS from 16 to 32,
+   * keeping an existing row's letters, rolls back to 16 and applies again, to a tag
+   * placed immediately before it.
+   *
+   * @throws Exception when the changeset does not apply or roll back
+   */
+  @Test
+  void theDelegationRightsWideningRollsBackAndReapplies() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback83" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-83"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-delegation-rights-widening");
+      assertEquals(16, columnSize(connection, "EMAIL_DELEGATION", "RIGHTS"), "sixteen before 1.0.0-83");
+      try (Statement statement = connection.createStatement()) {
+        statement.executeUpdate("INSERT INTO EMAIL_DELEGATION (ID, GRANTEE_ID, OWNER_ID, OWNER_MAILBOX, CONNECTOR_ID, PRESET, RIGHTS, STATUS,"
+            + " ORIGIN, CREATED_DATE, UPDATED_DATE) VALUES (1, 'bob', 'alice', 'alice@acme.com', 7, 'EDITOR', 'lrswite', 'ACCEPTED', 'EXO',"
+            + " CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
+      }
+      liquibase.update("");
+      assertEquals(32, columnSize(connection, "EMAIL_DELEGATION", "RIGHTS"), "1.0.0-83 widens it to 32");
+      assertEquals("lrswite", rightsOfRow(connection), "and keeps what a row held");
+      liquibase.rollback("before-delegation-rights-widening", "");
+      assertEquals(16, columnSize(connection, "EMAIL_DELEGATION", "RIGHTS"), "the rollback narrows it back");
+      assertEquals("lrswite", rightsOfRow(connection));
+      liquibase.update("");
+      assertEquals(32, columnSize(connection, "EMAIL_DELEGATION", "RIGHTS"), "the changeset applies again after its rollback");
+    }
+  }
+
+  /**
+   * EXO-90548, decision 3d -- 1.0.0-83 as MySQL and PostgreSQL would run it, and its
+   * rollback.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theDelegationRightsWideningOnMySqlAndPostgreSql() throws Exception {
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-83").toUpperCase(Locale.ROOT);
+      assertTrue(update.contains("EMAIL_DELEGATION") && update.contains("RIGHTS") && update.contains("VARCHAR(32)"), vendor + ": " + update);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-83").toUpperCase(Locale.ROOT);
+      assertTrue(rollback.contains("EMAIL_DELEGATION") && rollback.contains("VARCHAR(16)"), vendor + " rollback: " + rollback);
+    }
+  }
+
+  /**
+   * The declared size of a column, from the JDBC metadata.
+   *
+   * @param connection the database
+   * @param tableName the table
+   * @param columnName the column
+   * @return its size
+   * @throws SQLException when the metadata cannot be read
+   */
+  private int columnSize(Connection connection, String tableName, String columnName) throws SQLException {
+    try (ResultSet columns = connection.getMetaData().getColumns(null, null, tableName, columnName)) {
+      assertTrue(columns.next(), tableName + "." + columnName);
+      return columns.getInt("COLUMN_SIZE");
+    }
+  }
+
+  /**
+   * The RIGHTS of the one delegation row the widening test writes.
+   *
+   * @param connection the database
+   * @return its letters
+   * @throws SQLException when it cannot be read
+   */
+  private String rightsOfRow(Connection connection) throws SQLException {
+    try (Statement statement = connection.createStatement();
+        ResultSet row = statement.executeQuery("SELECT RIGHTS FROM EMAIL_DELEGATION WHERE ID = 1")) {
+      assertTrue(row.next());
+      return row.getString(1);
+    }
+  }
+
+  /**
    * EXO-90548 -- the shared-mailbox folder changesets as MySQL and PostgreSQL would run
    * them: five nullable columns, and a rollback that drops each of them, 1.0.0-82 first.
    *

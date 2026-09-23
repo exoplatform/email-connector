@@ -1690,4 +1690,19 @@
       <dropColumn tableName="EMAIL_DELEGATION" columnName="GRANTED_ROLES"/>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-83">
+    <comment>
+      EMAIL_DELEGATION.RIGHTS widened from 16 to 32 (EXO-90548, decision 3d), the width
+      EMAIL_FOLDER.RIGHTS already has since 1.0.0-81: RFC 4314 lets a server add digit
+      rights beside the eleven standard letters, and a share's INBOX letters are the
+      same vocabulary as a folder's. Nullable, as before. Rolled back explicitly to
+      VARCHAR(16) (modifyDataType has no automatic rollback); the rollback fails only
+      on a row holding more than sixteen letters, which no server phase 0 or the
+      certification met wrote.
+    </comment>
+    <modifyDataType tableName="EMAIL_DELEGATION" columnName="RIGHTS" newDataType="VARCHAR(32)"/>
+    <rollback>
+      <modifyDataType tableName="EMAIL_DELEGATION" columnName="RIGHTS" newDataType="VARCHAR(16)"/>
+    </rollback>
+  </changeSet>
 </databaseChangeLog>
