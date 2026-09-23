@@ -1766,6 +1766,18 @@ public class EmailBoxStorage {
   }
 
   /**
+   * The unread messages of one folder of a mailbox, by the badge's own predicate --
+   * what a shared inbox the user chose to count adds to it (EXO-90546).
+   *
+   * @param userId the mailbox owner -- for a shared inbox, the delegate whose mirror it is
+   * @param folder the folder key, {@code CUSTOM:<id>} for a shared inbox
+   * @return the number of unread messages in that folder
+   */
+  public long countUnreadEmails(String userId, String folder) {
+    return emailBoxDao.countUnreadByUserIdAndFolder(userId, folder);
+  }
+
+  /**
    * The category links of every unread INBOX message — the rows
    * {@link #countUnreadEmails} counts, each with the ids of the categories it is
    * linked to, for a badge that must leave out the categories the user did not
