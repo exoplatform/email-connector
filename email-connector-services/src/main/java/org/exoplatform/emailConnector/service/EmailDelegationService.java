@@ -1354,7 +1354,8 @@ public class EmailDelegationService {
                                          // eXo wrote before folders were shared. One made in the
                                          // mail server's interface records no roles either, and
                                          // may well cover its Trash.
-                                         delegation.isInboxOnly() && delegation.getOrigin() == DelegationOrigin.EXO));
+                                         delegation.isInboxOnly() && delegation.getOrigin() == DelegationOrigin.EXO,
+                                         sentCopyOf(granteeUsername, delegation)));
     }
     return entries;
   }
@@ -2045,6 +2046,23 @@ public class EmailDelegationService {
       return key;
     } catch (MailboxRightMissingException e) {
       return null;
+    }
+  }
+
+  /**
+   * Whether a mail sent from this share is filed in its owner's Sent (EXO-90551), for the
+   * switcher entry: the answer {@link #ownerSentFolderKey} would give, and the copy not
+   * switched off. Best-effort: a share that cannot be read answers no.
+   *
+   * @param granteeUsername the delegate
+   * @param delegation an accepted share of theirs
+   * @return true when the copy will be filed
+   */
+  private boolean sentCopyOf(String granteeUsername, EmailDelegation delegation) {
+    try {
+      return emailConnectorService.isSharedMailboxSentCopyEnabled() && ownerSentFolderKey(granteeUsername, delegation.getId()) != null;
+    } catch (ObjectNotFoundException | RuntimeException e) {
+      return false;
     }
   }
 
