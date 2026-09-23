@@ -168,7 +168,11 @@ public class EmailDelegationStorage {
   public EmailDelegation update(EmailDelegation delegation) {
     EmailDelegationEntity entity = emailDelegationDAO.findById(delegation.getId())
                                                      .orElseThrow(() -> new IllegalArgumentException("emailConnector.delegation.notFound"));
+    // The activity stamp is touchActivity's alone, written in SQL outside any DTO: a
+    // DTO read before the grantee's last listing must not rewind it (#432-2).
+    Date lastActivity = entity.getLastActivityDate();
     toEntity(delegation, entity);
+    entity.setLastActivityDate(lastActivity);
     entity.setUpdatedDate(new Date());
     return fromEntity(emailDelegationDAO.saveAndFlush(entity));
   }
