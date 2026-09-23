@@ -194,6 +194,40 @@ public class EmailDelegationStorage {
   }
 
   /**
+   * What an owner's change of access wrote on the server, written alone (stack review
+   * N-1): a row-wide write from the read made before the SETACL round-trip would put
+   * back a leave or a revoke committed meanwhile. A share that ended meanwhile (revoked,
+   * gone) is not written.
+   *
+   * @param ownerId the owner, whose row it must be
+   * @param id the row id
+   * @param preset the preset recorded
+   * @param rights the letters the server holds
+   * @param nativeRights the server's own words for them
+   * @param granteeMailbox the identifier the entry was written for
+   * @param checked the rights check stamp
+   * @return the row as it now stands, null when it is not that owner's or has ended
+   */
+  public EmailDelegation updateGrantedRights(String ownerId,
+                                             long id,
+                                             DelegationPreset preset,
+                                             String rights,
+                                             String nativeRights,
+                                             String granteeMailbox,
+                                             Date checked) {
+    int updated = emailDelegationDAO.updateGrantedRights(id,
+                                                         ownerId,
+                                                         preset == null ? null : preset.name(),
+                                                         rights,
+                                                         nativeRights,
+                                                         granteeMailbox,
+                                                         checked,
+                                                         new Date(),
+                                                         List.of(DelegationStatus.REVOKED.name(), DelegationStatus.GONE.name()));
+    return updated == 0 ? null : getAsOwner(ownerId, id);
+  }
+
+  /**
    * DTO to entity, every column but the two stamps.
    *
    * @param delegation the source
