@@ -68,6 +68,7 @@ import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailFolder;
+import org.exoplatform.emailConnector.model.FolderMessageCounts;
 import org.exoplatform.emailConnector.model.GrantGranularity;
 import org.exoplatform.emailConnector.model.GrantedDelegations;
 import org.exoplatform.emailConnector.model.MailFolderView;
@@ -75,13 +76,16 @@ import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.SharedMailbox;
+import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngine;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngineRegistry;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
+import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailDelegationStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 import org.exoplatform.social.core.identity.model.Identity;
+import org.exoplatform.social.core.identity.model.Profile;
 import org.exoplatform.social.core.manager.IdentityManager;
 
 /**
@@ -134,6 +138,9 @@ class EmailDelegationServiceTest {
 
   @Mock
   private EmailFolderStorage                  emailFolderStorage;
+
+  @Mock
+  private EmailBoxStorage                     emailBoxStorage;
 
   @Mock
   private IdentityManager                     identityManager;
@@ -895,6 +902,91 @@ class EmailDelegationServiceTest {
   }
 
   // ---------------------------------------------------------------------------------
+  // Change access (the owner's "Change access")
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * Changing the access writes the preset through the engine's own grant -- which
+   * replaces the grantee's entry -- on the OWNER's session, capped by the owner's rights,
+   * and records what the engine says it wrote. The share keeps its status.
+   */
+  @Test
+  void changePresetRewritesTheGranteesEntryThroughTheEngine() throws Exception {
+    EmailDelegation accepted = row(DelegationStatus.ACCEPTED, DelegationOrigin.SERVER);
+    accepted.setPreset(null);
+    accepted.setRights("lrsw");
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    MailboxRights ownerRights = MailboxRights.of("lrswipkxtea");
+    when(engine.myRights(any(), eq(INBOX))).thenReturn(ownerRights);
+    when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), eq(ownerRights)))
+                                                                                                          .thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
+                                                                                                                                           MailboxRights.of("lrs")));
+
+    EmailDelegation changed = service.changePreset(OWNER, 100L, DelegationPreset.READER);
+
+    ArgumentCaptor<MailboxAclSession> session = ArgumentCaptor.forClass(MailboxAclSession.class);
+    verify(engine).grant(session.capture(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), eq(ownerRights));
+    assertEquals(OWNER, session.getValue().username(), "the owner's own session");
+    assertEquals(DelegationPreset.READER, changed.getPreset());
+    assertEquals("lrs", changed.getRights(), "what the server holds, not what was asked");
+    assertEquals(DelegationStatus.ACCEPTED, changed.getStatus(), "the share stays accepted");
+    verify(emailDelegationStorage).update(accepted);
+    verify(eventPublisher, never()).publishEvent(any());
+  }
+
+  /**
+   * Only the owner of the mailbox, and only on their own rows: anybody else -- the
+   * delegate included -- is told there is no such delegation, and nothing is written.
+   */
+  @Test
+  void changePresetIsTheOwnersAlone() throws Exception {
+    when(emailDelegationStorage.getAsOwner(GRANTEE, 100L)).thenReturn(null);
+
+    assertThrows(ObjectNotFoundException.class, () -> service.changePreset(GRANTEE, 100L, DelegationPreset.EDITOR));
+    verify(engine, never()).grant(any(), any(), any(), any(), any());
+    verify(emailDelegationStorage, never()).update(any());
+  }
+
+  /**
+   * A preset eXo does not grant, and a share no longer on the server, are refused with
+   * their codes before anything reaches the server.
+   */
+  @Test
+  void changePresetRefusesWhatCannotBeWritten() throws Exception {
+    assertEquals(EmailDelegationService.PRESET_INVALID_MESSAGE,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> service.changePreset(OWNER, 100L, DelegationPreset.CUSTOM)).getMessage());
+    EmailDelegation revoked = row(DelegationStatus.REVOKED, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(revoked);
+    assertEquals(EmailDelegationService.NOT_CHANGEABLE_MESSAGE,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> service.changePreset(OWNER, 100L, DelegationPreset.EDITOR)).getMessage());
+    verify(engine, never()).grant(any(), any(), any(), any(), any());
+  }
+
+  /**
+   * A row of a mailbox the owner is no longer connected to -- they reconnected eXo to
+   * another account -- is not written: writing it would grant the grantee access to the
+   * mailbox connected NOW, which the row never covered.
+   */
+  @Test
+  void changePresetRefusesARowOfAnotherMailbox() throws Exception {
+    EmailDelegation elsewhere = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    elsewhere.setOwnerMailbox("alice@previous.org");
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(elsewhere);
+    // A server that would answer, so that only the guard can stop the write.
+    lenient().when(engine.probe(any())).thenReturn(SUPPORTED);
+    lenient().when(engine.myRights(any(), eq(INBOX))).thenReturn(MailboxRights.of("lrswipkxtea"));
+    lenient().when(engine.grant(any(), any(), any(), any(), any())).thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswit")));
+
+    assertEquals(EmailDelegationService.NOT_CHANGEABLE_MESSAGE,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> service.changePreset(OWNER, 100L, DelegationPreset.EDITOR)).getMessage());
+    verify(engine, never()).grant(any(), any(), any(), any(), any());
+  }
+
+  // ---------------------------------------------------------------------------------
   // Reading the server's shares
   // ---------------------------------------------------------------------------------
 
@@ -1087,6 +1179,87 @@ class EmailDelegationServiceTest {
     verify(emailDelegationStorage, never()).update(any());
     when(emailDelegationStorage.getAsGrantee(OWNER, 100L)).thenReturn(null);
     assertThrows(ObjectNotFoundException.class, () -> service.updatePreferences(OWNER, 100L, true, true));
+  }
+
+  // ---------------------------------------------------------------------------------
+  // The mail drawer's switcher
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * The switcher offers the ACCEPTED shares only -- an invitation still pending is not a
+   * mailbox anybody can open yet -- each under the key of its shared INBOX (not of
+   * another folder of the same share that comes first in the registry), with that
+   * INBOX's unread count and the owner's display name.
+   */
+  @Test
+  void sharedMailboxesAreTheAcceptedSharesUnderTheirInboxKey() {
+    EmailDelegation accepted = accepted("lrs");
+    accepted.setPreset(DelegationPreset.READER);
+    EmailDelegation pending = row(DelegationStatus.PENDING, DelegationOrigin.EXO);
+    pending.setId(101L);
+    when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(pending, accepted));
+    EmailFolder sentOfTheShare = delegatedFolder(11L);
+    sentOfTheShare.setType(MailFolderView.TYPE_DELEGATED);
+    EmailFolder inboxOfTheShare = delegatedFolder(12L);
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(sentOfTheShare, inboxOfTheShare));
+    // A leftover INBOX row of the pending share, so that offering a pending share
+    // would show up as a second entry rather than as a missing stub.
+    lenient().when(emailFolderStorage.getDelegatedFolders(GRANTEE, 101L)).thenReturn(List.of(delegatedFolder(13L)));
+    when(emailBoxStorage.getFolderCounts(GRANTEE)).thenReturn(new FolderMessageCounts(Map.of("CUSTOM:12", 20, "CUSTOM:11", 40),
+                                                                                      Map.of("CUSTOM:12", 3, "CUSTOM:11", 9)));
+    Identity alice = new Identity("organization", OWNER);
+    Profile profile = new Profile(alice);
+    profile.setProperty(Profile.FULL_NAME, "Alice Martin");
+    alice.setProfile(profile);
+    when(identityManager.getOrCreateUserIdentity(OWNER)).thenReturn(alice);
+
+    List<SharedMailboxEntry> entries = service.getSharedMailboxes(GRANTEE);
+
+    assertEquals(1, entries.size(), "the pending invitation is not a mailbox to switch to");
+    SharedMailboxEntry entry = entries.get(0);
+    assertEquals(100L, entry.delegationId());
+    assertEquals("CUSTOM:12", entry.folderKey(), "the shared INBOX, not the first folder the share has");
+    assertEquals(3, entry.unreadCount());
+    assertEquals("Alice Martin", entry.ownerFullName());
+    assertEquals(OWNER_MAILBOX, entry.ownerMailbox());
+    assertEquals(DelegationPreset.READER, entry.preset());
+    assertEquals("lrs", entry.rights());
+    assertTrue(entry.affordances().get("markRead"));
+    assertFalse(entry.affordances().get("delete"));
+    verify(emailFolderStorage, never()).getDelegatedFolders(GRANTEE, 101L);
+  }
+
+  /**
+   * A share whose INBOX is not registered has nothing to open and is left out; an owner
+   * no eXo profile names is shown by their address; and a caller with no accepted share
+   * costs no count query at all -- the switcher is read on every drawer opening.
+   */
+  @Test
+  void sharedMailboxesLeaveOutWhatCannotBeOpened() {
+    EmailDelegation withInbox = accepted("lrs");
+    withInbox.setOwnerId(null);
+    EmailDelegation withoutInbox = accepted("lrs");
+    withoutInbox.setId(102L);
+    when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(withInbox, withoutInbox));
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(delegatedFolder(12L)));
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 102L)).thenReturn(List.of());
+    when(emailBoxStorage.getFolderCounts(GRANTEE)).thenReturn(new FolderMessageCounts(Map.of(), Map.of()));
+
+    List<SharedMailboxEntry> entries = service.getSharedMailboxes(GRANTEE);
+
+    assertEquals(1, entries.size());
+    assertEquals(OWNER_MAILBOX, entries.get(0).ownerFullName(), "no eXo owner: the address names the mailbox");
+    assertEquals(0, entries.get(0).unreadCount());
+
+    withInbox.setOwnerId(OWNER);
+    when(identityManager.getOrCreateUserIdentity(OWNER)).thenThrow(new RuntimeException("profile store down"));
+    assertEquals(OWNER_MAILBOX,
+                 service.getSharedMailboxes(GRANTEE).get(0).ownerFullName(),
+                 "an unreadable profile names the mailbox by its address rather than failing the switcher");
+
+    when(emailDelegationStorage.getReceived(OWNER)).thenReturn(List.of(row(DelegationStatus.DECLINED, DelegationOrigin.EXO)));
+    assertTrue(service.getSharedMailboxes(OWNER).isEmpty());
+    verify(emailBoxStorage, never()).getFolderCounts(OWNER);
   }
 
   // ---------------------------------------------------------------------------------
