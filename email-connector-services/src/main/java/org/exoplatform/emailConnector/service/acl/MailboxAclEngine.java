@@ -17,9 +17,11 @@
 package org.exoplatform.emailConnector.service.acl;
 
 import java.util.List;
+import java.util.Map;
 
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.model.DelegationPreset;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
@@ -137,6 +139,70 @@ public interface MailboxAclEngine {
    * @throws MailboxAclException when the server refuses
    */
   void revoke(MailboxAclSession session, String mailbox, String identifier);
+
+  /**
+   * The letters a preset stands for on one folder of the owner's mailbox, by the
+   * folder's role (EXO-90548). The default is the preset's own letters whatever the
+   * folder: a per-mailbox engine never sees a role.
+   *
+   * @param preset READER or EDITOR
+   * @param role the folder's role, null for INBOX
+   * @return the letters, before any cap
+   */
+  default MailboxRights lettersFor(DelegationPreset preset, FolderRole role) {
+    return preset == null ? MailboxRights.NONE : preset.rights();
+  }
+
+  /**
+   * {@link #grant(MailboxAclSession, String, String, DelegationPreset, MailboxRights)} on
+   * one folder of a given role, whose letters may differ by role -- an Editor holds
+   * {@code e} where mail leaves, never on Trash (EXO-90548). The default ignores the
+   * role, as a per-mailbox engine does.
+   *
+   * @param session the owner's session
+   * @param mailbox the folder's full name
+   * @param identifier the grantee as the server names them
+   * @param preset READER or EDITOR
+   * @param ownerRights the owner's own rights on that folder
+   * @param role the folder's role, null for INBOX
+   * @return the entry as written
+   * @throws MailboxAclException when nothing is left to grant or the server refuses
+   */
+  default MailboxAce grant(MailboxAclSession session,
+                           String mailbox,
+                           String identifier,
+                           DelegationPreset preset,
+                           MailboxRights ownerRights,
+                           FolderRole role) {
+    return grant(session, mailbox, identifier, preset, ownerRights);
+  }
+
+  /**
+   * The owner's own folders by role, read on the OWNER's session, where the server
+   * shows their special-use attributes -- it may show a delegate none (Dovecot,
+   * EXO-90552). Only on a per-folder engine; the default knows none.
+   *
+   * @param session the owner's session
+   * @return the folder full name of each role found, possibly empty, never null
+   * @throws MailboxAclException when the server cannot be asked
+   */
+  default Map<FolderRole, String> findRoleFolders(MailboxAclSession session) {
+    return Map.of();
+  }
+
+  /**
+   * The owner's own folders whose ACL names an identifier, for "Remove access" to remove
+   * every entry of that person -- including one written in another mail application
+   * (EXO-90548). Only on a per-folder engine; the default knows none.
+   *
+   * @param session the owner's session
+   * @param identifier the grantee as the server names them
+   * @return the folder full names, possibly empty, never null
+   * @throws MailboxAclException when the server cannot be asked
+   */
+  default List<String> foldersHolding(MailboxAclSession session, String identifier) {
+    return List.of();
+  }
 
   /**
    * The mailboxes other users shared with the session's user, as this session sees
