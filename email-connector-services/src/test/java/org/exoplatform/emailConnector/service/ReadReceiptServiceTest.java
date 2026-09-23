@@ -64,6 +64,7 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.ReadReceiptConflictException;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
@@ -113,6 +114,9 @@ class ReadReceiptServiceTest {
 
   @Mock
   private EmailReadReceiptAnswerStorage answerStorage;
+
+  @Mock
+  private EmailDelegationService  emailDelegationService;
 
   @InjectMocks
   private ReadReceiptService      readReceiptService;
@@ -254,6 +258,36 @@ class ReadReceiptServiceTest {
     assertEquals(ReadReceiptPrompt.ASK, prompt(safe, ReadReceiptPolicy.ASK));
     assertEquals(ReadReceiptPrompt.NONE, prompt(safe, ReadReceiptPolicy.NEVER));
     assertEquals(ReadReceiptPrompt.AUTO, prompt(safe, ReadReceiptPolicy.ALWAYS));
+  }
+
+  /**
+   * Stack review #437-2 (decision 1) -- a delegate is never offered to answer a request
+   * on a shared mailbox's mail, whatever the policy (ALWAYS included) and whatever the
+   * folder (its Sent, keyed CUSTOM:, included); and an answer asked for anyway is
+   * refused before anything is claimed, sent or written on the owner's copy.
+   */
+  @Test
+  void aDelegateNeverAnswersAReceiptOnASharedMailboxsMail() throws Exception {
+    Email shared = incoming();
+    shared.setFolder("CUSTOM:8");
+    Email sharedSent = incoming();
+    sharedSent.setFolder("CUSTOM:9");
+    Email own = incoming();
+    own.setFolder("CUSTOM:5");
+    EmailDelegation share = new EmailDelegation();
+    lenient().when(emailDelegationService.delegationOf(USER, "CUSTOM:8")).thenReturn(share);
+    lenient().when(emailDelegationService.delegationOf(USER, "CUSTOM:9")).thenReturn(share);
+
+    assertEquals(ReadReceiptPrompt.NONE, prompt(shared, ReadReceiptPolicy.ASK));
+    assertEquals(ReadReceiptPrompt.NONE, prompt(shared, ReadReceiptPolicy.ALWAYS));
+    assertEquals(ReadReceiptPrompt.NONE, prompt(sharedSent, ReadReceiptPolicy.ASK));
+    assertEquals(ReadReceiptPrompt.ASK, prompt(own, ReadReceiptPolicy.ASK), "one of the user's own folders is answered as before");
+
+    assertRefused(shared, ReadReceiptAction.SEND, ReadReceiptService.NOT_ALLOWED);
+    assertRefused(shared, ReadReceiptAction.IGNORE, ReadReceiptService.NOT_ALLOWED);
+    verify(answerStorage, never()).claim(anyString(), anyString(), any(), any(), any());
+    verify(emailBoxStorage, never()).claimReadReceipt(anyString(), any(), any());
+    verify(emailBoxService, never()).openServerCopy(anyString(), any());
   }
 
   /**
