@@ -396,6 +396,19 @@ public class EmailBoxRestTest {
                                                   .accept(MediaType.APPLICATION_JSON))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.ownerCopy").doesNotExist());
+    // The composer's draft path answers the same (EXO-90551).
+    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), eq(5L))).thenReturn(EmailBoxService.OwnerCopy.SKIPPED);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/d1/send?delegationId=5").with(testSimpleUser())
+                                                                           .content(asJsonString(email))
+                                                                           .contentType(MediaType.APPLICATION_JSON)
+                                                                           .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.ownerCopy").value("SKIPPED"));
+    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), eq(7L))).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/d1/send?delegationId=7").with(testSimpleUser())
+                                                                           .content(asJsonString(email))
+                                                                           .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isGone());
   }
 
   @Test
@@ -735,7 +748,7 @@ public class EmailBoxRestTest {
     response.andExpect(status().isOk());
     // The path names the draft, whatever the body claims.
     ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
-    verify(emailBoxService).sendDraft(sent.capture(), anyString());
+    verify(emailBoxService).sendDraft(sent.capture(), anyString(), isNull());
     org.junit.jupiter.api.Assertions.assertEquals("draft-1", sent.getValue().getDraftLocalId());
   }
 
@@ -744,7 +757,7 @@ public class EmailBoxRestTest {
     Email draft = new Email();
     draft.setTo(List.of(mock(EmailRecipient.class)));
     doThrow(new ObjectNotFoundException("emailConnector.drafts.send.gone")).when(emailBoxService)
-                                                                          .sendDraft(any(Email.class), anyString());
+                                                                          .sendDraft(any(Email.class), anyString(), isNull());
     ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/gone/send").with(testSimpleUser())
                                                                                       .content(asJsonString(draft))
                                                                                       .contentType(MediaType.APPLICATION_JSON)

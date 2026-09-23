@@ -7557,6 +7557,51 @@ public class EmailBoxServiceTest {
     assertThrows(IllegalArgumentException.class, () -> emailBoxService.sendDraft(draft, TEST_USER));
   }
 
+  /**
+   * EXO-90551 -- the composer's own draft of a mail written in a shared mailbox (the
+   * common send path: any composer that paused holds one) is sent as any draft, and a
+   * copy of the very message is filed in the owner's Sent; the answer says FILED.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftSentFromASharedMailboxFilesTheOwnersCopy() {
+    mockDraftSendFixture();
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPStore store = (IMAPStore) userEmailSettingService.connect("1", TEST_USER);
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    when(ownerSent.exists()).thenReturn(true);
+    when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertEquals(EmailBoxService.OwnerCopy.FILED, emailBoxService.sendDraft(draft("draft-1"), TEST_USER, 100L));
+
+      ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sent.capture()));
+      ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
+      verify(ownerSent).appendMessages(filed.capture());
+      assertSame(sent.getValue(), filed.getValue()[0], "the very message that went out");
+    }
+  }
+
+  /**
+   * EXO-90551 -- a draft sent from a share that is not the sender's is refused before
+   * the draft is claimed: nothing goes out, and the draft is left exactly where it was.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftSentFromAShareThatIsNotTheSendersIsNotClaimed() {
+    lenient().when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 7L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertThrows(ObjectNotFoundException.class, () -> emailBoxService.sendDraft(draft("draft-1"), TEST_USER, 7L));
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+    }
+    verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
+  }
+
   @Test
   void sendingADraftThatIsNoLongerThereSaysSoRatherThanSendingSomethingElse() throws Exception {
     givenAUsableMailbox();

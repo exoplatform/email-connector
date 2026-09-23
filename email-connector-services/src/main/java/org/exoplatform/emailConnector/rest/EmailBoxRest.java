@@ -1474,6 +1474,16 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Sends the composer's draft; from a mailbox shared with the caller when
+   * {@code delegationId} names it, filing a copy in its owner's Sent (EXO-90551).
+   *
+   * @param request the caller's request, for the acting user
+   * @param draftLocalId the draft's local id
+   * @param draft the draft as the composer is showing it
+   * @param delegationId the share the draft is sent from, or null
+   * @return {@code ownerCopy} when a share is named; empty otherwise
+   */
   @PostMapping("/drafts/{draftLocalId}/send")
   @Secured("users")
   @Operation(summary = "Sends a draft", method = "POST",
@@ -1483,14 +1493,18 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "No draft under that local id"),
       @ApiResponse(responseCode = "409", description = "The draft is scheduled; it is sent through its schedule (emailConnector.scheduled.locked)"),
+      @ApiResponse(responseCode = "410", description = "The named mailbox is no longer shared with the caller; nothing was sent"),
       @ApiResponse(responseCode = "500", description = "The mail server refused the message"), })
-  public void sendDraft(HttpServletRequest request,
-                        @Parameter(description = "The draft's local id", required = true)
-                        @PathVariable("draftLocalId")
-                        String draftLocalId,
-                        @Parameter(description = "The draft as the composer is showing it", required = true)
-                        @RequestBody
-                        Email draft) {
+  public Map<String, String> sendDraft(HttpServletRequest request,
+                                       @Parameter(description = "The draft's local id", required = true)
+                                       @PathVariable("draftLocalId")
+                                       String draftLocalId,
+                                       @Parameter(description = "The draft as the composer is showing it", required = true)
+                                       @RequestBody
+                                       Email draft,
+                                       @Parameter(description = "The share the draft is sent from, when it was written in a mailbox shared with the caller (EXO-90551)")
+                                       @RequestParam(value = "delegationId", required = false)
+                                       Long delegationId) {
     try {
       if (draft == null || CollectionUtils.isEmpty(draft.getTo())) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
@@ -1498,7 +1512,14 @@ public class EmailBoxRest {
       // The path is what names the draft; a body claiming a different id would be two
       // answers to one question, and the addressable one wins.
       draft.setDraftLocalId(draftLocalId);
-      emailBoxService.sendDraft(draft, request.getRemoteUser());
+      EmailBoxService.OwnerCopy ownerCopy = emailBoxService.sendDraft(draft, request.getRemoteUser(), delegationId);
+      Map<String, String> response = new HashMap<>();
+      if (ownerCopy != null) {
+        response.put("ownerCopy", ownerCopy.name());
+      }
+      return response;
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (ScheduledSendConflictException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (IllegalAccessException e) {
