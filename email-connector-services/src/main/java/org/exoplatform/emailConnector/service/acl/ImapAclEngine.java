@@ -364,8 +364,12 @@ public class ImapAclEngine implements MailboxAclEngine {
    * namespace lists is still not settled. Phase 0 ran on BlueMind and on Stalwart
    * (2026-09-21/22) but did not record either the SETACL identifier or the segment
    * letters side by side ("not in the record" -- plan, sections 13.C.1 and 13.D); the
-   * Stalwart segment was the owner's full address. Until a re-run of the phase-0
-   * scripts captures both, both spellings are tried and neither is assumed.
+   * Stalwart segment was the owner's full address. Dovecot 2.3.21 (EXO-90552) recorded
+   * both: the segment is the owner's <b>login</b> ({@code shared/%%u/}, which is the
+   * address only where the login is the address), and SETACL takes any identifier
+   * verbatim -- an unknown one included, with no error -- so a grantee named by an
+   * address that is not their login is granted nothing, silently. Until other servers
+   * are recorded, both spellings are tried here and neither is assumed.
    *
    * @param session the grantee's session
    * @param ownerIdentifier the owner's mailbox identifier
