@@ -85,8 +85,9 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * <li><b>Allowlist, then intersection.</b> A preset is expanded by the engine into its
  * server's vocabulary, capped by the engine's allowlist ({@link MailboxRights#GRANTABLE},
  * {@code lrswit}, on IMAP: never {@code a x e p k}) and by the owner's own MYRIGHTS,
- * which this service reads and requires {@code a} in -- eXo never grants a right the
- * owner does not hold. The row records what the engine says it wrote, in letters and
+ * which this service reads -- eXo never grants a right the owner does not hold. The
+ * owner holding {@code a} is not a precondition: the server's answer to SETACL decides
+ * (Stalwart grants an owner's SETACL without {@code a} in MYRIGHTS). The row records what the engine says it wrote, in letters and
  * in the server's own words ({@code NATIVE_RIGHTS}).</li>
  * <li><b>No unattended identity switch.</b> The ACL is written at <i>invite</i>, on the
  * owner's own session and consented action; it is not written at accept, which would
@@ -113,9 +114,12 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * share immediately), a real server-side subscription on BlueMind (the share was
  * invisible until accepted) -- {@link #accept} calls the engine's subscribe hook when
  * its capabilities say so, before looking for the mailbox. BlueMind e-mails the owner
- * on every rights change itself; any owner-facing notification this add-on adds must
- * be gated on {@code capabilities.serverNotifiesOwner()} being false. What is still
- * open is named where it matters, in the engine.
+ * on every rights change itself: an owner-facing notification of an ACL change this
+ * add-on might add would have to be gated on {@code capabilities.serverNotifiesOwner()}
+ * being false -- none exists today. The notices of an answer (accepted, declined,
+ * left) are not ACL changes and are never gated
+ * ({@code EmailDelegationNotificationListener#notifyOwner}). What is still open is
+ * named where it matters, in the engine.
  */
 @Service
 public class EmailDelegationService {
@@ -222,7 +226,8 @@ public class EmailDelegationService {
    * <p>
    * The grant happens HERE and not at accept -- see the class comment. The order is:
    * the grantee resolved from their own connected setting on the same preset; the
-   * server probed; the owner's own MYRIGHTS read and {@code a} required; the engine
+   * server probed; the owner's own MYRIGHTS read -- {@code a} is not required, the
+ * server's answer to SETACL decides; the engine
    * handed the preset and the owner's rights, expanding the one and capping by the
    * other in its server's own vocabulary (letters on IMAP, a verb on BlueMind -- plan,
    * section 3.4); then the row ({@code PENDING/EXO}) recording what was written,
@@ -241,9 +246,8 @@ public class EmailDelegationService {
    * @throws IllegalArgumentException with a message code when the grantee is the
    *           caller, unknown, not connected on the same preset, the preset is not
    *           grantable, or the share already stands
-   * @throws MailboxAclException when the server does not support ACLs, the owner
-   *           cannot administer their INBOX, nothing is left to grant, or SETACL is
-   *           refused
+   * @throws MailboxAclException when the server does not support ACLs, nothing is left
+   *           to grant, or SETACL is refused
    */
   public EmailDelegation invite(String ownerUsername, String granteeUsername, DelegationPreset preset) throws IllegalAccessException {
     if (preset == null || !preset.isGrantable()) {
@@ -624,42 +628,6 @@ public class EmailDelegationService {
       return parsed > 0 ? parsed : DEFAULT_MAX_PER_USER;
     } catch (NumberFormatException e) {
       return DEFAULT_MAX_PER_USER;
-    }
-  }
-
-  /**
-   * Whether the mail server behind a delegation tells the mailbox owner about a rights
-   * change by itself -- the one question an owner-facing notification must ask before
-   * it is sent. BlueMind e-mails the owner on every grant and revoke, so anything eXo
-   * added on top would reach that owner twice for one act; a plain IMAP server says
-   * nothing and eXo is the only voice there (plan, sections 5.1 and 13.F).
-   * <p>
-   * Answered from the engine of the delegation's connector preset, with <b>no
-   * connection opened</b>: it is a trait of the server product rather than of a
-   * session, and the act that raises an owner-facing notification is usually the
-   * grantee's, on the grantee's thread, where the owner's mailbox is nobody's to open.
-   * An unknown or unresolvable connector answers false -- eXo notifying once is the
-   * recoverable error, eXo staying silent about somebody else reaching into a mailbox
-   * is not.
-   *
-   * @param delegation the delegation, possibly null
-   * @return true when the server already told the owner
-   */
-  public boolean serverNotifiesOwner(EmailDelegation delegation) {
-    if (delegation == null || delegation.getConnectorId() == null) {
-      return false;
-    }
-    try {
-      EmailConnector connector = emailConnectorService.getEmailConnector(delegation.getConnectorId());
-      if (connector == null) {
-        return false;
-      }
-      return aclEngineRegistry.engineFor(connector).serverNotifiesOwner();
-    } catch (RuntimeException e) {
-      LOG.debug("The ACL engine of connector {} could not be resolved; assuming the server notifies nobody",
-                delegation.getConnectorId(),
-                e);
-      return false;
     }
   }
 

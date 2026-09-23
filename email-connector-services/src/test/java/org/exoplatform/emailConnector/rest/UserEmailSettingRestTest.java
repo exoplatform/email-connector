@@ -225,13 +225,13 @@ public class UserEmailSettingRestTest {
            .andExpect(status().reason(EmailDelegationService.GRANTEE_NOT_CONNECTED_MESSAGE));
 
     when(emailDelegationService.invite(SIMPLE_USER, "carol", DelegationPreset.READER))
-                                                                                      .thenThrow(new MailboxAclException(MailboxAclException.OWNER_CANNOT_ADMINISTER,
-                                                                                                                         "MYRIGHTS INBOX = lrswit"));
+                                                                                      .thenThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED,
+                                                                                                                         "SETACL refused"));
     mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations").with(testSimpleUser())
                                                                   .content(asJsonString(new DelegationInviteRequest("carol", DelegationPreset.READER)))
                                                                   .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isBadGateway())
-           .andExpect(status().reason(MailboxAclException.OWNER_CANNOT_ADMINISTER));
+           .andExpect(status().reason(MailboxAclException.SERVER_REFUSED));
 
     when(emailDelegationService.invite(SIMPLE_USER, "dave", DelegationPreset.READER)).thenThrow(new IllegalAccessException("not connected"));
     mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations").with(testSimpleUser())
