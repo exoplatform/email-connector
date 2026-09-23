@@ -42,9 +42,10 @@ import java.util.Map;
  * @param folders the shared mailbox's other folders the delegate may see -- the owner's
  *          Sent, Archive, Trash, Spam and the rest the share covers (EXO-90548), roles
  *          first; empty for a share that covers INBOX only
- * @param inboxOnly whether the share covers the owner's INBOX alone -- written before eXo
- *          shared the owner's other folders (EXO-90548 review): what the band tells the
- *          delegate, rather than what the last discovery happened to find
+ * @param inboxOnly whether eXo wrote the share before it shared the owner's other folders,
+ *          so that only the INBOX is shared and the owner can extend it (EXO-90548 review):
+ *          what the band tells the delegate, rather than what the last discovery happened
+ *          to find. False for a share made in the mail server's own interface
  */
 public record SharedMailboxEntry(Long delegationId,
                                  String ownerId,

@@ -287,10 +287,11 @@ public class ImapAclEngine implements MailboxAclEngine {
   /**
    * The owner's folders by role, from one {@code LIST "*"} on the owner's session: the
    * special-use attribute first ({@code \Sent}, {@code \Archive}, {@code \Trash},
-   * {@code \Junk}, {@code \Drafts}), then, for a role no attribute names, a folder whose
-   * last segment is that role's usual English name. Never a folder under another user's
-   * or a shared namespace, never one that cannot hold mail; the first folder found for a
-   * role keeps it.
+   * {@code \Junk}, {@code \Drafts}), then, for a role no attribute names, a top-level
+   * folder (or one directly under INBOX) whose name is one of that role's usual names
+   * (MailFolderNames, the ones the user's own mailbox recognises). Never a folder under
+   * another user's or a shared namespace, never one that cannot hold mail; the first
+   * folder found for a role keeps it.
    *
    * @param session the owner's session
    * @return the folder full name of each role found, never null
@@ -306,7 +307,10 @@ public class ImapAclEngine implements MailboxAclEngine {
         byAttribute.putIfAbsent(attributeRole, folder.getFullName());
         continue;
       }
-      FolderRole nameRole = roleOfName(folder.getName());
+      // By name only at the top of the owner's mailbox (or directly under INBOX, where
+      // some servers keep everything): a grant is written on what this returns, so a
+      // nested "Clients/Deleted" is never taken for the Trash and shared (EXO-90548).
+      FolderRole nameRole = isTopLevel(folder) ? roleOfName(folder.getName()) : null;
       if (nameRole != null) {
         byName.putIfAbsent(nameRole, folder.getFullName());
       }
@@ -475,7 +479,29 @@ public class ImapAclEngine implements MailboxAclEngine {
   }
 
   /**
-   * The role a folder's last segment names by its usual English name, exactly (not a
+   * Whether a folder sits at the top of the owner's mailbox, or directly under INBOX --
+   * the only places a role folder is recognised by its name alone.
+   *
+   * @param folder the owner's folder
+   * @return true when its full name has no parent other than INBOX; false when the
+   *         separator cannot be read
+   */
+  private static boolean isTopLevel(IMAPFolder folder) {
+    String fullName = StringUtils.defaultString(folder.getFullName());
+    String name = StringUtils.defaultString(folder.getName());
+    if (fullName.equals(name)) {
+      return true;
+    }
+    try {
+      char separator = folder.getSeparator();
+      return fullName.equalsIgnoreCase("INBOX" + separator + name);
+    } catch (MessagingException e) {
+      return false;
+    }
+  }
+
+  /**
+   * The role a folder's name names by one of its usual names, exactly (not a
    * substring: a folder named "Trash notes" is not the Trash).
    *
    * @param name the last segment

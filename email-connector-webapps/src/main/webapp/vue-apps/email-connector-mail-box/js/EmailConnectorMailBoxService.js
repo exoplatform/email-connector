@@ -310,7 +310,9 @@ export function canMoveTo(folders, folder) {
  * @returns {Object} the switcher entry ({ownerFullName, ...}), or null
  */
 export function inboxOnlyShareHint(folder) {
-  return inboxOnlyShareOf(folder, canMoveOutOf(folder));
+  // Only where it is true: the user may take mail out, and neither Delete nor Archive is
+  // there to do it (EXO-90548 review).
+  return inboxOnlyShareOf(folder, canMoveOutOf(folder) && !canDelete(folder) && !canArchive(folder));
 }
 
 /**
