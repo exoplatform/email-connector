@@ -520,13 +520,17 @@ public class EmailFolderService {
   /**
    * The shared-namespace roots a walk's own listing shows: a top-level folder that
    * cannot hold mail, one of whose children has an INBOX child --
-   * {@code Shared Folders/<owner>/Inbox}.
+   * {@code Shared Folders/<owner>/Inbox}. Also what the Trash and Archive finders read on
+   * a server that advertises no namespace (EXO-90548).
    *
-   * @param folders the walk's folders
+   * @param folders the walk's folders, possibly null
    * @return the roots, possibly empty
    */
-  private Set<String> sharedRootsByShape(List<DiscoveredFolder> folders) {
+  public Set<String> sharedRootsByShape(List<DiscoveredFolder> folders) {
     Set<String> roots = new HashSet<>();
+    if (folders == null) {
+      return roots;
+    }
     for (DiscoveredFolder container : folders) {
       String name = container == null ? null : container.fullName();
       String delimiter = container == null ? null : container.delimiter();

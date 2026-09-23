@@ -39,6 +39,7 @@ import static org.mockito.Mockito.when;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import javax.mail.MessagingException;
 import javax.mail.Store;
@@ -1239,6 +1240,35 @@ class EmailDelegationServiceTest {
     when(emailFolderStorage.getDelegatedFolders(GRANTEE, 101L)).thenReturn(List.of(delegatedFolder(13L)));
 
     assertEquals(List.of("CUSTOM:12", "CUSTOM:13"), service.getDelegatedFolderKeys(GRANTEE));
+  }
+
+  /**
+   * EXO-90548 -- the roots the caller's own walk and finders leave out on one server:
+   * every row's remote root on that connector, whatever its status (a declined share is
+   * still listed by the server), never a blank one, and never another connector's --
+   * whose path could match one of the caller's own folders on this server.
+   */
+  @Test
+  void theSharedMailboxRootsSpanEveryRowOfTheServerWhateverItsStatus() {
+    EmailDelegation accepted = accepted("lrs");
+    accepted.setRemoteRoot("shared/alice@dovecot.local");
+    EmailDelegation declined = accepted("lrs");
+    declined.setId(101L);
+    declined.setStatus(DelegationStatus.DECLINED);
+    declined.setRemoteRoot("Shared Folders/anne@acme.com");
+    EmailDelegation unrooted = accepted("lrs");
+    unrooted.setId(102L);
+    unrooted.setRemoteRoot(" ");
+    EmailDelegation otherServer = accepted("lrs");
+    otherServer.setId(103L);
+    otherServer.setConnectorId(accepted.getConnectorId() + 1);
+    otherServer.setRemoteRoot("Archive");
+    when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(accepted, declined, unrooted, otherServer));
+
+    assertEquals(Set.of("shared/alice@dovecot.local", "Shared Folders/anne@acme.com"),
+                 service.getSharedMailboxRoots(GRANTEE, accepted.getConnectorId()));
+    assertEquals(Set.of(), service.getSharedMailboxRoots(" ", accepted.getConnectorId()));
+    assertEquals(Set.of(), service.getSharedMailboxRoots(GRANTEE, null));
   }
 
   // ---------------------------------------------------------------------------------

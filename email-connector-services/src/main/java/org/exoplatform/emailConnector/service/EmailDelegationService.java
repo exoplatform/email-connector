@@ -841,6 +841,36 @@ public class EmailDelegationService {
   // ---------------------------------------------------------------------------------
 
   /**
+   * Where every mailbox somebody shared with the caller sits in the caller's own folder
+   * listing on one server -- the {@code REMOTE_ROOT} of each of their rows on that
+   * connector, whatever its status (EXO-90548). The caller's folder walk and their Trash
+   * and Archive finders leave these trees out, beside the namespaces the server
+   * advertises: on a server whose namespace is not advertised or cannot be read, and
+   * whose shared root has no INBOX child -- Dovecot's {@code shared/<owner>}, which holds
+   * the owner's INBOX mail itself, when NAMESPACE fails -- no shape reveals it and only
+   * the row does. Any status, because a declined or left share is still listed by the
+   * server; one connector only, because another server's paths mean nothing in this
+   * listing and could match one of the caller's own folders there. Read from eXo's rows,
+   * no mail server.
+   *
+   * @param username the caller
+   * @param connectorId the connector preset of the listing
+   * @return the roots, possibly empty, never null
+   */
+  public Set<String> getSharedMailboxRoots(String username, Long connectorId) {
+    if (StringUtils.isBlank(username) || connectorId == null) {
+      return Set.of();
+    }
+    Set<String> roots = new HashSet<>();
+    for (EmailDelegation delegation : emailDelegationStorage.getReceived(username)) {
+      if (connectorId.equals(delegation.getConnectorId()) && StringUtils.isNotBlank(delegation.getRemoteRoot())) {
+        roots.add(delegation.getRemoteRoot());
+      }
+    }
+    return roots;
+  }
+
+  /**
    * The folder keys of every mailbox somebody shared with the caller -- what the
    * caller's own reads leave out (EXO-90557): their search, their conversations, their
    * list's thread counts. Read from eXo's rows, no mail server.
