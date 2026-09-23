@@ -67,13 +67,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           v-if="actionable"
           :current-preset="currentPreset"
           :disabled="disabled"
+          :can-extend="canExtend"
           @change-preset="$emit('change-preset', $event)"
+          @extend="$emit('extend')"
           @revoke="$emit('revoke')" />
       </div>
       <div class="caption text-sub-title text-truncate">
         {{ grantee.granteeId ? grantee.identifier : $t('UserSettings.emailConnector.sharing.notAnExoUser') }}
       </div>
       <div class="caption text-sub-title text-wrap">{{ rightsSummary }}</div>
+      <!-- What the grant covers beside the Inbox (EXO-90548). -->
+      <div v-if="canExtend" class="caption text-sub-title">{{ $t('UserSettings.emailConnector.sharing.inboxOnly') }}</div>
+      <div v-if="notShared" class="caption warning--text text-wrap">{{ notShared }}</div>
       <!-- Where the access was written: a small marker, not the chip -- a share made
            in the mail server's own interface is the server's, and says so. -->
       <div v-if="discovered" class="caption text-sub-title text-wrap">
@@ -170,6 +175,29 @@ export default {
     actionable() {
       const delegation = this.grantee.delegation;
       return !!delegation?.id && delegation.status !== 'REVOKED' && delegation.status !== 'GONE';
+    },
+    /**
+     * Whether the share covers the Inbox alone and eXo may extend it: written by eXo
+     * before folders were shared (EXO-90548). A share made on the server is never
+     * rewritten from here.
+     *
+     * @returns {Boolean} true when "Share Sent, Archive, Trash and Spam too" is offered
+     */
+    canExtend() {
+      const delegation = this.grantee.delegation;
+      return this.actionable && !this.discovered && !!delegation.inboxOnly;
+    },
+    /**
+     * The owner's folders the grant found but the server refused to share, said on the
+     * row -- "Trash could not be shared" -- or nothing.
+     *
+     * @returns {String} the sentence, or empty
+     */
+    notShared() {
+      const roles = this.actionable ? this.grantee.delegation.rolesNotShared || [] : [];
+      return roles.length
+        ? this.$t('UserSettings.emailConnector.sharing.notShared', { 0: roles.map(role => this.$t(`UserSettings.emailConnector.sharing.role.${role}`)).join(', ') })
+        : '';
     },
   },
 };
