@@ -273,7 +273,7 @@ export default {
      */
     deleteEmail() {
       this.$root.$emit('delete-email', this.threadIds, this.actingFolder);
-      this.$root.$emit('close-email-detail-drawer');
+      this.closeUnlessAsked();
     },
     /**
      * Archives the opened conversation — every message of it listed in the acting
@@ -283,7 +283,7 @@ export default {
      */
     archiveEmail() {
       this.$root.$emit('archive-email', this.threadIds, this.actingFolder);
-      this.$root.$emit('close-email-detail-drawer');
+      this.closeUnlessAsked();
     },
     /**
      * Opens the folder picker for the opened conversation — every message of it
@@ -305,7 +305,23 @@ export default {
      */
     markAsJunk() {
       this.$root.$emit('junk-email', this.threadIds, this.actingFolder);
-      this.$root.$emit('close-email-detail-drawer');
+      this.closeUnlessAsked();
+    },
+    /**
+     * Closes the reader after an action that takes the conversation out of its folder --
+     * unless, in a mailbox somebody shared with the user, that action is first asked
+     * (EXO-90548): the reader then closes on the yes (EmailConnectorMailBoxDrawerListItemDetail,
+     * shared-mailbox-action-confirmed), and a Cancel leaves the user on the message they
+     * kept, as the purge's confirmation does.
+     *
+     * @returns {void}
+     */
+    closeUnlessAsked() {
+      const service = this.$emailConnectorMailBoxService;
+      const entry = service?.sharedMailboxOfFolder?.(this.actingFolder);
+      if (!entry || service.isDestructiveActionConfirmed(entry)) {
+        this.$root.$emit('close-email-detail-drawer');
+      }
     },
     /**
      * Puts the opened conversation — every message of it listed in the acting

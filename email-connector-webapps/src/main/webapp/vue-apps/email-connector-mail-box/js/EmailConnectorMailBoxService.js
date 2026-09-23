@@ -22,7 +22,7 @@ export * from './EmailConnectorScheduledSendService.js';
 export * from './EmailConnectorReadReceiptService.js';
 // The mailboxes shared with the user, and what their rights let the interface offer.
 export * from './EmailConnectorSharedMailboxes.js';
-import { isSharedMailboxFolder, sharedMailboxAllows, sharedMailboxAllowsMoveOut, sharedMailboxHasRole, sharedMailboxOfFolder } from './EmailConnectorSharedMailboxes.js';
+import { isSharedMailboxFolder, sharedFolderRole, sharedMailboxAllows, sharedMailboxAllowsMoveOut, sharedMailboxHasRole, sharedMailboxOfFolder } from './EmailConnectorSharedMailboxes.js';
 import { refusal } from './EmailConnectorScheduledSendService.js';
 
 const presentation = {
@@ -148,6 +148,14 @@ const attachmentMapIconsExtensions = new Map([
 // writable in the next.
 const READ_ONLY_FOLDERS = ['TRASH', 'JUNK'];
 
+// A shared mailbox's folders of these roles are read-only too (EXO-90548 review,
+// finding 2), and more so than the user's own: nothing leaves its Trash (decision 3a,
+// so no Restore either), its Spam has no "Not spam" (that would file into the user's
+// own INBOX, another mailbox), and its Drafts are the owner's unfinished mail, which
+// the user's own draft actions must never touch. The server refuses the same
+// (EmailBoxService#asRoleFolder, #checkDelegatedMove).
+const SHARED_READ_ONLY_ROLES = ['TRASH', 'JUNK', 'DRAFTS'];
+
 /**
  * Whether a folder's messages may only be read, never acted on.
  *
@@ -156,7 +164,7 @@ const READ_ONLY_FOLDERS = ['TRASH', 'JUNK'];
  * @returns {Boolean} true when no mutating action may be offered on those messages
  */
 export function isReadOnlyFolder(folder) {
-  return READ_ONLY_FOLDERS.includes(folder || 'INBOX');
+  return READ_ONLY_FOLDERS.includes(folder || 'INBOX') || SHARED_READ_ONLY_ROLES.includes(sharedFolderRole(folder));
 }
 
 // Folders that offer the Trash actions — restore, and delete permanently.
