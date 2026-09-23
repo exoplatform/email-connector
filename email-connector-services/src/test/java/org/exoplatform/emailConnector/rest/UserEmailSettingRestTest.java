@@ -69,11 +69,13 @@ import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.GrantedDelegations;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
+import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.rest.model.DelegationInviteRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationPreferencesRequest;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.model.ReadReceiptPolicy;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
+import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
@@ -196,6 +198,66 @@ public class UserEmailSettingRestTest {
            .andExpect(jsonPath("$[0].affordances.markRead").value(true))
            .andExpect(jsonPath("$[0].affordances.delete").value(false));
     verify(emailDelegationService).getReceivedDelegations(SIMPLE_USER, false);
+  }
+
+  /**
+   * Changing access hands the preset to the service under the caller's name; a row that
+   * is not the caller's answers 404, an invalid preset 400 with its code.
+   */
+  @Test
+  void changingAccessIsTheCallersAndMapsTheRefusals() throws Exception {
+    EmailDelegation changed = new EmailDelegation();
+    changed.setId(5L);
+    changed.setPreset(DelegationPreset.READER);
+    when(emailDelegationService.changePreset(SIMPLE_USER, 5L, DelegationPreset.READER)).thenReturn(changed);
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/5/preset").with(testSimpleUser())
+                                                                        .content("{\"preset\":\"READER\"}")
+                                                                        .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.preset").value("READER"));
+    verify(emailDelegationService).changePreset(SIMPLE_USER, 5L, DelegationPreset.READER);
+
+    when(emailDelegationService.changePreset(SIMPLE_USER, 6L, DelegationPreset.EDITOR)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/6/preset").with(testSimpleUser())
+                                                                        .content("{\"preset\":\"EDITOR\"}")
+                                                                        .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isNotFound());
+
+    when(emailDelegationService.changePreset(SIMPLE_USER, 7L, DelegationPreset.CUSTOM)).thenThrow(new IllegalArgumentException("emailConnector.delegation.presetInvalid"));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/7/preset").with(testSimpleUser())
+                                                                        .content("{\"preset\":\"CUSTOM\"}")
+                                                                        .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.delegation.presetInvalid"));
+  }
+
+  /**
+   * The mail drawer's switcher reads the caller's shared mailboxes under the caller's
+   * own name, and each entry reaches the client with the folder key the drawer lists
+   * and the affordances its chrome is drawn from.
+   */
+  @Test
+  void sharedMailboxesAreTheCallersAndCarryWhatTheSwitcherDraws() throws Exception {
+    when(emailDelegationService.getSharedMailboxes(SIMPLE_USER)).thenReturn(List.of(new SharedMailboxEntry(5L,
+                                                                                                           "alice",
+                                                                                                           "Alice Martin",
+                                                                                                           "alice@acme.com",
+                                                                                                           DelegationPreset.READER,
+                                                                                                           "lrs",
+                                                                                                           MailboxRights.of("lrs")
+                                                                                                                        .affordances(),
+                                                                                                           "CUSTOM:12",
+                                                                                                           3)));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/mailboxes").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$[0].delegationId").value(5))
+           .andExpect(jsonPath("$[0].ownerFullName").value("Alice Martin"))
+           .andExpect(jsonPath("$[0].preset").value("READER"))
+           .andExpect(jsonPath("$[0].folderKey").value("CUSTOM:12"))
+           .andExpect(jsonPath("$[0].unreadCount").value(3))
+           .andExpect(jsonPath("$[0].affordances.markRead").value(true))
+           .andExpect(jsonPath("$[0].affordances.delete").value(false));
+    verify(emailDelegationService).getSharedMailboxes(SIMPLE_USER);
   }
 
   /**

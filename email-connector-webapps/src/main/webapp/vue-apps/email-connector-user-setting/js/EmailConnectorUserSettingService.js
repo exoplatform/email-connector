@@ -389,6 +389,35 @@ export function revokeDelegation(id) {
 }
 
 /**
+ * Changes the access a grantee holds on the caller's own mailbox to another preset --
+ * written on the mail server, replacing what the grantee held there. A refusal carries
+ * the server's message code as the error message.
+ *
+ * @param {Number} id the delegation id
+ * @param {String} preset READER or EDITOR
+ * @returns {Promise<Object>} the delegation as it now stands
+ */
+export function changeDelegationPreset(id, preset) {
+  return fetch(`/email-connector/rest/user-email-setting/delegations/${id}/preset`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({preset}),
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json()
+      .catch(() => ({}))
+      .then(body => {
+        throw new Error(body?.message || 'Error when changing the access to your mailbox');
+      });
+  });
+}
+
+/**
  * Answers a share: accept it, decline it, or leave one already accepted. Three verbs
  * on one path because the server decides what each means for the row — and none of
  * them touches the access itself, which stays the owner's to remove.

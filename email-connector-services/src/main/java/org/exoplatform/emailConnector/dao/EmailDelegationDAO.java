@@ -183,4 +183,36 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   boolean badgeIncluded, @Param("notifyNewMail")
   boolean notifyNewMail, @Param("updated")
   Date updated);
+
+  /**
+   * What an owner's change of access wrote on the server, and nothing else of the row
+   * (stack review N-1): the preset, the letters, the server's own words, the identifier
+   * written and the check stamp. The status, the dates and the grantee's toggles stay as
+   * they stand, so a leave committed while the server was being asked is not undone;
+   * and a row that ended meanwhile ({@code ended} statuses) is not written at all.
+   *
+   * @param id the row id
+   * @param ownerId the owner, whose row it must be
+   * @param preset the preset recorded, as its name
+   * @param rights the letters the server holds
+   * @param nativeRights the server's own words for them
+   * @param granteeMailbox the identifier the entry was written for
+   * @param checked the rights check stamp
+   * @param updated the update stamp
+   * @param ended the statuses of a share no longer on the server
+   * @return the rows updated: one, or zero when the row is not that owner's or ended
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.preset = :preset, d.rights = :rights, d.nativeRights = :nativeRights, d.granteeMailbox = :granteeMailbox, d.lastRightsCheckDate = :checked, d.updatedDate = :updated WHERE d.id = :id AND d.ownerId = :ownerId AND d.status NOT IN :ended")
+  int updateGrantedRights(@Param("id")
+  long id, @Param("ownerId")
+  String ownerId, @Param("preset")
+  String preset, @Param("rights")
+  String rights, @Param("nativeRights")
+  String nativeRights, @Param("granteeMailbox")
+  String granteeMailbox, @Param("checked")
+  Date checked, @Param("updated")
+  Date updated, @Param("ended")
+  List<String> ended);
 }

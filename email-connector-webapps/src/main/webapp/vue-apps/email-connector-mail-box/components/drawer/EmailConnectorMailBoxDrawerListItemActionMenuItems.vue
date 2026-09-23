@@ -44,7 +44,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          no message up there to carry the flag, so the push came back as a failure that,
          until this change, nothing showed. -->
     <v-list-item
-      v-if="!readOnly && !inDrafts"
+      v-if="canMarkRead && !inDrafts"
       class="ps-2 pe-3 height-auto"
       @click.stop="updateEmailReadStatus">
       <v-sheet
@@ -345,6 +345,16 @@ export default {
       return this.$emailConnectorMailBoxService.isReadOnlyFolder(this.email.folder);
     },
     /**
+     * Whether read/unread may be offered on this row: not in a read-only folder, and in
+     * a mailbox somebody shared with the user only with the right to keep read state --
+     * which is the owner's read state too (canMarkReadIn).
+     *
+     * @returns {Boolean} true when the read-status item belongs on this row
+     */
+    canMarkRead() {
+      return this.$emailConnectorMailBoxService.canMarkReadIn(this.email.folder);
+    },
+    /**
      * Whether this row is one the Trash actions apply to. Off the ROW's folder for the
      * same reason readOnly above is, and asked of the same service so the two answers
      * are made in one place: a folder that offers restore must be one where the
@@ -375,7 +385,7 @@ export default {
      * @returns {Boolean} true when the folder-changing actions belong on this row
      */
     canMove() {
-      return !this.readOnly && !this.inDrafts;
+      return this.$emailConnectorMailBoxService.canMoveOutOf(this.email.folder);
     },
     /**
      * Whether this row is a draft listed in the Drafts folder — asked of the same

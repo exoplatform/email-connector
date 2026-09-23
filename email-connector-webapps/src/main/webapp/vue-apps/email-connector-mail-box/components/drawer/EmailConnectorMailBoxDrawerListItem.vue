@@ -20,7 +20,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        the narrow layout keeps the browser's default for what the row holds. -->
   <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -->
   <div
-    :style="email.refreshPending ? 'pointer-events: none; opacity: 0.6;' : (dragged ? 'opacity: 0.5;' : null)"
+    :style="rowStyle"
     v-bind="canDrag ? { draggable: 'true' } : {}"
     @dragstart="onDragStart"
     @dragend="onDragEnd"
@@ -411,10 +411,30 @@ export default {
      * folder, like canToggleFavorite above, and the same rule the row's context menu
      * reads.
      *
+     * A mailbox somebody shared with the user takes it away too, where its rights or
+     * the phase do not let mail be taken out of it (canMoveOutOf) -- the same answer the
+     * row's context menu reads.
+     *
      * @returns {Boolean} true when the swipe must offer nothing
      */
     readOnly() {
-      return this.$emailConnectorMailBoxService.isReadOnlyFolder(this.email.folder);
+      return !this.$emailConnectorMailBoxService.canMoveOutOf(this.email.folder);
+    },
+    /**
+     * The row's inline style: faded while its message is on its way into the mirror or
+     * being dragged.
+     *
+     * @returns {Object} the style
+     */
+    rowStyle() {
+      const style = {};
+      if (this.email.refreshPending) {
+        style.pointerEvents = 'none';
+        style.opacity = 0.6;
+      } else if (this.dragged) {
+        style.opacity = 0.5;
+      }
+      return style;
     },
     /**
      * Whether the row is selected: every message it gathers, by folder and UID -- a row

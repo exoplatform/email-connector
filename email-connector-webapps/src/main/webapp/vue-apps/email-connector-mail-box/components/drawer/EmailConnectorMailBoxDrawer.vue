@@ -44,7 +44,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     class="no-box-shadow">
     <template #title>
       <div v-if="!hasFullAppLeft" :class="{ 'd-flex align-center': selectMode }">
-        <span :class="{ 'text-body': selectMode }">
+        <!-- The mailbox switcher (delegation plan 7.3): the plain title while nothing
+             is shared with the user, a menu of their mailboxes once something is. -->
+        <email-connector-mail-box-switcher
+          v-if="!selectMode"
+          :title="title"
+          :suffix="titleSuffix"
+          :own-address="ownAddress"
+          :own-unread-count="ownInboxUnread"
+          @switch="onSwitchMailbox" />
+        <span v-else class="text-body">
           {{ title }}
         </span>
       </div>
@@ -73,7 +82,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="icon-default-color">fa-bars</v-icon>
       </v-btn>
       <div class="d-flex align-center justify-space-between width-full">
-        <span :class="{ 'text-body': selectMode }">
+        <email-connector-mail-box-switcher
+          v-if="!selectMode"
+          :title="title"
+          :suffix="titleSuffix"
+          :own-address="ownAddress"
+          :own-unread-count="ownInboxUnread"
+          @switch="onSwitchMailbox" />
+        <span v-else class="text-body">
           {{ title }}
         </span>
         <email-connector-mail-box-drawer-actions
@@ -139,6 +155,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           ref="expandedListPane"
           class="flex-grow-1 flex-shrink-1 fill-height overflow-y-auto overflow-x-hidden"
           style="min-width: 0;">
+          <!-- Whose mailbox this is, before anything else in the list (plan 7.6). -->
+          <email-connector-shared-mailbox-band
+            v-if="currentSharedMailbox"
+            :entry="currentSharedMailbox"
+            sticky />
           <email-connector-mail-box-drawer-search-results
             v-if="searchActive"
             ref="expandedSearchResults"
@@ -194,92 +215,100 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </div>
       </div>
     </template>
-    <template v-if="emailBoxDrawer && !loading" #content>
-      <v-list-item v-if="syncBlocked" class="full-height align-center">
-        <v-list-item-content>
-          <v-icon
-            size="60"
-            class="orange--text text--darken-2">
-            fas fa-exclamation-triangle
-          </v-icon>
-          <v-list-item-title class="text-wrap mt-5 mb-0">
-            {{ $t('emailConnector.mailBox.list.drawer.sync.blocked.reconnect') }}
-          </v-list-item-title>
-          <div class="mt-8">
-            <v-btn
-              @click="checkSetting"
-              class="btn btn-primary body-2">
-              {{ $t('emailConnector.mailBox.list.drawer.sync.blocked.checkSetting') }}
-            </v-btn>
-          </div>
-        </v-list-item-content>
-      </v-list-item>
-      <email-connector-mail-box-drawer-search-results
-        v-else-if="searchActive && !expanded"
-        ref="searchResults"
-        :results="mergedSearchResults"
-        :total-matches="searchTotalMatches"
-        :server-searching="searchServerRunning"
-        :server-error="searchServerError"
-        @open-result="openSearchResult" />
-      <!-- Full screen: the reader. With nothing open it shows the "select an email"
-           placeholder while the list beside it holds something to select, and nothing
-           over an empty list, which says so itself (EXO-90415). -->
-      <template v-else-if="expanded">
-        <email-connector-mail-box-drawer-multi-select-email
-          v-if="selectMode"
-          :emails="emails"
-          :selected-emails="selectedEmails" />
-        <template v-else-if="selectEmailPlaceHolder">
-          <email-connector-mail-box-drawer-select-email v-if="navigationEmails.length" />
-        </template>
-        <!-- The reader tells the header which conversation it is showing, so the
-             title bar above can act on the exchange rather than on the one message
-             that was clicked. This drawer holds both of them and is the only place
-             the value can pass between them. -->
-        <email-connector-mail-box-drawer-thread-content
-          v-else
-          :email="email"
-          :emails="emails"
-          expanded-drawer
-          :defer-thread-read="autoOpenReadPending"
-          @thread-context="threadContext = $event"
-          @loading="readerLoading = $event"
-          @opened-partial="readerPartial = $event" />
-      </template>
-      <email-connector-mail-box-scheduled-list
-        v-else-if="scheduledView"
-        :signal="scheduledViewSignal"
-        @loading="scheduledLoading = $event" />
-      <template v-else>
-        <email-connector-mail-box-drawer-filter-chips
-          :important-category="importantCategory"
-          :category-view-id="categoryViewId"
-          :favorite-only="favoriteOnly"
-          :unread-only="unreadOnly"
-          class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
-          @toggle-important="toggleImportantView"
-          @toggle-favorite="onToggleFavoriteFilter"
-          @toggle-unread="toggleUnreadFilter" />
-        <template v-if="hasEmails">
-          <email-connector-mail-box-drawer-content
-            ref="listContent"
+    <!-- Opened on a shared mailbox, the band says whose it is while its list is still
+         on its way (plan 7.6: the deep link shows it before the list loads). -->
+    <template v-if="emailBoxDrawer && (!loading || (currentSharedMailbox && !expanded))" #content>
+      <email-connector-shared-mailbox-band
+        v-if="currentSharedMailbox && !expanded"
+        :entry="currentSharedMailbox"
+        sticky />
+      <template v-if="!loading">
+        <v-list-item v-if="syncBlocked" class="full-height align-center">
+          <v-list-item-content>
+            <v-icon
+              size="60"
+              class="orange--text text--darken-2">
+              fas fa-exclamation-triangle
+            </v-icon>
+            <v-list-item-title class="text-wrap mt-5 mb-0">
+              {{ $t('emailConnector.mailBox.list.drawer.sync.blocked.reconnect') }}
+            </v-list-item-title>
+            <div class="mt-8">
+              <v-btn
+                @click="checkSetting"
+                class="btn btn-primary body-2">
+                {{ $t('emailConnector.mailBox.list.drawer.sync.blocked.checkSetting') }}
+              </v-btn>
+            </div>
+          </v-list-item-content>
+        </v-list-item>
+        <email-connector-mail-box-drawer-search-results
+          v-else-if="searchActive && !expanded"
+          ref="searchResults"
+          :results="mergedSearchResults"
+          :total-matches="searchTotalMatches"
+          :server-searching="searchServerRunning"
+          :server-error="searchServerError"
+          @open-result="openSearchResult" />
+        <!-- Full screen: the reader. With nothing open it shows the "select an email"
+             placeholder while the list beside it holds something to select, and nothing
+             over an empty list, which says so itself (EXO-90415). -->
+        <template v-else-if="expanded">
+          <email-connector-mail-box-drawer-multi-select-email
+            v-if="selectMode"
             :emails="emails"
-            :selected-emails="selectedEmails"
-            :select-mode="selectMode" 
-            :indeterminate="indeterminate"
-            :sync-in-progress="syncInProgress"
-            :webmail-url="webmailUrl"
-            @update:selected-emails="selectedEmails = $event" />
-          <!-- A custom folder is a recent-activity mirror, not a copy, and the list says
-               so rather than letting an older message look lost. -->
-          <div
-            v-if="customFolderWindow"
-            class="caption text-sub-title text-center py-2">
-            {{ $t('emailConnector.mailBox.list.drawer.folder.custom.window', { 0: customFolderWindow }) }}
-          </div>
+            :selected-emails="selectedEmails" />
+          <template v-else-if="selectEmailPlaceHolder">
+            <email-connector-mail-box-drawer-select-email v-if="navigationEmails.length" />
+          </template>
+          <!-- The reader tells the header which conversation it is showing, so the
+               title bar above can act on the exchange rather than on the one message
+               that was clicked. This drawer holds both of them and is the only place
+               the value can pass between them. -->
+          <email-connector-mail-box-drawer-thread-content
+            v-else
+            :email="email"
+            :emails="emails"
+            expanded-drawer
+            :defer-thread-read="autoOpenReadPending"
+            @thread-context="threadContext = $event"
+            @loading="readerLoading = $event"
+            @opened-partial="readerPartial = $event" />
         </template>
-        <email-connector-mail-box-drawer-no-email v-else />
+        <email-connector-mail-box-scheduled-list
+          v-else-if="scheduledView"
+          :signal="scheduledViewSignal"
+          @loading="scheduledLoading = $event" />
+        <template v-else>
+          <email-connector-mail-box-drawer-filter-chips
+            :important-category="importantCategory"
+            :category-view-id="categoryViewId"
+            :favorite-only="favoriteOnly"
+            :unread-only="unreadOnly"
+            class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
+            @toggle-important="toggleImportantView"
+            @toggle-favorite="onToggleFavoriteFilter"
+            @toggle-unread="toggleUnreadFilter" />
+          <template v-if="hasEmails">
+            <email-connector-mail-box-drawer-content
+              ref="listContent"
+              :emails="emails"
+              :selected-emails="selectedEmails"
+              :select-mode="selectMode" 
+              :indeterminate="indeterminate"
+              :sync-in-progress="syncInProgress"
+              :webmail-url="webmailUrl"
+              @update:selected-emails="selectedEmails = $event" />
+            <!-- A custom folder is a recent-activity mirror, not a copy, and the list says
+                 so rather than letting an older message look lost. -->
+            <div
+              v-if="customFolderWindow"
+              class="caption text-sub-title text-center py-2">
+              {{ $t('emailConnector.mailBox.list.drawer.folder.custom.window', { 0: customFolderWindow }) }}
+            </div>
+          </template>
+          <email-connector-mail-box-drawer-no-email v-else />
+        </template>
       </template>
     </template>
   </pinneable-drawer>
@@ -287,7 +316,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
-import { LIST_TOP_ROW_HEIGHT, SCHEDULED_VIEW, isScheduledView } from '../../js/EmailConnectorMailBoxService.js';
+import { LIST_TOP_ROW_HEIGHT, SCHEDULED_VIEW, isScheduledView, SHARED_INBOX_TYPE, canMarkReadIn, isDestructiveActionConfirmed,
+  loadSharedMailboxes, setCurrentSharedMailbox, sharedMailboxById, sharedMailboxOfFolder, sharedMailboxState } from '../../js/EmailConnectorMailBoxService.js';
 import listNavigationMixin, { firstOpenableThread, searchRows, threadIndexOf, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
 import emailDragMixin from '../../js/EmailConnectorMailBoxEmailDragMixin.js';
 
@@ -429,6 +459,10 @@ export default {
       layoutExpanded: false,
       // Whether the full-screen folder column is folded to an icon rail (EXO-90415).
       navigationRail: initialNavigationRail(),
+      // The user's own address and INBOX unread count, for the switcher's "My mailbox"
+      // entry: the count is the last one the user's own listing gave.
+      ownAddress: '',
+      ownInboxUnread: 0,
       NAVIGATION_BACKGROUND,
       // The chips row's height, which the folder column's first row shares.
       LIST_TOP_ROW_HEIGHT,
@@ -608,6 +642,11 @@ export default {
     };
     document.addEventListener('email-favorite-status-changed', this.onFavoriteStatusChangedOutside);
     this.$root.$on('switch-folder', this.onSwitchFolder);
+    // A share accepted, declined or left from the settings' drawer, opened over the
+    // mailbox by the switcher's "Manage shared mailboxes": the switcher follows, and a
+    // mailbox left while the user was in it gives way to their own.
+    this.onDelegationsUpdated = () => this.refreshSharedMailboxes();
+    this.$root.$on('email-delegations-updated', this.onDelegationsUpdated);
     this.$root.$on('open-category-view', this.openCategoryView);
     this.$root.$on('enter-select-mode', this.onEnterSelectMode);
     this.$root.$on('update-email-favorite-status', this.onUpdateEmailFavoriteStatus);
@@ -657,8 +696,13 @@ export default {
         this.cancelSelectMode();
       }
     };
-    this.onDeleteEmail = (emails, folder) => this.applyListAction(emails, () => this.deleteEmails(emails, folder), folder);
-    this.onArchiveEmail = (emails, folder) => this.applyListAction(emails, () => this.archiveEmails(emails, folder), folder);
+    // Taking mail out of a shared mailbox is confirmed first, once per session per
+    // mailbox (plan 7.6); in the user's own mailbox whenSharedMailboxConfirmed runs the
+    // action at once and nothing changes.
+    this.onDeleteEmail = (emails, folder) => this.whenSharedMailboxConfirmed(folder, 'delete',
+      () => this.applyListAction(emails, () => this.deleteEmails(emails, folder), folder));
+    this.onArchiveEmail = (emails, folder) => this.whenSharedMailboxConfirmed(folder, 'archive',
+      () => this.applyListAction(emails, () => this.archiveEmails(emails, folder), folder));
     // The two Trash actions, wired exactly as delete and archive are: the rows leave
     // the listing, the reader stops showing what is no longer there, and a running
     // selection ends. The confirmation for the permanent one is asked before the event
@@ -691,14 +735,16 @@ export default {
     // The two Junk actions, wired the same way. "Mark as spam" leaves from any
     // writable folder, "Not spam" from the Spam listing; a Delete out of Spam is the
     // ordinary delete-email above, addressed to the row's own folder.
-    this.onJunkEmail = (emails, folder) => this.applyListAction(emails, () => this.markAsJunk(emails, folder), folder);
+    this.onJunkEmail = (emails, folder) => this.whenSharedMailboxConfirmed(folder, 'junk',
+      () => this.applyListAction(emails, () => this.markAsJunk(emails, folder), folder));
     this.onNotJunkEmail = (emails) => this.applyListAction(emails, () => this.restoreFromJunk(emails));
     this.$root.$on('junk-email', this.onJunkEmail);
     this.$root.$on('not-junk-email', this.onNotJunkEmail);
     // "Move to..." into one of the user's own folders, wired the same way as archive:
     // the rows leave the listing at once, the reader stops showing what is no longer
     // there, and a running selection ends. The target comes from the picker drawer.
-    this.onMoveEmail = (emails, target, folder) => this.applyListAction(emails, () => this.moveEmails(emails, target, folder), folder);
+    this.onMoveEmail = (emails, target, folder) => this.whenSharedMailboxConfirmed(folder, 'move',
+      () => this.applyListAction(emails, () => this.moveEmails(emails, target, folder), folder));
     this.$root.$on('move-email', this.onMoveEmail);
     // A draft was saved to (or discarded from) the Drafts folder. The list is a
     // mirror of the local cache and the composer has just changed it, so it has to
@@ -783,7 +829,7 @@ export default {
         await this.openMailFromOutside(options);
         return;
       }
-      await this.open(options.loading, options.folder);
+      await this.open(options.loading, options.folder, options.mailbox);
       if (options.searchTerm) {
         this.openSearchFromOutside(options.searchTerm);
       }
@@ -841,6 +887,7 @@ export default {
     this.$root.$off('move-email', this.onMoveEmail);
     this.$root.$off('email-categories-updated', this.onCategoriesUpdated);
     this.$root.$off('switch-folder', this.onSwitchFolder);
+    this.$root.$off('email-delegations-updated', this.onDelegationsUpdated);
     this.$root.$off('open-category-view', this.openCategoryView);
     this.$root.$off('enter-select-mode', this.onEnterSelectMode);
     this.$root.$off('update-email-favorite-status', this.onUpdateEmailFavoriteStatus);
@@ -865,7 +912,26 @@ export default {
      * @returns {Array} the folder descriptors ({key, type, displayName, path, syncEnabled, missing, count})
      */
     folders() {
+      // In a shared mailbox, its folders and nothing of the user's own: phase 1 registers
+      // its INBOX alone (plan 4.4), so that is the whole column, the whole menu and the
+      // whole move-to list -- no Sent, no Trash, no folder of the user's to file into.
+      if (this.currentSharedMailbox) {
+        return [{
+          key: this.currentSharedMailbox.folderKey,
+          type: SHARED_INBOX_TYPE,
+          syncEnabled: true,
+          unreadCount: this.currentSharedMailbox.unreadCount || 0,
+        }];
+      }
       return this.emailBox?.folders || [{ key: 'INBOX', type: 'BUILT_IN', syncEnabled: true }];
+    },
+    /**
+     * The shared mailbox the drawer is in, or null in the user's own (plan 7.3).
+     *
+     * @returns {Object} the switcher entry, or null
+     */
+    currentSharedMailbox() {
+      return sharedMailboxState().current;
     },
     /**
      * The folders offered in the 3-dots menu: every built-in the server listed, and the
@@ -899,21 +965,8 @@ export default {
     },
     title() {
       if (!this.selectMode) {
-        let title = this.$t('emailConnector.mailBox.list.drawer.title');
-        // Any folder but the inbox names itself in the title, built-in or the user's
-        // own, through the one labelling function: a custom name is shown as written.
-        if (this.currentFolder !== 'INBOX') {
-          title = `${title} · ${this.$emailConnectorMailBoxService.folderLabel(this.currentFolderView, this.$t.bind(this))}`;
-        }
-        // The favorite view reads as one more folder-like narrowing of the list.
-        if (this.favoriteOnly) {
-          title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.favorites')}`;
-        }
-        // A category view is a view like a folder, and titles like one.
-        if (this.categoryView) {
-          title = `${title} · ${this.categoryView.name}`;
-        }
-        return title;
+        const title = this.$t('emailConnector.mailBox.list.drawer.title');
+        return this.titleSuffix ? `${title} · ${this.titleSuffix}` : title;
       }
       return `${this.selectedEmails.length} ${this.selectedEmails.length === 1 ?
         this.$t('emailConnector.mailBox.list.drawer.emailSelected') :
@@ -921,6 +974,30 @@ export default {
     },
     indeterminate() {
       return this.selectedEmails.length > 0 && this.selectedEmails.length < this.emails.length; 
+    },
+    /**
+     * What the title says after the mailbox's name: the folder, the favorite view and
+     * the category view the list is narrowed to, each after a dot. Nothing for the
+     * inbox, the user's own or a shared mailbox's.
+     *
+     * @returns {String} the suffix, empty for none
+     */
+    titleSuffix() {
+      const parts = [];
+      // Any folder but an inbox names itself, built-in or the user's own, through the
+      // one labelling function: a custom name is shown as written.
+      if (this.currentFolder !== 'INBOX' && this.currentFolder !== this.currentSharedMailbox?.folderKey) {
+        parts.push(this.$emailConnectorMailBoxService.folderLabel(this.currentFolderView, this.$t.bind(this)));
+      }
+      // The favorite view reads as one more folder-like narrowing of the list.
+      if (this.favoriteOnly) {
+        parts.push(this.$t('emailConnector.mailBox.list.drawer.folder.favorites'));
+      }
+      // A category view is a view like a folder, and titles like one.
+      if (this.categoryView) {
+        parts.push(this.categoryView.name);
+      }
+      return parts.join(' · ');
     },
     /**
      * Whether the full-screen left pane -- folder column and list -- is on screen: in
@@ -965,7 +1042,11 @@ export default {
     folderCounts() {
       const counts = {};
       this.folders.forEach(folder => {
-        if (UNREAD_COUNTED_FOLDERS.includes(folder.key)) {
+        // A shared mailbox's INBOX is counted like the user's own, where the rights keep
+        // read state (s): without it the count is one nothing the user does can move.
+        if (UNREAD_COUNTED_FOLDERS.includes(folder.key)
+            || (folder.type === SHARED_INBOX_TYPE
+                && canMarkReadIn(folder.key))) {
           counts[folder.key] = {
             count: Math.max(0, (folder.unreadCount || 0) + (this.unreadAdjustments[folder.key] || 0)),
             unread: true,
@@ -1026,7 +1107,9 @@ export default {
     // The header filter is the platform's own (exo-drawer); it hides the go-back
     // button, so it steps aside while select mode needs that button.
     canSearch() {
-      return !this.syncBlocked && !this.selectMode && !this.scheduledView;
+      // Not in a shared mailbox in phase 1: the search reaches the user's OWN mailbox on
+      // the server, and its hits would be offered under somebody else's name.
+      return !this.syncBlocked && !this.selectMode && !this.scheduledView && !this.currentSharedMailbox;
     },
     /**
      * Whether the Scheduled view is listed (EXO-90434): its own list replaces the
@@ -1258,7 +1341,10 @@ export default {
      */
     readDefaultCategoryView() {
       this.defaultCategoryViewPromise = this.$emailConnectorCommonService.getUserEmailSetting()
-        .then(setting => setting && setting.defaultCategoryView || null)
+        .then(setting => {
+          this.ownAddress = setting?.emailAddress || '';
+          return setting && setting.defaultCategoryView || null;
+        })
         .catch(() => null);
     },
     /**
@@ -1288,15 +1374,29 @@ export default {
       this.categoryViewId = defaultView && this.importantCategory && defaultView === this.importantCategory.id
         ? this.importantCategory.id : null;
     },
-    async open(loading, folder = null) {
+    async open(loading, folder = null, mailbox = null) {
       if (loading) {
         this.syncInProgress = true;
         await this.$nextTick();
       }
+      // The switcher's entries, read on every opening: a share accepted since the last
+      // one is offered. Awaited only when the opening names a shared mailbox (the
+      // mailbox= deep link, plan 7.4) -- that entry is what the band and
+      // the listing need, and it is there before the list is asked for.
+      const sharedMailboxes = loadSharedMailboxes();
+      const sharedMailbox = mailbox ? sharedMailboxById(mailbox)
+        || await sharedMailboxes.then(() => sharedMailboxById(mailbox)) : null;
+      setCurrentSharedMailbox(sharedMailbox);
+      if (mailbox && !sharedMailbox) {
+        // A shortcut to a share left, declined or revoked since: the user's own mailbox,
+        // and why (plan 5.2).
+        this.alertSharedMailboxGone();
+      }
       // Always (re)open on the inbox -- or the built-in folder the caller names, the
-      // Scheduled view for the notification of a mail not sent (EXO-90434) -- without
-      // leftover search, filter or view state.
-      this.currentFolder = OPENABLE_FOLDERS.includes(folder) ? folder : 'INBOX';
+      // Scheduled view for the notification of a mail not sent (EXO-90434), or the
+      // shared mailbox the deep link names -- without leftover search, filter or view
+      // state.
+      this.currentFolder = sharedMailbox?.folderKey || (OPENABLE_FOLDERS.includes(folder) ? folder : 'INBOX');
       this.favoriteOnly = false;
       this.unreadOnly = false;
       this.categoryViewId = null;
@@ -1304,8 +1404,8 @@ export default {
       this.clearSearch();
       this.loading = true;
       this.emailBoxDrawer = true;
-      // The "open on Important" default is the inbox's: a folder asked for by name opens
-      // on that folder as it is.
+      // The "open on Important" default is the user's own inbox's: a folder or a shared
+      // mailbox asked for by name opens as it is.
       if (this.currentFolder === 'INBOX') {
         await this.applyDefaultCategoryView();
       }
@@ -1967,6 +2067,8 @@ export default {
       this.movedEmailIds = [];
       this.refreshPendingRows = [];
       this.endEmailDrag();
+      // The next opening is on the user's own mailbox unless it names another.
+      setCurrentSharedMailbox(null);
     },
     checkSetting() {
       this.$root.$emit('open-user-setting-drawer');
@@ -2022,7 +2124,7 @@ export default {
         const email = this.emails.find(e => e.mailRemoteId === id && (!folder || (e.folder || 'INBOX') === folder));
         if (!email) {
           const known = folder && this.knownReadStatus(id, folder, knownRead);
-          if (folder && !this.$emailConnectorMailBoxService.isReadOnlyFolder(folder) && known !== read) {
+          if (folder && canMarkReadIn(folder) && known !== read) {
             unlisted.push(id);
             // Counted only when the change is known to be one: a message of unknown
             // state may already have been read.
@@ -2032,7 +2134,9 @@ export default {
           }
           return false;
         }
-        if (this.$emailConnectorMailBoxService.isReadOnlyFolder(email.folder)) {
+        // A read-only folder, or a shared mailbox without the right to keep read state:
+        // the row keeps its state rather than showing one nothing saves.
+        if (!canMarkReadIn(email.folder)) {
           return false;
         }
         if (email.read !== read) {
@@ -3034,6 +3138,105 @@ export default {
       }
     },
     /**
+     * Switches the drawer to another mailbox (plan 7.3): the user's own, or one shared
+     * with them. What narrowed the list -- search, favorite and unread chips, a category
+     * view, a selection -- is left behind, as a folder switch leaves it; the listing of
+     * the shared INBOX is what stamps the share as in use for the sync (plan 6,
+     * EmailDelegationService#touchActivity).
+     *
+     * @param {Object} entry the switcher entry, null for the user's own mailbox
+     * @returns {void}
+     */
+    onSwitchMailbox(entry) {
+      if ((entry?.delegationId || null) === (this.currentSharedMailbox?.delegationId || null)) {
+        return;
+      }
+      this.favoriteOnly = false;
+      this.unreadOnly = false;
+      this.filtersTouched = true;
+      this.clearSearch();
+      this.$refs.emailBoxDrawer?.resetFilter?.();
+      setCurrentSharedMailbox(entry);
+      this.onSwitchFolder(entry ? entry.folderKey : 'INBOX');
+    },
+    /**
+     * Re-reads the switcher's entries; a mailbox the user was in that is no longer
+     * among them gives way to their own.
+     *
+     * @returns {Promise<void>} resolved once done
+     */
+    async refreshSharedMailboxes() {
+      const wasIn = this.currentSharedMailbox;
+      await loadSharedMailboxes();
+      if (wasIn && !this.currentSharedMailbox && this.emailBoxDrawer) {
+        this.onSwitchFolder('INBOX');
+      }
+    },
+    /**
+     * Leaves a shared mailbox that is no longer among the switcher's entries, for the
+     * user's own, and says so.
+     *
+     * @returns {Promise<void>} resolved once the user's own inbox is listed
+     */
+    leaveUnavailableSharedMailbox() {
+      setCurrentSharedMailbox(null);
+      this.alertSharedMailboxGone();
+      this.currentFolder = 'INBOX';
+      return this.loadEmailBox();
+    },
+    /**
+     * Tells the user that the shared mailbox they were in, or that a link named, is not
+     * shared with them any more -- on the platform's toast, which listens on the document.
+     *
+     * @returns {void}
+     */
+    alertSharedMailboxGone() {
+      document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+        alertType: 'warning',
+        alertMessage: this.$t('emailConnector.delegation.gone'),
+      }}));
+    },
+    /**
+     * Keeps the switcher's unread counts in step with what a listing just brought: the
+     * user's own INBOX count from the folder list, or the shared INBOX's from its rows
+     * (the listing holds its whole mirror). A favorite-only listing holds a subset and
+     * says nothing about either.
+     *
+     * @param {Object} sharedMailbox the shared mailbox listed, null for the user's own
+     * @param {Boolean} favoriteOnly whether the listing was the favorite subset
+     * @returns {void}
+     */
+    countMailboxUnread(sharedMailbox, favoriteOnly) {
+      if (favoriteOnly) {
+        return;
+      }
+      if (sharedMailbox) {
+        sharedMailbox.unreadCount = (this.emailBox?.emails || []).filter(email => !email.read).length;
+      } else {
+        this.ownInboxUnread = (this.emailBox?.folders || []).find(folder => folder.key === 'INBOX')?.unreadCount || 0;
+      }
+    },
+    /**
+     * Runs an action that takes mail out of its folder -- delete, archive, spam, move --
+     * asking first when the folder is a mailbox somebody shared with the user, once per
+     * session per mailbox, naming it (plan 7.6). In the user's own mailbox, and in a
+     * shared one already confirmed this session, the action runs at once, on this very
+     * call: nothing is deferred where nothing is asked.
+     *
+     * @param {String} folder the folder the messages are numbered in; the listed one when omitted
+     * @param {String} action delete, archive, junk or move
+     * @param {Function} run the action
+     * @returns {void}
+     */
+    whenSharedMailboxConfirmed(folder, action, run) {
+      const entry = sharedMailboxOfFolder(folder || this.currentFolder);
+      if (!entry || isDestructiveActionConfirmed(entry)) {
+        run();
+        return;
+      }
+      this.$root.$emit('open-shared-mailbox-confirm-popup', entry, action, confirmed => confirmed && run());
+    },
+    /**
      * A folder's name as the listing shows it, from the descriptors the server listed
      * with the mailbox -- the raw key when it listed no such folder.
      *
@@ -3063,11 +3266,31 @@ export default {
       // rows -- the folders, the sync status, the webmail -- is still wanted, and read
       // with the Drafts, whose rows are then left out.
       const scheduled = isScheduledView(folder);
-      const emailBox = await this.$emailConnectorMailBoxService.getEmailBox(scheduled ? 'DRAFTS' : folder, !scheduled && favoriteOnly);
+      const sharedMailbox = this.currentSharedMailbox;
+      let emailBox;
+      try {
+        emailBox = await this.$emailConnectorMailBoxService.getEmailBox(scheduled ? 'DRAFTS' : folder, !scheduled && favoriteOnly);
+      } catch (e) {
+        // A shared mailbox whose listing fails is asked about, not guessed from the
+        // status: a share revoked, left or reconciled away has its folder rows deleted,
+        // so its listing answers 400 emailConnector.folder.unknown rather than a 410.
+        // The switcher's entries are the server's word -- ACCEPTED shares with a
+        // registered INBOX: the share gone from them, the user goes back to their own
+        // mailbox and is told why; still there, the failure is a hiccup and is thrown as
+        // it is in the user's own mailbox.
+        if (sharedMailbox && sharedMailbox.delegationId === this.currentSharedMailbox?.delegationId) {
+          await loadSharedMailboxes();
+          if (!this.currentSharedMailbox) {
+            return this.leaveUnavailableSharedMailbox();
+          }
+        }
+        throw e;
+      }
       if (folder !== this.currentFolder || favoriteOnly !== this.favoriteOnly) {
         return;
       }
       this.emailBox = scheduled ? { ...emailBox, emails: [] } : emailBox;
+      this.countMailboxUnread(sharedMailbox, favoriteOnly);
       // The folder list's unread counts are the server's again, the reads made here
       // included.
       this.unreadAdjustments = {};

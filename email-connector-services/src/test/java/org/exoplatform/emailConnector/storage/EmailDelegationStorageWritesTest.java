@@ -17,6 +17,8 @@
 package org.exoplatform.emailConnector.storage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import java.util.Date;
 
@@ -94,5 +96,84 @@ class EmailDelegationStorageWritesTest {
     assertEquals(new Date(9_000L), read.getLastActivityDate() == null ? null : new Date(read.getLastActivityDate().getTime()),
                  "the listing's stamp stands");
     assertEquals("lrsw", read.getRights(), "and the write itself landed");
+  }
+
+  /**
+   * Stack review N-1, in SQL -- the owner's change of access and a grantee's leave
+   * committed while the SETACL was on the wire: the rights land, the leave stands
+   * (status, badge, response date untouched).
+   */
+  @Test
+  void aChangeOfAccessNeverUndoesALeaveMadeMeanwhile() {
+    EmailDelegation stale = emailDelegationStorage.create(acceptedRow("carol"));
+    EmailDelegationEntity leave = emailDelegationDAO.findById(stale.getId()).orElseThrow();
+    leave.setStatus(DelegationStatus.DECLINED.name());
+    leave.setBadgeIncluded(false);
+    leave.setRespondedDate(new Date(8_000L));
+    emailDelegationDAO.saveAndFlush(leave);
+
+    EmailDelegation changed = emailDelegationStorage.updateGrantedRights("alice",
+                                                                         stale.getId(),
+                                                                         DelegationPreset.EDITOR,
+                                                                         "lrswit",
+                                                                         "lrswite",
+                                                                         "carol@acme.com",
+                                                                         new Date(9_000L));
+
+    assertEquals(DelegationStatus.DECLINED, changed.getStatus(), "the leave stands");
+    assertFalse(changed.isBadgeIncluded(), "and so does its badge reset");
+    assertEquals(8_000L, changed.getRespondedDate().getTime());
+    assertEquals(DelegationPreset.EDITOR, changed.getPreset());
+    assertEquals("lrswit", changed.getRights(), "the rights the server holds landed");
+    assertEquals("carol@acme.com", changed.getGranteeMailbox());
+    assertNull(emailDelegationStorage.updateGrantedRights("bob", stale.getId(), DelegationPreset.READER, "lrs", null, null, new Date()),
+               "another owner's id writes nothing");
+    assertEquals("lrswit", emailDelegationStorage.getAsOwner("alice", stale.getId()).getRights());
+  }
+
+  /**
+   * A share revoked (or gone) while the SETACL was on the wire is not written: the
+   * answer is null and the row keeps what the revoke left.
+   */
+  @Test
+  void aChangeOfAccessNeverWritesAShareThatEndedMeanwhile() {
+    for (DelegationStatus ended : new DelegationStatus[] { DelegationStatus.REVOKED, DelegationStatus.GONE }) {
+      EmailDelegation stale = emailDelegationStorage.create(acceptedRow("dave-" + ended.name().toLowerCase()));
+      EmailDelegationEntity revoked = emailDelegationDAO.findById(stale.getId()).orElseThrow();
+      revoked.setStatus(ended.name());
+      emailDelegationDAO.saveAndFlush(revoked);
+
+      assertNull(emailDelegationStorage.updateGrantedRights("alice",
+                                                            stale.getId(),
+                                                            DelegationPreset.EDITOR,
+                                                            "lrswit",
+                                                            null,
+                                                            null,
+                                                            new Date()),
+                 ended.name());
+      EmailDelegation read = emailDelegationStorage.getAsOwner("alice", stale.getId());
+      assertEquals(ended, read.getStatus());
+      assertEquals("lrs", read.getRights(), ended.name() + ": nothing written");
+    }
+  }
+
+  /**
+   * An accepted Reader share of alice's mailbox for the given grantee.
+   *
+   * @param grantee the grantee's username
+   * @return the unsaved row
+   */
+  private EmailDelegation acceptedRow(String grantee) {
+    EmailDelegation row = new EmailDelegation();
+    row.setGranteeId(grantee);
+    row.setOwnerId("alice");
+    row.setOwnerMailbox("alice@acme.com");
+    row.setConnectorId(7L);
+    row.setPreset(DelegationPreset.READER);
+    row.setRights("lrs");
+    row.setStatus(DelegationStatus.ACCEPTED);
+    row.setOrigin(DelegationOrigin.EXO);
+    row.setBadgeIncluded(true);
+    return row;
   }
 }
