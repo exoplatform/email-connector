@@ -299,9 +299,9 @@ public class EmailBoxServiceTest {
   private EmailBoxService         emailBoxService;
 
   /**
-   * The one per-test setup Sonar's S8745 allows: the six fixtures below, each kept as its
+   * The one per-test setup Sonar's S8745 allows: the seven fixtures below, each kept as its
    * own method so its Javadoc says what it switches and why. The first four run in this
-   * order; the two provider stubs after them are lenient and order-independent.
+   * order; the three stubs after them are lenient and order-independent.
    */
   @BeforeEach
   void setUp() {
@@ -311,6 +311,7 @@ public class EmailBoxServiceTest {
     defaultTheAdministrationWideSyncSettingsOn();
     theSyncResolvesAnAuthenticatorForItsWorkers();
     theProviderAnswersTheStoredAccount();
+    countNothingInTheCacheByDefault();
   }
 
   /**
@@ -393,9 +394,8 @@ public class EmailBoxServiceTest {
    * An empty cache's folder counts for every listing in this class: the folder list
    * reads them on each getEmailBox and getFolders, and an unstubbed mock answers null
    * where the storage never does. Lenient like the defaults around it; the tests about
-   * the counts stub their own.
+   * the counts stub their own. Called from setUp: one @BeforeEach per class (Sonar S8745).
    */
-  @BeforeEach
   void countNothingInTheCacheByDefault() {
     lenient().when(emailBoxStorage.getFolderCounts(anyString())).thenReturn(new FolderMessageCounts(Map.of(), Map.of()));
   }
