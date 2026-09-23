@@ -31,7 +31,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -64,7 +66,10 @@ import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
+import org.exoplatform.emailConnector.model.MailboxAce;
+import org.exoplatform.emailConnector.model.DelegationGrantee;
 import org.exoplatform.emailConnector.model.EmailDelegation;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.GrantedDelegations;
@@ -76,6 +81,7 @@ import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.model.ReadReceiptPolicy;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
+import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
@@ -179,13 +185,17 @@ public class UserEmailSettingRestTest {
    */
   @Test
   void delegationListings() throws Exception {
+    DelegationGrantee bob = DelegationGrantee.of(MailboxAce.ofLetters("bob@acme.com", MailboxRights.of("lrswite")), "bob", null)
+                                             .withExtendableRoles(List.of(FolderRole.JUNK));
     when(emailDelegationService.getGrantedDelegations(SIMPLE_USER)).thenReturn(new GrantedDelegations(MailboxAclCapabilities.imap(true, true),
                                                                                                     "simple@acme.com",
-                                                                                                    List.of()));
+                                                                                                    List.of(bob)));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/granted").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.capabilities.supported").value(true))
-           .andExpect(jsonPath("$.ownerMailbox").value("simple@acme.com"));
+           .andExpect(jsonPath("$.ownerMailbox").value("simple@acme.com"))
+           // EXO-90548: what an Extend would add reaches the settings row.
+           .andExpect(jsonPath("$.grantees[0].extendableRoles[0]").value("JUNK"));
 
     EmailDelegation delegation = new EmailDelegation();
     delegation.setId(5L);
@@ -232,6 +242,35 @@ public class UserEmailSettingRestTest {
   }
 
   /**
+   * EXO-90548 -- "Extend access" is the caller's, as owner: the extended row comes back
+   * with what it now covers and what could not be shared, never with the owner's own
+   * folder names; a share that is not the caller's is 404, one that cannot be extended
+   * 400 with its code.
+   */
+  @Test
+  void extendIsTheOwnersAndSaysWhatItCovers() throws Exception {
+    EmailDelegation extended = new EmailDelegation();
+    extended.setId(5L);
+    extended.setGrantedRoles("INBOX,SENT,ARCHIVE,JUNK");
+    extended.setOwnerRoleFolders(new EnumMap<>(Map.of(FolderRole.TRASH, "Corbeille", FolderRole.SENT, "Sent")));
+    when(emailDelegationService.extend(SIMPLE_USER, 5L)).thenReturn(extended);
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations/5/extend").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.grantedRoles").value("INBOX,SENT,ARCHIVE,JUNK"))
+           .andExpect(jsonPath("$.rolesNotShared[0]").value("TRASH"))
+           .andExpect(jsonPath("$.inboxOnly").value(false))
+           .andExpect(jsonPath("$.ownerRoleFolders").doesNotExist());
+
+    when(emailDelegationService.extend(SIMPLE_USER, 6L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations/6/extend").with(testSimpleUser())).andExpect(status().isNotFound());
+
+    when(emailDelegationService.extend(SIMPLE_USER, 7L)).thenThrow(new IllegalArgumentException("emailConnector.delegation.notChangeable"));
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations/7/extend").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.delegation.notChangeable"));
+  }
+
+  /**
    * The mail drawer's switcher reads the caller's shared mailboxes under the caller's
    * own name, and each entry reaches the client with the folder key the drawer lists
    * and the affordances its chrome is drawn from.
@@ -247,7 +286,15 @@ public class UserEmailSettingRestTest {
                                                                                                            MailboxRights.of("lrs")
                                                                                                                         .affordances(),
                                                                                                            "CUSTOM:12",
-                                                                                                           3)));
+                                                                                                           3,
+                                                                                                           List.of(new SharedMailboxFolder("CUSTOM:14",
+                                                                                                                                           FolderRole.TRASH,
+                                                                                                                                           "Trash",
+                                                                                                                                           "lrs",
+                                                                                                                                           MailboxRights.of("lrs")
+                                                                                                                                                        .affordances(),
+                                                                                                                                           true)),
+                                                                                                           true)));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/mailboxes").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$[0].delegationId").value(5))
@@ -256,7 +303,14 @@ public class UserEmailSettingRestTest {
            .andExpect(jsonPath("$[0].folderKey").value("CUSTOM:12"))
            .andExpect(jsonPath("$[0].unreadCount").value(3))
            .andExpect(jsonPath("$[0].affordances.markRead").value(true))
-           .andExpect(jsonPath("$[0].affordances.delete").value(false));
+           .andExpect(jsonPath("$[0].affordances.delete").value(false))
+           // EXO-90548: the share's other folders, each with its own controls.
+           .andExpect(jsonPath("$[0].folders[0].key").value("CUSTOM:14"))
+           .andExpect(jsonPath("$[0].folders[0].role").value("TRASH"))
+           .andExpect(jsonPath("$[0].folders[0].readable").value(true))
+           .andExpect(jsonPath("$[0].folders[0].affordances.delete").value(false))
+           // What the band says: from the share, not from the folders found.
+           .andExpect(jsonPath("$[0].inboxOnly").value(true));
     verify(emailDelegationService).getSharedMailboxes(SIMPLE_USER);
   }
 

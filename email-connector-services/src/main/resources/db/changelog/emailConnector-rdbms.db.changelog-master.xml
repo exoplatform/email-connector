@@ -1644,4 +1644,65 @@
       <dropColumn tableName="EMAIL_DELEGATION" columnName="NATIVE_RIGHTS"/>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-81">
+    <comment>
+      A shared mailbox's folders beyond its INBOX (EXO-90548, phase-2 slice 2.1). On a
+      delegated folder row: FOLDER_ROLE is what the folder is in the owner's mailbox (SENT,
+      ARCHIVE, TRASH, JUNK, DRAFTS), which is where a delete, an archive or a "mark as
+      spam" from the shared mailbox files -- never the delegate's own folders; RIGHTS
+      are the delegate's own MYRIGHTS letters on THAT folder, which the write guard
+      reads rather than the INBOX's (32 wide: RFC 4314 lets a server add digit rights
+      beside the eleven letters); RIGHTS_CHECK_DATE is when they were last read.
+      Null on every row written before this and on every folder of the user's own
+      mailbox, which keeps its built-in names in the sync state. Rolled back
+      explicitly, as the other columns of this feature are. Named FOLDER_ROLE rather
+      than ROLE, a keyword several vendors need quoted.
+    </comment>
+    <addColumn tableName="EMAIL_FOLDER">
+      <column name="FOLDER_ROLE" type="VARCHAR(20)"/>
+      <column name="RIGHTS" type="VARCHAR(32)"/>
+      <column name="RIGHTS_CHECK_DATE" type="TIMESTAMP"/>
+    </addColumn>
+    <rollback>
+      <dropColumn tableName="EMAIL_FOLDER" columnName="RIGHTS_CHECK_DATE"/>
+      <dropColumn tableName="EMAIL_FOLDER" columnName="RIGHTS"/>
+      <dropColumn tableName="EMAIL_FOLDER" columnName="FOLDER_ROLE"/>
+    </rollback>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-82">
+    <comment>
+      What an owner's grant covered (EXO-90548). GRANTED_ROLES is the comma list of the
+      roles eXo's grant wrote beside INBOX (SENT,ARCHIVE,TRASH,JUNK), MAILBOX on a
+      server that grants a whole mailbox at once, and null for a share written before
+      this (INBOX only) -- which is what offers the owner "Extend access". The roles of
+      an owner's folders are read on the OWNER's session, where the server shows their
+      special-use attributes: Dovecot shows a delegate none on a shared folder, so
+      OWNER_ROLE_FOLDERS keeps the role-to-name map the grant resolved (JSON, names
+      relative to the owner's own root), for the delegate's discovery to read. Both
+      null on every row written before this. Rolled back explicitly.
+    </comment>
+    <addColumn tableName="EMAIL_DELEGATION">
+      <column name="GRANTED_ROLES" type="VARCHAR(100)"/>
+      <column name="OWNER_ROLE_FOLDERS" type="VARCHAR(2000)"/>
+    </addColumn>
+    <rollback>
+      <dropColumn tableName="EMAIL_DELEGATION" columnName="OWNER_ROLE_FOLDERS"/>
+      <dropColumn tableName="EMAIL_DELEGATION" columnName="GRANTED_ROLES"/>
+    </rollback>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-83">
+    <comment>
+      EMAIL_DELEGATION.RIGHTS widened from 16 to 32 (EXO-90548, decision 3d), the width
+      EMAIL_FOLDER.RIGHTS already has since 1.0.0-81: RFC 4314 lets a server add digit
+      rights beside the eleven standard letters, and a share's INBOX letters are the
+      same vocabulary as a folder's. Nullable, as before. Rolled back explicitly to
+      VARCHAR(16) (modifyDataType has no automatic rollback); the rollback fails only
+      on a row holding more than sixteen letters, which no server phase 0 or the
+      certification met wrote.
+    </comment>
+    <modifyDataType tableName="EMAIL_DELEGATION" columnName="RIGHTS" newDataType="VARCHAR(32)"/>
+    <rollback>
+      <modifyDataType tableName="EMAIL_DELEGATION" columnName="RIGHTS" newDataType="VARCHAR(16)"/>
+    </rollback>
+  </changeSet>
 </databaseChangeLog>

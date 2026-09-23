@@ -97,9 +97,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       element="div"
       class="my-auto" /> 
     <!-- `restricted` is the mobile long-press drawer saying "the swipe already offers
-         these two"; `canMove` is the folder saying they must not be offered at all. -->
+         these two"; `canArchive` / `canDelete` are the folder, and in a shared mailbox
+         its destinations, saying whether they may be offered at all (EXO-90548). -->
     <v-list-item
-      v-if="!restricted && canMove"
+      v-if="!restricted && canArchive"
       class="ps-2 pe-3 height-auto"
       @click.stop="archiveEmail">
       <v-sheet
@@ -122,7 +123,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          offer it, so the mobile long-press drawer is the only place a phone user can
          reach it from. -->
     <v-list-item
-      v-if="canMove"
+      v-if="canMarkAsJunk"
       class="ps-2 pe-3 height-auto"
       @click.stop="markAsJunk">
       <v-sheet
@@ -161,7 +162,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </span>
     </v-list-item>
     <v-list-item
-      v-if="!restricted && canMove"
+      v-if="inboxOnlyHint"
+      class="ps-2 pe-3 height-auto"
+      inactive>
+      <span class="caption text-sub-title">{{ inboxOnlyHint }}</span>
+    </v-list-item>
+    <v-list-item
+      v-if="!restricted && canDelete"
       class="ps-2 pe-3 height-auto"
       @click.stop="deleteEmail">
       <v-sheet
@@ -204,7 +211,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          "Not spam" back to the inbox, and a Delete that files into the Trash exactly
          as the ordinary delete does (the backend allows that one move out of Junk). -->
     <v-list-item
-      v-if="junkActions"
+      v-if="junkActions && canRestoreFromJunk"
       class="ps-2 pe-3 height-auto"
       @click.stop="restoreFromJunk">
       <v-sheet
@@ -375,6 +382,15 @@ export default {
       return this.$emailConnectorMailBoxService.hasJunkActions(this.email.folder);
     },
     /**
+     * Whether "Not spam" belongs on this row: in the user's own Spam only -- out of a
+     * shared mailbox's it would file into another mailbox (EXO-90548).
+     *
+     * @returns {Boolean} true when "Not spam" is offered
+     */
+    canRestoreFromJunk() {
+      return this.$emailConnectorMailBoxService.canRestoreFromJunk(this.email.folder);
+    },
+    /**
      * Whether delete, archive and mark-as-spam may be offered on this row at all. On
      * top of readOnly: all three address a message by its IMAP uid, and an unsent draft
      * has none to address -- discarding a draft is its own action, in the composer,
@@ -386,6 +402,45 @@ export default {
      */
     canMove() {
       return this.$emailConnectorMailBoxService.canMoveOutOf(this.email.folder);
+    },
+    /**
+     * Whether "Mark as spam" belongs on this row: where delete and archive do, and in a
+     * shared mailbox only when its owner shares a Spam folder to file into (EXO-90548) --
+     * the rule the toolbar and the reader already ask.
+     *
+     * @returns {Boolean} true when "Mark as spam" is offered
+     */
+    canMarkAsJunk() {
+      return this.$emailConnectorMailBoxService.canMarkAsJunk(this.email.folder);
+    },
+    /**
+     * Whether Archive belongs on this row: in a shared mailbox, only where its owner
+     * shares an Archive to file into (EXO-90548).
+     *
+     * @returns {Boolean} true when Archive is offered
+     */
+    canArchive() {
+      return this.$emailConnectorMailBoxService.canArchive(this.email.folder);
+    },
+    /**
+     * Whether Delete belongs on this row: in a shared mailbox, only where its owner
+     * shares a Trash to file into (EXO-90548).
+     *
+     * @returns {Boolean} true when Delete is offered
+     */
+    canDelete() {
+      return this.$emailConnectorMailBoxService.canDelete(this.email.folder);
+    },
+    /**
+     * The owner of a shared mailbox that shares only its Inbox, when the user could
+     * otherwise take this row out of it -- said on the menu in place of the absent
+     * Delete and Archive (EXO-90548).
+     *
+     * @returns {String} the hint, or empty
+     */
+    inboxOnlyHint() {
+      const entry = this.$emailConnectorMailBoxService.inboxOnlyShareHint(this.email.folder);
+      return entry ? this.$t('emailConnector.mailBox.sharedMailbox.inboxOnlyActions', { 0: entry.ownerFullName }) : '';
     },
     /**
      * Whether this row is a draft listed in the Drafts folder — asked of the same

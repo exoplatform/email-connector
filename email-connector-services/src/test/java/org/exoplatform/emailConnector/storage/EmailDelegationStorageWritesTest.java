@@ -18,9 +18,12 @@ package org.exoplatform.emailConnector.storage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 import java.util.Date;
+import java.util.EnumMap;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -40,6 +43,7 @@ import org.exoplatform.emailConnector.model.DelegationOrigin;
 import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailDelegation;
+import org.exoplatform.emailConnector.model.FolderRole;
 
 /**
  * Stack review #432-2 -- what a whole-row write may not put back, in SQL over the shipped
@@ -155,6 +159,114 @@ class EmailDelegationStorageWritesTest {
       assertEquals(ended, read.getStatus());
       assertEquals("lrs", read.getRights(), ended.name() + ": nothing written");
     }
+  }
+
+  /**
+   * The per-folder write (EXO-90548 on N-1), in SQL: the rights and the folder roles
+   * land together, a leave made meanwhile stands, another owner's id writes nothing, and
+   * a share that ended meanwhile is not written at all.
+   */
+  @Test
+  void aChangeOfFolderAccessWritesTheRolesAndNeverUndoesALeave() {
+    EmailDelegation stale = emailDelegationStorage.create(acceptedRow("erin"));
+    EmailDelegationEntity leave = emailDelegationDAO.findById(stale.getId()).orElseThrow();
+    leave.setStatus(DelegationStatus.DECLINED.name());
+    leave.setBadgeIncluded(false);
+    emailDelegationDAO.saveAndFlush(leave);
+    Map<FolderRole, String> folders = new EnumMap<>(FolderRole.class);
+    folders.put(FolderRole.SENT, "Sent");
+    folders.put(FolderRole.TRASH, "Corbeille");
+
+    EmailDelegation changed = emailDelegationStorage.updateGrantedRights("alice",
+                                                                         stale.getId(),
+                                                                         DelegationPreset.EDITOR,
+                                                                         "lrswite",
+                                                                         null,
+                                                                         "erin@acme.com",
+                                                                         new Date(),
+                                                                         "INBOX,SENT,TRASH",
+                                                                         folders);
+
+    assertEquals(DelegationStatus.DECLINED, changed.getStatus(), "the leave stands");
+    assertFalse(changed.isBadgeIncluded());
+    assertEquals("lrswite", changed.getRights());
+    assertEquals("INBOX,SENT,TRASH", changed.getGrantedRoles());
+    assertEquals("Corbeille", changed.getOwnerRoleFolders().get(FolderRole.TRASH));
+    assertNull(emailDelegationStorage.updateGrantedRights("bob", stale.getId(), DelegationPreset.READER, "lrs", null, null,
+                                                          new Date(), "INBOX", folders),
+               "another owner's id writes nothing");
+
+    EmailDelegationEntity revoked = emailDelegationDAO.findById(stale.getId()).orElseThrow();
+    revoked.setStatus(DelegationStatus.REVOKED.name());
+    emailDelegationDAO.saveAndFlush(revoked);
+    assertNull(emailDelegationStorage.updateGrantedRights("alice", stale.getId(), DelegationPreset.READER, "lrs", null, null,
+                                                          new Date(), "INBOX", folders),
+               "a revoked share is not written");
+    EmailDelegation read = emailDelegationStorage.getAsOwner("alice", stale.getId());
+    assertEquals("INBOX,SENT,TRASH", read.getGrantedRoles(), "nothing written after the revoke");
+    assertEquals("lrswite", read.getRights());
+  }
+
+  /**
+   * EXO-90548 review, finding 1, in SQL: the owner extends a pending share while its
+   * grantee's accept is on the wire. The accept writes its own columns only, so the
+   * folder roles the Extend recorded stand; the server's words recorded by the owner's
+   * side are kept, and a preset not given is kept too. An accept of a row revoked
+   * meanwhile writes nothing.
+   */
+  @Test
+  void anAcceptNeverUndoesAnExtendMadeMeanwhile() {
+    EmailDelegation row = acceptedRow("frank");
+    row.setStatus(DelegationStatus.PENDING);
+    row.setNativeRights("Read, Write");
+    EmailDelegation pending = emailDelegationStorage.create(row);
+    Map<FolderRole, String> folders = new EnumMap<>(FolderRole.class);
+    folders.put(FolderRole.SENT, "Sent");
+    assertNotNull(emailDelegationStorage.updateGrantedRights("alice", pending.getId(), DelegationPreset.READER, "lrs", "Read, Write",
+                                                             "frank@acme.com", new Date(), "INBOX,SENT", folders));
+
+    EmailDelegation accepted = emailDelegationStorage.accept("frank", pending.getId(), "Other Users/alice", "lrs", null, new Date(9_000L));
+
+    assertEquals(DelegationStatus.ACCEPTED, accepted.getStatus());
+    assertEquals("Other Users/alice", accepted.getRemoteRoot());
+    assertEquals("INBOX,SENT", accepted.getGrantedRoles(), "the Extend's roles stand");
+    assertEquals("Sent", accepted.getOwnerRoleFolders().get(FolderRole.SENT));
+    assertEquals("Read, Write", accepted.getNativeRights(), "the owner side's words are kept");
+    assertEquals(DelegationPreset.READER, accepted.getPreset(), "no preset given, none written");
+    assertNull(emailDelegationStorage.accept("frank", pending.getId(), "x", "lrs", null, new Date()), "already accepted: nothing written");
+    assertNull(emailDelegationStorage.accept("bob", pending.getId(), "x", "lrs", null, new Date()), "another grantee's id writes nothing");
+
+    EmailDelegation other = emailDelegationStorage.create(acceptedRow("gina"));
+    EmailDelegationEntity revoked = emailDelegationDAO.findById(other.getId()).orElseThrow();
+    revoked.setStatus(DelegationStatus.REVOKED.name());
+    emailDelegationDAO.saveAndFlush(revoked);
+    assertNull(emailDelegationStorage.accept("gina", other.getId(), "x", "lrs", null, new Date()), "a revoked share is not accepted");
+    assertEquals(DelegationStatus.REVOKED, emailDelegationStorage.getAsOwner("alice", other.getId()).getStatus());
+  }
+
+  /**
+   * EXO-90548 review, finding 1, in SQL: the owner's listing refreshes a share on offer
+   * to the letters its ACL holds, without touching the folder roles an Extend wrote, and
+   * never writes a share in use.
+   */
+  @Test
+  void theOwnersRefreshOfAShareOnOfferKeepsItsFolderRoles() {
+    EmailDelegation row = acceptedRow("hank");
+    row.setStatus(DelegationStatus.PENDING);
+    EmailDelegation pending = emailDelegationStorage.create(row);
+    Map<FolderRole, String> folders = new EnumMap<>(FolderRole.class);
+    folders.put(FolderRole.TRASH, "Corbeille");
+    emailDelegationStorage.updateGrantedRights("alice", pending.getId(), DelegationPreset.EDITOR, "lrswite", null, "hank@acme.com",
+                                               new Date(), "INBOX,TRASH", folders);
+
+    EmailDelegation refreshed = emailDelegationStorage.updateOfferedRights("alice", pending.getId(), "lrswit", "lrswit");
+
+    assertEquals("lrswit", refreshed.getRights());
+    assertEquals("INBOX,TRASH", refreshed.getGrantedRoles(), "the Extend's roles stand");
+    assertEquals(DelegationStatus.PENDING, refreshed.getStatus());
+    EmailDelegation inUse = emailDelegationStorage.create(acceptedRow("ivan"));
+    assertNull(emailDelegationStorage.updateOfferedRights("alice", inUse.getId(), "l", "l"), "a share in use is not written");
+    assertEquals("lrs", emailDelegationStorage.getAsOwner("alice", inUse.getId()).getRights());
   }
 
   /**

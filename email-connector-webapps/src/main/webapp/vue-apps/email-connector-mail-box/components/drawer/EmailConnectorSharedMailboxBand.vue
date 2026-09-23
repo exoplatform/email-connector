@@ -64,7 +64,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 {{ levelIcon }}
               </v-icon>
             </template>
-            <span>{{ levelLabel }} · {{ rightsSummary }}</span>
+            <span>{{ levelLabel }} · {{ rightsSummary }}<template v-if="inboxOnly"> · {{ inboxOnly }}</template></span>
           </v-tooltip>
         </span>
         <slot v-if="$slots.default"></slot>
@@ -160,6 +160,19 @@ export default {
       return capabilities.markRead
         ? this.$t('UserSettings.emailConnector.sharedWithMe.rights.markRead')
         : this.$t('UserSettings.emailConnector.sharedWithMe.rights.read');
+    },
+    /**
+     * Said when the share covers the owner's Inbox alone -- written before eXo shared the
+     * owner's other folders; the owner can extend it (EXO-90548). Read from the share
+     * itself (inboxOnly), not from the folders the last discovery found: those are empty
+     * before the first discovery, after a failed one, or when every folder was refused.
+     *
+     * @returns {String} the sentence, or empty
+     */
+    inboxOnly() {
+      return this.entry?.inboxOnly
+        ? this.$t('emailConnector.mailBox.sharedMailbox.inboxOnly', { 0: this.entry.ownerFullName })
+        : '';
     },
     /**
      * "You are in Alice's mailbox · Reader" in pieces, the owner's name and the level

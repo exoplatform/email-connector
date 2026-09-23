@@ -314,6 +314,49 @@ public interface EmailFolderDAO extends JpaRepository<EmailFolderEntity, Long> {
   String type);
 
   /**
+   * Discovery's write on a folder of a shared mailbox (EXO-90548): its role in the
+   * owner's mailbox and the delegate's own letters on it, stamped -- nothing else, so
+   * neither the opt-in nor the sync memory written since can be put back. Scoped to the
+   * delegation as well as to the user, so a row of the user's own mailbox is never
+   * given letters.
+   *
+   * @param id the row id
+   * @param userId the grantee
+   * @param delegationId the delegation the row belongs to
+   * @param role the role, null for none
+   * @param rights the letters
+   * @param when the check time
+   * @return the rows updated: one, or zero when no such delegated row belongs to that user
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailFolderEntity folder SET folder.role = :role, folder.rights = :rights, folder.rightsCheckDate = :when WHERE folder.id = :id AND folder.userId = :userId AND folder.delegationId = :delegationId")
+  int updateDelegatedRights(@Param("id")
+  long id, @Param("userId")
+  String userId, @Param("delegationId")
+  long delegationId, @Param("role")
+  String role, @Param("rights")
+  String rights, @Param("when")
+  Date when);
+
+  /**
+   * Marks a shared mailbox's discovery due (EXO-90548): clears the discovery stamp on
+   * its INBOX row -- the throttle's clock -- for every grantee registering it, so the
+   * next pass rediscovers the owner's folders at once instead of after the quarter-hour.
+   * The INBOX row's stamp is only that clock: its letters are the delegation's.
+   *
+   * @param delegationId the share
+   * @param inboxType the type of a shared mailbox's INBOX row
+   * @return the rows updated
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailFolderEntity folder SET folder.rightsCheckDate = NULL WHERE folder.delegationId = :delegationId AND folder.type = :inboxType")
+  int markDiscoveryDue(@Param("delegationId")
+  long delegationId, @Param("inboxType")
+  String inboxType);
+
+  /**
    * Drops every registered folder of one shared mailbox -- the leave / revoke purge of
    * the registry rows. As with {@link #deleteByUserId}, the mirrored rows are deleted
    * by the caller.

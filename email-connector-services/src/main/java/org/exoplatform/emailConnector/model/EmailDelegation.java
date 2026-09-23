@@ -17,7 +17,13 @@
 package org.exoplatform.emailConnector.model;
 
 import java.util.Date;
+import java.util.EnumMap;
+import java.util.EnumSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
+
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -34,6 +40,9 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class EmailDelegation {
+
+  /** {@link #grantedRoles} of a grant made in one call on a per-mailbox server. */
+  public static final String GRANTED_WHOLE_MAILBOX = "MAILBOX";
 
   private Long             id;
 
@@ -94,6 +103,72 @@ public class EmailDelegation {
   private Date             updatedDate;
 
   /**
+   * The roles eXo's grant wrote beside INBOX (EXO-90548), {@code MAILBOX} for a
+   * per-mailbox grant, null for a share written before (INBOX only).
+   */
+  private String           grantedRoles;
+
+  /**
+   * The owner's role-to-folder-name map as the grant resolved it on the owner's session
+   * (EXO-90548). Server-side only: the delegate's discovery reads it, no screen does.
+   * Never null: empty when no grant recorded one.
+   */
+  @JsonIgnore
+  private Map<FolderRole, String> ownerRoleFolders = new EnumMap<>(FolderRole.class);
+
+  /**
+   * The delegation as it was before EXO-90548 recorded what a grant covered: every
+   * existing positional caller keeps building it this way.
+   *
+   * @param id the row id
+   * @param granteeId the grantee's username
+   * @param ownerId the owner's username, when an eXo user
+   * @param ownerMailbox the owner's mailbox identifier
+   * @param granteeMailbox the grantee's mailbox identifier
+   * @param connectorId the connector preset
+   * @param remoteRoot the shared root in the grantee's listing
+   * @param preset the preset
+   * @param rights the letters last observed
+   * @param nativeRights the server's own vocabulary last observed
+   * @param status the status
+   * @param origin who wrote the share
+   * @param badgeIncluded whether it counts in the badge
+   * @param notifyNewMail whether new mail notifies
+   * @param lastActivityDate the grantee's last use
+   * @param lastRightsCheckDate when the rights were last read
+   * @param invitedDate when invited
+   * @param respondedDate when answered
+   * @param revokedDate when revoked
+   * @param createdDate when created
+   * @param updatedDate when updated
+   */
+  public EmailDelegation(Long id,
+                         String granteeId,
+                         String ownerId,
+                         String ownerMailbox,
+                         String granteeMailbox,
+                         Long connectorId,
+                         String remoteRoot,
+                         DelegationPreset preset,
+                         String rights,
+                         String nativeRights,
+                         DelegationStatus status,
+                         DelegationOrigin origin,
+                         boolean badgeIncluded,
+                         boolean notifyNewMail,
+                         Date lastActivityDate,
+                         Date lastRightsCheckDate,
+                         Date invitedDate,
+                         Date respondedDate,
+                         Date revokedDate,
+                         Date createdDate,
+                         Date updatedDate) {
+    this(id, granteeId, ownerId, ownerMailbox, granteeMailbox, connectorId, remoteRoot, preset, rights, nativeRights, status, origin,
+         badgeIncluded, notifyNewMail, lastActivityDate, lastRightsCheckDate, invitedDate, respondedDate, revokedDate, createdDate,
+         updatedDate, null, new EnumMap<>(FolderRole.class));
+  }
+
+  /**
    * The rights, as a model.
    *
    * @return the last observed rights, empty when never observed
@@ -110,5 +185,76 @@ public class EmailDelegation {
    */
   public Map<String, Boolean> getAffordances() {
     return getMailboxRights().affordances();
+  }
+
+  /**
+   * The roles eXo's grant wrote beside INBOX, parsed once (EXO-90548).
+   *
+   * @return the roles, empty for an INBOX-only share and for a per-mailbox grant
+   */
+  public Set<FolderRole> grantedRoleSet() {
+    Set<FolderRole> roles = EnumSet.noneOf(FolderRole.class);
+    if (grantedRoles == null || grantsWholeMailbox()) {
+      return roles;
+    }
+    for (String name : grantedRoles.split(",")) {
+      FolderRole role = FolderRole.of(name);
+      if (role != null) {
+        roles.add(role);
+      }
+    }
+    return roles;
+  }
+
+  /**
+   * Whether the grant was one call on a per-mailbox server (BlueMind), which covers every
+   * folder of the mailbox at once.
+   *
+   * @return true for a per-mailbox grant
+   */
+  public boolean grantsWholeMailbox() {
+    return GRANTED_WHOLE_MAILBOX.equals(grantedRoles);
+  }
+
+  /**
+   * Whether the share was written before eXo granted more than INBOX (EXO-90548): what
+   * offers the owner "Extend access".
+   *
+   * @return true for a share whose grant recorded nothing
+   */
+  public boolean isInboxOnly() {
+    return grantedRoles == null;
+  }
+
+  /**
+   * The owner's folders the grant found but could not share -- "Trash could not be
+   * shared: your server refused", on the owner's list (EXO-90548).
+   *
+   * @return the roles, in grant order, empty when none failed
+   */
+  public List<FolderRole> getRolesNotShared() {
+    if (grantedRoles == null || grantsWholeMailbox() || ownerRoleFolders == null) {
+      return List.of();
+    }
+    Set<FolderRole> granted = grantedRoleSet();
+    return FolderRole.GRANTED.stream().filter(role -> ownerRoleFolders.containsKey(role) && !granted.contains(role)).toList();
+  }
+
+  /**
+   * The stored form of a set of granted roles: INBOX first, always -- so a grant that
+   * shared INBOX alone is told from a share written before roles were recorded (null) --
+   * then the roles in grant order.
+   *
+   * @param roles the roles granted beside INBOX
+   * @return the comma list
+   */
+  public static String grantedRolesOf(Set<FolderRole> roles) {
+    StringBuilder list = new StringBuilder(MailFolder.INBOX);
+    for (FolderRole role : FolderRole.GRANTED) {
+      if (roles != null && roles.contains(role)) {
+        list.append(',').append(role.name());
+      }
+    }
+    return list.toString();
   }
 }

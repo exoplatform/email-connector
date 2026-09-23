@@ -18,8 +18,11 @@ package org.exoplatform.emailConnector.service.acl;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 import javax.mail.Folder;
 import javax.mail.FolderClosedException;
@@ -38,11 +41,14 @@ import com.sun.mail.imap.Rights;
 
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.model.DelegationPreset;
+import org.exoplatform.emailConnector.model.DiscoveredFolder;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.SharedMailbox;
+import org.exoplatform.emailConnector.service.EmailFolderService;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -90,6 +96,9 @@ public class ImapAclEngine implements MailboxAclEngine {
 
   /** The engine name a preset selects. */
   public static final String NAME                 = "imap";
+
+  /** How many folders "Remove access" asks for the grantee's entry, at most (plan, A-4). */
+  static final int           MAX_FOLDERS_ASKED    = 200;
 
   /** The RFC 4314 capability -- a fast positive in {@link #probe}, never the gate. */
   static final String        ACL_CAPABILITY       = "ACL";
@@ -197,17 +206,41 @@ public class ImapAclEngine implements MailboxAclEngine {
   }
 
   /**
-   * The preset's letters, capped by the allowlist and by the owner's own rights, then
-   * SETACL with exactly those: {@link IMAPFolder#addACL(ACL)} sends the rights with no
-   * {@code +}/{@code -} modifier, so an entry the identifier already had is replaced
-   * rather than widened. Nothing that reads is left: refused with
-   * {@code NOTHING_TO_GRANT}, nothing written.
+   * The preset's letters on INBOX: {@link #grant(MailboxAclSession, String, String,
+   * DelegationPreset, MailboxRights, FolderRole)} with no role.
    *
    * @param session the owner's session
    * @param mailbox the folder's full name (per-folder server)
    * @param identifier the grantee as the server names them
    * @param preset READER or EDITOR
    * @param ownerRights the owner's own MYRIGHTS on the folder
+   * @return the entry as written
+   * @throws MailboxAclException when nothing is left to grant or the server refuses
+   */
+  @Override
+  public MailboxAce grant(MailboxAclSession session,
+                          String mailbox,
+                          String identifier,
+                          DelegationPreset preset,
+                          MailboxRights ownerRights) {
+    return grant(session, mailbox, identifier, preset, ownerRights, null);
+  }
+
+  /**
+   * The preset's letters for the folder's role ({@link #lettersFor}), capped by the
+   * role's allowlist -- {@link MailboxRights#GRANTABLE} on Trash,
+   * {@link MailboxRights#GRANTABLE_WHERE_MAIL_LEAVES} everywhere else -- and by the
+   * owner's own rights, then SETACL with exactly those: {@link IMAPFolder#addACL(ACL)}
+   * sends the rights with no {@code +}/{@code -} modifier, so an entry the identifier
+   * already had is replaced rather than widened. Nothing that reads is left: refused
+   * with {@code NOTHING_TO_GRANT}, nothing written.
+   *
+   * @param session the owner's session
+   * @param mailbox the folder's full name
+   * @param identifier the grantee as the server names them
+   * @param preset READER or EDITOR
+   * @param ownerRights the owner's own MYRIGHTS on the folder
+   * @param role the folder's role, null for INBOX
    * @return the entry as written: the letters, the letters again as native form, and
    *         the preset they read as -- READER when an Editor was capped to {@code lrs}
    * @throws MailboxAclException when nothing is left to grant or the server refuses
@@ -217,8 +250,10 @@ public class ImapAclEngine implements MailboxAclEngine {
                           String mailbox,
                           String identifier,
                           DelegationPreset preset,
-                          MailboxRights ownerRights) {
-    MailboxRights letters = expand(preset).intersect(MailboxRights.GRANTABLE).intersect(ownerRights);
+                          MailboxRights ownerRights,
+                          FolderRole role) {
+    MailboxRights cap = role == FolderRole.TRASH ? MailboxRights.GRANTABLE : MailboxRights.GRANTABLE_WHERE_MAIL_LEAVES;
+    MailboxRights letters = lettersFor(preset, role).intersect(cap).intersect(ownerRights);
     if (!letters.canRead()) {
       throw new MailboxAclException(MailboxAclException.NOTHING_TO_GRANT,
                                     "preset " + preset + " against owner rights " + (ownerRights == null ? "" : ownerRights.letters()));
@@ -232,14 +267,269 @@ public class ImapAclEngine implements MailboxAclEngine {
   }
 
   /**
+   * A Reader reads ({@code lrs}) everywhere. An Editor also writes, and holds
+   * {@code e} -- the right to expunge, without which a delete or a move leaves the
+   * original behind -- on every folder mail leaves from, and never on Trash, where it
+   * would be permanent deletion (EXO-90548, PO decision Q-1).
+   *
+   * @param preset READER or EDITOR
+   * @param role the folder's role, null for INBOX
+   * @return the letters, before the owner's cap
+   */
+  @Override
+  public MailboxRights lettersFor(DelegationPreset preset, FolderRole role) {
+    if (preset == DelegationPreset.EDITOR) {
+      return role == FolderRole.TRASH ? MailboxRights.GRANTABLE : MailboxRights.GRANTABLE_WHERE_MAIL_LEAVES;
+    }
+    return expand(preset);
+  }
+
+  /**
+   * The owner's folders by role, from one {@code LIST "*"} on the owner's session: the
+   * special-use attribute first ({@code \Sent}, {@code \Archive}, {@code \Trash},
+   * {@code \Junk}, {@code \Drafts}), then, for a role no attribute names, a top-level
+   * folder (or one directly under INBOX) whose name is one of that role's usual names
+   * (MailFolderNames, the ones the user's own mailbox recognises). Never a folder under
+   * another user's or a shared namespace, never one that cannot hold mail; the first
+   * folder found for a role keeps it.
+   *
+   * @param session the owner's session
+   * @return the folder full name of each role found, never null
+   * @throws MailboxAclException when the server refuses
+   */
+  @Override
+  public Map<FolderRole, String> findRoleFolders(MailboxAclSession session) {
+    Map<FolderRole, String> byAttribute = new EnumMap<>(FolderRole.class);
+    Map<FolderRole, String> byTopName = new EnumMap<>(FolderRole.class);
+    Map<FolderRole, String> byInboxChildName = new EnumMap<>(FolderRole.class);
+    for (IMAPFolder folder : ownFolders(session)) {
+      FolderRole attributeRole = roleOfAttributes(folder);
+      if (attributeRole != null) {
+        byAttribute.putIfAbsent(attributeRole, folder.getFullName());
+        continue;
+      }
+      // By name only at the top of the owner's mailbox, then directly under INBOX (where
+      // some servers keep everything): a grant is written on what this returns, so a
+      // nested "Clients/Deleted" is never taken for the Trash and shared, and a user's
+      // "INBOX/Spam" never beats a top-level "Junk Mail", whatever the LIST order
+      // (EXO-90548).
+      FolderRole nameRole = roleOfName(folder.getName());
+      if (nameRole == null) {
+        continue;
+      }
+      if (StringUtils.defaultString(folder.getFullName()).equals(folder.getName())) {
+        byTopName.putIfAbsent(nameRole, folder.getFullName());
+      } else if (isTopLevel(folder)) {
+        byInboxChildName.putIfAbsent(nameRole, folder.getFullName());
+      }
+    }
+    byTopName.forEach(byAttribute::putIfAbsent);
+    byInboxChildName.forEach(byAttribute::putIfAbsent);
+    return byAttribute;
+  }
+
+  /**
+   * The owner's folders whose GETACL names the identifier, INBOX included. At most
+   * {@link #MAX_FOLDERS_ASKED} folders are asked -- "Remove access" on a mailbox of
+   * hundreds of folders stops there and says so in the log (plan, assumption A-4). A
+   * folder whose ACL cannot be read is skipped: its entry, if any, is the owner's to
+   * remove in the mail server's own interface.
+   *
+   * @param session the owner's session
+   * @param identifier the grantee as the server names them
+   * @return the folder full names, never null
+   * @throws MailboxAclException when the server cannot list folders
+   */
+  @Override
+  public List<String> foldersHolding(MailboxAclSession session, String identifier) {
+    List<String> holding = new ArrayList<>();
+    if (StringUtils.isBlank(identifier)) {
+      return holding;
+    }
+    List<IMAPFolder> folders = ownFolders(session);
+    if (folders.size() > MAX_FOLDERS_ASKED) {
+      LOG.warn("Removing an access asks only the first {} of {} folders; an entry beyond them stays", MAX_FOLDERS_ASKED, folders.size());
+    }
+    for (IMAPFolder folder : folders.subList(0, Math.min(folders.size(), MAX_FOLDERS_ASKED))) {
+      try {
+        for (ACL acl : folder.getACL()) {
+          if (acl != null && identifier.equalsIgnoreCase(acl.getName())) {
+            holding.add(folder.getFullName());
+            break;
+          }
+        }
+      } catch (MessagingException e) {
+        LOG.debug("GETACL on '{}' could not be read while removing an access: {}", folder.getFullName(), e.getMessage());
+      }
+    }
+    return holding;
+  }
+
+  /**
+   * {@code LIST "" "<root><delimiter>*"} from the default folder -- by pattern, for the
+   * reason {@link #listSharedMailboxes} explains (Stalwart answers a namespace folder's
+   * own list with nothing). Each folder is read off the listing alone: name, attributes,
+   * separator and whether it can hold mail, no {@code exists()} probe. A failure of the
+   * connection is {@code UNREACHABLE}, a refusal {@code SERVER_REFUSED}.
+   *
+   * @param session the grantee's session
+   * @param root the shared mailbox's root
+   * @param delimiter the hierarchy delimiter, "/" when unknown
+   * @return the folders under the root, never null
+   * @throws MailboxAclException when the server refuses or cannot be reached
+   */
+  @Override
+  public List<DiscoveredFolder> listFoldersUnder(MailboxAclSession session, String root, String delimiter) {
+    List<DiscoveredFolder> folders = new ArrayList<>();
+    if (StringUtils.isBlank(root)) {
+      return folders;
+    }
+    String separator = StringUtils.defaultIfEmpty(delimiter, "/");
+    try {
+      Folder[] listed = session.store().getDefaultFolder().list(StringUtils.removeEnd(root, separator) + separator + "*");
+      for (Folder folder : listed == null ? new Folder[0] : listed) {
+        if (!(folder instanceof IMAPFolder imapFolder) || StringUtils.isBlank(imapFolder.getFullName())) {
+          continue;
+        }
+        String[] attributes = imapFolder.getAttributes();
+        Set<String> attributeSet = attributes == null ? Set.of() : Set.of(attributes);
+        boolean selectable = attributeSet.stream()
+                                         .noneMatch(attribute -> "\\Noselect".equalsIgnoreCase(attribute)
+                                             || "\\NonExistent".equalsIgnoreCase(attribute));
+        char listedSeparator = imapFolder.getSeparator();
+        folders.add(new DiscoveredFolder(imapFolder.getFullName(),
+                                         imapFolder.getName(),
+                                         listedSeparator == 0 ? separator : String.valueOf(listedSeparator),
+                                         attributeSet,
+                                         false,
+                                         selectable));
+      }
+      return folders;
+    } catch (MessagingException e) {
+      if (isConnectionFailure(e)) {
+        throw new MailboxAclException(MailboxAclException.UNREACHABLE, e);
+      }
+      throw refused("LIST", root, e);
+    }
+  }
+
+  /**
+   * The folders of the session's own mailbox: {@code LIST "*"}, minus every folder that
+   * cannot hold mail and every folder under another user's or a shared namespace.
+   *
+   * @param session the session
+   * @return the folders, never null
+   * @throws MailboxAclException when the server refuses
+   */
+  private List<IMAPFolder> ownFolders(MailboxAclSession session) {
+    List<IMAPFolder> own = new ArrayList<>();
+    try {
+      Store store = session.store();
+      List<String> otherRoots = new ArrayList<>();
+      for (Folder[] namespaces : List.of(nonNull(store.getUserNamespaces(null)), nonNull(store.getSharedNamespaces()))) {
+        for (Folder namespace : namespaces) {
+          if (namespace != null && StringUtils.isNotBlank(namespace.getFullName())) {
+            otherRoots.add(namespace.getFullName());
+          }
+        }
+      }
+      if (otherRoots.isEmpty()) {
+        // A server that advertises no namespace (Stalwart): the shape of its listing.
+        for (Folder root : namespaceRootsFromList(store)) {
+          otherRoots.add(root.getFullName());
+        }
+      }
+      Folder[] listed = store.getDefaultFolder().list("*");
+      for (Folder folder : listed == null ? new Folder[0] : listed) {
+        if (!(folder instanceof IMAPFolder imapFolder) || (imapFolder.getType() & Folder.HOLDS_MESSAGES) == 0) {
+          continue;
+        }
+        if (!EmailFolderService.isUnderAnyRoot(imapFolder.getFullName(), String.valueOf(imapFolder.getSeparator()), otherRoots)) {
+          own.add(imapFolder);
+        }
+      }
+      return own;
+    } catch (MessagingException e) {
+      throw refused("LIST", "*", e);
+    }
+  }
+
+  /**
+   * An array the library may answer null for, as an empty one.
+   *
+   * @param folders the array
+   * @return the array, never null
+   */
+  private static Folder[] nonNull(Folder[] folders) {
+    return folders == null ? new Folder[0] : folders;
+  }
+
+  /**
+   * The role a folder's special-use attributes name, if any.
+   *
+   * @param folder the folder
+   * @return the role, or null
+   * @throws MailboxAclException never: an unreadable attribute list is no role
+   */
+  private static FolderRole roleOfAttributes(IMAPFolder folder) {
+    String[] attributes;
+    try {
+      attributes = folder.getAttributes();
+    } catch (MessagingException e) {
+      return null;
+    }
+    for (String attribute : attributes == null ? new String[0] : attributes) {
+      FolderRole role = FolderRole.ofAttribute(attribute);
+      if (role != null) {
+        return role;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Whether a folder sits at the top of the owner's mailbox, or directly under INBOX --
+   * the only places a role folder is recognised by its name alone.
+   *
+   * @param folder the owner's folder
+   * @return true when its full name has no parent other than INBOX; false when the
+   *         separator cannot be read
+   */
+  private static boolean isTopLevel(IMAPFolder folder) {
+    String fullName = StringUtils.defaultString(folder.getFullName());
+    String name = StringUtils.defaultString(folder.getName());
+    if (fullName.equals(name)) {
+      return true;
+    }
+    try {
+      char separator = folder.getSeparator();
+      return fullName.equalsIgnoreCase("INBOX" + separator + name);
+    } catch (MessagingException e) {
+      return false;
+    }
+  }
+
+  /**
+   * The role a folder's name names by one of its usual names, exactly (not a
+   * substring: a folder named "Trash notes" is not the Trash).
+   *
+   * @param name the last segment
+   * @return the role, or null
+   */
+  private static FolderRole roleOfName(String name) {
+    return FolderRole.ofUsualName(name);
+  }
+
+  /**
    * The preset a set of observed letters reads as on an IMAP server: a preset's letters
    * exactly, or a preset's letters plus only what the server adds by itself because it
    * couples letters (RFC 4314 section 2.1.1). Stalwart answers {@code lrswit} as
    * {@code tewsirl}: it stores {@code e} with {@code t}, so an Editor granted from eXo
-   * read back as CUSTOM (observed on the rig, 2026-09-23). The couplings admitted are
-   * the RFC's legacy ones and nothing else -- {@code e} and {@code d} beside {@code t},
-   * {@code c} beside {@code k} -- so a set granting more than coupling implies
-   * ({@code a}, {@code x}, {@code e} without {@code t}) is never a preset.
+   * read back as CUSTOM (observed on the rig, 2026-09-23). The only coupling admitted is
+   * {@code e} beside {@code t}, so a set granting more than coupling implies
+   * ({@code a}, {@code x}, {@code e} without {@code t}) is never a preset. The virtual
+   * {@code c}/{@code d} Dovecot adds never reach here: {@link MailboxRights#of(String)}
+   * drops them (EXO-90552).
    *
    * @param rights the letters a server answered
    * @return READER or EDITOR, CUSTOM when none matches
@@ -281,8 +571,10 @@ public class ImapAclEngine implements MailboxAclEngine {
 
   /**
    * Whether a server may add a letter by itself because the granted letters couple it
-   * (RFC 4314 section 2.1.1): {@code e} and the legacy {@code d} with {@code t}, the
-   * legacy {@code c} with {@code k}.
+   * (RFC 4314 section 2.1.1): {@code e} with {@code t}. The legacy {@code d} and
+   * {@code c} are kept as a guard only: {@link MailboxRights#letters()} never holds
+   * them (folded or dropped by {@link MailboxRights#of(String)}), so those two arms are
+   * unreachable today and would only matter if a caller built rights another way.
    *
    * @param letter the extra letter observed
    * @param granted the letters granted
@@ -370,8 +662,14 @@ public class ImapAclEngine implements MailboxAclEngine {
    * namespace lists is still not settled. Phase 0 ran on BlueMind and on Stalwart
    * (2026-09-21/22) but did not record either the SETACL identifier or the segment
    * letters side by side ("not in the record" -- plan, sections 13.C.1 and 13.D); the
-   * Stalwart segment was the owner's full address. Until a re-run of the phase-0
-   * scripts captures both, both spellings are tried and neither is assumed.
+   * Stalwart segment was the owner's full address. On Dovecot 2.3.21 (EXO-90552) the
+   * segment is the owner's full address too, and SETACL was observed to accept any
+   * identifier verbatim -- {@code bob}, and an unknown {@code nobody@dovecot.local} --
+   * with no error. The rig's logins equal the addresses, so what follows is reasoned
+   * from Dovecot's {@code shared/%%u/} semantics, not observed: the segment is the
+   * owner's <b>login</b>, and a grantee named by an address that is not their login
+   * would be granted nothing, silently. Until a server with login != address is
+   * recorded, both spellings are tried here and neither is assumed.
    *
    * @param session the grantee's session
    * @param ownerIdentifier the owner's mailbox identifier

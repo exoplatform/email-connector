@@ -54,6 +54,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          allow it (absent right, absent button). -->
     <template v-if="canMoveOut">
       <v-btn
+        v-if="canArchive"
         :title="$t('emailConnector.mailBox.list.drawer.detail.archive.label')"
         @click="archiveEmail()"
         icon>
@@ -74,16 +75,23 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="icon-default-color">fa-folder-open</v-icon>
       </v-btn>
       <v-btn
+        v-if="canDelete"
         :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
         color="error"
         @click="deleteEmail()"
         icon>
         <v-icon size="20">fa-trash</v-icon>
       </v-btn>
+      <span
+        v-if="inboxOnlyHint"
+        class="caption text-sub-title align-self-center ms-2">
+        {{ inboxOnlyHint }}
+      </span>
     </template>
     <!-- What a Spam message offers instead: back to the inbox, or into the Trash. -->
     <template v-if="junkActions">
       <v-btn
+        v-if="canRestoreFromJunk"
         :title="$t('emailConnector.mailBox.list.drawer.detail.notJunk.label')"
         @click="restoreFromJunk()"
         icon>
@@ -232,6 +240,15 @@ export default {
       return this.$emailConnectorMailBoxService.hasJunkActions(this.email?.folder);
     },
     /**
+     * Whether "Not spam" belongs beside the Spam delete: in the user's own Spam only --
+     * out of a shared mailbox's it would file into another mailbox (EXO-90548).
+     *
+     * @returns {Boolean} true when "Not spam" is offered
+     */
+    canRestoreFromJunk() {
+      return this.$emailConnectorMailBoxService.canRestoreFromJunk(this.email?.folder);
+    },
+    /**
      * Whether "Mark as spam" may be offered on the opened message: the same rows the
      * delete and archive are offered on, minus a draft, which is not mail to report.
      *
@@ -241,14 +258,41 @@ export default {
       return this.$emailConnectorMailBoxService.canMarkAsJunk(this.email?.folder);
     },
     /**
-     * Whether "Move to..." may be offered on the opened message: the rows "Mark as
-     * spam" is offered on, when the user has a mirrored folder to move it into.
+     * Whether "Move to..." may be offered on the opened message: where mail may be taken
+     * out of its folder and there is a folder to move it into (canMoveTo).
      *
      * @returns {Boolean} true when the button belongs here
      */
     canMoveTo() {
-      return this.canMarkAsJunk
-        && this.$emailConnectorMailBoxService.moveTargets(this.$root.mailFolders, this.email?.folder).length > 0;
+      return this.$emailConnectorMailBoxService.canMoveTo(this.$root.mailFolders, this.email?.folder);
+    },
+    /**
+     * Whether Archive belongs on the opened message: in a shared mailbox, only where its
+     * owner shares an Archive to file into (EXO-90548).
+     *
+     * @returns {Boolean} true when the button belongs here
+     */
+    canArchive() {
+      return this.$emailConnectorMailBoxService.canArchive(this.email?.folder);
+    },
+    /**
+     * Whether Delete belongs on the opened message: in a shared mailbox, only where its
+     * owner shares a Trash to file into (EXO-90548).
+     *
+     * @returns {Boolean} true when the button belongs here
+     */
+    canDelete() {
+      return this.$emailConnectorMailBoxService.canDelete(this.email?.folder);
+    },
+    /**
+     * Said where Delete and Archive would be, when the owner of the shared mailbox the
+     * opened message is in shares only the Inbox (EXO-90548).
+     *
+     * @returns {String} the hint, or empty
+     */
+    inboxOnlyHint() {
+      const entry = this.$emailConnectorMailBoxService.inboxOnlyShareHint(this.email?.folder);
+      return entry ? this.$t('emailConnector.mailBox.sharedMailbox.inboxOnlyActions', { 0: entry.ownerFullName }) : '';
     },
   },
   methods: {
@@ -273,7 +317,7 @@ export default {
      */
     deleteEmail() {
       this.$root.$emit('delete-email', this.threadIds, this.actingFolder);
-      this.$root.$emit('close-email-detail-drawer');
+      this.closeUnlessAsked();
     },
     /**
      * Archives the opened conversation — every message of it listed in the acting
@@ -283,7 +327,7 @@ export default {
      */
     archiveEmail() {
       this.$root.$emit('archive-email', this.threadIds, this.actingFolder);
-      this.$root.$emit('close-email-detail-drawer');
+      this.closeUnlessAsked();
     },
     /**
      * Opens the folder picker for the opened conversation — every message of it
@@ -305,7 +349,23 @@ export default {
      */
     markAsJunk() {
       this.$root.$emit('junk-email', this.threadIds, this.actingFolder);
-      this.$root.$emit('close-email-detail-drawer');
+      this.closeUnlessAsked();
+    },
+    /**
+     * Closes the reader after an action that takes the conversation out of its folder --
+     * unless, in a mailbox somebody shared with the user, that action is first asked
+     * (EXO-90548): the reader then closes on the yes (EmailConnectorMailBoxDrawerListItemDetail,
+     * shared-mailbox-action-confirmed), and a Cancel leaves the user on the message they
+     * kept, as the purge's confirmation does.
+     *
+     * @returns {void}
+     */
+    closeUnlessAsked() {
+      const service = this.$emailConnectorMailBoxService;
+      const entry = service?.sharedMailboxOfFolder?.(this.actingFolder);
+      if (!entry || service.isDestructiveActionConfirmed(entry)) {
+        this.$root.$emit('close-email-detail-drawer');
+      }
     },
     /**
      * Puts the opened conversation — every message of it listed in the acting

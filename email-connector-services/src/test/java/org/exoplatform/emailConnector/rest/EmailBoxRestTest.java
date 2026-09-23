@@ -385,6 +385,35 @@ public class EmailBoxRestTest {
            .andExpect(status().isBadRequest());
   }
 
+  /**
+   * EXO-90548, live on Stalwart -- a shared mailbox with no Trash, Archive or Spam to
+   * file into: the conversation delete and spam and the archive are 400s carrying the
+   * missing destination's own code, which the interface can say.
+   */
+  @Test
+  void aMissingSharedDestinationIsABadRequestWithItsOwnCode() throws Exception {
+    List<Long> emailIds = List.of(123L);
+    when(emailBoxService.deleteConversations(emailIds, SIMPLE_USER, "CUSTOM:8")).thenThrow(new IllegalArgumentException("emailConnector.delegation.noTrash"));
+    when(emailBoxService.archiveEmail(emailIds, SIMPLE_USER, "CUSTOM:8")).thenThrow(new IllegalArgumentException("emailConnector.delegation.noArchive"));
+    when(emailBoxService.markConversationsAsJunk(emailIds, SIMPLE_USER, "CUSTOM:8")).thenThrow(new IllegalArgumentException("emailConnector.delegation.noJunk"));
+
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "?folder=CUSTOM:8&conversation=true").with(testSimpleUser())
+                                                                                .content(asJsonString(emailIds))
+                                                                                .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.delegation.noTrash"));
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/archive?folder=CUSTOM:8").with(testSimpleUser())
+                                                                      .content(asJsonString(emailIds))
+                                                                      .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.delegation.noArchive"));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/junk?folder=CUSTOM:8&conversation=true").with(testSimpleUser())
+                                                                                   .content(asJsonString(emailIds))
+                                                                                   .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.delegation.noJunk"));
+  }
+
   @Test
   void archiveEmail() throws Exception {
     ResultActions response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/archive").with(testSimpleUser()));

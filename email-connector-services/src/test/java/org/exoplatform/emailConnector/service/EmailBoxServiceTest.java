@@ -165,6 +165,7 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.FolderMessageCounts;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
@@ -11455,28 +11456,233 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * A delegate who DOES hold {@code t} still cannot delete or archive out of the shared
-   * mailbox in this phase, and for a different reason: the destination would be the
-   * caller's OWN Trash or Archive, which is a different mailbox. A move is a copy into
-   * the destination and a removal from the source -- across mailboxes that is taking a
-   * copy of somebody else's mail into your own store and removing theirs, which is not
-   * what the person who clicked "delete" meant. Registering the shared mailbox's own
-   * Trash is the later task; the message code says which of the two refusals it is.
+   * An explicit Move-to from a shared mailbox into the caller's own folder is still
+   * refused: that is taking a copy of somebody else's mail into your own store and
+   * removing theirs (EXO-90548 narrowed crossMailbox to exactly this case).
    */
   @Test
   @SneakyThrows
   void aMoveOutOfASharedMailboxNeverLandsInTheCallersOwn() {
     givenAConnectedMailbox();
-    // The rights guard passes (an Editor holds t); what refuses is the boundary: the
-    // source is in alice's mailbox and the Trash the delete would file into is the
-    // caller's own.
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 8L)).thenReturn(delegatedInbox(8L));
     when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(aSharedMailboxRow());
 
     assertEquals(EmailBoxService.CROSS_MAILBOX_MESSAGE,
                  assertThrows(IllegalArgumentException.class,
-                              () -> emailBoxService.deleteEmail(List.of(1212L), TEST_USER, "CUSTOM:8")).getMessage(),
+                              () -> emailBoxService.moveToFolder(List.of(1212L), TEST_USER, "CUSTOM:8", MailFolder.INBOX)).getMessage(),
                  "the rights pass, the mailbox boundary does not");
     verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * EXO-90548 -- a delete in a shared mailbox files into THAT mailbox's Trash, resolved
+   * through its registry row, never through the loose finders that look at the caller's
+   * own mailbox; the original is expunged and checked gone.
+   */
+  @Test
+  @SneakyThrows
+  void aDeleteInASharedMailboxFilesIntoItsOwnTrash() {
+    SharedMove move = givenASharedMove();
+
+    int failures = emailBoxService.deleteEmail(List.of(1212L), TEST_USER, "CUSTOM:8");
+
+    assertEquals(0, failures);
+    verify(move.source()).copyMessages(new Message[] { move.message() }, move.trash());
+    verify(move.message()).setFlag(Flags.Flag.DELETED, true);
+    verify(move.store(), never()).getDefaultFolder();
+    verify(emailBoxStorage, never()).createEmail(any());
+  }
+
+  /**
+   * EXO-90548 -- Dovecot answers an expunge it refused with a tagged OK and keeps the
+   * message: the move ends by checking, and a message still there is not shown as gone
+   * -- its deleted flag is taken back, its row put back, the folder's letters re-read.
+   */
+  @Test
+  @SneakyThrows
+  void aDeleteTheServerSilentlyIgnoredIsPutBackAndItsRightsReRead() {
+    SharedMove move = givenASharedMove();
+    when(move.message().isExpunged()).thenReturn(false);
+
+    int failures = emailBoxService.deleteEmail(List.of(1212L), TEST_USER, "CUSTOM:8");
+
+    assertEquals(1, failures);
+    verify(move.message()).setFlag(Flags.Flag.DELETED, false);
+    verify(emailBoxStorage).createEmail(any());
+    verify(emailDelegationService).refreshFolderRights(TEST_USER, "CUSTOM:8", move.store());
+  }
+
+  /**
+   * EXO-90548 -- a shared mailbox's delete, archive and spam need that mailbox's own
+   * folder: without it the action is refused by name, nothing is removed; a delete from
+   * its Trash is the permanent one and refused as policy; and taking mail out needs e,
+   * said as the move it is.
+   */
+  @Test
+  @SneakyThrows
+  void aSharedMailboxRefusesWhatItCannotFileAndNeverPurges() {
+    givenAConnectedMailbox();
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(aSharedMailboxRow());
+
+    assertEquals(EmailBoxService.NO_SHARED_TRASH_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.deleteEmail(List.of(1212L), TEST_USER, "CUSTOM:8")).getMessage());
+    assertEquals(EmailBoxService.NO_SHARED_ARCHIVE_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.archiveEmail(List.of(1212L), TEST_USER, "CUSTOM:8")).getMessage());
+    assertEquals(EmailBoxService.NO_SHARED_JUNK_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.markAsJunk(List.of(1212L), TEST_USER, "CUSTOM:8")).getMessage());
+
+    when(emailDelegationService.roleOf(TEST_USER, "CUSTOM:8")).thenReturn(FolderRole.TRASH);
+    assertEquals(EmailBoxService.PURGE_NOT_ALLOWED_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.deleteEmail(List.of(1212L), TEST_USER, "CUSTOM:8")).getMessage());
+
+    when(emailDelegationService.roleOf(TEST_USER, "CUSTOM:8")).thenReturn(null);
+    when(emailDelegationService.roleFolderKey(TEST_USER, 100L, FolderRole.TRASH)).thenReturn("CUSTOM:9");
+    doThrow(new MailboxRightMissingException(MailboxRights.EXPUNGE)).when(emailDelegationService)
+                                                                    .checkRight(TEST_USER, "CUSTOM:8", MailboxRights.EXPUNGE);
+    assertEquals(MailboxRightMissingException.CODE_PREFIX + "t",
+                 assertThrows(MailboxRightMissingException.class, () -> emailBoxService.deleteEmail(List.of(1212L), TEST_USER, "CUSTOM:8")).getMessage());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * EXO-90548 review, finding 2 -- a shared mailbox's folder answers as the user's own
+   * folder of its role does: archiving out of its Archive and reporting its Spam as spam
+   * file a message into the folder it is in, and nothing leaves its Drafts. Each is
+   * counted as a failure and nothing is touched, whatever the letters.
+   */
+  @Test
+  @SneakyThrows
+  void aSharedFolderOfARoleRefusesWhatTheOwnFolderOfThatRoleRefuses() {
+    givenAConnectedMailbox();
+    when(emailDelegationService.delegationOf(eq(TEST_USER), anyString())).thenReturn(aSharedMailboxRow());
+    when(emailDelegationService.roleOf(TEST_USER, "CUSTOM:10")).thenReturn(FolderRole.ARCHIVE);
+    when(emailDelegationService.roleOf(TEST_USER, "CUSTOM:11")).thenReturn(FolderRole.JUNK);
+    when(emailDelegationService.roleOf(TEST_USER, "CUSTOM:12")).thenReturn(FolderRole.DRAFTS);
+    lenient().when(emailDelegationService.roleFolderKey(TEST_USER, 100L, FolderRole.ARCHIVE)).thenReturn("CUSTOM:10");
+    lenient().when(emailDelegationService.roleFolderKey(TEST_USER, 100L, FolderRole.JUNK)).thenReturn("CUSTOM:11");
+    lenient().when(emailDelegationService.roleFolderKey(TEST_USER, 100L, FolderRole.TRASH)).thenReturn("CUSTOM:9");
+
+    assertEquals(1, emailBoxService.archiveEmail(List.of(1212L), TEST_USER, "CUSTOM:10"), "archive out of the Archive");
+    assertEquals(1, emailBoxService.markAsJunk(List.of(1212L), TEST_USER, "CUSTOM:11"), "spam out of the Spam");
+    assertEquals(1, emailBoxService.archiveEmail(List.of(1212L), TEST_USER, "CUSTOM:11"), "archive out of the Spam");
+    assertEquals(1, emailBoxService.deleteEmail(List.of(1212L), TEST_USER, "CUSTOM:12"), "anything out of the Drafts");
+
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * Decision 3a, whatever the letters -- nothing leaves a shared mailbox's Trash: not an
+   * Undo of the delete that filed it there, not a move, not an archive. Here the letters
+   * on that Trash would allow it (the guard answers yes), and it is refused all the same.
+   */
+  @Test
+  @SneakyThrows
+  void nothingLeavesASharedTrashWhateverTheLetters() {
+    givenAConnectedMailbox();
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    when(emailDelegationService.delegationOf(eq(TEST_USER), anyString())).thenReturn(aSharedMailboxRow());
+    when(emailDelegationService.roleOf(TEST_USER, "CUSTOM:9")).thenReturn(FolderRole.TRASH);
+    lenient().when(emailDelegationService.roleFolderKey(TEST_USER, 100L, FolderRole.ARCHIVE)).thenReturn("CUSTOM:10");
+    EmailFolder inbox = registeredFolder(8L, "shared/alice", true);
+    EmailFolder trash = registeredFolder(9L, "shared/alice/Trash", true);
+    lenient().when(emailFolderStorage.getFolder(TEST_USER, 8L)).thenReturn(inbox);
+    lenient().when(emailFolderStorage.getFolder(TEST_USER, 9L)).thenReturn(trash);
+
+    assertEquals(MailboxRightMissingException.CODE_PREFIX + "t",
+                 assertThrows(MailboxRightMissingException.class,
+                              () -> emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:9", "CUSTOM:8")).getMessage(),
+                 "the Undo of a delete in a shared mailbox");
+    assertEquals(1, emailBoxService.archiveEmail(List.of(1212L), TEST_USER, "CUSTOM:9"), "an archive out of it");
+
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * EXO-90548, live on Stalwart -- an Inbox-only share whose letters allow taking mail
+   * out (tewsirl): a delete, an archive or a spam of whole conversations, the path every
+   * interface control uses, is refused with the missing destination's own code before
+   * anything is read or removed -- a coded 400 for the interface, never a failure count
+   * behind a WARN, and never a filing into the delegate's own folders.
+   */
+  @Test
+  @SneakyThrows
+  void anInboxOnlyShareRefusesEachActionWithItsOwnCodeOnTheConversationPath() {
+    givenAConnectedMailbox();
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(aSharedMailboxRow());
+
+    assertEquals(EmailBoxService.NO_SHARED_TRASH_MESSAGE,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.deleteConversations(List.of(1212L), TEST_USER, "CUSTOM:8")).getMessage());
+    assertEquals(EmailBoxService.NO_SHARED_JUNK_MESSAGE,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.markConversationsAsJunk(List.of(1212L), TEST_USER, "CUSTOM:8")).getMessage());
+    assertEquals(EmailBoxService.NO_SHARED_ARCHIVE_MESSAGE,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.archiveEmail(List.of(1212L), TEST_USER, "CUSTOM:8")).getMessage());
+
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * A delete out of the shared INBOX of alice's mailbox into its own Trash: the rows,
+   * the registry, the store and the one message.
+   *
+   * @return the fixture
+   */
+  @SneakyThrows
+  private SharedMove givenASharedMove() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    EmailFolder inbox = delegatedInbox(8L);
+    inbox.setRemoteName("shared/alice");
+    EmailFolder trashRow = delegatedInbox(9L);
+    trashRow.setType(MailFolderView.TYPE_DELEGATED);
+    trashRow.setRemoteName("shared/alice/Trash");
+    lenient().when(emailFolderStorage.getFolder(TEST_USER, 8L)).thenReturn(inbox);
+    lenient().when(emailFolderStorage.getFolder(TEST_USER, 9L)).thenReturn(trashRow);
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(aSharedMailboxRow());
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:9")).thenReturn(aSharedMailboxRow());
+    when(emailDelegationService.roleFolderKey(TEST_USER, 100L, FolderRole.TRASH)).thenReturn("CUSTOM:9");
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    // The caller's own mailbox, empty: what the loose finders would look at, and must not.
+    Folder ownRoot = mock(Folder.class);
+    lenient().when(store.getDefaultFolder()).thenReturn(ownRoot);
+    lenient().when(ownRoot.listSubscribed("*")).thenReturn(new Folder[0]);
+    lenient().when(ownRoot.list("*")).thenReturn(new Folder[0]);
+    IMAPFolder source = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "shared/alice");
+    IMAPFolder trash = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "shared/alice/Trash");
+    when(store.getFolder("shared/alice")).thenReturn(source);
+    lenient().when(store.getFolder("shared/alice/Trash")).thenReturn(trash);
+    Email row = email(TEST_USER);
+    row.setId(7L);
+    row.setFolder("CUSTOM:8");
+    row.setMailHeaderId("<one@example.org>");
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212L), eq(TEST_USER), any(), eq("CUSTOM:8"), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(row);
+    Message message = mock(Message.class);
+    when(source.getMessageByUID(1212L)).thenReturn(message);
+    when(message.getHeader("Message-ID")).thenReturn(new String[] { "<one@example.org>" });
+    // Not expunged by the copy; expunged by the UID EXPUNGE.
+    lenient().when(message.isExpunged()).thenReturn(false, true);
+    return new SharedMove(store, source, trash, message);
+  }
+
+  /**
+   * The pieces of a shared mailbox's delete.
+   *
+   * @param store the store
+   * @param source the shared INBOX
+   * @param trash the shared mailbox's Trash
+   * @param message the message
+   */
+  private record SharedMove(IMAPStore store, IMAPFolder source, IMAPFolder trash, Message message) {
   }
 
   /**
@@ -11852,6 +12058,97 @@ public class EmailBoxServiceTest {
 
     verify(emailDelegationService).refreshGranteeRights(eq(TEST_USER), any(), any());
     verify(emailDelegationService, never()).getSyncableFolders(anyString(), anyLong());
+  }
+
+  /**
+   * EXO-90548 -- the periodic pass discovers a share's folders (throttled inside the
+   * service) and deletes the mirror of each folder the discovery dropped or can no
+   * longer read; a discovery that fails costs the pass nothing else.
+   */
+  @Test
+  void thePassDeletesTheMirrorOfAFolderTheDiscoveryDropped() throws Exception {
+    mockEmptySync();
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    EmailDelegation share = aSharedMailboxRow();
+    when(emailDelegationService.getActiveDelegations(eq(TEST_USER), any())).thenReturn(List.of(share));
+    when(emailDelegationService.refreshGranteeRights(eq(TEST_USER), any(), any())).thenReturn(share);
+    EmailFolder dropped = new EmailFolder();
+    dropped.setId(21L);
+    when(emailDelegationService.discoverDelegatedFoldersIfDue(eq(TEST_USER), eq(share), any())).thenReturn(List.of(dropped));
+    when(emailBoxStorage.getEmails(TEST_USER, "CUSTOM:21")).thenReturn(new ArrayList<>());
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(emailBoxStorage).getEmails(TEST_USER, "CUSTOM:21");
+    verify(emailDelegationService).getSyncableFolders(TEST_USER, 100L);
+
+    when(emailDelegationService.discoverDelegatedFoldersIfDue(eq(TEST_USER), eq(share), any())).thenThrow(new IllegalStateException("boom"));
+    emailBoxService.synchronize(TEST_USER);
+    verify(emailDelegationService, times(2)).getSyncableFolders(TEST_USER, 100L);
+  }
+
+  /**
+   * EXO-90548 (F6) -- on a server that advertises no namespace (Stalwart), the Trash and
+   * Archive finders still skip a subscribed shared tree, recognised by its shape:
+   * {@code Shared Folders/allan/INBOX} contains "all", {@code Shared Folders/anne/Trash}
+   * is named Trash, and both are listed before the user's own folders.
+   */
+  @Test
+  @SneakyThrows
+  void theLooseFindersSkipASharedTreeOnAServerWithoutNamespaces() {
+    IMAPStore store = mock(IMAPStore.class);
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    IMAPFolder container = listedFolder("Shared Folders", false);
+    IMAPFolder allan = listedFolder("Shared Folders/allan", false);
+    IMAPFolder allanInbox = listedFolder("Shared Folders/allan/INBOX", true);
+    IMAPFolder anne = listedFolder("Shared Folders/anne", false);
+    IMAPFolder anneTrash = listedFolder("Shared Folders/anne/Trash", true);
+    IMAPFolder ownArchive = listedFolder("Archive", true);
+    IMAPFolder ownTrash = listedFolder("Trash", true);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.listSubscribed("*")).thenReturn(new Folder[] { allanInbox, anneTrash, ownArchive, ownTrash });
+    when(root.list("*")).thenReturn(new Folder[] { container, allan, allanInbox, anne, anneTrash, ownArchive, ownTrash });
+
+    assertSame(ownArchive, ReflectionTestUtils.invokeMethod(emailBoxService, "findArchiveFolder", store));
+    assertSame(ownTrash, ReflectionTestUtils.invokeMethod(emailBoxService, "findTrashFolder", store));
+    // The shape costs a listing once per store, not once per delete or archive.
+    verify(root, times(1)).list("*");
+  }
+
+  /**
+   * EXO-90548 -- a shared root no namespace and no shape reveals is still kept out, from
+   * the user's own delegation rows: Dovecot's {@code shared/alice@dovecot.local} holds the
+   * owner's INBOX mail itself and has no INBOX child, so when NAMESPACE cannot be read
+   * only its row names it. Neither the finders nor the walk take its Trash, Archive or
+   * root for the user's own.
+   */
+  @Test
+  @SneakyThrows
+  void aSharedRootOnlyItsDelegationNamesIsKeptOut() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    IMAPFolder sharedRoot = listedFolder("shared", false);
+    IMAPFolder aliceInbox = listedFolder("shared/alice@dovecot.local", true);
+    IMAPFolder aliceTrash = listedFolder("shared/alice@dovecot.local/Trash", true);
+    IMAPFolder aliceArchive = listedFolder("shared/alice@dovecot.local/Archive", true);
+    IMAPFolder factures = listedFolder("Factures", true);
+    IMAPFolder ownArchive = listedFolder("Archive", true);
+    IMAPFolder ownTrash = listedFolder("Trash", true);
+    givenAMailboxListing(sharedRoot, aliceInbox, aliceTrash, aliceArchive, factures, ownArchive, ownTrash);
+    when(userEmailSettingService.getConnectedAccount(any())).thenReturn(new UserEmailSettingService.ConnectedAccount(TEST_USER, 1L));
+    when(emailDelegationService.getSharedMailboxRoots(TEST_USER, 1L)).thenReturn(Set.of("shared/alice@dovecot.local"));
+
+    Store store = userEmailSettingService.connect("1", TEST_USER);
+    assertSame(ownArchive, ReflectionTestUtils.invokeMethod(emailBoxService, "findArchiveFolder", store));
+    assertSame(ownTrash, ReflectionTestUtils.invokeMethod(emailBoxService, "findTrashFolder", store));
+
+    emailBoxService.getFolders(TEST_USER, true);
+
+    ArgumentCaptor<EmailFolder> created = ArgumentCaptor.forClass(EmailFolder.class);
+    verify(emailFolderStorage, atLeastOnce()).createFolder(created.capture());
+    assertEquals(List.of("Factures"), created.getAllValues().stream().map(EmailFolder::getRemoteName).toList(),
+                 "the user's own folder, and none of alice's");
   }
 
   /**

@@ -484,7 +484,7 @@ public class UserEmailSettingRest {
   @Secured("users")
   @Operation(summary = "Changes a grantee's access to the caller's own mailbox",
              method = "PUT",
-             description = "Writes the preset (READER or EDITOR) for the grantee on the caller's INBOX, on the caller's own session, through the same engine call as the grant -- it replaces the grantee's entry (RFC 4314 SETACL), capped by the caller's own rights -- and records what the server holds. The status is unchanged. Owner only: a delegation that is not the caller's own is answered 404.")
+             description = "Writes the preset (READER or EDITOR) for the grantee on the caller's INBOX and on the other folders the share covers, on the caller's own session, through the same engine call as the grant -- it replaces the grantee's entry (RFC 4314 SETACL), capped by the caller's own rights -- and records what the server holds. The status is unchanged. A narrowing a folder refused is answered 502 emailConnector.delegation.notNarrowed after the rest is recorded. Owner only: a delegation that is not the caller's own is answered 404.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Invalid preset, or a share no longer on the server (emailConnector.delegation.*)"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
@@ -498,6 +498,41 @@ public class UserEmailSettingRest {
                                                 DelegationInviteRequest body) {
     try {
       return emailDelegationService.changePreset(request.getRemoteUser(), id, body == null ? null : body.getPreset());
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (MailboxAclException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getCode());
+    }
+  }
+
+  /**
+   * Shares with a grantee the caller's folders a share written before EXO-90548 left
+   * out: Sent, Archive, Trash and Spam, beside the INBOX it covers.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param id the delegation id, resolved with the caller as owner
+   * @return the delegation as it now stands
+   */
+  @PostMapping("/delegations/{id}/extend")
+  @Secured("users")
+  @Operation(summary = "Extends a share of the caller's own mailbox to its Sent, Archive, Trash and Spam folders",
+             method = "POST",
+             description = "Grants the share's own preset on each of the caller's Sent, Archive, Trash and Spam folders the share does not cover yet, on the caller's own session, with each folder's letters (an Editor holds e where mail leaves, never on Trash), and records what the server accepted. Only for a share eXo wrote, still on the server, on a server that grants per folder. Owner only: a delegation that is not the caller's own is answered 404.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "A share that cannot be extended (emailConnector.delegation.notChangeable)"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "404", description = "No such delegation of the caller's mailbox"),
+      @ApiResponse(responseCode = "502", description = "The mail server could not be asked (emailConnector.delegation.*)") })
+  public EmailDelegation extendDelegation(HttpServletRequest request,
+                                          @Parameter(description = "The delegation id", required = true)
+                                          @PathVariable("id")
+                                          long id) {
+    try {
+      return emailDelegationService.extend(request.getRemoteUser(), id);
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {

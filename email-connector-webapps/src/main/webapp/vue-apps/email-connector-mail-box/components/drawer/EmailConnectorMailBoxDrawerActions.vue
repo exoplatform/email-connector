@@ -50,7 +50,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="icon-default-color">fa-envelope-open-text</v-icon>
       </v-btn>
       <v-btn
-        v-if="canMutateSelection"
+        v-if="canArchiveSelection"
         :title="$t('emailConnector.mailBox.list.drawer.detail.archive.label')"
         @click="archiveEmails()"
         icon>
@@ -79,7 +79,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-btn>
       </span>
       <v-btn
-        v-if="canMutateSelection"
+        v-if="canDeleteSelection"
         :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
         @click="deleteEmails()"
         icon>
@@ -93,7 +93,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="error--text">fa-trash</v-icon>
       </v-btn>
       <v-btn
-        v-if="canApplyJunkActions"
+        v-if="canApplyNotJunk"
         :title="$t('emailConnector.mailBox.list.drawer.detail.notJunk.label')"
         @click="restoreFromJunk()"
         icon>
@@ -149,7 +149,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.read.label') }}
       </v-btn>
       <v-btn
-        v-if="canMutateSelection"
+        v-if="canArchiveSelection"
         @click="archiveEmails()"
         outlined
         class="btn btn-primary font-weight-bold">
@@ -193,7 +193,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-btn>
       </span>
       <v-btn
-        v-if="canMutateSelection"
+        v-if="canDeleteSelection"
         @click="deleteEmails()"
         outlined
         class="btn error font-weight-bold">
@@ -209,7 +209,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <span class="error--text"> {{ $t('emailConnector.mailBox.list.drawer.detail.discard.label') }} </span>
       </v-btn>
       <v-btn
-        v-if="canApplyJunkActions"
+        v-if="canApplyNotJunk"
         @click="restoreFromJunk()"
         outlined
         class="btn btn-primary font-weight-bold">
@@ -350,14 +350,37 @@ export default {
      * the push lands for a draft that HAS been uploaded, and only fails — silently, one
      * more uncounted failure — for one that has not.) What Drafts gets is Discard.
      *
-     * In a mailbox somebody shared with the user, what the rights and the phase allow
-     * decides as well (canMoveOutOf): absent right, absent button.
+     * In a mailbox somebody shared with the user, what the rights allow decides as well
+     * (canMoveOutOf): absent right, absent button. Delete and Archive each also need
+     * their own destination there (canDeleteSelection, canArchiveSelection).
      *
-     * @returns {Boolean} true when archive/delete may be offered
+     * @returns {Boolean} true when mail may be taken out of the selected rows' folders
      */
     canMutateSelection() {
       return this.selectedEmails.every(emailId =>
         this.$emailConnectorMailBoxService.canMoveOutOf(this.emailsMap[emailId]?.folder));
+    },
+    /**
+     * Whether the selection may be archived: every row may be taken out of its folder,
+     * and in a shared mailbox its owner shares an Archive to file into (EXO-90548).
+     *
+     * @returns {Boolean} true when Archive may be offered
+     */
+    canArchiveSelection() {
+      return this.hasSelectedEmails
+        && this.selectedEmails.every(emailId =>
+          this.$emailConnectorMailBoxService.canArchive(this.emailsMap[emailId]?.folder));
+    },
+    /**
+     * Whether the selection may be deleted: every row may be taken out of its folder,
+     * and in a shared mailbox its owner shares a Trash to file into (EXO-90548).
+     *
+     * @returns {Boolean} true when Delete may be offered
+     */
+    canDeleteSelection() {
+      return this.hasSelectedEmails
+        && this.selectedEmails.every(emailId =>
+          this.$emailConnectorMailBoxService.canDelete(this.emailsMap[emailId]?.folder));
     },
     /**
      * Whether the selection's read state may be changed: the rows canMutateSelection
@@ -437,6 +460,18 @@ export default {
           this.$emailConnectorMailBoxService.hasJunkActions(this.emailsMap[emailId]?.folder));
     },
     /**
+     * Whether "Not spam" may be offered on the selection: the Spam actions apply, and
+     * every row is in the user's own Spam -- out of a shared mailbox's it would file
+     * into another mailbox (EXO-90548).
+     *
+     * @returns {Boolean} true when "Not spam" may be offered
+     */
+    canApplyNotJunk() {
+      return this.canApplyJunkActions
+        && this.selectedEmails.every(emailId =>
+          this.$emailConnectorMailBoxService.canRestoreFromJunk(this.emailsMap[emailId]?.folder));
+    },
+    /**
      * Whether the selection may be reported as spam: every selected row must be one
      * "Mark as spam" is offered on (a writable folder's, and not a draft), so the
      * request is never sent for a row the server would refuse and count as failed.
@@ -449,17 +484,18 @@ export default {
           this.$emailConnectorMailBoxService.canMarkAsJunk(this.emailsMap[emailId]?.folder));
     },
     /**
-     * Whether the selection may be moved into one of the user's own folders: the same
-     * rows "Mark as spam" is offered on, and only when the user has at least one
-     * mirrored folder other than the one the rows are listed in -- a picker with
+     * Whether the selection may be moved: every row may be taken out of its folder, and
+     * there is at least one folder other than the one the rows are listed in to move
+     * them into (canMoveTo; in a shared mailbox, one of that mailbox's) -- a picker with
      * nothing to pick is a button that lies. Read off the root's folder list at
      * evaluation time (see the mailbox drawer's loadEmailBox for why it lives there).
      *
      * @returns {Boolean} true when "Move to..." may be offered
      */
     canOfferMove() {
-      return this.canMarkSelectionAsJunk
-        && this.$emailConnectorMailBoxService.moveTargets(this.$root.mailFolders, this.selectionFolder).length > 0;
+      return this.hasSelectedEmails
+        && this.canMutateSelection
+        && this.$emailConnectorMailBoxService.canMoveTo(this.$root.mailFolders, this.selectionFolder);
     },
     /**
      * Whether the selection may be moved now: offered (canOfferMove), and in one folder,
