@@ -249,8 +249,10 @@ export function searchRows(results) {
  *   `supersedeEmailRequest` also calls cancelAutoOpenDwell, so a mail the user opens
  *   themselves is never held back from being read;
  * - `navigationList()` (method): the list component on screen, or null;
- * - `navigationDrawer()` (method): its exo-drawer, to tell whether it is the drawer on
- *   top of the page;
+ * - `navigationDrawer()` (method): its exo-drawer -- the very instance exo-drawer
+ *   pushes into `eXo.openedDrawers`, so the inner one when a wrapper such as
+ *   pinneable-drawer holds it (EXO-90577) -- to tell whether it is the drawer on top of
+ *   the page;
  * - optionally `navigationEntriesOf(rows)` (method): the rows the list shows for a
  *   listing -- conversations by default (threadRows), one per hit in a search;
  * - optionally `onAutoOpenedEmailRead(row)` (method): what else the drawer marks read
@@ -344,7 +346,9 @@ export default {
       }
     },
     /**
-     * Whether this drawer is the one on top of the page.
+     * Whether this drawer is the one on top of the page: no drawer open at all (the
+     * dedicated full-screen tab, where the drawer is permanent and never stacked), or
+     * the last one stacked is this drawer's own exo-drawer (navigationDrawer).
      *
      * @returns {Boolean} true when no other drawer is open over it
      */
