@@ -32,9 +32,11 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.event.DelegatedFoldersDroppedEvent;
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
+import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.model.DelegationGrantee;
 import org.exoplatform.emailConnector.model.DelegationOrigin;
 import org.exoplatform.emailConnector.model.DelegationPreset;
@@ -56,6 +58,7 @@ import org.exoplatform.emailConnector.service.acl.MailboxAclEngineRegistry;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
 import org.exoplatform.emailConnector.storage.EmailDelegationStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -306,11 +309,8 @@ public class EmailDelegationService {
    * Removes a grantee's access: DELETEACL on the caller's own INBOX, on the caller's
    * own session, for the identifier the grant was written to (kept on the row, so this
    * works after the grantee disconnected their own mailbox from eXo). The row goes
-   * {@code REVOKED} and the grantee's registered folders of this mailbox are dropped.
-   * <p>
-   * TODO (sync branch): the mirrored {@code EMAIL_BOX} rows of those folders are purged
-   * by the delegated sync when it lands; in this phase no such rows exist, since
-   * delegated folders are registered with the sync off.
+   * {@code REVOKED} and the grantee's registered folders of this mailbox are dropped,
+   * the mail mirrored under them with them ({@link #dropDelegatedFolders}).
    *
    * @param ownerUsername the caller
    * @param id the delegation id
@@ -335,7 +335,7 @@ public class EmailDelegationService {
     delegation.setStatus(DelegationStatus.REVOKED);
     delegation.setRevokedDate(new Date());
     delegation = emailDelegationStorage.update(delegation);
-    emailFolderStorage.deleteDelegatedFolders(delegation.getGranteeId(), delegation.getId());
+    dropDelegatedFolders(delegation.getGranteeId(), delegation.getId());
     LOG.info("Mailbox delegation revoked: actor={} ownerMailbox={} grantee={} identifier={}",
              ownerUsername,
              delegation.getOwnerMailbox(),
@@ -388,11 +388,10 @@ public class EmailDelegationService {
    * that moment is what decides, so a share the owner removed meanwhile is reported
    * honestly.
    * <p>
-   * TODO (sync branch): the folder is registered with {@code SYNC_ENABLED} off. The
-   * delegated sync -- window cap, activity gate, lazy attachments, no new-mail
-   * broadcast -- is not in this delivery, and the custom-folder rotation must not pick
-   * the folder up in its place (its queries exclude delegated rows). That branch turns
-   * the opt-in on at accept.
+   * The folder is registered opted in: accepting is the delegate asking for the mailbox,
+   * and the delegated sync (window cap, activity gate, no new-mail broadcast) mirrors it
+   * from the next pass the delegate is in it. The custom-folder rotation never picks it
+   * up, since its queries exclude delegated rows.
    *
    * @param granteeUsername the caller
    * @param id the delegation id
@@ -571,7 +570,7 @@ public class EmailDelegationService {
     delegation.setStatus(delegation.getOrigin() == DelegationOrigin.SERVER ? DelegationStatus.AVAILABLE : DelegationStatus.DECLINED);
     delegation.setRespondedDate(new Date());
     EmailDelegation updated = emailDelegationStorage.update(delegation);
-    emailFolderStorage.deleteDelegatedFolders(granteeUsername, updated.getId());
+    dropDelegatedFolders(granteeUsername, updated.getId());
     return updated;
   }
 
@@ -616,6 +615,196 @@ public class EmailDelegationService {
       return parsed > 0 ? parsed : DEFAULT_MAX_PER_USER;
     } catch (NumberFormatException e) {
       return DEFAULT_MAX_PER_USER;
+    }
+  }
+
+  // ---------------------------------------------------------------------------------
+  // The delegated branch of the sync, and the rights it is gated on
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * The shared mailboxes the caller is subscribed to AND currently in -- what the
+   * delegated branch of their sync walks.
+   * <p>
+   * "Currently in" is {@code LAST_ACTIVITY_DATE} within the same activity threshold the
+   * mailbox tiers already use, stamped by {@link #touchActivity} when the caller lists
+   * one of the mailbox's folders. A delegation nobody opens therefore costs nothing at
+   * all -- not a slower tier, nothing -- which is the third of the mitigations that
+   * make one mirror per delegate affordable, beside the smaller window and INBOX-only.
+   *
+   * @param granteeUsername the caller
+   * @param activeSince an activity stamp at or after this instant makes a share active
+   * @return the active accepted delegations, never null
+   */
+  public List<EmailDelegation> getActiveDelegations(String granteeUsername, Date activeSince) {
+    if (StringUtils.isBlank(granteeUsername) || activeSince == null) {
+      return List.of();
+    }
+    return emailDelegationStorage.getActive(granteeUsername, activeSince);
+  }
+
+  /**
+   * The folders of one shared mailbox that the caller asked to mirror: opted in and
+   * still listed by the server.
+   * <p>
+   * At accept time that is the delegated INBOX and nothing else ({@code SYNC_ENABLED}
+   * is set on it alone), which is the "INBOX only unless the delegate opts a folder in"
+   * rule -- expressed as a property of the rows rather than as a type test here, so
+   * that the day delegated sub-folders are discovered and offered, the sync needs no
+   * change to pick them up.
+   *
+   * @param granteeUsername the caller
+   * @param delegationId the delegation
+   * @return the folders to mirror, never null
+   */
+  public List<EmailFolder> getSyncableFolders(String granteeUsername, long delegationId) {
+    return emailFolderStorage.getDelegatedFolders(granteeUsername, delegationId)
+                             .stream()
+                             .filter(EmailFolder::isSyncEnabled)
+                             .filter(folder -> !folder.isMissing())
+                             .toList();
+  }
+
+  /**
+   * Records that the caller is looking at the shared mailbox a folder key belongs to.
+   * <p>
+   * A no-op, without a query, for a key that is not a delegated folder's -- which is
+   * every key of the caller's own mailbox, so the listing path may call this
+   * unconditionally. Failure-isolated for the reason the mailbox's own stamp is: a
+   * listing must never fail because a stamp did, and a lost stamp costs one sync
+   * period of a shared mailbox, not the mail.
+   *
+   * @param granteeUsername the caller
+   * @param folderKey the {@code EMAIL_BOX.FOLDER} discriminator being listed
+   */
+  public void touchActivity(String granteeUsername, String folderKey) {
+    try {
+      EmailDelegation delegation = delegationOf(granteeUsername, folderKey);
+      if (delegation == null) {
+        return;
+      }
+      Date now = new Date();
+      emailDelegationStorage.touchActivity(granteeUsername,
+                                           delegation.getId(),
+                                           now,
+                                           EmailConnectorUtils.getSyncActivityThrottleBefore(now));
+    } catch (RuntimeException e) {
+      LOG.debug("Could not stamp the activity of user {} on folder {}; the share stands on its previous stamp",
+                granteeUsername,
+                folderKey,
+                e);
+    }
+  }
+
+  /**
+   * The delegation a folder key belongs to, or null when the key names a folder of the
+   * caller's own mailbox.
+   * <p>
+   * Both lookups are scoped to the caller: the folder row by {@code (id, userId)}, the
+   * delegation by {@code (id, granteeId)}. A key naming somebody else's folder, or a
+   * folder whose delegation is not the caller's, answers null and is then treated as an
+   * own-mailbox key by every caller -- which is safe, because the row it would act on
+   * does not exist for this user either.
+   *
+   * @param username the caller
+   * @param folderKey the {@code EMAIL_BOX.FOLDER} discriminator
+   * @return the delegation, or null for an own folder
+   */
+  public EmailDelegation delegationOf(String username, String folderKey) {
+    if (StringUtils.isBlank(username) || !MailFolder.isCustom(folderKey)) {
+      return null;
+    }
+    EmailFolder folder;
+    try {
+      folder = emailFolderStorage.getFolder(username, MailFolder.customId(folderKey));
+    } catch (IllegalArgumentException malformed) {
+      return null;
+    }
+    if (folder == null || folder.getDelegationId() == null) {
+      return null;
+    }
+    return emailDelegationStorage.getAsGrantee(username, folder.getDelegationId());
+  }
+
+  /**
+   * The rights the server last told us the caller holds on a folder of a shared
+   * mailbox, or null when the key is one of their own folders.
+   *
+   * @param username the caller
+   * @param folderKey the {@code EMAIL_BOX.FOLDER} discriminator
+   * @return the rights, or null for an own folder
+   */
+  public MailboxRights rightsOn(String username, String folderKey) {
+    EmailDelegation delegation = delegationOf(username, folderKey);
+    return delegation == null ? null : delegation.getMailboxRights();
+  }
+
+  /**
+   * <b>The guard.</b> Refuses an operation on a folder of a shared mailbox when the
+   * right it needs is not among the letters the server grants the caller there.
+   * <p>
+   * Three things about it are deliberate.
+   * <ul>
+   * <li><b>An own folder passes untouched.</b> The check is "is this key delegated, and
+   * if so may I", never "is this key mine" -- so it can be put in front of every write
+   * path without changing what any of them do for the mailbox the user owns.</li>
+   * <li><b>A share that is no longer accepted is a {@link DelegationRevokedException},
+   * not a refusal.</b> The two mean different things to the interface: the first says
+   * "this mailbox is gone, leave it", the second says "you may not do THAT here".</li>
+   * <li><b>It is not the enforcement.</b> The server enforces the ACL and would refuse
+   * the same operation itself; this turns its {@code NO} -- which arrives as a
+   * protocol exception whose text may name internal paths and users -- into a message
+   * code, and stops eXo optimistically writing a local change the server was never
+   * going to keep.</li>
+   * </ul>
+   *
+   * @param username the caller
+   * @param folderKey the {@code EMAIL_BOX.FOLDER} discriminator acted on
+   * @param right the RFC 4314 letter the operation needs
+   * @throws MailboxRightMissingException when the folder is delegated and the letter is
+   *           not held
+   * @throws DelegationRevokedException when the share is no longer accepted
+   */
+  public void checkRight(String username, String folderKey, char right) throws MailboxRightMissingException {
+    EmailDelegation delegation = delegationOf(username, folderKey);
+    if (delegation == null) {
+      return;
+    }
+    if (delegation.getStatus() != DelegationStatus.ACCEPTED) {
+      throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
+    }
+    if (!delegation.getMailboxRights().has(right)) {
+      LOG.debug("User {} was refused right '{}' on delegated folder {} of mailbox {} (rights {})",
+                username,
+                right,
+                folderKey,
+                delegation.getOwnerMailbox(),
+                delegation.getRights());
+      throw new MailboxRightMissingException(right);
+    }
+  }
+
+  /**
+   * Refuses an operation that only makes sense on a folder of the caller's OWN mailbox,
+   * addressed by its registry id: creating, renaming or deleting a folder belongs to
+   * whoever owns the mailbox, and a delegate is never offered it.
+   * <p>
+   * Why by id rather than by letter. Rename and delete of a mailbox are RFC 4314's
+   * {@code x}, which eXo never grants and never will from its own presets, so the
+   * letter check would be a refusal in every case that can arise -- but it would ALSO
+   * admit the case where a server-made share happens to carry {@code x}, and let a
+   * delegate rename or destroy a folder of somebody else's mailbox from a screen that
+   * only ever meant to manage their own. The folder-settings screen does not list
+   * delegated folders at all; this is what makes the REST endpoints behind it agree.
+   *
+   * @param username the caller
+   * @param folderId the registry id
+   * @throws MailboxRightMissingException always, when the folder is a delegated one
+   */
+  public void checkOwnFolder(String username, long folderId) throws MailboxRightMissingException {
+    EmailFolder folder = emailFolderStorage.getFolder(username, folderId);
+    if (folder != null && folder.getDelegationId() != null) {
+      throw new MailboxRightMissingException(MailboxRights.DELETE_MAILBOX);
     }
   }
 
@@ -971,14 +1160,15 @@ public class EmailDelegationService {
    * @param shared the mailbox as the namespace listed it
    */
   private void registerDelegatedInbox(String granteeUsername, EmailDelegation delegation, SharedMailbox shared) {
+    Date now = new Date();
     EmailFolder existing = emailFolderStorage.getFolderByRemoteName(granteeUsername, shared.inboxName());
     if (existing != null) {
       if (!delegation.getId().equals(existing.getDelegationId())) {
         emailFolderStorage.adoptAsDelegated(granteeUsername, existing.getId(), delegation.getId(), MailFolderView.TYPE_DELEGATED_INBOX);
       }
+      enableDelegatedInboxSync(granteeUsername, existing, now);
       return;
     }
-    Date now = new Date();
     EmailFolder folder = new EmailFolder();
     folder.setUserId(granteeUsername);
     folder.setRemoteName(shared.inboxName());
@@ -988,7 +1178,47 @@ public class EmailDelegationService {
     folder.setDelegationId(delegation.getId());
     folder.setDiscoveredDate(now);
     folder.setLastSeenDate(now);
-    emailFolderStorage.createFolder(folder);
+    enableDelegatedInboxSync(granteeUsername, emailFolderStorage.createFolder(folder), now);
+  }
+
+  /**
+   * Opts the delegated INBOX in, which is what makes accepting a share actually mirror
+   * anything: {@code EmailFolderStorage.createFolder} writes every row opted OUT, on
+   * purpose -- for a folder DISCOVERED in the user's own mailbox, nothing is mirrored
+   * until the user asks. A shared mailbox's INBOX is the opposite case: the user just
+   * asked, by accepting, and a share that mirrored nothing until a second click in a
+   * settings screen that does not even list delegated folders would simply look broken.
+   * <p>
+   * The INBOX alone. Every other folder of the shared mailbox stays opted out, which is
+   * the "INBOX only unless the delegate opts a folder in" rule of the sync budget.
+   *
+   * @param granteeUsername the grantee -- the rows' viewer
+   * @param folder the registered delegated INBOX
+   * @param now the opt-in stamp
+   */
+  private void enableDelegatedInboxSync(String granteeUsername, EmailFolder folder, Date now) {
+    if (folder != null && folder.getId() != null && !folder.isSyncEnabled()) {
+      emailFolderStorage.updateSyncEnabled(granteeUsername, folder.getId(), true, now);
+    }
+  }
+
+  /**
+   * Drops a share's folders from the delegate's registry, and the mail mirrored under
+   * them with them (stack review #437-1): the keys are read before the rows go, and the
+   * mailbox cache purges them on the event. The one way a share's folders are dropped --
+   * revoke, leave, a disconnect, a withdrawal found on the server -- so no path can
+   * leave the owner's mail in the delegate's database, where it would resurface as the
+   * delegate's own once nothing marks it as shared any more.
+   *
+   * @param granteeUsername the delegate
+   * @param delegationId the share
+   */
+  private void dropDelegatedFolders(String granteeUsername, long delegationId) {
+    List<String> keys = emailFolderStorage.getDelegatedFolders(granteeUsername, delegationId).stream().map(EmailFolder::getKey).toList();
+    emailFolderStorage.deleteDelegatedFolders(granteeUsername, delegationId);
+    if (!keys.isEmpty() && eventPublisher != null) {
+      eventPublisher.publishEvent(new DelegatedFoldersDroppedEvent(granteeUsername, keys));
+    }
   }
 
   /**
@@ -1002,7 +1232,7 @@ public class EmailDelegationService {
     delegation.setStatus(status);
     delegation.setRevokedDate(new Date());
     EmailDelegation updated = emailDelegationStorage.update(delegation);
-    emailFolderStorage.deleteDelegatedFolders(updated.getGranteeId(), updated.getId());
+    dropDelegatedFolders(updated.getGranteeId(), updated.getId());
     return updated;
   }
 

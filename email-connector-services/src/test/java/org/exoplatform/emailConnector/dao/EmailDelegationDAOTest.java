@@ -149,6 +149,73 @@ public class EmailDelegationDAOTest {
   }
 
   /**
+   * The sync tier, executed: only ACCEPTED rows of that grantee whose activity stamp is
+   * at or after the threshold. A row never opened (null stamp) is never active, which is
+   * what makes an accepted-and-forgotten share cost nothing; a PENDING row is never
+   * active whatever its stamp; and another grantee's active row is not in the answer.
+   */
+  @Test
+  void onlyAcceptedRowsStampedSinceTheThresholdAreActive() {
+    Date now = new Date();
+    Date activeSince = new Date(now.getTime() - 60_000L);
+    Long inTheMailbox = persist(GRANTEE, OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    stamp(inTheMailbox, now);
+    Long longAgo = persist(GRANTEE, OTHER, "carol@acme.com", 7L, "ACCEPTED");
+    stamp(longAgo, new Date(now.getTime() - 600_000L));
+    persist(GRANTEE, "dave", "dave@acme.com", 7L, "ACCEPTED");
+    Long notYetAccepted = persist(GRANTEE, "erin", "erin@acme.com", 7L, "PENDING");
+    stamp(notYetAccepted, now);
+    Long someoneElses = persist(OTHER, OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    stamp(someoneElses, now);
+    entityManager.clear();
+
+    List<EmailDelegationEntity> active = emailDelegationDAO.findActiveByGranteeId(GRANTEE, "ACCEPTED", activeSince);
+
+    assertEquals(1, active.size(), "the one accepted share this grantee is actually in");
+    assertEquals(inTheMailbox, active.get(0).getId());
+  }
+
+  /**
+   * The activity stamp, executed: written when the previous one is older than the
+   * throttle (or absent), a no-op when it is fresher, and never on somebody else's row.
+   * The throttle is in the WHERE clause on purpose -- a map would be per JVM, and this
+   * has to hold across the cluster.
+   */
+  @Test
+  void theActivityStampIsThrottledInTheStatementAndScopedToItsGrantee() {
+    Date now = new Date();
+    Long id = persist(GRANTEE, OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    entityManager.clear();
+
+    assertEquals(1, emailDelegationDAO.touchActivity(id, GRANTEE, now, new Date(now.getTime() - 600_000L)),
+                 "a row with no stamp at all is stamped");
+    entityManager.clear();
+    assertEquals(0, emailDelegationDAO.touchActivity(id, GRANTEE, new Date(now.getTime() + 1_000L), new Date(now.getTime() - 600_000L)),
+                 "a stamp fresher than the throttle is left alone");
+    entityManager.clear();
+    assertEquals(0, emailDelegationDAO.touchActivity(id, OTHER, new Date(now.getTime() + 600_000L), now),
+                 "somebody else cannot stamp this share");
+    entityManager.clear();
+    assertEquals(1, emailDelegationDAO.touchActivity(id, GRANTEE, new Date(now.getTime() + 600_000L), new Date(now.getTime() + 1_000L)),
+                 "a stamp older than the throttle is rewritten");
+    entityManager.clear();
+    assertEquals(new Date(now.getTime() + 600_000L).getTime(),
+                 emailDelegationDAO.findById(id).orElseThrow().getLastActivityDate().getTime());
+  }
+
+  /**
+   * Stamps one row's activity directly, to set up the tier tests.
+   *
+   * @param id the row id
+   * @param when the stamp
+   */
+  private void stamp(Long id, Date when) {
+    EmailDelegationEntity entity = entityManager.find(EmailDelegationEntity.class, id);
+    entity.setLastActivityDate(when);
+    entityManager.persistAndFlush(entity);
+  }
+
+  /**
    * Persists one row.
    *
    * @param granteeId the grantee

@@ -124,6 +124,17 @@ public class EmailConnectorUtils {
   public static final int      DEFAULT_EMAIL_BOX_CACHE_SIZE =
                                           Integer.parseInt(System.getProperty("email.connector.sync.emails.number", "1000"));
 
+  // The window of a folder of a mailbox somebody else shared with this user, against the
+  // thousand of their own above. Smaller on purpose and not by timidity: the mirror is one
+  // copy PER DELEGATE (the delegation design keeps USER_ID meaning "the viewer", so five
+  // delegates of one mailbox are five windows of rows and five sets of bodies), and the
+  // three mitigations that make that duplication affordable are this cap, the INBOX-only
+  // default, and no sync at all while the delegate is not looking at the mailbox. A
+  // delegate is assisting with somebody's mail, not archiving it: three hundred recent
+  // messages is what that job reads, and the server is still searchable past the window.
+  public static final int      DEFAULT_DELEGATED_EMAIL_BOX_CACHE_SIZE =
+                                          Integer.parseInt(System.getProperty("email.connector.sync.delegated.emails.number", "300"));
+
   public static final String   OPEN_EMAIL              = "exo.email.openEmail";
 
   public static final String   SEND_EMAIL              = "exo.email.sendEmail";
