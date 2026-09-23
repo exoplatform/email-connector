@@ -82,6 +82,18 @@ import org.exoplatform.services.log.Log;
  * {@link #findSharedMailbox} matches the whole identifier first and its local part
  * second, and says so; and Stalwart's behaviour on a current build, observed on
  * v0.11.8 only (section 13.C).
+ * <p>
+ * <b>Deployment requirements on Dovecot</b> (certified by EXO-90552, decided by the
+ * PO on 2026-09-23 -- stated here because this class is what depends on them):
+ * <ul>
+ * <li><b>IMAP logins equal email addresses.</b> Dovecot's shared namespace names the
+ * owner by login ({@code shared/%%u/}) and accepts a SETACL for any identifier
+ * without complaint, so a grantee named by an address that is not their login is
+ * granted nothing, silently.</li>
+ * <li><b>No {@code INDEXPVT} on the shared namespace.</b> This add-on mirrors one
+ * {@code \Seen} bit per mailbox, shared by owner and delegates; a per-user seen
+ * index would make the owner's unread state and the delegate's diverge.</li>
+ * </ul>
  */
 @Service
 public class ImapAclEngine implements MailboxAclEngine {
