@@ -282,6 +282,61 @@ public class EmailDelegationStorage {
   }
 
   /**
+   * A grantee's accept, written alone (EXO-90548 review, finding 1): a row-wide write
+   * from the read made before the server calls would put back the folder roles an
+   * owner's Extend wrote meanwhile. Only a row of that grantee still pending, declined
+   * or available is written.
+   *
+   * @param granteeId the grantee, whose row it must be
+   * @param id the row id
+   * @param remoteRoot where the shared tree is on the grantee's session
+   * @param rights the grantee's own MYRIGHTS letters
+   * @param preset the preset to record, or null to keep the recorded one
+   * @param checked the rights check and response stamp
+   * @return the row as it now stands, null when nothing was written
+   */
+  public EmailDelegation accept(String granteeId, long id, String remoteRoot, String rights, DelegationPreset preset, Date checked) {
+    int updated = emailDelegationDAO.accept(id,
+                                            granteeId,
+                                            DelegationStatus.ACCEPTED.name(),
+                                            remoteRoot,
+                                            rights,
+                                            rights,
+                                            preset == null ? null : preset.name(),
+                                            checked,
+                                            checked,
+                                            new Date(),
+                                            List.of(DelegationStatus.PENDING.name(),
+                                                    DelegationStatus.DECLINED.name(),
+                                                    DelegationStatus.AVAILABLE.name()));
+    return updated == 0 ? null : getAsGrantee(granteeId, id);
+  }
+
+  /**
+   * The letters the owner's ACL holds for a share on offer, written alone (EXO-90548
+   * review, finding 1). A share in use or ended is not written.
+   *
+   * @param ownerId the owner, whose row it must be
+   * @param id the row id
+   * @param rights the letters the owner's ACL holds
+   * @param nativeRights the server's own words for them
+   * @return the row as it now stands, null when nothing was written
+   */
+  public EmailDelegation updateOfferedRights(String ownerId, long id, String rights, String nativeRights) {
+    Date now = new Date();
+    int updated = emailDelegationDAO.updateOfferedRights(id,
+                                                         ownerId,
+                                                         rights,
+                                                         nativeRights,
+                                                         now,
+                                                         now,
+                                                         List.of(DelegationStatus.ACCEPTED.name(),
+                                                                 DelegationStatus.REVOKED.name(),
+                                                                 DelegationStatus.GONE.name()));
+    return updated == 0 ? null : getAsOwner(ownerId, id);
+  }
+
+  /**
    * DTO to entity, every column but the two stamps.
    *
    * @param delegation the source
