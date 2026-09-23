@@ -1045,6 +1045,49 @@ class EmailDelegationServiceTest {
     verify(engine, never()).grant(any(), any(), any(), any(), any());
   }
 
+  /**
+   * EXO-90546 -- a change that moves the right to keep read state is announced, since
+   * the grantee's badge may count this inbox only while it is held.
+   */
+  @Test
+  void changePresetAnnouncesAMoveOfKeepSeen() throws Exception {
+    EmailDelegation readOnly = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    readOnly.setRights("lrp");
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(readOnly);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.myRights(any(), eq(INBOX))).thenReturn(MailboxRights.of("lrswipkxtea"));
+    when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any()))
+                                                                                                .thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
+                                                                                                                                 MailboxRights.of("lrs")));
+
+    service.changePreset(OWNER, 100L, DelegationPreset.READER);
+
+    ArgumentCaptor<EmailDelegationEvent> event = ArgumentCaptor.forClass(EmailDelegationEvent.class);
+    verify(eventPublisher).publishEvent(event.capture());
+    assertEquals(EmailDelegationEvent.Type.RIGHTS_CHANGED, event.getValue().type());
+  }
+
+  /**
+   * EXO-90546 -- an accepted share the owner's ACL no longer carries is revoked by the
+   * listing, with no notification; its grantee's badge is still told.
+   */
+  @Test
+  void anAcceptedShareFoundGoneIsAnnounced() throws Exception {
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(OWNER_MAILBOX, MailboxRights.of("lrswipkxtea"))));
+    EmailDelegation accepted = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    accepted.setBadgeIncluded(true);
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(accepted));
+    lenient().when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER));
+
+    service.getGrantedDelegations(OWNER);
+
+    assertEquals(DelegationStatus.REVOKED, accepted.getStatus());
+    ArgumentCaptor<EmailDelegationEvent> event = ArgumentCaptor.forClass(EmailDelegationEvent.class);
+    verify(eventPublisher).publishEvent(event.capture());
+    assertEquals(EmailDelegationEvent.Type.RIGHTS_CHANGED, event.getValue().type());
+  }
+
   // ---------------------------------------------------------------------------------
   // Reading the server's shares
   // ---------------------------------------------------------------------------------
@@ -1238,6 +1281,26 @@ class EmailDelegationServiceTest {
     verify(emailDelegationStorage, never()).update(any());
     when(emailDelegationStorage.getAsGrantee(OWNER, 100L)).thenReturn(null);
     assertThrows(ObjectNotFoundException.class, () -> service.updatePreferences(OWNER, 100L, true, true));
+  }
+
+  /**
+   * EXO-90546 -- flipping "count this mailbox in my unread badge" is announced, so the
+   * badge is re-counted; setting it to the value it already has, or changing only the
+   * notification toggle, announces nothing.
+   */
+  @Test
+  void flippingTheBadgeSwitchIsAnnouncedAndOnlyThen() throws Exception {
+    EmailDelegation accepted = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(accepted);
+
+    service.updatePreferences(GRANTEE, 100L, false, true);
+    verify(eventPublisher, never()).publishEvent(any());
+
+    service.updatePreferences(GRANTEE, 100L, true, null);
+    ArgumentCaptor<EmailDelegationEvent> event = ArgumentCaptor.forClass(EmailDelegationEvent.class);
+    verify(eventPublisher).publishEvent(event.capture());
+    assertEquals(EmailDelegationEvent.Type.BADGE_PREFERENCE_CHANGED, event.getValue().type());
+    assertEquals(GRANTEE, event.getValue().actor());
   }
 
   // ---------------------------------------------------------------------------------
