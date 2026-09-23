@@ -39,6 +39,8 @@ import org.exoplatform.services.log.Log;
 
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import io.meeds.common.ContainerTransactional;
 import jakarta.annotation.PreDestroy;
@@ -199,9 +201,18 @@ public class EmailSyncService {
    * listener, whose transaction has committed by the time it runs: the claim is a
    * database write and needs one of its own, for the same reason
    * {@code EmailBoxService.registerMailboxForSync} does (EXO-90059).
+   * <p>
+   * The mailbox reaches the executor only once that transaction has committed
+   * (EXO-90573): the hand-over is registered for {@code afterCommit}. Handed over
+   * inside it, the run would start on a claim still uncommitted -- its first writes,
+   * the release included, waiting on the row lock -- and a commit that then failed
+   * would roll the claim back under a synchronization already running, free for
+   * another node to claim the same mailbox. A claim that does not commit is never
+   * handed over.
    *
    * @param userId the mailbox owner
-   * @return whether the mailbox was claimed and handed to the executor
+   * @return whether the mailbox was claimed, its hand-over to the executor then
+   *         following the commit
    */
   @Transactional(propagation = Propagation.REQUIRES_NEW)
   public boolean dispatchNow(String userId) {
@@ -219,14 +230,44 @@ public class EmailSyncService {
         LOG.debug("The mailbox of user {} is already being synchronized; no immediate sync dispatched", userId);
         return false;
       }
-      executor.execute(() -> runClaimed(userId, now));
-      LOG.debug("Dispatched an immediate synchronization of the mailbox of user {} on node {}", userId, node);
+      if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+        // Reached without the proxy: the DAO's own transaction has already committed
+        // the claim, so it can be handed over at once.
+        handOverClaimed(userId, now, node);
+        return true;
+      }
+      TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+        /** Hands the mailbox over once the claim is committed, never before. */
+        @Override
+        public void afterCommit() {
+          handOverClaimed(userId, now, node);
+        }
+      });
       return true;
     } catch (RuntimeException | LinkageError e) {
       LOG.warn("The mailbox of user {} could not be synchronized immediately; it stays due for the next tick",
                userId,
                e);
       return false;
+    }
+  }
+
+  /**
+   * Hands a mailbox whose claim has committed to the executor, once
+   * {@link #dispatchNow} has returned. Never throws: the caller's transaction is
+   * already over, and a refusal leaves the claim to the stale timeout, as a refusal
+   * in the tick does.
+   *
+   * @param userId the mailbox owner
+   * @param startedAt the claim's stamp
+   * @param node this node's identity
+   */
+  private void handOverClaimed(String userId, Date startedAt, String node) {
+    try {
+      executor.execute(() -> runClaimed(userId, startedAt));
+      LOG.debug("Dispatched an immediate synchronization of the mailbox of user {} on node {}", userId, node);
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("The claimed mailbox of user {} could not be handed to the executor", userId, e);
     }
   }
 
