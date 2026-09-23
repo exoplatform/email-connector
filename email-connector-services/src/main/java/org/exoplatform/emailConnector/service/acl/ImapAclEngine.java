@@ -230,10 +230,11 @@ public class ImapAclEngine implements MailboxAclEngine {
    * exactly, or a preset's letters plus only what the server adds by itself because it
    * couples letters (RFC 4314 section 2.1.1). Stalwart answers {@code lrswit} as
    * {@code tewsirl}: it stores {@code e} with {@code t}, so an Editor granted from eXo
-   * read back as CUSTOM (observed on the rig, 2026-09-23). The couplings admitted are
-   * the RFC's legacy ones and nothing else -- {@code e} and {@code d} beside {@code t},
-   * {@code c} beside {@code k} -- so a set granting more than coupling implies
-   * ({@code a}, {@code x}, {@code e} without {@code t}) is never a preset.
+   * read back as CUSTOM (observed on the rig, 2026-09-23). The only coupling admitted is
+   * {@code e} beside {@code t}, so a set granting more than coupling implies
+   * ({@code a}, {@code x}, {@code e} without {@code t}) is never a preset. The virtual
+   * {@code c}/{@code d} Dovecot adds never reach here: {@link MailboxRights#of(String)}
+   * drops them (EXO-90552).
    *
    * @param rights the letters a server answered
    * @return READER or EDITOR, CUSTOM when none matches
@@ -275,8 +276,10 @@ public class ImapAclEngine implements MailboxAclEngine {
 
   /**
    * Whether a server may add a letter by itself because the granted letters couple it
-   * (RFC 4314 section 2.1.1): {@code e} and the legacy {@code d} with {@code t}, the
-   * legacy {@code c} with {@code k}.
+   * (RFC 4314 section 2.1.1): {@code e} with {@code t}. The legacy {@code d} and
+   * {@code c} are kept as a guard only: {@link MailboxRights#letters()} never holds
+   * them (folded or dropped by {@link MailboxRights#of(String)}), so those two arms are
+   * unreachable today and would only matter if a caller built rights another way.
    *
    * @param letter the extra letter observed
    * @param granted the letters granted
@@ -364,12 +367,14 @@ public class ImapAclEngine implements MailboxAclEngine {
    * namespace lists is still not settled. Phase 0 ran on BlueMind and on Stalwart
    * (2026-09-21/22) but did not record either the SETACL identifier or the segment
    * letters side by side ("not in the record" -- plan, sections 13.C.1 and 13.D); the
-   * Stalwart segment was the owner's full address. Dovecot 2.3.21 (EXO-90552) recorded
-   * both: the segment is the owner's <b>login</b> ({@code shared/%%u/}, which is the
-   * address only where the login is the address), and SETACL takes any identifier
-   * verbatim -- an unknown one included, with no error -- so a grantee named by an
-   * address that is not their login is granted nothing, silently. Until other servers
-   * are recorded, both spellings are tried here and neither is assumed.
+   * Stalwart segment was the owner's full address. On Dovecot 2.3.21 (EXO-90552) the
+   * segment is the owner's full address too, and SETACL was observed to accept any
+   * identifier verbatim -- {@code bob}, and an unknown {@code nobody@dovecot.local} --
+   * with no error. The rig's logins equal the addresses, so what follows is reasoned
+   * from Dovecot's {@code shared/%%u/} semantics, not observed: the segment is the
+   * owner's <b>login</b>, and a grantee named by an address that is not their login
+   * would be granted nothing, silently. Until a server with login != address is
+   * recorded, both spellings are tried here and neither is assumed.
    *
    * @param session the grantee's session
    * @param ownerIdentifier the owner's mailbox identifier
