@@ -1892,6 +1892,92 @@ public class EmailDelegationService {
   }
 
   /**
+   * The key of a shared mailbox's folder of one role -- where a delete, an archive or a
+   * "mark as spam" in that mailbox files (EXO-90548): the same share's folder, never one
+   * of the caller's own. Missing folders do not count.
+   *
+   * @param username the delegate
+   * @param delegationId the share
+   * @param role the role
+   * @return the {@code CUSTOM:<id>} key, or null when the share has no such folder
+   */
+  public String roleFolderKey(String username, long delegationId, FolderRole role) {
+    return emailFolderStorage.getDelegatedFolders(username, delegationId)
+                             .stream()
+                             .filter(folder -> MailFolderView.TYPE_DELEGATED.equals(folder.getType()))
+                             .filter(folder -> !folder.isMissing())
+                             .filter(folder -> folder.getRole() == role)
+                             .map(EmailFolder::getKey)
+                             .findFirst()
+                             .orElse(null);
+  }
+
+  /**
+   * The key of a shared mailbox's INBOX -- where a restore out of its Trash goes.
+   *
+   * @param username the delegate
+   * @param delegationId the share
+   * @return the key, or null when the share has none registered
+   */
+  public String inboxFolderKey(String username, long delegationId) {
+    return emailFolderStorage.getDelegatedFolders(username, delegationId)
+                             .stream()
+                             .filter(folder -> MailFolderView.TYPE_DELEGATED_INBOX.equals(folder.getType()))
+                             .map(EmailFolder::getKey)
+                             .findFirst()
+                             .orElse(null);
+  }
+
+  /**
+   * The role a folder key has in the owner's mailbox, when it is a folder of a shared
+   * mailbox of the caller's.
+   *
+   * @param username the caller
+   * @param folderKey the key
+   * @return the role, null for the shared INBOX, a folder without role, or an own folder
+   */
+  public FolderRole roleOf(String username, String folderKey) {
+    EmailFolder folder = delegatedFolderOf(username, folderKey);
+    return folder == null ? null : folder.getRole();
+  }
+
+  /**
+   * Re-reads the caller's letters on one folder of a shared mailbox, on the caller's own
+   * store -- after a write the server acknowledged but did not do (Dovecot answers an
+   * expunge it refused with a tagged OK, EXO-90548), so the next attempt is refused by
+   * eXo with the right reason and the chrome stops offering it. The shared INBOX goes
+   * through {@link #refreshGranteeRights}. Best-effort: a failure leaves the letters as
+   * they were.
+   *
+   * @param username the delegate
+   * @param folderKey the folder's key
+   * @param store the delegate's connected store, borrowed
+   */
+  public void refreshFolderRights(String username, String folderKey, Store store) {
+    EmailFolder folder = delegatedFolderOf(username, folderKey);
+    EmailDelegation delegation = folder == null ? null : emailDelegationStorage.getAsGrantee(username, folder.getDelegationId());
+    if (delegation == null || delegation.getStatus() != DelegationStatus.ACCEPTED) {
+      return;
+    }
+    if (MailFolderView.TYPE_DELEGATED_INBOX.equals(folder.getType())) {
+      refreshGranteeRights(username, delegation, store);
+      return;
+    }
+    EmailConnector connector = emailConnectorService.getEmailConnector(delegation.getConnectorId());
+    if (connector == null) {
+      return;
+    }
+    MailboxAclEngine engine = aclEngineRegistry.engineFor(connector);
+    MailboxAclSession session = new MailboxAclSession(connector, username, delegation.getGranteeMailbox(), () -> store, null);
+    try {
+      MailboxRights rights = rightsOf(engine, session, folder.getRemoteName());
+      emailFolderStorage.updateDelegatedRights(username, folder.getId(), delegation.getId(), folder.getRole(), rights.letters(), new Date());
+    } catch (MailboxAclException e) {
+      LOG.debug("The rights of {} on folder {} could not be re-read ({})", username, folderKey, e.getCode());
+    }
+  }
+
+  /**
    * The registered folder a key names, when it is a folder of a shared mailbox of the
    * caller's; null for an own folder, an unknown key or a malformed one.
    *
