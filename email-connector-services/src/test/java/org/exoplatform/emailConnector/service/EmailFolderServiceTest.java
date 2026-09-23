@@ -225,6 +225,88 @@ class EmailFolderServiceTest {
   }
 
   /**
+   * EXO-90557 -- a delegate's own LIST returns the mailbox shared with them (Stalwart:
+   * {@code Shared Folders/alice@acme.com/Inbox}, no NAMESPACE advertised). Those folders
+   * are not theirs and never reach the registry or a built-in role; a folder tree of
+   * their own shaped alike ({@code Projects/Acme/Inbox} under a folder that holds mail)
+   * stays theirs.
+   */
+  @Test
+  void theSharedFoldersInADelegatesOwnListingAreNotTheirs() {
+    DiscoveredFolder sharedRoot = container("Shared Folders");
+    DiscoveredFolder owner = container("Shared Folders/alice@acme.com");
+    DiscoveredFolder sharedInbox = folder("Shared Folders/alice@acme.com/Inbox", false);
+    DiscoveredFolder sharedSent = folder("Shared Folders/alice@acme.com/Sent Items", false);
+    DiscoveredFolder projects = folder("Projects", true);
+    DiscoveredFolder acmeInbox = folder("Projects/Acme/Inbox", true);
+    DiscoveredFolder inbox = folder("INBOX", true);
+    // A container of the user's own, whose children hold no INBOX: not a shared root.
+    DiscoveredFolder archives = container("Archives");
+    DiscoveredFolder archived = folder("Archives/2020/Q1", true);
+
+    List<DiscoveredFolder> own = emailFolderService.withoutOtherUsersFolders(List.of(inbox, sharedRoot, owner, sharedInbox, sharedSent,
+                                                                                     projects, acmeInbox, archives, archived),
+                                                                             List.of());
+
+    assertEquals(List.of(inbox, projects, acmeInbox, archives, archived), own);
+  }
+
+  /**
+   * The namespaces a server advertises are left out too, even where the listing shows
+   * no container for them.
+   */
+  @Test
+  void theAdvertisedOtherUsersNamespaceIsNotTheUsers() {
+    DiscoveredFolder anne = folder("Other Users/anne/INBOX", false);
+    DiscoveredFolder mine = folder("Customers", true);
+
+    assertEquals(List.of(mine), emailFolderService.withoutOtherUsersFolders(List.of(anne, mine), List.of("Other Users/")));
+  }
+
+  /**
+   * On a server that advertises its namespaces the listing's shape is not guessed: a
+   * user's own container that holds no mail, with an Inbox two levels down, stays
+   * theirs.
+   */
+  @Test
+  void anAdvertisedNamespaceMeansTheShapeIsNotGuessed() {
+    DiscoveredFolder projects = container("Projects");
+    DiscoveredFolder acmeInbox = folder("Projects/Acme/Inbox", true);
+
+    assertEquals(List.of(projects, acmeInbox),
+                 emailFolderService.withoutOtherUsersFolders(List.of(projects, acmeInbox), List.of("Other Users/")));
+  }
+
+  /**
+   * A folder already registered under a share is the delegation's: the walk neither
+   * refreshes it as the user's own nor counts it as seen for the user's own purge.
+   */
+  @Test
+  void aWalkLeavesAFolderRegisteredUnderAShareAlone() {
+    EmailFolder delegated = new EmailFolder();
+    delegated.setId(16L);
+    delegated.setRemoteName("Shared Folders/alice@acme.com/Inbox");
+    delegated.setDelegationId(1L);
+    when(emailFolderStorage.getFolderByRemoteName(USER, "Shared Folders/alice@acme.com/Inbox")).thenReturn(delegated);
+    when(emailFolderStorage.getFolders(USER)).thenReturn(List.of());
+
+    emailFolderService.reconcileDiscovered(USER, List.of(folder("Shared Folders/alice@acme.com/Inbox", false)));
+
+    verify(emailFolderStorage, never()).markSeen(anyString(), anyLong(), any(), any(), any());
+    verify(emailFolderStorage, never()).createFolder(any());
+  }
+
+  /**
+   * A container that cannot hold mail, as a listing shows one.
+   *
+   * @param fullName the full name
+   * @return the folder
+   */
+  private DiscoveredFolder container(String fullName) {
+    return new DiscoveredFolder(fullName, fullName.substring(fullName.lastIndexOf('/') + 1), "/", Set.of("\\Noselect"), false, false);
+  }
+
+  /**
    * The cap: the eleventh opt-in is refused with the message the screen shows, and
    * nothing is written; the opt-in of a folder already opted in is a no-op that is
    * not counted against it.
