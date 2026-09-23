@@ -17,8 +17,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- The composer opened from a mailbox somebody shared with the user (delegation
        plan 7.8): the mail goes out AS THE USER, through their own mail server, and
-       lands in their own Sent -- the owner has no trace of it unless copied, so the
-       copy is offered, and ticked by default. The band is the identity cue's (7.6),
+       lands in their own Sent -- and in the owner's Sent where that copy is filed
+       (EXO-90551). The owner's copy is offered either way, ticked by default only when
+       the owner would otherwise have no trace of the mail (PO decision Q-3). The band is the identity cue's (7.6),
        with the access level's icon as everywhere else: the drawer's title already says
        whether this is a reply. -->
   <email-connector-shared-mailbox-band :entry="entry">
@@ -66,6 +67,8 @@ export default {
     entry: { type: Object, required: true },
     // Whether this is a reply (a new mail or a forward otherwise).
     reply: { type: Boolean, default: false },
+    // Whether a copy is also filed in the owner's Sent (EXO-90551).
+    sentCopy: { type: Boolean, default: false },
     // Whether the owner is among the copied recipients.
     copyOwner: { type: Boolean, default: false },
     // Whether the owner is a direct (To) recipient: the box then stays ticked and
@@ -91,9 +94,12 @@ export default {
      * @returns {Array} [{text, bold}]
      */
     noticeParts() {
+      // Where the sent copies go: the user's own Sent, and the owner's when it is filed
+      // there (EXO-90551).
+      const suffix = this.sentCopy ? '.filed' : '';
       const key = this.reply
-        ? 'emailConnector.mailBox.sharedMailbox.composer.reply'
-        : 'emailConnector.mailBox.sharedMailbox.composer.new';
+        ? `emailConnector.mailBox.sharedMailbox.composer.reply${suffix}`
+        : `emailConnector.mailBox.sharedMailbox.composer.new${suffix}`;
       return this.$t(key, { 0: OWNER_MARK })
         .split(new RegExp(`(${OWNER_MARK})`))
         .filter(part => part)
