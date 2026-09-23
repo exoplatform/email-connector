@@ -11546,6 +11546,61 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90548 review, finding 2 -- a shared mailbox's folder answers as the user's own
+   * folder of its role does: archiving out of its Archive and reporting its Spam as spam
+   * file a message into the folder it is in, and nothing leaves its Drafts. Each is
+   * counted as a failure and nothing is touched, whatever the letters.
+   */
+  @Test
+  @SneakyThrows
+  void aSharedFolderOfARoleRefusesWhatTheOwnFolderOfThatRoleRefuses() {
+    givenAConnectedMailbox();
+    when(emailDelegationService.delegationOf(eq(TEST_USER), anyString())).thenReturn(aSharedMailboxRow());
+    when(emailDelegationService.roleOf(TEST_USER, "CUSTOM:10")).thenReturn(FolderRole.ARCHIVE);
+    when(emailDelegationService.roleOf(TEST_USER, "CUSTOM:11")).thenReturn(FolderRole.JUNK);
+    when(emailDelegationService.roleOf(TEST_USER, "CUSTOM:12")).thenReturn(FolderRole.DRAFTS);
+    lenient().when(emailDelegationService.roleFolderKey(TEST_USER, 100L, FolderRole.ARCHIVE)).thenReturn("CUSTOM:10");
+    lenient().when(emailDelegationService.roleFolderKey(TEST_USER, 100L, FolderRole.JUNK)).thenReturn("CUSTOM:11");
+    lenient().when(emailDelegationService.roleFolderKey(TEST_USER, 100L, FolderRole.TRASH)).thenReturn("CUSTOM:9");
+
+    assertEquals(1, emailBoxService.archiveEmail(List.of(1212L), TEST_USER, "CUSTOM:10"), "archive out of the Archive");
+    assertEquals(1, emailBoxService.markAsJunk(List.of(1212L), TEST_USER, "CUSTOM:11"), "spam out of the Spam");
+    assertEquals(1, emailBoxService.archiveEmail(List.of(1212L), TEST_USER, "CUSTOM:11"), "archive out of the Spam");
+    assertEquals(1, emailBoxService.deleteEmail(List.of(1212L), TEST_USER, "CUSTOM:12"), "anything out of the Drafts");
+
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * Decision 3a, whatever the letters -- nothing leaves a shared mailbox's Trash: not an
+   * Undo of the delete that filed it there, not a move, not an archive. Here the letters
+   * on that Trash would allow it (the guard answers yes), and it is refused all the same.
+   */
+  @Test
+  @SneakyThrows
+  void nothingLeavesASharedTrashWhateverTheLetters() {
+    givenAConnectedMailbox();
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    when(emailDelegationService.delegationOf(eq(TEST_USER), anyString())).thenReturn(aSharedMailboxRow());
+    when(emailDelegationService.roleOf(TEST_USER, "CUSTOM:9")).thenReturn(FolderRole.TRASH);
+    lenient().when(emailDelegationService.roleFolderKey(TEST_USER, 100L, FolderRole.ARCHIVE)).thenReturn("CUSTOM:10");
+    EmailFolder inbox = registeredFolder(8L, "shared/alice", true);
+    EmailFolder trash = registeredFolder(9L, "shared/alice/Trash", true);
+    lenient().when(emailFolderStorage.getFolder(TEST_USER, 8L)).thenReturn(inbox);
+    lenient().when(emailFolderStorage.getFolder(TEST_USER, 9L)).thenReturn(trash);
+
+    assertEquals(MailboxRightMissingException.CODE_PREFIX + "t",
+                 assertThrows(MailboxRightMissingException.class,
+                              () -> emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:9", "CUSTOM:8")).getMessage(),
+                 "the Undo of a delete in a shared mailbox");
+    assertEquals(1, emailBoxService.archiveEmail(List.of(1212L), TEST_USER, "CUSTOM:9"), "an archive out of it");
+
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
    * A delete out of the shared INBOX of alice's mailbox into its own Trash: the rows,
    * the registry, the store and the one message.
    *

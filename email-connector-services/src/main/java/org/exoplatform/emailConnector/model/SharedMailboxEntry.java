@@ -41,8 +41,10 @@ import java.util.Map;
  * @param unreadCount how many messages of that INBOX the delegate's mirror holds unread
  * @param folders the shared mailbox's other folders the delegate may see -- the owner's
  *          Sent, Archive, Trash, Spam and the rest the share covers (EXO-90548), roles
- *          first; empty for a share that covers INBOX only, which the band tells the
- *          delegate
+ *          first; empty for a share that covers INBOX only
+ * @param inboxOnly whether the share covers the owner's INBOX alone -- written before eXo
+ *          shared the owner's other folders (EXO-90548 review): what the band tells the
+ *          delegate, rather than what the last discovery happened to find
  */
 public record SharedMailboxEntry(Long delegationId,
                                  String ownerId,
@@ -53,5 +55,6 @@ public record SharedMailboxEntry(Long delegationId,
                                  Map<String, Boolean> affordances,
                                  String folderKey,
                                  int unreadCount,
-                                 List<SharedMailboxFolder> folders) {
+                                 List<SharedMailboxFolder> folders,
+                                 boolean inboxOnly) {
 }

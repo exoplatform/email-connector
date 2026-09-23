@@ -1677,11 +1677,17 @@ class EmailDelegationServiceTest {
     assertEquals(List.of(trash.getKey(), custom.getKey()), folders.stream().map(SharedMailboxFolder::key).toList());
     assertEquals(FolderRole.TRASH, folders.get(0).role());
     assertFalse(folders.get(0).affordances().get("delete"), "a Reader deletes nothing from the owner's Trash");
+    // What the band says is the share's own answer, not the folders found (review nit).
+    share.setGrantedRoles(null);
+    assertTrue(service.getSharedMailboxes(GRANTEE).get(0).inboxOnly(), "a share written before folders were shared");
+    share.setGrantedRoles("INBOX,TRASH");
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(inbox));
+    assertFalse(service.getSharedMailboxes(GRANTEE).get(0).inboxOnly(), "folders granted, none discovered yet");
   }
 
   /**
    * EXO-90548 -- where a shared mailbox's delete, archive and spam file: that share's
-   * folder of the role, never a missing one; its INBOX for a restore; a folder's role.
+   * folder of the role, never a missing one; a folder's role.
    */
   @Test
   void theSharesRoleFoldersAreFoundInTheShareOnly() {
@@ -1697,7 +1703,6 @@ class EmailDelegationServiceTest {
 
     assertEquals(trash.getKey(), service.roleFolderKey(GRANTEE, 100L, FolderRole.TRASH));
     assertNull(service.roleFolderKey(GRANTEE, 100L, FolderRole.ARCHIVE));
-    assertEquals(inbox.getKey(), service.inboxFolderKey(GRANTEE, 100L));
     assertEquals(FolderRole.TRASH, service.roleOf(GRANTEE, trash.getKey()));
   }
 

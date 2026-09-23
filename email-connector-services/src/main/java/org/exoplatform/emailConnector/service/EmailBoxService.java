@@ -6357,7 +6357,7 @@ public class EmailBoxService {
       return 0;
     }
     String sourceFolder = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
-    if (!canMoveOutOf(action, sourceFolder) || !isConversationFolder(sourceFolder)) {
+    if (!canMoveOutOf(action, asRoleFolder(username, sourceFolder)) || !isConversationFolder(sourceFolder)) {
       // A folder the action has no meaning on, or one whose listing is not a
       // conversation's home (the Junk folder, ALL_MAIL): the single-folder path
       // answers exactly as it always has, refusal and count included.
@@ -6386,7 +6386,7 @@ public class EmailBoxService {
         // user's own mailbox would quietly delete the owner's copy in theirs. Skipped
         // rather than refused, because the caller asked about THEIR conversation and
         // getting it is not conditional on somebody else's folder.
-        if (isConversationFolder(rowFolder) && canMoveOutOf(action, rowFolder) && isSameMailbox(username, sourceFolder, rowFolder)
+        if (isConversationFolder(rowFolder) && canMoveOutOf(action, asRoleFolder(username, rowFolder)) && isSameMailbox(username, sourceFolder, rowFolder)
             && mayActOn(username, rowFolder, MailboxRights.DELETE_MESSAGES)) {
           idsByFolder.computeIfAbsent(rowFolder, key -> new LinkedHashSet<>()).addAll(ids);
         }
@@ -6550,7 +6550,8 @@ public class EmailBoxService {
    * mailbox into another. The source also needs {@code e}, since the move ends in an
    * expunge. The rights checks run FIRST so that a delegate who holds no {@code t} is
    * told the true reason -- their rights -- rather than a rule that would not apply to
-   * them anyway.
+   * them anyway. Nothing leaves a shared mailbox's Trash at all, whatever the letters
+   * (decision 3a): that is refused before the letters are read.
    *
    * @param username the caller
    * @param sourceKey the folder the messages leave
@@ -6560,6 +6561,12 @@ public class EmailBoxService {
    *           two folders are in different mailboxes
    */
   private void checkDelegatedMove(String username, String sourceKey, String destinationKey) throws MailboxRightMissingException {
+    if (emailDelegationService.roleOf(username, sourceKey) == FolderRole.TRASH) {
+      // Nothing leaves a shared mailbox's Trash, whatever the letters (decision 3a,
+      // PO decision Q-1): eXo never grants e there, and where a server or another mail
+      // application shows it anyway, a restore, an undo or a move out is still refused.
+      throw new MailboxRightMissingException(MailboxRights.DELETE_MESSAGES);
+    }
     checkDelegatedRight(username, sourceKey, MailboxRights.DELETE_MESSAGES);
     try {
       // And e (EXO-90548): a move ends in an expunge, and a server holding the source
@@ -6761,8 +6768,22 @@ public class EmailBoxService {
     }
     // In the shared body rather than at each of the five entry points, because this is
     // the one place that is guaranteed to be on the path of all of them -- including
-    // the per-folder calls the conversation widening makes.
+    // the per-folder calls the conversation widening makes. The source's t first, so a
+    // delegate who holds none is told their rights before any limitation of the share.
+    checkDelegatedRight(username, sourceFolder, MailboxRights.DELETE_MESSAGES);
     String destinationKey = destinationKeyOf(username, action, sourceFolder, targetFolder);
+    if (!canMoveOutOf(action, asRoleFolder(username, sourceFolder))) {
+      // A shared mailbox's folder by what it is in its owner's mailbox (EXO-90548 review,
+      // finding 2): archiving out of its Archive or reporting its Spam as spam files a
+      // message into the folder it is in, and nothing leaves its Trash or its Drafts --
+      // the same answers the user's own folders of those roles give.
+      LOG.warn("{} is not an operation on the {} folder of a shared mailbox; {} message(s) of user {} were left where they are",
+               action,
+               sourceFolder,
+               mailRemoteIds.size(),
+               username);
+      return mailRemoteIds.size();
+    }
     checkDelegatedMove(username, sourceFolder, destinationKey);
     // A shared mailbox's folder files inside that mailbox, into the folder its own
     // registry names (EXO-90548) -- never through the loose finders, which look at the
@@ -6957,6 +6978,29 @@ public class EmailBoxService {
       broadcastUnreadCountChanged(username);
     }
     return failures;
+  }
+
+  /**
+   * The key {@link #canMoveOutOf} reads for a folder: a shared mailbox's folder of a role
+   * answers as the user's own folder of that role would (EXO-90548 review, finding 2) --
+   * its Trash, Drafts, Spam and Archive -- and every other folder as itself.
+   *
+   * @param username the caller
+   * @param folder the folder key
+   * @return the built-in key of the folder's role, or the key itself
+   */
+  private String asRoleFolder(String username, String folder) {
+    FolderRole role = MailFolder.isCustom(folder) ? emailDelegationService.roleOf(username, folder) : null;
+    if (role == null) {
+      return folder;
+    }
+    return switch (role) {
+      case TRASH -> MailFolder.TRASH;
+      case DRAFTS -> MailFolder.DRAFTS;
+      case JUNK -> MailFolder.JUNK;
+      case ARCHIVE -> MailFolder.ARCHIVE;
+      default -> folder;
+    };
   }
 
   /**
@@ -7270,13 +7314,14 @@ public class EmailBoxService {
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(notAllowedMessage(folderKey, action), username));
     }
-    // Restore and purge are the Trash's and the Junk folder's own operations, and both
-    // of those are the CALLER's folders: a shared mailbox's Trash is not registered in
-    // this phase, so a delegated key here could only mean "restore somebody else's mail
-    // into my inbox", which is not a restore. t is checked first so that a delegate who
-    // holds none is told their rights rather than a limitation; the cross-mailbox rule
-    // then answers the rest. Reached today only from this class -- the REST layer sends
-    // TRASH or JUNK -- which is exactly why it is checked here and not left to trust.
+    // Restore and purge are the Trash's and the Junk folder's own operations, on the
+    // CALLER's folders: a delegated key here would mean "restore somebody else's mail
+    // into my inbox", which is not a restore. A shared mailbox's Trash is registered
+    // since EXO-90548, and nothing leaves it whatever the letters (decision 3a,
+    // checkDelegatedMove); t is then checked so that a delegate who holds none is told
+    // their rights rather than a limitation, and the cross-mailbox rule answers the rest.
+    // Reached today only from this class -- the REST layer sends TRASH or JUNK -- which
+    // is exactly why it is checked here and not left to trust.
     if (action == HiddenFolderAction.PURGE) {
       // Destroying mail for good in a shared mailbox is refused as a policy, whatever
       // the letters (EXO-90548): an Editor now holds e on INBOX, and a per-mailbox

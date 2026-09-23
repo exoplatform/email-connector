@@ -287,7 +287,8 @@ public class UserEmailSettingRestTest {
                                                                                                                                            "lrs",
                                                                                                                                            MailboxRights.of("lrs")
                                                                                                                                                         .affordances(),
-                                                                                                                                           true)))));
+                                                                                                                                           true)),
+                                                                                                           true)));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/mailboxes").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$[0].delegationId").value(5))
@@ -301,7 +302,9 @@ public class UserEmailSettingRestTest {
            .andExpect(jsonPath("$[0].folders[0].key").value("CUSTOM:14"))
            .andExpect(jsonPath("$[0].folders[0].role").value("TRASH"))
            .andExpect(jsonPath("$[0].folders[0].readable").value(true))
-           .andExpect(jsonPath("$[0].folders[0].affordances.delete").value(false));
+           .andExpect(jsonPath("$[0].folders[0].affordances.delete").value(false))
+           // What the band says: from the share, not from the folders found.
+           .andExpect(jsonPath("$[0].inboxOnly").value(true));
     verify(emailDelegationService).getSharedMailboxes(SIMPLE_USER);
   }
 

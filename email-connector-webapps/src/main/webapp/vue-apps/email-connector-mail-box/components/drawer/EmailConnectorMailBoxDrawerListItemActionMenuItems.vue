@@ -122,7 +122,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          offer it, so the mobile long-press drawer is the only place a phone user can
          reach it from. -->
     <v-list-item
-      v-if="canMove"
+      v-if="canMarkAsJunk"
       class="ps-2 pe-3 height-auto"
       @click.stop="markAsJunk">
       <v-sheet
@@ -386,6 +386,16 @@ export default {
      */
     canMove() {
       return this.$emailConnectorMailBoxService.canMoveOutOf(this.email.folder);
+    },
+    /**
+     * Whether "Mark as spam" belongs on this row: where delete and archive do, and in a
+     * shared mailbox only when its owner shares a Spam folder to file into (EXO-90548) --
+     * the rule the toolbar and the reader already ask.
+     *
+     * @returns {Boolean} true when "Mark as spam" is offered
+     */
+    canMarkAsJunk() {
+      return this.$emailConnectorMailBoxService.canMarkAsJunk(this.email.folder);
     },
     /**
      * Whether this row is a draft listed in the Drafts folder — asked of the same

@@ -153,6 +153,19 @@ export function sharedMailboxHasRole(folder, role) {
 }
 
 /**
+ * The role a folder of a shared mailbox has in its owner's mailbox -- TRASH, JUNK,
+ * DRAFTS, ARCHIVE or SENT -- as the server discovered it (EXO-90548).
+ *
+ * @param {String} folder a folder key
+ * @returns {String} the role, or null for the shared INBOX, a folder with no role, or a
+ *          folder of the user's own mailbox
+ */
+export function sharedFolderRole(folder) {
+  const entry = sharedMailboxOfFolder(folder);
+  return (entry?.folders || []).find(shared => shared.key === folder)?.role || null;
+}
+
+/**
  * Whether a folder belongs to a mailbox somebody shared with the user.
  *
  * @param {String} folder a folder key
