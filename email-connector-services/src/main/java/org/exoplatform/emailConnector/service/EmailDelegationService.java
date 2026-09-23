@@ -1330,6 +1330,9 @@ public class EmailDelegationService {
     FolderMessageCounts counts = emailBoxStorage.getFolderCounts(granteeUsername);
     Map<String, Integer> unreadCounts = counts == null || counts.getUnreadCounts() == null ? Map.of()
                                                                                            : counts.getUnreadCounts();
+    // Read once for the whole list (EXO-90551 review): the switcher is drawn every time
+    // the drawer opens.
+    boolean sentCopyEnabled = isSentCopyEnabled();
     List<SharedMailboxEntry> entries = new ArrayList<>();
     for (EmailDelegation delegation : accepted) {
       List<EmailFolder> folders = emailFolderStorage.getDelegatedFolders(granteeUsername, delegation.getId());
@@ -1355,7 +1358,7 @@ public class EmailDelegationService {
                                          // mail server's interface records no roles either, and
                                          // may well cover its Trash.
                                          delegation.isInboxOnly() && delegation.getOrigin() == DelegationOrigin.EXO,
-                                         sentCopyOf(granteeUsername, delegation)));
+                                         sentCopyEnabled && sentCopyOf(folders, delegation)));
     }
     return entries;
   }
@@ -2050,20 +2053,41 @@ public class EmailDelegationService {
   }
 
   /**
-   * Whether a mail sent from this share is filed in its owner's Sent (EXO-90551), for the
-   * switcher entry: the answer {@link #ownerSentFolderKey} would give, and the copy not
-   * switched off. Best-effort: a share that cannot be read answers no.
+   * Whether an administrator left the owner's Sent copy on (EXO-90551). A setting that
+   * cannot be read answers no rather than failing the switcher: the switcher then
+   * promises no copy, which is the safe side of the promise.
    *
-   * @param granteeUsername the delegate
-   * @param delegation an accepted share of theirs
-   * @return true when the copy will be filed
+   * @return true when the copy is switched on
    */
-  private boolean sentCopyOf(String granteeUsername, EmailDelegation delegation) {
+  private boolean isSentCopyEnabled() {
     try {
-      return emailConnectorService.isSharedMailboxSentCopyEnabled() && ownerSentFolderKey(granteeUsername, delegation.getId()) != null;
-    } catch (ObjectNotFoundException | RuntimeException e) {
+      return emailConnectorService.isSharedMailboxSentCopyEnabled();
+    } catch (RuntimeException e) {
+      LOG.debug("Could not read whether the owner's Sent copy is switched on; the switcher promises none", e);
       return false;
     }
+  }
+
+  /**
+   * Whether a mail sent from this share is filed in its owner's Sent (EXO-90551), for the
+   * switcher entry, from the rows the list already holds: the answer
+   * {@link #ownerSentFolderKey} gives for an accepted share -- the share's Sent, still
+   * listed, and the delegate's letters on it holding i -- without reading the share and
+   * its folders again per entry. Both read the letters through {@link #folderRights}, so
+   * the promise and the send agree.
+   *
+   * @param folders the share's registered folders
+   * @param delegation the accepted share
+   * @return true when the copy will be filed
+   */
+  private static boolean sentCopyOf(List<EmailFolder> folders, EmailDelegation delegation) {
+    return folders.stream()
+                  .filter(folder -> MailFolderView.TYPE_DELEGATED.equals(folder.getType()))
+                  .filter(folder -> !folder.isMissing())
+                  .filter(folder -> folder.getRole() == FolderRole.SENT)
+                  .findFirst()
+                  .map(folder -> folderRights(folder, delegation).has(MailboxRights.INSERT))
+                  .orElse(false);
   }
 
   /**
