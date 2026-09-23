@@ -358,6 +358,9 @@ public class EmailDelegationService {
     }
     delegation.setStatus(DelegationStatus.REVOKED);
     delegation.setRevokedDate(new Date());
+    // Back off by default (#441-1): a share taken up again must be chosen again to count
+    // in the badge, as a new one is (plan 7.7).
+    delegation.setBadgeIncluded(false);
     delegation = emailDelegationStorage.update(delegation);
     dropDelegatedFolders(delegation.getGranteeId(), delegation.getId());
     LOG.info("Mailbox delegation revoked: actor={} ownerMailbox={} grantee={} identifier={}",
@@ -685,6 +688,9 @@ public class EmailDelegationService {
   private EmailDelegation endShare(String granteeUsername, EmailDelegation delegation) {
     delegation.setStatus(delegation.getOrigin() == DelegationOrigin.SERVER ? DelegationStatus.AVAILABLE : DelegationStatus.DECLINED);
     delegation.setRespondedDate(new Date());
+    // Back off by default (#441-1): a share taken up again must be chosen again to count
+    // in the badge, as a new one is (plan 7.7).
+    delegation.setBadgeIncluded(false);
     EmailDelegation updated = emailDelegationStorage.update(delegation);
     dropDelegatedFolders(granteeUsername, updated.getId());
     return updated;
@@ -1431,6 +1437,9 @@ public class EmailDelegationService {
     boolean wasInUse = delegation.getStatus() == DelegationStatus.ACCEPTED;
     delegation.setStatus(status);
     delegation.setRevokedDate(new Date());
+    // Back off by default (#441-1): a share taken up again must be chosen again to count
+    // in the badge, as a new one is (plan 7.7).
+    delegation.setBadgeIncluded(false);
     EmailDelegation updated = emailDelegationStorage.update(delegation);
     dropDelegatedFolders(updated.getGranteeId(), updated.getId());
     if (wasInUse) {

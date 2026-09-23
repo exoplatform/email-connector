@@ -548,6 +548,33 @@ class EmailDelegationServiceTest {
   }
 
   /**
+   * Stack review #441-1 -- a share left, revoked or found withdrawn stops counting in the
+   * badge for good: taken up again, it must be chosen again, as a new one is.
+   */
+  @Test
+  void aShareThatEndsNoLongerCountsInTheBadge() throws Exception {
+    EmailDelegation left = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    left.setBadgeIncluded(true);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(left);
+    service.leave(GRANTEE, 100L);
+    assertFalse(left.isBadgeIncluded(), "leave");
+
+    EmailDelegation revoked = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    revoked.setBadgeIncluded(true);
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(revoked);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    service.revoke(OWNER, 100L);
+    assertFalse(revoked.isBadgeIncluded(), "revoke");
+
+    EmailDelegation withdrawn = row(DelegationStatus.PENDING, DelegationOrigin.EXO);
+    withdrawn.setBadgeIncluded(true);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(withdrawn);
+    when(engine.findSharedMailbox(any(), eq(OWNER_MAILBOX))).thenReturn(null);
+    assertThrows(DelegationRevokedException.class, () -> service.accept(GRANTEE, 100L));
+    assertFalse(withdrawn.isBadgeIncluded(), "found withdrawn");
+  }
+
+  /**
    * Leaving withdraws the grantee's server-side subscription where the engine has one
    * (BlueMind), as the grantee, best effort: a refusal is logged and the leave stands.
    */
