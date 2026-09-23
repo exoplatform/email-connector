@@ -442,6 +442,8 @@ class EmailDelegationServiceTest {
 
     verify(emailDelegationStorage).update(declined);
     verify(emailDelegationStorage, never()).create(any());
+    // A re-grant: the grantee's folders follow at their next pass (EXO-90548).
+    verify(emailFolderStorage).markDiscoveryDue(declined.getId());
     assertEquals(DelegationStatus.PENDING, delegation.getStatus());
     assertNull(delegation.getRespondedDate());
   }
@@ -1272,6 +1274,9 @@ class EmailDelegationServiceTest {
     }
     assertEquals("INBOX,SENT,ARCHIVE,TRASH,JUNK", extended.getGrantedRoles());
     verify(emailDelegationStorage, never()).update(any());
+    // Live on Stalwart: the grantee's folders follow at their next pass, not after the
+    // quarter-hour discovery throttle.
+    verify(emailFolderStorage).markDiscoveryDue(100L);
 
     when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(row(DelegationStatus.ACCEPTED, DelegationOrigin.SERVER));
     assertEquals(EmailDelegationService.NOT_CHANGEABLE_MESSAGE,
@@ -1327,6 +1332,7 @@ class EmailDelegationServiceTest {
     assertEquals(EmailDelegationService.NOT_CHANGEABLE_MESSAGE,
                  assertThrows(IllegalArgumentException.class, () -> service.extend(OWNER, 100L)).getMessage());
     verify(emailDelegationStorage, never()).update(any());
+    verify(emailFolderStorage, never()).markDiscoveryDue(anyLong());
   }
 
   /**
@@ -1874,6 +1880,7 @@ class EmailDelegationServiceTest {
     assertEquals(DelegationStatus.ACCEPTED, changed.getStatus(), "the share stays accepted");
     verify(emailDelegationStorage, never()).update(any());
     verify(eventPublisher, never()).publishEvent(any());
+    verify(emailFolderStorage).markDiscoveryDue(100L);
   }
 
   /**

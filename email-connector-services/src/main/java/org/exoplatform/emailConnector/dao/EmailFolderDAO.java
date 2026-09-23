@@ -340,6 +340,23 @@ public interface EmailFolderDAO extends JpaRepository<EmailFolderEntity, Long> {
   Date when);
 
   /**
+   * Marks a shared mailbox's discovery due (EXO-90548): clears the discovery stamp on
+   * its INBOX row -- the throttle's clock -- for every grantee registering it, so the
+   * next pass rediscovers the owner's folders at once instead of after the quarter-hour.
+   * The INBOX row's stamp is only that clock: its letters are the delegation's.
+   *
+   * @param delegationId the share
+   * @param inboxType the type of a shared mailbox's INBOX row
+   * @return the rows updated
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailFolderEntity folder SET folder.rightsCheckDate = NULL WHERE folder.delegationId = :delegationId AND folder.type = :inboxType")
+  int markDiscoveryDue(@Param("delegationId")
+  long delegationId, @Param("inboxType")
+  String inboxType);
+
+  /**
    * Drops every registered folder of one shared mailbox -- the leave / revoke purge of
    * the registry rows. As with {@link #deleteByUserId}, the mirrored rows are deleted
    * by the caller.
