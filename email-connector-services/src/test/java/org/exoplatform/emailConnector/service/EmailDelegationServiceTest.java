@@ -1246,6 +1246,38 @@ class EmailDelegationServiceTest {
   // ---------------------------------------------------------------------------------
 
   /**
+   * Stack review #443-2 -- REVOKED is not terminal: a share the server lists again is
+   * offered to the grantee again (AVAILABLE), from the grantee's discovery and from the
+   * owner's ACL alike, with its revoke date cleared and never subscribed on its own.
+   */
+  @Test
+  void aRevokedShareTheServerListsAgainIsOfferedAgain() throws Exception {
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    EmailDelegation revokedAtGrantee = row(DelegationStatus.REVOKED, DelegationOrigin.EXO);
+    revokedAtGrantee.setRemoteRoot("Other Users/alice");
+    revokedAtGrantee.setRevokedDate(new Date(1_000L));
+    when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(revokedAtGrantee));
+    when(engine.listSharedMailboxes(any())).thenReturn(List.of(new SharedMailbox("alice@acme.com", "Other Users/alice", "Other Users/alice/INBOX", "/")));
+
+    service.getReceivedDelegations(GRANTEE, true);
+
+    assertEquals(DelegationStatus.AVAILABLE, revokedAtGrantee.getStatus());
+    assertNull(revokedAtGrantee.getRevokedDate());
+    verify(emailDelegationStorage, never()).create(any());
+    verify(emailFolderStorage, never()).createFolder(any());
+
+    EmailDelegation revokedAtOwner = row(DelegationStatus.REVOKED, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(revokedAtOwner));
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrs"))));
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER, GRANTEE));
+
+    service.getGrantedDelegations(OWNER);
+
+    assertEquals(DelegationStatus.AVAILABLE, revokedAtOwner.getStatus());
+    assertEquals("lrs", revokedAtOwner.getRights());
+  }
+
+  /**
    * The owner's list is the server's ACL: the owner's own entry and {@code anyone} are
    * skipped; an entry with a row is that row (rights and native form refreshed); an
    * entry naming a connected user without a row gets an AVAILABLE/SERVER row carrying
