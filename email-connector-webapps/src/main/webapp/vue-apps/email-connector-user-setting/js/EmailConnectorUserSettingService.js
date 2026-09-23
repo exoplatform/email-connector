@@ -389,6 +389,28 @@ export function revokeDelegation(id) {
 }
 
 /**
+ * Shares with a grantee the owner's Sent, Archive, Trash and Spam, beside the Inbox an
+ * older share covers (EXO-90548): the owner's "Extend access".
+ *
+ * @param {Number} id the delegation id
+ * @returns {Promise<Object>} the delegation as it now stands; rejects with the server's
+ *          message code
+ */
+export function extendDelegation(id) {
+  return fetch(`/email-connector/rest/user-email-setting/delegations/${id}/extend`, {
+    credentials: 'include',
+    method: 'POST',
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json().catch(() => ({})).then(body => {
+      throw new Error(body?.message || 'Error when extending the access to your mailbox');
+    });
+  });
+}
+
+/**
  * Changes the access a grantee holds on the caller's own mailbox to another preset --
  * written on the mail server, replacing what the grantee held there. A refusal carries
  * the server's message code as the error message.
