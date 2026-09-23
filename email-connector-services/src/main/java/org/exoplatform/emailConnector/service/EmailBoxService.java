@@ -154,6 +154,7 @@ import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
+import org.exoplatform.emailConnector.model.ThreadSummary;
 import org.exoplatform.emailConnector.model.MailboxSyncState;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailAttachment;
@@ -1855,7 +1856,20 @@ public class EmailBoxService {
   private void syncDelegatedFolders(Store store, String username, UserEmailSetting userEmailSetting) {
     Date activeSince = new Date(System.currentTimeMillis()
         - emailConnectorService.getEmailBoxActivityThresholdDays() * 86_400_000L);
-    for (EmailDelegation delegation : emailDelegationService.getActiveDelegations(username, activeSince)) {
+    for (EmailDelegation active : emailDelegationService.getActiveDelegations(username, activeSince)) {
+      // What the server lets this user do there, re-read first on their own session
+      // (EXO-90557): a share withdrawn on the server stops here, and narrowed or
+      // widened rights reach the controls and the guards before anything is synced.
+      EmailDelegation delegation;
+      try {
+        delegation = emailDelegationService.refreshGranteeRights(username, active, store);
+      } catch (RuntimeException e) {
+        LOG.warn("Could not re-read the rights of user {} on shared mailbox {}", username, active.getOwnerMailbox(), e);
+        delegation = active;
+      }
+      if (delegation == null) {
+        continue;
+      }
       for (EmailFolder delegatedFolder : emailDelegationService.getSyncableFolders(username, delegation.getId())) {
         try {
           syncDelegatedFolder(store, delegatedFolder, username, userEmailSetting);
@@ -2369,7 +2383,46 @@ public class EmailBoxService {
     for (Folder folder : all == null ? new Folder[0] : all) {
       describe(folder, false, walk, seenNames);
     }
+    // The mailboxes other people share with this user are in the same listing, and are
+    // not this user's folders (EXO-90557): kept out before anything classifies or
+    // registers them.
+    List<DiscoveredFolder> own = emailFolderService.withoutOtherUsersFolders(walk.descriptors(), otherUsersNamespaceRoots(store));
+    if (own.size() != walk.descriptors().size()) {
+      Set<DiscoveredFolder> kept = Collections.newSetFromMap(new IdentityHashMap<>());
+      kept.addAll(own);
+      walk.descriptors().removeIf(descriptor -> !kept.contains(descriptor));
+      walk.handles().keySet().removeIf(descriptor -> !kept.contains(descriptor));
+    }
     return walk;
+  }
+
+  /**
+   * The Other Users and Shared namespace roots the server advertises (NAMESPACE), for
+   * keeping other people's mailboxes out of this user's folder walk. A server that does
+   * not advertise them -- or a store that is not IMAP -- answers none, and the walk's
+   * own listing is read for their shape instead
+   * ({@link EmailFolderService#withoutOtherUsersFolders}).
+   *
+   * @param store the connected store
+   * @return the roots' full names, possibly empty, never null
+   */
+  private List<String> otherUsersNamespaceRoots(Store store) {
+    List<String> roots = new ArrayList<>();
+    if (!(store instanceof IMAPStore imapStore)) {
+      return roots;
+    }
+    try {
+      for (Folder[] namespaces : Arrays.asList(imapStore.getUserNamespaces(null), imapStore.getSharedNamespaces())) {
+        for (Folder namespace : namespaces == null ? new Folder[0] : namespaces) {
+          if (namespace != null && StringUtils.isNotBlank(namespace.getFullName())) {
+            roots.add(namespace.getFullName());
+          }
+        }
+      }
+    } catch (MessagingException | RuntimeException e) {
+      LOG.debug("The namespaces of a mailbox could not be read; its listing's shape decides alone", e);
+    }
+    return roots;
   }
 
   /**
@@ -3616,7 +3669,7 @@ public class EmailBoxService {
     return new EmailBox(emails,
                         userEmailSetting.getEmailSyncStatus(),
                         userEmailSetting.getEmailConnectorWebmailUrl(),
-                        emailBoxStorage.getThreadSummaries(username, userEmailSetting.getEmailAddress()),
+                        threadSummariesFor(username, folder, userEmailSetting.getEmailAddress()),
                         folderCounts.getMessageCounts(),
                         buildFolderViews(username, loadMailboxSyncState(username), folderCounts));
   }
@@ -5304,7 +5357,77 @@ public class EmailBoxService {
     }
     // A scheduled draft stays in its conversation, marked so the reader shows it
     // read-only rather than offering to resume a draft whose every edit is refused.
-    return markScheduledDrafts(username, conversation);
+    return markScheduledDrafts(username, withinMailbox(username, conversation, openedFrom));
+  }
+
+  /**
+   * A conversation kept inside the mailbox it is read from (EXO-90557). One thread id
+   * can have rows in the user's own mailbox and in a mailbox somebody shared with them
+   * -- a delegate who replied keeps the reply in their own Sent, their unsent answer in
+   * their own Drafts. Read from the shared mailbox, only its rows: the user's own
+   * drafts and copies are theirs, reopened from their own mailbox. Read from the user's
+   * own mailbox (or by an agent, which names no folder), none of the shared mailbox's
+   * rows: they are its owner's mail.
+   *
+   * @param username the reader
+   * @param conversation the rows read by thread id
+   * @param openedFrom the folder the reader was opened from, possibly null
+   * @return the rows of that mailbox only
+   */
+  private List<Email> withinMailbox(String username, List<Email> conversation, String openedFrom) {
+    if (conversation == null || conversation.isEmpty()) {
+      return conversation;
+    }
+    List<String> sharedKeys = emailDelegationService.getDelegatedFolderKeys(username);
+    if (sharedKeys.isEmpty()) {
+      return conversation;
+    }
+    EmailDelegation readIn = emailDelegationService.delegationOf(username, openedFrom);
+    Set<String> keep = readIn == null ? null : new HashSet<>(emailDelegationService.getMailboxFolderKeys(username, readIn.getId()));
+    return conversation.stream()
+                       .filter(email -> keep == null ? !sharedKeys.contains(email.getFolder()) : keep.contains(email.getFolder()))
+                       .collect(Collectors.toCollection(ArrayList::new));
+  }
+
+  /**
+   * The conversation counts a listing carries, counted inside the mailbox listed
+   * (EXO-90557): a shared mailbox's over its own folders only, so none of its rows reads
+   * "Draft" for the user's own unsent answer; the user's own over their own folders, so
+   * the copies a shared mailbox holds of the same conversation do not inflate them.
+   *
+   * @param username the reader
+   * @param folder the folder listed
+   * @param userEmail the reader's own address
+   * @return the summaries, by thread id
+   */
+  private Map<String, ThreadSummary> threadSummariesFor(String username, String folder, String userEmail) {
+    EmailDelegation listed = emailDelegationService.delegationOf(username, folder);
+    if (listed != null) {
+      return emailBoxStorage.getMailboxThreadSummaries(username, emailDelegationService.getMailboxFolderKeys(username, listed.getId()));
+    }
+    List<String> sharedKeys = emailDelegationService.getDelegatedFolderKeys(username);
+    return sharedKeys.isEmpty() ? emailBoxStorage.getThreadSummaries(username, userEmail)
+                                : emailBoxStorage.getThreadSummaries(username, userEmail, sharedKeys);
+  }
+
+  /**
+   * One message of the user's OWN mailbox by its local id -- what an agent is handed
+   * (EXO-90557). {@link #getOwnedEmailById} checks the row is this user's; a row of a
+   * mailbox somebody shared with them is theirs too, as a mirror, but it is its owner's
+   * mail, and the agent's write tools act on the user's own INBOX by UID, where that
+   * UID names another message. Answered as not found, like an id that is not theirs.
+   *
+   * @param id the local id
+   * @param username the reader
+   * @return the message, null when it is not in the user's own mailbox
+   * @throws IllegalAccessException if the row belongs to somebody else
+   */
+  public Email getOwnMailboxEmailById(long id, String username) throws IllegalAccessException {
+    Email email = getOwnedEmailById(id, username);
+    if (email != null && emailDelegationService.delegationOf(username, email.getFolder()) != null) {
+      return null;
+    }
+    return email;
   }
 
   /**
@@ -12129,7 +12252,12 @@ public class EmailBoxService {
       throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
     }
     String term = query.trim().toLowerCase();
-    List<Email> matches = emailBoxStorage.getEmailsForSearch(username)
+    // Not the mailboxes somebody shared with the user (EXO-90557): a hit says nothing
+    // of whose mail it is, and it would be offered as theirs.
+    List<String> sharedKeys = emailDelegationService.getDelegatedFolderKeys(username);
+    List<Email> cached = sharedKeys.isEmpty() ? emailBoxStorage.getEmailsForSearch(username)
+                                              : emailBoxStorage.getEmailsForSearch(username, sharedKeys);
+    List<Email> matches = cached
                                          .stream()
                                          .filter(email -> !favoritesOnly || email.isStarred())
                                          .filter(email -> matchesCachedEmail(email, term))
@@ -14271,11 +14399,16 @@ public class EmailBoxService {
    * @throws MessagingException if the folder list cannot be read
    */
   private IMAPFolder findTrashFolder(Store store) throws MessagingException {
+    List<String> sharedRoots = otherUsersNamespaceRoots(store);
     for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
       if (!(folder instanceof IMAPFolder)) {
         continue;
       }
       IMAPFolder imapFolder = (IMAPFolder) folder;
+      // Never a folder of a mailbox somebody shared with this user (EXO-90557).
+      if (EmailFolderService.isUnderAnyRoot(imapFolder.getFullName(), String.valueOf(imapFolder.getSeparator()), sharedRoots)) {
+        continue;
+      }
       if (!imapFolder.exists()) {
         continue;
       }
@@ -14332,11 +14465,16 @@ public class EmailBoxService {
    * @throws MessagingException if the folder list cannot be read
    */
   private IMAPFolder findArchiveFolder(Store store) throws MessagingException {
+    List<String> sharedRoots = otherUsersNamespaceRoots(store);
     for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
       if (!(folder instanceof IMAPFolder)) {
         continue;
       }
       IMAPFolder imapFolder = (IMAPFolder) folder;
+      // Never a folder of a mailbox somebody shared with this user (EXO-90557).
+      if (EmailFolderService.isUnderAnyRoot(imapFolder.getFullName(), String.valueOf(imapFolder.getSeparator()), sharedRoots)) {
+        continue;
+      }
       if (!imapFolder.exists()) {
         continue;
       }

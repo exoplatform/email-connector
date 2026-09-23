@@ -672,6 +672,20 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<String> excludedFolders);
 
   /**
+   * {@link #summarizeThreadsByUserId}, over the named folders only -- the conversations
+   * of a mailbox somebody shared with the user, counted within that mailbox and never
+   * with the user's own copies or drafts (EXO-90557).
+   *
+   * @param userId the mirror's owner -- for a shared mailbox, the delegate
+   * @param folders the folders to count, the shared mailbox's {@code CUSTOM:<id>} keys
+   * @return rows of {@code [threadId, messageCount, draftCount]}, one per conversation
+   */
+  @Query("SELECT email.threadId, COUNT(DISTINCT COALESCE(email.mailHeaderId, email.draftLocalId)), SUM(CASE WHEN email.draftLocalId IS NULL THEN 0 ELSE 1 END) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IS NOT NULL AND email.folder IN :folders GROUP BY email.threadId")
+  List<Object[]> summarizeThreadsByUserIdInFolders(@Param("userId")
+  String userId, @Param("folders")
+  List<String> folders);
+
+  /**
    * Who wrote the messages of each conversation that carries an unsent draft, with
    * the date each of them first appears in it.
    * <p>
