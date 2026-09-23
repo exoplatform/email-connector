@@ -36,15 +36,16 @@ export const NAVIGATION_MIN_WIDTH_PX = 140;
 
 export const NAVIGATION_MAX_WIDTH_PX = 360;
 
-// The list's minimum, its two handles included: some 320 px of rows, a phone's width,
-// which the rows are laid out for.
+// The list's minimum: a phone's width and a little more, which the rows are laid out
+// for.
 export const LIST_MIN_WIDTH_PX = 340;
 
 // What the reader keeps at least: a message's text stays readable, the wide ones scroll.
 export const READER_MIN_WIDTH_PX = 480;
 
-// Each handle's width. Both sit in the list's slot, so the pane's width stays the sum
-// of the two columns'.
+// The width of each handle's hit area. The handle between the columns takes no room; the
+// one at the pane's end takes this much of the list's (SEPARATOR_PLACEMENTS), so the
+// pane's width is the sum of the two columns'.
 export const SEPARATOR_WIDTH_PX = 8;
 
 // What an arrow key moves a focused handle by.
@@ -214,6 +215,64 @@ export function separatorKeyWidth(event, value, range, rtl) {
   default:
     return null;
   }
+}
+
+// Where each part of a handle sits, in CSS pixels from its anchor's start side (left in
+// a left-to-right page), and the anchor's own width. The hit areas keep off the columns'
+// scrollbars, which sit at each column's end, and nothing passes the left pane's edge --
+// the pane is a sideways scroller that clips what passes it and would scroll to show it:
+// - between the folder column and the list, the anchor is zero-wide on the boundary,
+//   the 1 px line is the list's first pixel, where the plain divider stood, and the hit
+//   area lies on the list's side, whose start holds no scrollbar;
+// - at the end of the pane, the anchor takes the hit area's width after the list, so the
+//   list's scrollbar ends where it begins, and the line is its last pixel: the pane's.
+const SEPARATOR_PLACEMENTS = {
+  between: { width: 0, hit: 0, line: 0, grip: -1 },
+  end: { width: SEPARATOR_WIDTH_PX, hit: 0, line: SEPARATOR_WIDTH_PX - 1, grip: SEPARATOR_WIDTH_PX - 3 },
+};
+
+const SEPARATOR_GRIP_WIDTH_PX = 3;
+
+// The platform's primary color, which an active handle takes.
+const SEPARATOR_ACTIVE_COLOR = 'var(--allPagesPrimaryColor, #578dc9)';
+
+/**
+ * The inline styles of a handle's parts (SEPARATOR_PLACEMENTS): its anchor, in the row
+ * of columns; the hit area, the whole height of the columns; the 1 px line, a plain
+ * vertical divider's own look (its border), primary while active; the grip across the
+ * line half-way down, a muted grey at rest.
+ *
+ * @param {String} placement `between` two columns, or at the `end` of the left pane
+ * @param {Boolean} rtl whether the page reads right to left: the offsets are mirrored
+ * @param {Boolean} active whether the handle is pointed at, held or focused
+ * @returns {Object} `{ anchor, hit, line, grip }`
+ */
+export function separatorStyles(placement, rtl, active) {
+  const offsets = SEPARATOR_PLACEMENTS[placement] || SEPARATOR_PLACEMENTS.between;
+  const side = rtl ? 'right' : 'left';
+  return {
+    anchor: { width: `${offsets.width}px`, minWidth: `${offsets.width}px`, alignSelf: 'stretch', zIndex: 1 },
+    hit: { top: 0, bottom: 0, [side]: `${offsets.hit}px`, width: `${SEPARATOR_WIDTH_PX}px`, touchAction: 'none' },
+    line: {
+      top: 0,
+      bottom: 0,
+      height: 'auto',
+      [side]: `${offsets.line}px`,
+      pointerEvents: 'none',
+      borderColor: active ? SEPARATOR_ACTIVE_COLOR : null,
+    },
+    grip: {
+      top: '50%',
+      [side]: `${offsets.grip}px`,
+      width: `${SEPARATOR_GRIP_WIDTH_PX}px`,
+      height: '32px',
+      marginTop: '-16px',
+      borderRadius: '2px',
+      pointerEvents: 'none',
+      background: active ? SEPARATOR_ACTIVE_COLOR : 'var(--allPagesGreyColorLighten1, #707070)',
+      opacity: active ? 1 : 0.4,
+    },
+  };
 }
 
 /**

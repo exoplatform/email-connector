@@ -18,40 +18,49 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
      dragged with the mouse or a finger, moved by the arrow keys once focused, reset by a
      double-click. It asks for a width and the drawer decides: it never sizes anything
      itself. A press does not take the focus -- the list keeps it, and the arrow keys with
-     it -- and only the keys it answers are its own. -->
+     it -- and only the keys it answers are its own.
+     Its line sits on the column edge, its hit area off the columns' scrollbars: between
+     two columns it takes no room, a zero-wide anchor on the boundary; at the end of the
+     left pane it takes its hit area's width (separatorStyles). -->
 <template>
-  <!-- A focusable separator is a widget in WAI-ARIA 1.2 (the window splitter pattern),
-       which the lint rule, reading every separator as static, does not know. -->
-  <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -->
   <div
-    :aria-valuenow="Math.round(value)"
-    :aria-valuemin="Math.round(min)"
-    :aria-valuemax="Math.round(max)"
-    :aria-label="label"
-    :title="$t('emailConnector.mailBox.list.drawer.columnSeparator.hint')"
-    :style="{ width: widthPx, minWidth: widthPx, touchAction: 'none' }"
-    role="separator"
-    aria-orientation="vertical"
-    tabindex="0"
-    class="col-resize-cursor flex-grow-0 flex-shrink-0 fill-height d-flex justify-center position-relative"
-    @pointerdown="startDrag"
-    @pointermove="drag"
-    @pointerup="endDrag"
-    @pointercancel="endDrag"
-    @lostpointercapture="endDrag"
-    @mousedown.prevent
-    @dblclick="$emit('reset')"
-    @keydown="onKeydown"
-    @mouseenter="hover = true"
-    @mouseleave="hover = false"
-    @focus="focused = true"
-    @blur="focused = false">
-    <v-divider vertical />
-    <div :style="gripStyle" class="position-absolute"></div>
+    :style="styles.anchor"
+    class="flex-grow-0 flex-shrink-0 position-relative">
+    <v-divider
+      :style="styles.line"
+      vertical
+      class="position-absolute" />
+    <div :style="styles.grip" class="position-absolute"></div>
+    <!-- A focusable separator is a widget in WAI-ARIA 1.2 (the window splitter pattern),
+         which the lint rule, reading every separator as static, does not know. -->
+    <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -->
+    <div
+      :aria-valuenow="Math.round(value)"
+      :aria-valuemin="Math.round(min)"
+      :aria-valuemax="Math.round(max)"
+      :aria-label="label"
+      :title="$t('emailConnector.mailBox.list.drawer.columnSeparator.hint')"
+      :style="styles.hit"
+      role="separator"
+      aria-orientation="vertical"
+      tabindex="0"
+      class="col-resize-cursor position-absolute"
+      @pointerdown="startDrag"
+      @pointermove="drag"
+      @pointerup="endDrag"
+      @pointercancel="endDrag"
+      @lostpointercapture="endDrag"
+      @mousedown.prevent
+      @dblclick="$emit('reset')"
+      @keydown="onKeydown"
+      @mouseenter="hover = true"
+      @mouseleave="hover = false"
+      @focus="focused = true"
+      @blur="focused = false"></div>
   </div>
 </template>
 <script>
-import { SEPARATOR_WIDTH_PX, separatorKeyWidth } from '../../js/EmailConnectorMailBoxColumnWidths.js';
+import { separatorKeyWidth, separatorStyles } from '../../js/EmailConnectorMailBoxColumnWidths.js';
 
 export default {
   props: {
@@ -73,6 +82,11 @@ export default {
       type: String,
       default: null,
     },
+    // Between two columns, or at the end of the left pane (separatorStyles).
+    placement: {
+      type: String,
+      default: 'between',
+    },
   },
   data: () => ({
     hover: false,
@@ -83,32 +97,13 @@ export default {
   }),
   computed: {
     /**
-     * The handle's width, in the list's slot (SEPARATOR_WIDTH_PX).
+     * The inline styles of the hit area, the line and the grip, for this divider's
+     * placement, the reading direction and whether it is pointed at, held or focused.
      *
-     * @returns {String} the width, in CSS pixels
+     * @returns {Object} `{ hit, line, grip }`
      */
-    widthPx() {
-      return `${SEPARATOR_WIDTH_PX}px`;
-    },
-    /**
-     * The grip, in the platform's primary color while the divider is pointed at, held
-     * or focused, a muted grey otherwise, so the handle is visible without shouting.
-     *
-     * @returns {Object} the grip's inline style
-     */
-    gripStyle() {
-      const active = this.hover || this.focused || !!this.dragStart;
-      return {
-        top: '50%',
-        left: '50%',
-        width: '4px',
-        height: '32px',
-        borderRadius: '2px',
-        transform: 'translate(-50%, -50%)',
-        pointerEvents: 'none',
-        background: active ? 'var(--allPagesPrimaryColor, #578dc9)' : 'var(--allPagesGreyColorLighten1, #707070)',
-        opacity: active ? 1 : 0.4,
-      };
+    styles() {
+      return separatorStyles(this.placement, this.$vuetify.rtl, this.hover || this.focused || !!this.dragStart);
     },
   },
   methods: {
