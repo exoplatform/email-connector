@@ -265,8 +265,9 @@ public class EmailBoxServiceTest {
   private EmailBoxService         emailBoxService;
 
   /**
-   * The one per-test setup Sonar's S8745 allows: the four fixtures below, in this order,
-   * each kept as its own method so its Javadoc says what it switches and why.
+   * The one per-test setup Sonar's S8745 allows: the six fixtures below, each kept as its
+   * own method so its Javadoc says what it switches and why. The first four run in this
+   * order; the two provider stubs after them are lenient and order-independent.
    */
   @BeforeEach
   void setUp() {
