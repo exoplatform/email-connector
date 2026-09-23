@@ -316,7 +316,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
-import { LIST_TOP_ROW_HEIGHT, SCHEDULED_VIEW, isScheduledView, SHARED_INBOX_TYPE, canMarkReadIn, isDestructiveActionConfirmed,
+import { LIST_TOP_ROW_HEIGHT, SCHEDULED_VIEW, isScheduledView, SHARED_INBOX_TYPE, SHARED_FOLDER_TYPE, canMarkReadIn, isDestructiveActionConfirmed,
   loadSharedMailboxes, setCurrentSharedMailbox, sharedMailboxById, sharedMailboxOfFolder, sharedMailboxState } from '../../js/EmailConnectorMailBoxService.js';
 import listNavigationMixin, { firstOpenableThread, searchRows, threadIndexOf, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
 import emailDragMixin from '../../js/EmailConnectorMailBoxEmailDragMixin.js';
@@ -700,9 +700,9 @@ export default {
     // mailbox (plan 7.6); in the user's own mailbox whenSharedMailboxConfirmed runs the
     // action at once and nothing changes.
     this.onDeleteEmail = (emails, folder) => this.whenSharedMailboxConfirmed(folder, 'delete',
-      () => this.applyListAction(emails, () => this.deleteEmails(emails, folder), folder));
+      () => this.applyListAction(emails, () => this.deleteEmails(emails, folder), folder), emails);
     this.onArchiveEmail = (emails, folder) => this.whenSharedMailboxConfirmed(folder, 'archive',
-      () => this.applyListAction(emails, () => this.archiveEmails(emails, folder), folder));
+      () => this.applyListAction(emails, () => this.archiveEmails(emails, folder), folder), emails);
     // The two Trash actions, wired exactly as delete and archive are: the rows leave
     // the listing, the reader stops showing what is no longer there, and a running
     // selection ends. The confirmation for the permanent one is asked before the event
@@ -912,16 +912,27 @@ export default {
      * @returns {Array} the folder descriptors ({key, type, displayName, path, syncEnabled, missing, count})
      */
     folders() {
-      // In a shared mailbox, its folders and nothing of the user's own: phase 1 registers
-      // its INBOX alone (plan 4.4), so that is the whole column, the whole menu and the
-      // whole move-to list -- no Sent, no Trash, no folder of the user's to file into.
+      // In a shared mailbox, its folders and nothing of the user's own: its INBOX, then the
+      // owner's folders the share lets the user see -- Sent, Archive, Trash, Spam and the
+      // rest, roles first as the server orders them (EXO-90548). That is the whole column,
+      // the whole menu and the whole move-to list: no folder of the user's to file into.
+      // A folder listed without the right to read it is left out rather than offered
+      // empty.
       if (this.currentSharedMailbox) {
         return [{
           key: this.currentSharedMailbox.folderKey,
           type: SHARED_INBOX_TYPE,
           syncEnabled: true,
           unreadCount: this.currentSharedMailbox.unreadCount || 0,
-        }];
+        }].concat((this.currentSharedMailbox.folders || [])
+          .filter(folder => folder.readable)
+          .map(folder => ({
+            key: folder.key,
+            type: SHARED_FOLDER_TYPE,
+            role: folder.role,
+            displayName: folder.displayName,
+            syncEnabled: true,
+          })));
       }
       return this.emailBox?.folders || [{ key: 'INBOX', type: 'BUILT_IN', syncEnabled: true }];
     },
@@ -2964,6 +2975,11 @@ export default {
         || undoGroups.some(group => group.mailHeaderIds.length > UNDO_MAX_MESSAGE_IDS)) {
         return;
       }
+      // An undo takes the mail back OUT of the target: never offered where that is
+      // refused -- a shared mailbox's Trash holds no e, so nothing leaves it (EXO-90548).
+      if (!this.$emailConnectorMailBoxService.sharedMailboxAllowsMoveOut(target)) {
+        return;
+      }
       const folderName = this.folderLabelOf(target);
       // Single-shot, and the toast closes on the click. The snackbar does not close
       // itself on a link click (social's Notifications leaves it up for its timeout),
@@ -3223,18 +3239,31 @@ export default {
      * shared one already confirmed this session, the action runs at once, on this very
      * call: nothing is deferred where nothing is asked.
      *
+     * <p>
+     * The reader drops a mail on the same delete-email / archive-email this answers, so
+     * for a question still open it waits (EmailConnectorMailBoxDrawerListItemDetail) and
+     * is told here once the answer is yes -- a Cancel leaves the mail on screen, as it is
+     * on the server (EXO-90548).
+     *
      * @param {String} folder the folder the messages are numbered in; the listed one when omitted
      * @param {String} action delete, archive, junk or move
      * @param {Function} run the action
+     * @param {Array} emails the messages acted on, for the reader
      * @returns {void}
      */
-    whenSharedMailboxConfirmed(folder, action, run) {
+    whenSharedMailboxConfirmed(folder, action, run, emails) {
       const entry = sharedMailboxOfFolder(folder || this.currentFolder);
       if (!entry || isDestructiveActionConfirmed(entry)) {
         run();
         return;
       }
-      this.$root.$emit('open-shared-mailbox-confirm-popup', entry, action, confirmed => confirmed && run());
+      this.$root.$emit('open-shared-mailbox-confirm-popup', entry, action, confirmed => {
+        if (!confirmed) {
+          return;
+        }
+        this.$root.$emit('shared-mailbox-action-confirmed', action, emails, folder);
+        run();
+      });
     },
     /**
      * A folder's name as the listing shows it, from the descriptors the server listed

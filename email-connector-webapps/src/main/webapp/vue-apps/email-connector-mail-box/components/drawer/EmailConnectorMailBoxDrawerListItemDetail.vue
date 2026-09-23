@@ -184,11 +184,18 @@ export default {
     // The toolbar closes this drawer after a delete or an archive; its list loses the
     // messages meanwhile, and the reader keeps no placeholder up.
     this.onDeleteOrArchiveEmail = (emails, folder) => {
-      if (!this.emailDetailDrawer) {
+      if (!this.emailDetailDrawer || this.awaitsSharedMailboxConfirmation(folder)) {
         return; 
       }
       this.refreshEmails(emails, folder);
       this.selectEmailPlaceHolder = false;
+    };
+    // A delete or an archive in a shared mailbox is asked first (EXO-90548): the mail
+    // leaves this reader once the answer is yes, and stays on a Cancel.
+    this.onSharedMailboxActionConfirmed = (action, emails, folder) => {
+      if (action === 'delete' || action === 'archive') {
+        this.onDeleteOrArchiveEmail(emails, folder);
+      }
     };
     // Mirror favorite changes (and their rollback after a refused push) onto this
     // drawer's own copies: the list it was opened with — a snapshot when it
@@ -221,6 +228,7 @@ export default {
     this.$root.$on('apply-email-favorite-status', this.onApplyEmailFavoriteStatus);
     this.$root.$on('delete-email', this.onDeleteOrArchiveEmail);
     this.$root.$on('archive-email', this.onDeleteOrArchiveEmail);
+    this.$root.$on('shared-mailbox-action-confirmed', this.onSharedMailboxActionConfirmed);
     this.$root.$on('attachment-download-started', (payload) => {
       this.activeDownload = payload;
     });
@@ -252,6 +260,7 @@ export default {
     this.$root.$off('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$off('delete-email', this.onDeleteOrArchiveEmail);
     this.$root.$off('archive-email', this.onDeleteOrArchiveEmail);
+    this.$root.$off('shared-mailbox-action-confirmed', this.onSharedMailboxActionConfirmed);
     this.$root.$off('update-email-favorite-status', this.onApplyEmailFavoriteStatus);
     this.$root.$off('apply-email-favorite-status', this.onApplyEmailFavoriteStatus);
   },
@@ -310,6 +319,19 @@ export default {
     },
   },
   methods: {
+    /**
+     * Whether a delete or an archive in this folder waits for the user's answer before
+     * the mail may leave the reader: a shared mailbox's folder whose actions were not
+     * confirmed yet this session (EXO-90548).
+     *
+     * @param {String} folder the folder acted in; the opened mail's when omitted
+     * @returns {Boolean} true while the question is open
+     */
+    awaitsSharedMailboxConfirmation(folder) {
+      const service = this.$emailConnectorMailBoxService;
+      const entry = service?.sharedMailboxOfFolder?.(folder || this.email?.folder);
+      return !!entry && !service.isDestructiveActionConfirmed(entry);
+    },
     /**
      * Opens the drawer on one message of a list.
      *

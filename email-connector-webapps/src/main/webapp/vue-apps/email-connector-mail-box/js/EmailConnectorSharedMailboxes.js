@@ -27,11 +27,11 @@
 // write guards check (EmailDelegationService#checkRight), so the chrome and the guard
 // cannot disagree about a right, only about how fresh it is.
 
-// The rules themselves -- the phase-2 switch and what a share's rights allow -- live in
-// a module with no state, which the settings bundle imports too.
-import { DELEGATED_MOVE_OUT_ENABLED, sharedMailboxCapabilities } from './EmailConnectorSharedMailboxRules.js';
+// The rules themselves -- what a folder's rights allow -- live in a module with no state,
+// which the settings bundle imports too.
+import { sharedMailboxCapabilities } from './EmailConnectorSharedMailboxRules.js';
 
-export { DELEGATED_MOVE_OUT_ENABLED, sharedMailboxCapabilities };
+export { sharedMailboxCapabilities };
 
 // The switcher's state: the entries the server answered, and the one the drawer is
 // in (null: the user's own mailbox). Observable, so the header, the list rows and the
@@ -121,7 +121,35 @@ export function sharedMailboxOfFolder(folder) {
   if (!folder || !String(folder).startsWith('CUSTOM:')) {
     return null;
   }
-  return sharedMailboxes.entries.find(entry => entry.folderKey === folder) || null;
+  return sharedMailboxes.entries.find(entry => entry.folderKey === folder
+                                               || (entry.folders || []).some(shared => shared.key === folder)) || null;
+}
+
+/**
+ * The affordances of one folder of a shared mailbox: its own, as the server computed them
+ * from the delegate's letters on THAT folder (EXO-90548), and the share's for its INBOX.
+ *
+ * @param {Object} entry the switcher entry
+ * @param {String} folder a folder key of that mailbox
+ * @returns {Object} the affordances
+ */
+function folderAffordances(entry, folder) {
+  const shared = (entry?.folders || []).find(candidate => candidate.key === folder);
+  return shared ? shared.affordances : entry?.affordances;
+}
+
+/**
+ * Whether the shared mailbox a folder belongs to shares a folder of one role -- where one
+ * of its actions files (EXO-90548): no Spam folder shared, no "Mark as spam". True for a
+ * folder of the user's own mailbox.
+ *
+ * @param {String} folder a folder key
+ * @param {String} role SENT, ARCHIVE, TRASH or JUNK
+ * @returns {Boolean} true when the action's destination exists
+ */
+export function sharedMailboxHasRole(folder, role) {
+  const entry = sharedMailboxOfFolder(folder);
+  return !entry || (entry.folders || []).some(shared => shared.role === role && shared.readable);
 }
 
 /**
@@ -145,20 +173,20 @@ export function isSharedMailboxFolder(folder) {
  */
 export function sharedMailboxAllows(folder, affordance) {
   const entry = sharedMailboxOfFolder(folder);
-  return !entry || !!entry.affordances?.[affordance];
+  return !entry || !!folderAffordances(entry, folder)?.[affordance];
 }
 
 /**
  * Whether mail may be moved out of a folder -- deleted, archived, reported as spam or
- * filed elsewhere. Always true for the user's own folders; for a shared mailbox, the
- * phase-2 switch and the t right.
+ * filed elsewhere. Always true for the user's own folders; for a shared mailbox, t and e
+ * on that folder.
  *
  * @param {String} folder a folder key
  * @returns {Boolean} true when those actions may be offered there
  */
 export function sharedMailboxAllowsMoveOut(folder) {
   const entry = sharedMailboxOfFolder(folder);
-  return !entry || sharedMailboxCapabilities(entry.affordances).moveOut;
+  return !entry || sharedMailboxCapabilities(folderAffordances(entry, folder)).moveOut;
 }
 
 
