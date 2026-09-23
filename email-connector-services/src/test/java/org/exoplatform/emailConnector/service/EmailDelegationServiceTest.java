@@ -1086,6 +1086,10 @@ class EmailDelegationServiceTest {
     when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any()))
                                                                                                 .thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
                                                                                                                                  MailboxRights.of("lrs")));
+    // The row as the targeted rights write leaves it (stack review N-1).
+    EmailDelegation reRead = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    reRead.setRights("lrs");
+    when(emailDelegationStorage.updateGrantedRights(eq(OWNER), eq(100L), any(), eq("lrs"), any(), any(), any())).thenReturn(reRead);
 
     service.changePreset(OWNER, 100L, DelegationPreset.READER);
 
