@@ -125,6 +125,7 @@ public class EmailContactPublishQueueTest {
    */
   @BeforeEach
   void setUp() {
+    theClientMintsAnAccountAndResolvesTheUrl();
     UserEmailSetting setting = new UserEmailSetting();
     setting.setEmailConnectorId(String.valueOf(CONNECTOR_ID));
     setting.setEmailAddress("alice@example.com");
@@ -157,8 +158,8 @@ public class EmailContactPublishQueueTest {
    * a null account matches no argument matcher — the service would look as if it had
    * never called the client at all.
    */
-  @BeforeEach
-  void theClientMintsAnAccountAndResolvesTheUrl() {
+  // Called from setUp: one @BeforeEach per class (Sonar S8745).
+  private void theClientMintsAnAccountAndResolvesTheUrl() {
     lenient().when(cardDavClient.accountOf(any(), any(), any())).thenReturn(ACCOUNT);
     // Identity, which is what the real client answers for a URL carrying no
     // placeholder — the fixture's. Unstubbed it answers null, and a null URL
