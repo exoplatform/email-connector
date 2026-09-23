@@ -22,7 +22,7 @@
 // (delete-email), "Mark as spam" (junk-email), or the category assignment -- with the
 // same rules for which mail may go where. Nothing here talks to the server.
 
-import { canMarkAsJunk, groupEmailsByThread, isListedFolder, moveTargets, threadIdsInFolder } from './EmailConnectorMailBoxService.js';
+import { canDelete, canMarkAsJunk, canMoveOutOf, groupEmailsByThread, isListedFolder, moveTargets, threadIdsInFolder } from './EmailConnectorMailBoxService.js';
 import { selectionByFolder, selectionKey } from './EmailConnectorMailBoxSelection.js';
 
 // The type the dragged payload is written under: a drop that does not carry it (a file,
@@ -45,7 +45,7 @@ const ACTION_FOLDERS = { TRASH: 'delete-email', JUNK: 'junk-email' };
  * @returns {Boolean} true when it may be dragged
  */
 export function canDragFrom(folder, email) {
-  return canMarkAsJunk(folder) && isListedFolder(folder) && !email?.draftLocalId && !email?.refreshPending;
+  return canMoveOutOf(folder) && isListedFolder(folder) && !email?.draftLocalId && !email?.refreshPending;
 }
 
 /**
@@ -138,7 +138,10 @@ export function folderDropAction(folders, drag, target) {
   }
   if (ACTION_FOLDERS[target]) {
     const listed = (folders || []).some(folder => folder.key === target && !folder.missing);
-    return listed && canMarkAsJunk(drag.folder) ? { event: ACTION_FOLDERS[target], args: [drag.ids, drag.folder] } : null;
+    // Each action asks its own destination (EXO-90548): a shared mailbox that shares no
+    // Trash takes no drop on the Trash, whatever it shares for spam, and the reverse.
+    const allowed = target === 'TRASH' ? canDelete(drag.folder) : canMarkAsJunk(drag.folder);
+    return listed && allowed ? { event: ACTION_FOLDERS[target], args: [drag.ids, drag.folder] } : null;
   }
   return moveTargets(folders, drag.folder).some(folder => folder.key === target)
     ? { event: 'move-email', args: [drag.ids, target, drag.folder] }
