@@ -674,6 +674,24 @@ class ImapAclEngineTest {
   }
 
   /**
+   * EXO-90548 review -- a role is recognised by name only at the top of the owner's
+   * mailbox or directly under INBOX: a nested "Clients/Deleted" or "Old/Junk Mail",
+   * listed first, is never taken for the Trash or the Spam and shared.
+   */
+  @Test
+  void aNestedFolderNamedLikeARoleIsNeverTakenForIt() throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    Folder[] listing = new Folder[] { listed("Deleted", "Clients/Deleted"), listed("Junk Mail", "Old/Junk Mail"),
+        listed("Deleted Items", "Deleted Items"), listed("Spam", "INBOX/Spam") };
+    when(root.list("*")).thenReturn(listing);
+
+    assertEquals(Map.of(FolderRole.TRASH, "Deleted Items", FolderRole.JUNK, "INBOX/Spam"), engine.findRoleFolders(session()));
+  }
+
+  /**
    * "Remove access" finds every folder of the owner whose ACL names the grantee, however
    * the identifier is cased, and skips a folder whose ACL cannot be read.
    */
