@@ -650,6 +650,30 @@ class ImapAclEngineTest {
   }
 
   /**
+   * EXO-90548, live on Stalwart 0.11.8 -- alice's folders are listed with no
+   * SPECIAL-USE attribute at all ({@code Deleted Items}, {@code Drafts}, {@code INBOX},
+   * {@code Junk Mail}, {@code Sent Items}): each role is still found by the names the
+   * user's own mailbox recognises, "Junk Mail" included (it was missed, so her Spam was
+   * never shared), and no Archive is invented where there is none.
+   */
+  @Test
+  void stalwartsUnattributedFoldersResolveToTheirRoles() throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    Folder[] alicesFolders = new Folder[] { listed("Deleted Items", "Deleted Items"), listed("Drafts", "Drafts"), listed("INBOX", "INBOX"),
+        listed("Junk Mail", "Junk Mail"), listed("Sent Items", "Sent Items") };
+    when(root.list("*")).thenReturn(alicesFolders);
+
+    Map<FolderRole, String> roles = engine.findRoleFolders(session());
+
+    assertEquals(Map.of(FolderRole.SENT, "Sent Items", FolderRole.TRASH, "Deleted Items", FolderRole.JUNK, "Junk Mail",
+                        FolderRole.DRAFTS, "Drafts"),
+                 roles);
+  }
+
+  /**
    * "Remove access" finds every folder of the owner whose ACL names the grantee, however
    * the identifier is cased, and skips a folder whose ACL cannot be read.
    */
