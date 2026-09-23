@@ -18,6 +18,9 @@ import EmailConnectorUserSettingApp from './components/EmailConnectorUserSetting
 import EmailConnectorUserSettingBody from './components/main/EmailConnectorUserSettingBody.vue';
 import EmailConnectorUserSettingFolders from './components/main/EmailConnectorUserSettingFolders.vue';
 import EmailConnectorUserSettingReadReceipts from './components/main/EmailConnectorUserSettingReadReceipts.vue';
+import EmailConnectorUserSettingAddressBook from './components/main/EmailConnectorUserSettingAddressBook.vue';
+import EmailConnectorUserSettingSignature from './components/main/EmailConnectorUserSettingSignature.vue';
+import EmailConnectorUserSettingAdvanced from './components/main/EmailConnectorUserSettingAdvanced.vue';
 import EmailConnectorUserSettingFoldersDrawer from './components/drawer/folders/EmailConnectorUserSettingFoldersDrawer.vue';
 import EmailConnectorUserSettingFolderNameDrawer from './components/drawer/folders/EmailConnectorUserSettingFolderNameDrawer.vue';
 import EmailConnectorUserSettingConnectorsDrawer from './components/drawer/connectors/EmailConnectorUserSettingConnectorsDrawer.vue';
@@ -28,15 +31,17 @@ import EmailConnectorUserSettingDisconnectDrawer from './components/drawer/disco
 import EmailConnectorUserSettingSignatureDrawer from './components/drawer/signature/EmailConnectorUserSettingSignatureDrawer.vue';
 import EmailConnectorContactsChoiceStep from './components/drawer/common/EmailConnectorContactsChoiceStep.vue';
 import EmailConnectorUserSettingSharing from './components/main/EmailConnectorUserSettingSharing.vue';
-import EmailConnectorUserSettingSharingDrawer from './components/sharing/EmailConnectorUserSettingSharingDrawer.vue';
+import EmailConnectorUserSettingMailboxSharingDrawer from './components/sharing/EmailConnectorUserSettingMailboxSharingDrawer.vue';
 import EmailConnectorUserSettingSharingInviteDrawer from './components/sharing/EmailConnectorUserSettingSharingInviteDrawer.vue';
-import EmailConnectorUserSettingSharedWithMeDrawer from './components/sharing/EmailConnectorUserSettingSharedWithMeDrawer.vue';
 
 const components = {
   'email-connector-user-setting-app': EmailConnectorUserSettingApp,
   'email-connector-user-setting-body': EmailConnectorUserSettingBody,
   'email-connector-user-setting-folders': EmailConnectorUserSettingFolders,
   'email-connector-user-setting-read-receipts': EmailConnectorUserSettingReadReceipts,
+  'email-connector-user-setting-address-book': EmailConnectorUserSettingAddressBook,
+  'email-connector-user-setting-signature': EmailConnectorUserSettingSignature,
+  'email-connector-user-setting-advanced': EmailConnectorUserSettingAdvanced,
   'email-connector-user-setting-folders-drawer': EmailConnectorUserSettingFoldersDrawer,
   'email-connector-user-setting-folder-name-drawer': EmailConnectorUserSettingFolderNameDrawer,
   'email-connector-user-setting-connectors-drawer': EmailConnectorUserSettingConnectorsDrawer,
@@ -47,9 +52,8 @@ const components = {
   'email-connector-user-setting-signature-drawer': EmailConnectorUserSettingSignatureDrawer,
   'email-connector-contacts-choice-step': EmailConnectorContactsChoiceStep,
   'email-connector-user-setting-sharing': EmailConnectorUserSettingSharing,
-  'email-connector-user-setting-sharing-drawer': EmailConnectorUserSettingSharingDrawer,
+  'email-connector-user-setting-mailbox-sharing-drawer': EmailConnectorUserSettingMailboxSharingDrawer,
   'email-connector-user-setting-sharing-invite-drawer': EmailConnectorUserSettingSharingInviteDrawer,
-  'email-connector-user-setting-shared-with-me-drawer': EmailConnectorUserSettingSharedWithMeDrawer,
 };
 
 for (const key in components) {

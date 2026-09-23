@@ -159,6 +159,18 @@ export default {
       this.$refs.inviteDrawer.open();
     },
     /**
+     * Shows a message on the platform's toast, through the document event it listens
+     * to, whichever app this drawer is mounted in (the settings page, or the mailbox's
+     * "Manage shared mailboxes" since EXO-90559).
+     *
+     * @param {String} message the message
+     * @param {String} type success or error
+     * @returns {void}
+     */
+    showAlert(message, type) {
+      document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: type, alertMessage: message}}));
+    },
+    /**
      * Writes the access on the mail server and invites the person. The refusals worth
      * their own words are the ones the user can act on: sharing with themselves, a
      * person whose mailbox is not connected here, a share that already exists.
@@ -172,7 +184,7 @@ export default {
       this.saving = true;
       this.$emailConnectorUserSettingService.inviteDelegation(this.granteeUsername, this.preset)
         .then(() => {
-          this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.sharing.shared'), 'success');
+          this.showAlert(this.$t('UserSettings.emailConnector.sharing.shared'), 'success');
           // The list behind this drawer is the mail server's; it just changed.
           this.$root.$emit('email-delegation-granted');
           this.$root.$emit('email-delegations-updated');
@@ -182,7 +194,7 @@ export default {
           const code = error?.message;
           const known = !!code && typeof this.$te === 'function' && this.$te(code);
           const message = known ? this.$t(code) : this.$t('UserSettings.emailConnector.sharing.share.error');
-          this.$root.$emit('alert-message', message, 'error');
+          this.showAlert(message, 'error');
         })
         .finally(() => this.saving = false);
     },
