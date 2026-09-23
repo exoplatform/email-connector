@@ -97,7 +97,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       element="div"
       class="my-auto" /> 
     <!-- `restricted` is the mobile long-press drawer saying "the swipe already offers
-         these two"; `canMove` is the folder saying they must not be offered at all. -->
+         these two"; `canArchive` / `canDelete` are the folder, and in a shared mailbox
+         its destinations, saying whether they may be offered at all (EXO-90548). -->
     <v-list-item
       v-if="!restricted && canArchive"
       class="ps-2 pe-3 height-auto"
