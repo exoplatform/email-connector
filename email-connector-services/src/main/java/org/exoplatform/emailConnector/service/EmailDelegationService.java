@@ -87,8 +87,9 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * {@code lrswit}, on IMAP: never {@code a x e p k}) and by the owner's own MYRIGHTS,
  * which this service reads -- eXo never grants a right the owner does not hold. The
  * owner holding {@code a} is not a precondition: the server's answer to SETACL decides
- * (Stalwart grants an owner's SETACL without {@code a} in MYRIGHTS). The row records what the engine says it wrote, in letters and
- * in the server's own words ({@code NATIVE_RIGHTS}).</li>
+ * (Stalwart grants an owner's SETACL without {@code a} in MYRIGHTS). The row records
+ * what the engine says it wrote, in letters and in the server's own words
+ * ({@code NATIVE_RIGHTS}).</li>
  * <li><b>No unattended identity switch.</b> The ACL is written at <i>invite</i>, on the
  * owner's own session and consented action; it is not written at accept, which would
  * mean running SETACL as the owner on the grantee's request thread with nobody at the
@@ -227,12 +228,12 @@ public class EmailDelegationService {
    * The grant happens HERE and not at accept -- see the class comment. The order is:
    * the grantee resolved from their own connected setting on the same preset; the
    * server probed; the owner's own MYRIGHTS read -- {@code a} is not required, the
- * server's answer to SETACL decides; the engine
-   * handed the preset and the owner's rights, expanding the one and capping by the
-   * other in its server's own vocabulary (letters on IMAP, a verb on BlueMind -- plan,
-   * section 3.4); then the row ({@code PENDING/EXO}) recording what was written,
-   * reusing a declined, revoked, gone or available row of the same key so the unique
-   * key holds and the history stays on one row.
+   * server's answer to SETACL decides; the engine handed the preset and the owner's
+   * rights, expanding the one and capping by the other in its server's own vocabulary
+   * (letters on IMAP, a verb on BlueMind -- plan, section 3.4); then the row
+   * ({@code PENDING/EXO}) recording what was written, reusing a declined, revoked,
+   * gone or available row of the same key so the unique key holds and the history
+   * stays on one row.
    * <p>
    * The grant is on the mailbox as a whole -- INBOX on a per-folder server -- on every
    * engine in this phase (plan, section 3.4: BlueMind's {@code _acls} is per mailbox,
