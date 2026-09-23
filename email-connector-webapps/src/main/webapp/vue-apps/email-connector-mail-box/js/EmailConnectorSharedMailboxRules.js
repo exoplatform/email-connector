@@ -38,14 +38,16 @@
  * it -- the one rule the drawer's controls and the settings' description of a share
  * both read, so the settings can never promise what the drawer does not offer:
  * reading always, read/unread with s, taking mail out only with t AND e (the server's
- * "moveOut"). The star is canStar's, per folder (see above).
+ * "moveOut"), and marking as favorite with w -- the owner's favorite too (EXO-90550). The
+ * star control itself is canStar's, per folder (see above).
  *
  * @param {Object} affordances a folder's (or a share's) affordances, as the server names them
- * @returns {Object} {markRead, moveOut}
+ * @returns {Object} {markRead, moveOut, star}
  */
 export function sharedMailboxCapabilities(affordances) {
   return {
     markRead: !!affordances?.markRead,
     moveOut: !!affordances?.moveOut,
+    star: !!affordances?.star,
   };
 }

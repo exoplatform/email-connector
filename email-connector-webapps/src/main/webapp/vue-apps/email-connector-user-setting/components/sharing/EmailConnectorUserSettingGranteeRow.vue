@@ -153,21 +153,25 @@ export default {
     },
     /**
      * What the person can do in the owner's mailbox, from the rule the mail drawer's
-     * controls follow -- never a move the drawer does not offer. The star is said by the
-     * Editor preset's description (EXO-90550).
+     * controls follow -- never a move the drawer does not offer -- and, with w, that what
+     * they mark as favorite is the owner's favorite too (EXO-90550).
      *
      * @returns {String} the sentence
      */
     rightsSummary() {
       const capabilities = sharedMailboxCapabilities(this.grantee.affordances);
+      let sentence;
       if (capabilities.moveOut) {
-        return this.$t(capabilities.markRead
+        sentence = this.$t(capabilities.markRead
           ? 'UserSettings.emailConnector.sharing.rights.markReadMoveOut'
           : 'UserSettings.emailConnector.sharing.rights.moveOut');
+      } else {
+        sentence = this.$t(capabilities.markRead
+          ? 'UserSettings.emailConnector.sharing.rights.markRead'
+          : 'UserSettings.emailConnector.sharing.rights.read');
       }
-      return this.$t(capabilities.markRead
-        ? 'UserSettings.emailConnector.sharing.rights.markRead'
-        : 'UserSettings.emailConnector.sharing.rights.read');
+      // With w, what they mark as favorite is a favorite for the owner too (EXO-90550).
+      return capabilities.star ? `${sentence} ${this.$t('UserSettings.emailConnector.sharing.rights.star')}` : sentence;
     },
     /**
      * Whether the owner can act on the row: one eXo holds, still on the server.
