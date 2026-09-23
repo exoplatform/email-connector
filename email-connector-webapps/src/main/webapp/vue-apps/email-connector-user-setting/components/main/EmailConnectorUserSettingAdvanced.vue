@@ -21,26 +21,33 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        the one control here that throws something away. -->
   <div>
     <v-divider class="mx-4" />
-    <!-- A real button, not a clickable row: it is reached with the keyboard and
-         announces whether the section is open. Wrapped as a list item because the
-         settings screen is a list, and a bare button in it breaks what a screen reader
-         announces. -->
-    <div role="listitem">
-      <button
-        type="button"
-        class="d-flex align-center width-full px-4 py-3 text-start"
-        :aria-expanded="expanded ? 'true' : 'false'"
-        aria-controls="emailConnectorAdvancedSettings"
-        @click="toggle">
-        <span class="d-flex flex-column flex-grow-1">
-          <span class="text-color">{{ $t('UserSettings.emailConnector.advanced.title') }}</span>
-          <span class="caption text-sub-title text-wrap">{{ summary }}</span>
-        </span>
-        <v-icon size="16" class="icon-default-color ms-2">
-          {{ expanded ? 'fa-chevron-up' : 'fa-chevron-down' }}
-        </v-icon>
-      </button>
-    </div>
+    <!-- The same row shape as every other setting - title and summary, the control in
+         the list item's action slot - so its chevron lines up with the edit icons and
+         switches above it (a hand-made full-width button drifted off that column). The
+         control is a real button: reached with the keyboard, named by the section's
+         title, and it announces whether the section is open. -->
+    <v-list-item>
+      <v-list-item-content>
+        <v-list-item-title class="text-color">
+          {{ $t('UserSettings.emailConnector.advanced.title') }}
+        </v-list-item-title>
+        <v-list-item-subtitle class="text-wrap">
+          {{ summary }}
+        </v-list-item-subtitle>
+      </v-list-item-content>
+      <v-list-item-action>
+        <v-btn
+          :aria-expanded="expanded ? 'true' : 'false'"
+          :aria-label="$t('UserSettings.emailConnector.advanced.title')"
+          aria-controls="emailConnectorAdvancedSettings"
+          icon
+          @click="toggle">
+          <v-icon size="16" class="icon-default-color">
+            {{ expanded ? 'fa-chevron-up' : 'fa-chevron-down' }}
+          </v-icon>
+        </v-btn>
+      </v-list-item-action>
+    </v-list-item>
     <div v-show="expanded" id="emailConnectorAdvancedSettings">
       <email-connector-user-setting-address-book :user-email-setting="userEmailSetting" />
       <!-- The user's own mail folders, and which of them are mirrored here: the
