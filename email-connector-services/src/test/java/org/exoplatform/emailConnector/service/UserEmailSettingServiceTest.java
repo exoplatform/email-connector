@@ -32,6 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -67,6 +68,8 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.emailConnector.entity.UserEmailSettingEntity;
 import org.exoplatform.emailConnector.event.ContactBookReleaseEvent;
+import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
+import org.exoplatform.emailConnector.event.EmailBoxSyncEvent;
 import org.exoplatform.emailConnector.event.EmailNotificationPreferencesChangedEvent;
 import org.exoplatform.emailConnector.model.ContactPublishQueue;
 import org.exoplatform.emailConnector.model.ContactPublishQueueEntry;
@@ -763,6 +766,77 @@ public class UserEmailSettingServiceTest {
       verify(settingService).set(any(Context.class), any(Scope.class), anyString(), stored.capture());
       String document = String.valueOf(stored.getValue().getValue());
       assertTrue(document, document.contains("eric@bm.example.org"));
+    }
+  }
+
+  /**
+   * Connecting again the account already stored - same connector, same address,
+   * whatever the case - raises no account cleanup: that broadcast empties the mailbox
+   * mirror and ends every share the user accepted, which a repeat one-click connect
+   * must not do. The sync is still asked for.
+   */
+  @Test
+  @SneakyThrows
+  void aRepeatConnectOfTheSameAccountKeepsTheUsersMailAndShares() {
+    assertConnectBroadcastsCleanup("{\"emailConnectorId\":\"1\",\"emailAddress\":\"Eric@bm.example.org\"}", false);
+  }
+
+  /**
+   * A connect that changes the address is a rebind: the mirror and the shares of
+   * the previous account go, through the cleanup broadcast.
+   */
+  @Test
+  @SneakyThrows
+  void aConnectToAnotherAddressCleansThePreviousAccountUp() {
+    assertConnectBroadcastsCleanup("{\"emailConnectorId\":\"1\",\"emailAddress\":\"old@bm.example.org\"}", true);
+  }
+
+  /**
+   * A first connect, with nothing stored, broadcasts the cleanup as before.
+   */
+  @Test
+  @SneakyThrows
+  void aFirstConnectThroughTheProviderStillBroadcastsTheCleanup() {
+    assertConnectBroadcastsCleanup(null, true);
+  }
+
+  /**
+   * Runs a one-click connect to {@code eric@bm.example.org} on connector 1 over the
+   * given stored setting, and checks whether the account cleanup was broadcast.
+   *
+   * @param storedJson the stored setting document, or null for none
+   * @param cleanupExpected whether the cleanup event must be published
+   */
+  @SneakyThrows
+  private void assertConnectBroadcastsCleanup(String storedJson, boolean cleanupExpected) {
+    // Pinned by hand, for the reason given in theAutoPublishPreference...: the
+    // context itself can win the @Autowired resolution of the publisher.
+    ReflectionTestUtils.setField(userEmailSettingService, "eventPublisher", eventPublisher);
+    if (storedJson != null) {
+      SettingValue storedSetting = mock(SettingValue.class);
+      when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY)))
+                         .thenReturn(storedSetting);
+      when(storedSetting.getValue()).thenReturn(storedJson);
+    }
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
+    when(emailCredentialsResolver.targetAccount(1L, "bluemind-sudo", TEST_USER)).thenReturn("eric@bm.example.org");
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any()))
+        .thenReturn(mock(Authenticator.class));
+    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+
+      userEmailSettingService.connectThroughProvider(1L, TEST_USER);
+
+      verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+      verify(eventPublisher, cleanupExpected ? times(1) : never())
+          .publishEvent(any(EmailBoxCleanupEvent.class));
+      verify(eventPublisher).publishEvent(any(EmailBoxSyncEvent.class));
     }
   }
 

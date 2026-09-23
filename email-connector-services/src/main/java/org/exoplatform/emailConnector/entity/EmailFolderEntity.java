@@ -87,9 +87,10 @@ public class EmailFolderEntity {
   @Column(name = "DELIMITER")
   private String  delimiter;
 
-  // CUSTOM for every row written today. Reserved so the built-in folder names could one
-  // day move here out of the JSON sync state, the day a user wants to CHOOSE which
-  // folder is their Archive -- a decision deliberately not taken now.
+  // CUSTOM for every folder of the user's own mailbox; DELEGATED_INBOX and DELEGATED
+  // for the folders of a mailbox shared with them (see DELEGATION_ID). Still reserved
+  // for the built-in folder names to one day move here out of the JSON sync state, the
+  // day a user wants to CHOOSE which folder is their Archive -- not taken now.
   @Column(name = "TYPE")
   private String  type;
 
@@ -137,4 +138,14 @@ public class EmailFolderEntity {
 
   @Column(name = "WINDOW_SIZE")
   private Integer windowSize;
+
+  // Null for every folder of the user's own mailbox -- the meaning every row written
+  // before delegation existed keeps without a migration. Set on the folders of a
+  // mailbox someone else shared with this user: the row then belongs to that
+  // EMAIL_DELEGATION, its REMOTE_NAME is the Other Users path on this user's own
+  // session, and its type is DELEGATED_INBOX or DELEGATED. The row is still THIS user's
+  // (USER_ID is the viewer, as everywhere), which is what keeps every read keyed on
+  // USER_ID right; the column only says which listing the folder belongs in.
+  @Column(name = "DELEGATION_ID")
+  private Long    delegationId;
 }

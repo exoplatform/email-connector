@@ -186,6 +186,11 @@ public class UserEmailSettingService {
    * supplied: the mailbox that is opened and the address that is stored must be the
    * same, or the connector would sync one account under another's name. No password
    * is stored, because there is none - the material is produced per request.
+   * <p>
+   * The account-cleanup broadcast - which empties the mailbox mirror and ends every
+   * share the user accepted - is raised only when the connector or the address
+   * differs from the stored one: connecting again the account already connected
+   * keeps the user's mail and shares.
    *
    * @param emailConnectorId the connector preset to connect to
    * @param username the eXo login connecting
@@ -213,10 +218,14 @@ public class UserEmailSettingService {
         throw new IllegalArgumentException("The provider of this connector names no mailbox for this user");
       }
       store = connect(emailConnector, authenticatorFor(emailConnector, username));
+      // Read before the write: the cleanup broadcast wipes the mirror and ends every
+      // accepted share, which is right for a rebind and wrong for a repeat connect
+      // of the account the user already has.
+      boolean accountChanged = !isConnectedAccount(getUserEmailSetting(username), emailConnectorId, address);
       UserEmailSetting connected = new UserEmailSetting();
       connected.setEmailConnectorId(String.valueOf(emailConnectorId));
       connected.setEmailAddress(address);
-      setUserEmailSetting(connected, username, true);
+      setUserEmailSetting(connected, username, accountChanged);
       eventPublisher.publishEvent(new EmailBoxSyncEvent(username));
     } catch (ConnectorCredentialsException | MessagingException e) {
       // A refusal: the provider produced no material for this user, or the mail
@@ -236,6 +245,22 @@ public class UserEmailSettingService {
         LOG.warn("Error when closing store", messagingException);
       }
     }
+  }
+
+  /**
+   * Whether a stored setting already names this connector and this address, so
+   * that connecting them again changes nothing the cleanup broadcast is for.
+   * Addresses compare without case, as mail servers treat them.
+   *
+   * @param stored the user's stored setting, blank when there is none
+   * @param emailConnectorId the connector being connected
+   * @param address the address the provider names
+   * @return true when the stored setting is that connector and that address
+   */
+  private boolean isConnectedAccount(UserEmailSetting stored, long emailConnectorId, String address) {
+    return stored != null
+        && String.valueOf(emailConnectorId).equals(stored.getEmailConnectorId())
+        && StringUtils.equalsIgnoreCase(address, stored.getEmailAddress());
   }
 
   /**

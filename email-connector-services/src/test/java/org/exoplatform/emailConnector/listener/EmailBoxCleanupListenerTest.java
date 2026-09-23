@@ -31,6 +31,7 @@ import org.springframework.transaction.event.TransactionalEventListener;
 import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailContactService;
+import org.exoplatform.emailConnector.service.EmailDelegationService;
 
 /**
  * What has to happen when a mailbox is rebound or disconnected — and, just as
@@ -47,6 +48,9 @@ public class EmailBoxCleanupListenerTest {
   @Mock
   private EmailContactService    emailContactService;
 
+  @Mock
+  private EmailDelegationService emailDelegationService;
+
   @InjectMocks
   private EmailBoxCleanupListener listener;
 
@@ -57,6 +61,8 @@ public class EmailBoxCleanupListenerTest {
     verify(emailBoxService).deleteUserEmails(USERNAME);
     verify(emailContactService).resetCollectionBackfill(USERNAME);
     verify(emailContactService).releaseCollectedContacts(USERNAME);
+    // #432-3: the mailboxes shared with the user end with the account that read them.
+    verify(emailDelegationService).endReceivedShares(USERNAME);
   }
 
   @Test

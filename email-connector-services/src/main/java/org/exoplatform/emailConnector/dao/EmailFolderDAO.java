@@ -44,14 +44,23 @@ import org.exoplatform.emailConnector.entity.EmailFolderEntity;
 public interface EmailFolderDAO extends JpaRepository<EmailFolderEntity, Long> {
 
   /**
-   * Every registered folder of a mailbox, missing ones included, in the order the
-   * settings screen shows them. The rows of one user are bounded by the folder count of
-   * their mailbox -- tens, exceptionally hundreds -- which is why this read is not paged.
+   * Every registered folder of the user's OWN mailbox, missing ones included, in the
+   * order the settings screen shows them. The rows of one user are bounded by the folder
+   * count of their mailbox -- tens, exceptionally hundreds -- which is why this read is
+   * not paged.
+   * <p>
+   * Own means {@code DELEGATION_ID IS NULL}: the folders of a mailbox someone shared with
+   * this user are registered under the same {@code USER_ID} (they are this user's rows,
+   * synced on this user's session) but belong to that delegation's listing, not to the
+   * user's folder settings -- and above all not to the discovery walk's reconciliation,
+   * which would mark as missing, then delete, every folder its own-mailbox walk did not
+   * list. Every row written before delegation existed has a null there, so this is the
+   * listing it always was.
    *
    * @param userId the mailbox owner
    * @return the folders, by display name, never null
    */
-  @Query("SELECT folder FROM EmailFolderEntity folder WHERE folder.userId = :userId ORDER BY folder.displayName ASC, folder.remoteName ASC")
+  @Query("SELECT folder FROM EmailFolderEntity folder WHERE folder.userId = :userId AND folder.delegationId IS NULL ORDER BY folder.displayName ASC, folder.remoteName ASC")
   List<EmailFolderEntity> findByUserId(@Param("userId")
   String userId);
 
@@ -84,8 +93,10 @@ public interface EmailFolderDAO extends JpaRepository<EmailFolderEntity, Long> {
   String remoteName);
 
   /**
-   * The folders a user opted in and the last walk still saw -- the candidates of one
-   * sync cycle, before the cap and the per-cycle budget are applied to them. Ordered by
+   * The OWN folders a user opted in and the last walk still saw -- the candidates of
+   * one sync cycle, before the cap and the per-cycle budget are applied to them. The
+   * folders of a shared mailbox are not among them: their sync is the delegation
+   * branch's, with its own window and gate, not the custom-folder rotation's. Ordered by
    * opt-in date so the cap, when an administrator lowers it under what a user already
    * enabled, keeps the OLDEST opt-ins; the least-recently-synced rotation is applied by
    * the service over this bounded list rather than in a second query, because both
@@ -95,18 +106,19 @@ public interface EmailFolderDAO extends JpaRepository<EmailFolderEntity, Long> {
    * @param userId the mailbox owner
    * @return the enabled, present folders, oldest opt-in first, never null
    */
-  @Query("SELECT folder FROM EmailFolderEntity folder WHERE folder.userId = :userId AND folder.syncEnabled = true AND folder.missing = false ORDER BY folder.enabledDate ASC, folder.id ASC")
+  @Query("SELECT folder FROM EmailFolderEntity folder WHERE folder.userId = :userId AND folder.delegationId IS NULL AND folder.syncEnabled = true AND folder.missing = false ORDER BY folder.enabledDate ASC, folder.id ASC")
   List<EmailFolderEntity> findEnabledByUserId(@Param("userId")
   String userId);
 
   /**
-   * How many folders a user has opted in -- what the cap is checked against.
+   * How many OWN folders a user has opted in -- what the custom-folder cap is checked
+   * against. Delegated folders have their own cap (per delegation) and do not count.
    *
    * @param userId the mailbox owner
    * @return the enabled count, missing ones included (they still hold a slot until
    *         their grace walk expires)
    */
-  @Query("SELECT COUNT(folder) FROM EmailFolderEntity folder WHERE folder.userId = :userId AND folder.syncEnabled = true")
+  @Query("SELECT COUNT(folder) FROM EmailFolderEntity folder WHERE folder.userId = :userId AND folder.delegationId IS NULL AND folder.syncEnabled = true")
   long countEnabledByUserId(@Param("userId")
   String userId);
 
@@ -268,6 +280,54 @@ public interface EmailFolderDAO extends JpaRepository<EmailFolderEntity, Long> {
   int deleteByIdAndUserId(@Param("id")
   long id, @Param("userId")
   String userId);
+
+  /**
+   * The folders of one shared mailbox, as registered for its grantee.
+   *
+   * @param userId the grantee -- the rows' viewer
+   * @param delegationId the delegation
+   * @return the folders, by display name, never null
+   */
+  @Query("SELECT folder FROM EmailFolderEntity folder WHERE folder.userId = :userId AND folder.delegationId = :delegationId ORDER BY folder.displayName ASC, folder.remoteName ASC")
+  List<EmailFolderEntity> findByUserIdAndDelegationId(@Param("userId")
+  String userId, @Param("delegationId")
+  long delegationId);
+
+  /**
+   * The accept's write for a row the own-mailbox walk registered first: the delegation
+   * it now belongs to and its type, nothing else -- the opt-in and the sync memory are
+   * left as they were, for the reason every writer here gives.
+   *
+   * @param id the row id
+   * @param userId the grantee
+   * @param delegationId the delegation
+   * @param type {@code DELEGATED_INBOX} or {@code DELEGATED}
+   * @return the rows updated: one, or zero when no such row belongs to that user
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailFolderEntity folder SET folder.delegationId = :delegationId, folder.type = :type WHERE folder.id = :id AND folder.userId = :userId")
+  int adoptAsDelegated(@Param("id")
+  long id, @Param("userId")
+  String userId, @Param("delegationId")
+  long delegationId, @Param("type")
+  String type);
+
+  /**
+   * Drops every registered folder of one shared mailbox -- the leave / revoke purge of
+   * the registry rows. As with {@link #deleteByUserId}, the mirrored rows are deleted
+   * by the caller.
+   *
+   * @param userId the grantee
+   * @param delegationId the delegation
+   * @return the rows deleted
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("DELETE FROM EmailFolderEntity folder WHERE folder.userId = :userId AND folder.delegationId = :delegationId")
+  int deleteByUserIdAndDelegationId(@Param("userId")
+  String userId, @Param("delegationId")
+  long delegationId);
 
   /**
    * Drops every registered folder of a mailbox -- the disconnect / rebind wipe. The
