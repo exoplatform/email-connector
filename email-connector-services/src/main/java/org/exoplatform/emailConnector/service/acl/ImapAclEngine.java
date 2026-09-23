@@ -300,22 +300,31 @@ public class ImapAclEngine implements MailboxAclEngine {
   @Override
   public Map<FolderRole, String> findRoleFolders(MailboxAclSession session) {
     Map<FolderRole, String> byAttribute = new EnumMap<>(FolderRole.class);
-    Map<FolderRole, String> byName = new EnumMap<>(FolderRole.class);
+    Map<FolderRole, String> byTopName = new EnumMap<>(FolderRole.class);
+    Map<FolderRole, String> byInboxChildName = new EnumMap<>(FolderRole.class);
     for (IMAPFolder folder : ownFolders(session)) {
       FolderRole attributeRole = roleOfAttributes(folder);
       if (attributeRole != null) {
         byAttribute.putIfAbsent(attributeRole, folder.getFullName());
         continue;
       }
-      // By name only at the top of the owner's mailbox (or directly under INBOX, where
+      // By name only at the top of the owner's mailbox, then directly under INBOX (where
       // some servers keep everything): a grant is written on what this returns, so a
-      // nested "Clients/Deleted" is never taken for the Trash and shared (EXO-90548).
-      FolderRole nameRole = isTopLevel(folder) ? roleOfName(folder.getName()) : null;
-      if (nameRole != null) {
-        byName.putIfAbsent(nameRole, folder.getFullName());
+      // nested "Clients/Deleted" is never taken for the Trash and shared, and a user's
+      // "INBOX/Spam" never beats a top-level "Junk Mail", whatever the LIST order
+      // (EXO-90548).
+      FolderRole nameRole = roleOfName(folder.getName());
+      if (nameRole == null) {
+        continue;
+      }
+      if (StringUtils.defaultString(folder.getFullName()).equals(folder.getName())) {
+        byTopName.putIfAbsent(nameRole, folder.getFullName());
+      } else if (isTopLevel(folder)) {
+        byInboxChildName.putIfAbsent(nameRole, folder.getFullName());
       }
     }
-    byName.forEach(byAttribute::putIfAbsent);
+    byTopName.forEach(byAttribute::putIfAbsent);
+    byInboxChildName.forEach(byAttribute::putIfAbsent);
     return byAttribute;
   }
 
