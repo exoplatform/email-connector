@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.carddav;
 
+import static org.mockito.Mockito.never;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -39,6 +40,7 @@ import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 
@@ -754,5 +756,68 @@ public class HttpCardDavClientTest {
             </d:prop></d:propstat>
           </d:response>
         </d:multistatus>""", href, displayName, ctag);
+  }
+
+  /**
+   * EXO-89649. A 401 on material the provider produced: one invalidation, the same
+   * request once more with a freshly produced header, and its answer is the answer.
+   */
+  @Test
+  void retriesARefusedRequestOnceWithAFreshHeader() throws Exception {
+    when(resolver.retriesAfterRefusal(PROVIDER)).thenReturn(true);
+    when(resolver.authorization(any(), any(), any())).thenReturn("Basic stale", "Basic fresh");
+    HttpResponse<String> refused = response(401, "");
+    HttpResponse<String> card = response(200, "BEGIN:VCARD\nVERSION:3.0\nFN:Bob\nEND:VCARD");
+    when(card.headers()).thenReturn(java.net.http.HttpHeaders.of(java.util.Map.of(), (a, b) -> true));
+    java.util.List<HttpRequest> requests = new java.util.ArrayList<>();
+    when(transport.<String> send(any(), any())).thenAnswer(invocation -> {
+      requests.add(invocation.getArgument(0));
+      return requests.size() == 1 ? refused : card;
+    });
+
+    client.fetchVCard(BOOK_URL + "bob.vcf", ACCOUNT);
+
+    verify(resolver, times(1)).invalidate(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.HTTP);
+    assertEquals(2, requests.size());
+    assertEquals("Basic fresh", requests.get(1).headers().firstValue("Authorization").orElse(null));
+    assertEquals(1, requests.get(1).headers().allValues("Authorization").size(), "the stale header is replaced, not doubled");
+  }
+
+  /** EXO-89649. A second 401 is the answer: no third request. */
+  @Test
+  void doesNotLoopOnAServerThatKeepsRefusing() throws Exception {
+    when(resolver.retriesAfterRefusal(PROVIDER)).thenReturn(true);
+    HttpResponse<String> refused = response(401, "");
+    when(transport.<String> send(any(), any())).thenReturn(refused);
+
+    assertThrows(CardDavException.class, () -> client.fetchVCard(BOOK_URL + "bob.vcf", ACCOUNT));
+
+    verify(transport, times(2)).send(any(), any());
+    verify(resolver, times(1)).invalidate(any(), any(), any(), any());
+  }
+
+  /** EXO-89649. Only a 401 counts: a 403 or a 5xx invalidates nothing. */
+  @Test
+  void onlyA401InvalidatesTheMaterial() throws Exception {
+    HttpResponse<String> forbidden = response(403, "");
+    when(transport.<String> send(any(), any())).thenReturn(forbidden);
+
+    assertThrows(CardDavException.class, () -> client.fetchVCard(BOOK_URL + "bob.vcf", ACCOUNT));
+
+    verify(transport, times(1)).send(any(), any());
+    verify(resolver, never()).invalidate(any(), any(), any(), any());
+  }
+
+  /** EXO-89649. A provider carrying what the user typed is never retried on a 401. */
+  @Test
+  void neverRetriesWithAProviderThatCannotRefreshItsMaterial() throws Exception {
+    when(resolver.retriesAfterRefusal(PROVIDER)).thenReturn(false);
+    HttpResponse<String> refused = response(401, "");
+    when(transport.<String> send(any(), any())).thenReturn(refused);
+
+    assertThrows(CardDavException.class, () -> client.fetchVCard(BOOK_URL + "bob.vcf", ACCOUNT));
+
+    verify(transport, times(1)).send(any(), any());
+    verify(resolver, never()).invalidate(any(), any(), any(), any());
   }
 }

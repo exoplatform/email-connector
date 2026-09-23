@@ -206,4 +206,45 @@ public class EmailCredentialsResolverTest {
 
     assertThrows(ConnectorCredentialsException.class, () -> resolver.requiresUserAction("nobody"));
   }
+
+  /** EXO-89649. Only the server refusing the credentials counts, wherever JavaMail put it. */
+  @Test
+  void recognisesAnAuthenticationFailureOnEitherChain() {
+    javax.mail.AuthenticationFailedException refused = new javax.mail.AuthenticationFailedException("AUTHENTICATIONFAILED");
+    javax.mail.MessagingException wrappedAsNext = new javax.mail.SendFailedException("Sending failed", refused);
+    RuntimeException wrappedAsCause = new IllegalStateException("Error when connecting store", refused);
+
+    org.junit.jupiter.api.Assertions.assertTrue(EmailCredentialsResolver.isAuthenticationFailure(refused));
+    org.junit.jupiter.api.Assertions.assertTrue(EmailCredentialsResolver.isAuthenticationFailure(wrappedAsNext));
+    org.junit.jupiter.api.Assertions.assertTrue(EmailCredentialsResolver.isAuthenticationFailure(wrappedAsCause));
+    org.junit.jupiter.api.Assertions.assertFalse(EmailCredentialsResolver.isAuthenticationFailure(new javax.mail.MessagingException("Connection timed out")));
+    org.junit.jupiter.api.Assertions.assertFalse(EmailCredentialsResolver.isAuthenticationFailure(null));
+  }
+
+  /** EXO-89649. The invalidation reaches the provider with the very context production used. */
+  @Test
+  void invalidatesOnTheChannelTheMaterialWasRefusedOn() {
+    resolver.invalidate(CONNECTOR_ID, PROVIDER_NAME, USERNAME, ConnectorCredentialsChannel.SMTP);
+
+    org.mockito.ArgumentCaptor<org.exoplatform.services.connector.credentials.ConnectorCredentialsContext> context =
+        org.mockito.ArgumentCaptor.forClass(org.exoplatform.services.connector.credentials.ConnectorCredentialsContext.class);
+    org.mockito.Mockito.verify(connectorCredentialsService).invalidate(context.capture());
+    assertEquals(CONNECTOR_ID, context.getValue().getConnectorId());
+    assertEquals(PROVIDER_NAME, context.getValue().getConnectorCredentialsProviderName());
+    assertEquals(USERNAME, context.getValue().getUsername());
+    assertEquals(ConnectorCredentialsChannel.SMTP, context.getValue().getChannel());
+  }
+
+  /** EXO-89649. A retry is worth it only for a provider that produces its material itself. */
+  @Test
+  @SneakyThrows
+  void retriesOnlyForAProviderThatProducesItsOwnMaterial() {
+    when(connectorCredentialsService.requiresUserAction("bluemind-sudo")).thenReturn(false);
+    when(connectorCredentialsService.requiresUserAction("personal")).thenReturn(true);
+    when(connectorCredentialsService.requiresUserAction("unknown")).thenThrow(new org.exoplatform.services.connector.credentials.ConnectorCredentialsException("none"));
+
+    org.junit.jupiter.api.Assertions.assertTrue(resolver.retriesAfterRefusal("bluemind-sudo"));
+    org.junit.jupiter.api.Assertions.assertFalse(resolver.retriesAfterRefusal("personal"));
+    org.junit.jupiter.api.Assertions.assertFalse(resolver.retriesAfterRefusal("unknown"));
+  }
 }

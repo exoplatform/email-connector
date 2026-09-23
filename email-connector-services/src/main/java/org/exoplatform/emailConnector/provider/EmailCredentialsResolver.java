@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.provider;
 
+import javax.mail.AuthenticationFailedException;
 import javax.mail.Authenticator;
 
 import org.springframework.stereotype.Component;
@@ -187,6 +188,70 @@ public class EmailCredentialsResolver {
                                                                      providerName,
                                                                      username,
                                                                      ConnectorCredentialsChannel.SMTP));
+  }
+
+  /**
+   * Tells the provider that material it produced for this account was refused by the
+   * server, so the next production does not hand it out again (EXO-89649). The
+   * contract's rule: once, then one more attempt with fresh material - never a loop.
+   * A provider that keeps nothing (Personal) does nothing.
+   *
+   * @param connectorId the connector the material was produced for
+   * @param providerName the connector's provider
+   * @param username the eXo login the material was produced for
+   * @param channel the channel the material was refused on
+   */
+  public void invalidate(Long connectorId, String providerName, String username, ConnectorCredentialsChannel channel) {
+    connectorCredentialsService.invalidate(context(connectorId, providerName, username, channel));
+  }
+
+  /**
+   * Whether a refused credential is worth one more attempt after invalidating it: only
+   * for a provider that produces its material itself (no user action), whose
+   * invalidation can yield something new. A provider carrying what the user typed would
+   * hand the same password back, and the second refusal would count against the user's
+   * account in the mail server's lockout policy.
+   *
+   * @param providerName the connector's provider
+   * @return true when a retry on fresh material makes sense
+   */
+  public boolean retriesAfterRefusal(String providerName) {
+    try {
+      return !connectorCredentialsService.requiresUserAction(providerName);
+    } catch (ConnectorCredentialsException | RuntimeException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Whether a mail failure is the server refusing the credentials - IMAP's or SMTP's
+   * AUTHENTICATIONFAILED - as opposed to anything else. Only that one is worth
+   * invalidating material for: a network error proves nothing about the material.
+   * Walks the cause chain; JavaMail's {@code MessagingException.getCause()} returns its
+   * next exception, so a refusal {@code Transport.send} wrapped is found too.
+   *
+   * @param failure what the mail layer threw
+   * @return true when the server refused the authentication
+   */
+  public static boolean isAuthenticationFailure(Throwable failure) {
+    java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    java.util.Deque<Throwable> pending = new java.util.ArrayDeque<>();
+    if (failure != null) {
+      pending.add(failure);
+    }
+    while (!pending.isEmpty()) {
+      Throwable current = pending.poll();
+      if (!seen.add(current)) {
+        continue;
+      }
+      if (current instanceof AuthenticationFailedException) {
+        return true;
+      }
+      if (current.getCause() != null) {
+        pending.add(current.getCause());
+      }
+    }
+    return false;
   }
 
   /**
