@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
@@ -923,6 +924,17 @@ class EmailDelegationServiceTest {
                                                                                                           .thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
                                                                                                                                            MailboxRights.of("lrs")));
 
+    EmailDelegation written = row(DelegationStatus.ACCEPTED, DelegationOrigin.SERVER);
+    written.setPreset(DelegationPreset.READER);
+    written.setRights("lrs");
+    when(emailDelegationStorage.updateGrantedRights(eq(OWNER),
+                                                    eq(100L),
+                                                    eq(DelegationPreset.READER),
+                                                    eq("lrs"),
+                                                    any(),
+                                                    eq(GRANTEE_MAILBOX),
+                                                    any())).thenReturn(written);
+
     EmailDelegation changed = service.changePreset(OWNER, 100L, DelegationPreset.READER);
 
     ArgumentCaptor<MailboxAclSession> session = ArgumentCaptor.forClass(MailboxAclSession.class);
@@ -931,8 +943,55 @@ class EmailDelegationServiceTest {
     assertEquals(DelegationPreset.READER, changed.getPreset());
     assertEquals("lrs", changed.getRights(), "what the server holds, not what was asked");
     assertEquals(DelegationStatus.ACCEPTED, changed.getStatus(), "the share stays accepted");
-    verify(emailDelegationStorage).update(accepted);
+    verify(emailDelegationStorage, never()).update(any());
     verify(eventPublisher, never()).publishEvent(any());
+  }
+
+  /**
+   * Stack review N-1 -- the grantee leaves while the owner's SETACL is on the wire. The
+   * change of access writes only what the server was told, so the leave stands: the
+   * answer is the row as it now is (declined, badge off), never the pre-SETACL read
+   * written back over it.
+   */
+  @Test
+  void aLeaveDuringAChangeOfAccessStandsAfterIt() throws Exception {
+    EmailDelegation accepted = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    accepted.setBadgeIncluded(true);
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    MailboxRights ownerRights = MailboxRights.of("lrswipkxtea");
+    when(engine.myRights(any(), eq(INBOX))).thenReturn(ownerRights);
+    when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), eq(ownerRights)))
+                                                                                                          .thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
+                                                                                                                                           MailboxRights.of("lrswit")));
+    EmailDelegation left = row(DelegationStatus.DECLINED, DelegationOrigin.EXO);
+    left.setBadgeIncluded(false);
+    left.setRights("lrswit");
+    when(emailDelegationStorage.updateGrantedRights(eq(OWNER), eq(100L), any(), eq("lrswit"), any(), any(), any())).thenReturn(left);
+
+    EmailDelegation changed = service.changePreset(OWNER, 100L, DelegationPreset.EDITOR);
+
+    assertEquals(DelegationStatus.DECLINED, changed.getStatus(), "the leave stands");
+    assertFalse(changed.isBadgeIncluded());
+    verify(emailDelegationStorage, never()).update(any());
+  }
+
+  /**
+   * A share revoked or gone while the server was asked is not written, and the owner is
+   * told it is not changeable.
+   */
+  @Test
+  void aShareThatEndedDuringAChangeOfAccessIsRefused() throws Exception {
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO));
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.myRights(any(), eq(INBOX))).thenReturn(MailboxRights.of("lrswipkxtea"));
+    when(engine.grant(any(), any(), any(), any(), any())).thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrs")));
+    when(emailDelegationStorage.updateGrantedRights(any(), anyLong(), any(), any(), any(), any(), any())).thenReturn(null);
+
+    assertEquals(EmailDelegationService.NOT_CHANGEABLE_MESSAGE,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> service.changePreset(OWNER, 100L, DelegationPreset.READER)).getMessage());
+    verify(emailDelegationStorage, never()).update(any());
   }
 
   /**
