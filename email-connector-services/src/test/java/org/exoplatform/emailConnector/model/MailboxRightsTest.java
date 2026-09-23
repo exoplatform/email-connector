@@ -111,6 +111,8 @@ class MailboxRightsTest {
     assertFalse(createOnly.canDeleteMailbox(), "Dovecot's c beside k alone is not an x");
     assertEquals("lrswipkxtea", MailboxRights.fromRights(new Rights("lrwstipekxacd")).letters(), "the owner");
     assertEquals("lrs", MailboxRights.of("lrs").letters(), "a Reader carries no virtual letter");
+    assertEquals("lrsx", MailboxRights.of("lrsxd").letters(), "x is a member of d (RFC 4314's t+e+x grouping)");
+    assertEquals("lrsx", MailboxRights.of("lrsxc").letters(), "x is a member of c");
   }
 
   /**
