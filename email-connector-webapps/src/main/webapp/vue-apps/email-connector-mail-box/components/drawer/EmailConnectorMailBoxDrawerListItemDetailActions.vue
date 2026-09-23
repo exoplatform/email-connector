@@ -84,6 +84,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <!-- What a Spam message offers instead: back to the inbox, or into the Trash. -->
     <template v-if="junkActions">
       <v-btn
+        v-if="canRestoreFromJunk"
         :title="$t('emailConnector.mailBox.list.drawer.detail.notJunk.label')"
         @click="restoreFromJunk()"
         icon>
@@ -230,6 +231,15 @@ export default {
      */
     junkActions() {
       return this.$emailConnectorMailBoxService.hasJunkActions(this.email?.folder);
+    },
+    /**
+     * Whether "Not spam" belongs beside the Spam delete: in the user's own Spam only --
+     * out of a shared mailbox's it would file into another mailbox (EXO-90548).
+     *
+     * @returns {Boolean} true when "Not spam" is offered
+     */
+    canRestoreFromJunk() {
+      return this.$emailConnectorMailBoxService.canRestoreFromJunk(this.email?.folder);
     },
     /**
      * Whether "Mark as spam" may be offered on the opened message: the same rows the
