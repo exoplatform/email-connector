@@ -85,7 +85,7 @@ public enum FolderRole {
   }
 
   /**
-   * The role a name names by its usual English name, exactly -- never a substring:
+   * The role a name names by its usual name, exactly -- never a substring:
    * "Trash notes" is not the Trash. The fallback for a server that shows no special-use
    * attribute where it is read. Handed a path below a shared root rather than a last
    * segment, it therefore only ever matches a direct child: "Archive/2024" names nothing.
@@ -97,12 +97,24 @@ public enum FolderRole {
     if (name == null) {
       return null;
     }
-    return switch (name.trim().toLowerCase(Locale.ROOT)) {
+    String usual = name.trim().toLowerCase(Locale.ROOT);
+    // The Trash, Spam, Drafts and Archive names are the ones the user's own mailbox
+    // recognises (MailFolderNames): Stalwart's "Junk Mail" was missed by a shorter list
+    // of its own here, so its owner's Spam was never shared (EXO-90548).
+    if (MailFolderNames.TRASH.contains(usual)) {
+      return TRASH;
+    }
+    if (MailFolderNames.JUNK.contains(usual)) {
+      return JUNK;
+    }
+    if (MailFolderNames.DRAFTS.contains(usual)) {
+      return DRAFTS;
+    }
+    if (MailFolderNames.ARCHIVE.contains(usual)) {
+      return ARCHIVE;
+    }
+    return switch (usual) {
     case "sent", "sent items", "sent messages", "sent mail" -> SENT;
-    case "archive", "archives" -> ARCHIVE;
-    case "trash", "deleted items", "deleted messages" -> TRASH;
-    case "junk", "spam", "junk e-mail", "junk email" -> JUNK;
-    case "drafts" -> DRAFTS;
     default -> null;
     };
   }
