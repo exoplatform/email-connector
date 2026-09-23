@@ -178,14 +178,16 @@ export default {
     },
     /**
      * Whether the share covers the Inbox alone and eXo may extend it: written by eXo
-     * before folders were shared (EXO-90548). A share made on the server is never
-     * rewritten from here.
+     * before folders were shared (EXO-90548), and accepted or still on offer -- a
+     * declined or merely available share is shared again by inviting (decision 3b).
+     * A share made on the server is never rewritten from here.
      *
      * @returns {Boolean} true when "Share Sent, Archive, Trash and Spam too" is offered
      */
     canExtend() {
       const delegation = this.grantee.delegation;
-      return this.actionable && !this.discovered && !!delegation.inboxOnly;
+      return this.actionable && !this.discovered && !!delegation.inboxOnly
+        && (delegation.status === 'ACCEPTED' || delegation.status === 'PENDING');
     },
     /**
      * The owner's folders the grant found but the server refused to share, said on the
