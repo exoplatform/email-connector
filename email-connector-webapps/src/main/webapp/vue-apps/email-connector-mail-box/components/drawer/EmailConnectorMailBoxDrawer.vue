@@ -1449,6 +1449,25 @@ export default {
       }
     },
     /**
+     * The exo-drawer INSIDE the pinneable-drawer wrapper the emailBoxDrawer ref points
+     * at: the one that holds the header filter field (showFilter, filterText,
+     * resetFilter) and the expand state (expand). The wrapper (EXO-89874) forwards
+     * only open, close, startLoading, endLoading and toogleExpand, so reading or
+     * setting any of those on the ref itself reaches nothing (EXO-90578: the search
+     * from outside never filled the field, the field was never emptied, and a
+     * hand-over collapsed a mailbox already expanded).
+     * <p>
+     * Falls back to the ref itself where it is a plain exo-drawer. Depends on the
+     * `ref="drawer"` social's PinneableDrawer.vue puts on its exo-drawer: renamed, the
+     * fallback would silently bring the bug back.
+     *
+     * @returns {Object} the exo-drawer, or undefined before the drawer is rendered
+     */
+    innerMailDrawer() {
+      const drawer = this.$refs.emailBoxDrawer;
+      return drawer?.$refs?.drawer || drawer;
+    },
+    /**
      * Opens the mailbox on a search someone started elsewhere — today, in the
      * platform's unified search, which only looks at the locally held mail.
      *
@@ -1460,7 +1479,7 @@ export default {
      * @returns {void}
      */
     openSearchFromOutside(term) {
-      const drawer = this.$refs.emailBoxDrawer;
+      const drawer = this.innerMailDrawer();
       if (drawer) {
         drawer.showFilter = true;
         drawer.filterText = term;
@@ -1569,7 +1588,7 @@ export default {
       if (handover?.email) {
         this.showHandedOverEmail(handover.email, handover.folder);
       }
-      const drawer = this.$refs.emailBoxDrawer;
+      const drawer = this.innerMailDrawer();
       if (drawer && !drawer.expand) {
         drawer.toogleExpand();
       }
@@ -1943,7 +1962,7 @@ export default {
       // stars and never searches again would keep the entries for the page's lifetime.
       this.favoriteOverrides.clear();
       // Also empty the drawer's own header filter field for the next open.
-      this.$refs.emailBoxDrawer?.resetFilter?.();
+      this.innerMailDrawer()?.resetFilter?.();
       document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
       this.cancelSelectMode();
       this.selectEmailPlaceHolder = false;
@@ -3183,7 +3202,7 @@ export default {
       // its field too, or its results would stand in for the view's list.
       if (isScheduledView(folder) && this.searchActive) {
         this.clearSearch();
-        this.$refs.emailBoxDrawer?.resetFilter?.();
+        this.innerMailDrawer()?.resetFilter?.();
       }
       if (this.expanded) {
         this.pinnedEmail = false;
