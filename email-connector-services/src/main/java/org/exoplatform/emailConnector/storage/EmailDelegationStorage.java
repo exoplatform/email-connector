@@ -17,7 +17,10 @@
 package org.exoplatform.emailConnector.storage;
 
 import java.util.Date;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -28,6 +31,11 @@ import org.exoplatform.emailConnector.model.DelegationOrigin;
 import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailDelegation;
+import org.exoplatform.emailConnector.model.FolderRole;
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
+
+import io.meeds.social.util.JsonUtils;
 
 /**
  * The delegation rows' persistence: entity to {@link EmailDelegation} and back. Every
@@ -40,6 +48,8 @@ import org.exoplatform.emailConnector.model.EmailDelegation;
  */
 @Component
 public class EmailDelegationStorage {
+
+  private static final Log LOG = ExoLogger.getLogger(EmailDelegationStorage.class);
 
   @Autowired
   private EmailDelegationDAO emailDelegationDAO;
@@ -253,6 +263,8 @@ public class EmailDelegationStorage {
     entity.setInvitedDate(delegation.getInvitedDate());
     entity.setRespondedDate(delegation.getRespondedDate());
     entity.setRevokedDate(delegation.getRevokedDate());
+    entity.setGrantedRoles(delegation.getGrantedRoles());
+    entity.setOwnerRoleFolders(roleFoldersToJson(delegation.getOwnerRoleFolders()));
     return entity;
   }
 
@@ -283,6 +295,59 @@ public class EmailDelegationStorage {
                                entity.getRespondedDate(),
                                entity.getRevokedDate(),
                                entity.getCreatedDate(),
-                               entity.getUpdatedDate());
+                               entity.getUpdatedDate(),
+                               entity.getGrantedRoles(),
+                               roleFoldersFromJson(entity.getOwnerRoleFolders()));
+  }
+
+  /**
+   * The owner's role-to-folder-name map as stored: a JSON object keyed by role name, or
+   * null for no map.
+   *
+   * @param roleFolders the map
+   * @return the JSON, or null
+   */
+  private static String roleFoldersToJson(Map<FolderRole, String> roleFolders) {
+    if (roleFolders == null || roleFolders.isEmpty()) {
+      return null;
+    }
+    Map<String, String> byName = new TreeMap<>();
+    roleFolders.forEach((role, name) -> {
+      if (role != null && name != null) {
+        byName.put(role.name(), name);
+      }
+    });
+    return byName.isEmpty() ? null : JsonUtils.toJsonString(byName);
+  }
+
+  /**
+   * The stored map read back. An entry whose role this version does not know, or whose
+   * name is not a string, is skipped; unreadable JSON reads as no map -- the delegate's
+   * discovery then falls back to folder names, which is what it does on a share written
+   * before the map existed.
+   *
+   * @param json the stored JSON
+   * @return the map, empty when none
+   */
+  @SuppressWarnings("unchecked")
+  private static Map<FolderRole, String> roleFoldersFromJson(String json) {
+    Map<FolderRole, String> roleFolders = new EnumMap<>(FolderRole.class);
+    if (json == null || json.isBlank()) {
+      return roleFolders;
+    }
+    try {
+      Map<String, Object> byName = JsonUtils.fromJsonString(json, Map.class);
+      if (byName != null) {
+        byName.forEach((name, folder) -> {
+          FolderRole role = FolderRole.of(name);
+          if (role != null && folder instanceof String folderName) {
+            roleFolders.put(role, folderName);
+          }
+        });
+      }
+    } catch (Exception e) { // the parser may throw its checked exception undeclared
+      LOG.debug("Unreadable owner role folders on a delegation row, read as none: {}", json, e);
+    }
+    return roleFolders;
   }
 }

@@ -40,6 +40,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.exoplatform.emailConnector.dao.EmailFolderDAO;
 import org.exoplatform.emailConnector.entity.EmailFolderEntity;
 import org.exoplatform.emailConnector.model.EmailFolder;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolderView;
 
@@ -116,6 +117,30 @@ public class EmailFolderStorageTest {
     assertNull(disabled.getEnabledDate());
     assertNull(disabled.getSnapshot(), "an opt-out forgets the sync memory");
     assertNull(disabled.getLastSyncDate());
+  }
+
+  /**
+   * EXO-90548 -- a delegated folder is registered with its role in the owner's mailbox
+   * and the delegate's own letters on it, and reads them back; a folder of the user's own
+   * mailbox has neither.
+   */
+  @Test
+  void aDelegatedFolderKeepsItsRoleAndLetters() {
+    EmailFolder trash = newFolder("bob", "Shared Folders/alice@acme.com/Trash", "Trash");
+    trash.setType(MailFolderView.TYPE_DELEGATED);
+    trash.setDelegationId(9L);
+    trash.setRole(FolderRole.TRASH);
+    trash.setRights("lrswit");
+    trash.setRightsCheckDate(new Date(5_000L));
+
+    EmailFolder read = emailFolderStorage.getFolder("bob", emailFolderStorage.createFolder(trash).getId());
+
+    assertEquals(FolderRole.TRASH, read.getRole());
+    assertEquals("lrswit", read.getRights());
+    assertEquals(5_000L, read.getRightsCheckDate().getTime());
+    EmailFolder own = emailFolderStorage.getFolder("bob", emailFolderStorage.createFolder(newFolder("bob", "Factures", "Factures")).getId());
+    assertNull(own.getRole());
+    assertNull(own.getRights());
   }
 
   /**

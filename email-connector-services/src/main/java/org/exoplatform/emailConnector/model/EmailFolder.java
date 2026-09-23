@@ -61,9 +61,56 @@ public class EmailFolder {
   private FolderSyncSnapshot snapshot;
 
   // Null for a folder of the user's own mailbox; the EMAIL_DELEGATION id for a folder of
-  // a mailbox shared with them. Declared LAST: the class is @AllArgsConstructor and
-  // built positionally in the storage.
+  // a mailbox shared with them. The class is @AllArgsConstructor and built
+  // positionally: fields are only ever added after the existing ones.
   private Long               delegationId;
+
+  // EXO-90548: a delegated folder's role in its owner's mailbox, null otherwise.
+  private FolderRole         role;
+
+  // EXO-90548: the delegate's own letters on this delegated folder, null otherwise.
+  private String             rights;
+
+  // EXO-90548: when those letters were last read.
+  private Date               rightsCheckDate;
+
+  /**
+   * The folder as it was before EXO-90548 gave delegated folders a role and letters of
+   * their own: every existing positional caller keeps building it this way, with no role
+   * and no letters.
+   *
+   * @param id the row id
+   * @param userId the user
+   * @param remoteName the IMAP full name
+   * @param displayName the last segment
+   * @param delimiter the hierarchy separator
+   * @param type CUSTOM, DELEGATED_INBOX or DELEGATED
+   * @param syncEnabled the opt-in
+   * @param enabledDate when opted in
+   * @param missing whether the last walk missed it
+   * @param discoveredDate when first seen
+   * @param lastSeenDate when last seen
+   * @param lastSyncDate when last synced
+   * @param snapshot the sync snapshot
+   * @param delegationId the delegation of a shared mailbox's folder
+   */
+  public EmailFolder(Long id,
+                     String userId,
+                     String remoteName,
+                     String displayName,
+                     String delimiter,
+                     String type,
+                     boolean syncEnabled,
+                     Date enabledDate,
+                     boolean missing,
+                     Date discoveredDate,
+                     Date lastSeenDate,
+                     Date lastSyncDate,
+                     FolderSyncSnapshot snapshot,
+                     Long delegationId) {
+    this(id, userId, remoteName, displayName, delimiter, type, syncEnabled, enabledDate, missing, discoveredDate, lastSeenDate,
+         lastSyncDate, snapshot, delegationId, null, null, null);
+  }
 
   /**
    * The {@code EMAIL_BOX.FOLDER} discriminator of this folder's mirrored messages.

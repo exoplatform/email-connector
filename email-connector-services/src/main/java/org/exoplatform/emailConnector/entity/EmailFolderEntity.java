@@ -148,4 +148,19 @@ public class EmailFolderEntity {
   // USER_ID right; the column only says which listing the folder belongs in.
   @Column(name = "DELEGATION_ID")
   private Long    delegationId;
+
+  // A delegated folder's role in its owner's mailbox (SENT, ARCHIVE, TRASH, JUNK,
+  // DRAFTS); null for INBOX, for a custom folder and for every folder of the user's own
+  // mailbox (EXO-90548).
+  @Column(name = "FOLDER_ROLE")
+  private String  role;
+
+  // The delegate's own MYRIGHTS letters on this delegated folder -- what the write guard
+  // reads for it. Null on the user's own folders. 32 wide, for a server's digit rights.
+  @Column(name = "RIGHTS")
+  private String  rights;
+
+  // When RIGHTS were last read from the server.
+  @Column(name = "RIGHTS_CHECK_DATE")
+  private Date    rightsCheckDate;
 }
