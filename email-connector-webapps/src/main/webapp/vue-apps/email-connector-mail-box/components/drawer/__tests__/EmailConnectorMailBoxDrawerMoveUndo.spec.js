@@ -464,13 +464,10 @@ describe('the moved rows in their destination (EXO-89966)', () => {
     expect(fixture.wrapper.vm.loading).toBe(false);
     const content = shallowMount(EmailConnectorMailBoxDrawerContent, {
       propsData: { emails: [remembered, { mailRemoteId: 2, mailHeaderId: '<b@host>' }], selectMode: true },
-      // Select-all now asks the service which id each row is selected under, since a
-      // draft may have no UID to be selected by (EXO-90438).
-      mocks: { $t: key => key, $emailConnectorMailBoxService: emailConnectorMailBoxService },
+      mocks: { $t: key => key },
     });
     content.vm.onSelectAllChange(true);
-    // The selection names messages by folder and UID (EXO-90416).
-    expect(content.emitted('update:selected-emails')[0][0]).toEqual(['INBOX:2']);
+    expect(content.emitted('update:selected-emails')[0][0]).toEqual([2]);
     content.destroy();
   });
 
