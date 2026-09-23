@@ -396,13 +396,15 @@ export default {
       return this.$emailConnectorMailBoxService.canStar(this.email.folder);
     },
     /**
-     * The owner of the shared mailbox this message is in, whose star it also sets
-     * (EXO-90550) -- said on the star; empty in the user's own mailbox.
+     * The owner of the shared mailbox whose INBOX this message is in -- said on the star
+     * there only, where it is true: her Favorites list her INBOX stars alone (EXO-90550).
+     * Empty elsewhere, and in the user's own mailbox.
      *
      * @returns {String} the owner's name, or empty
      */
     starSharedOwner() {
-      return this.$emailConnectorMailBoxService.sharedMailboxOfFolder(this.email.folder)?.ownerFullName || '';
+      const entry = this.$emailConnectorMailBoxService.sharedMailboxOfFolder(this.email.folder);
+      return entry && entry.folderKey === this.email.folder ? entry.ownerFullName || '' : '';
     },
   },
   methods: {
