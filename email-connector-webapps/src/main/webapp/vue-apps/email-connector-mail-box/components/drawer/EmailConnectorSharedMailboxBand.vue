@@ -163,12 +163,14 @@ export default {
     },
     /**
      * Said when the share covers the owner's Inbox alone -- written before eXo shared the
-     * owner's other folders; the owner can extend it (EXO-90548).
+     * owner's other folders; the owner can extend it (EXO-90548). Read from the share
+     * itself (inboxOnly), not from the folders the last discovery found: those are empty
+     * before the first discovery, after a failed one, or when every folder was refused.
      *
      * @returns {String} the sentence, or empty
      */
     inboxOnly() {
-      return this.entry && !(this.entry.folders || []).length
+      return this.entry?.inboxOnly
         ? this.$t('emailConnector.mailBox.sharedMailbox.inboxOnly', { 0: this.entry.ownerFullName })
         : '';
     },
