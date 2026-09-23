@@ -12315,4 +12315,107 @@ public class EmailBoxServiceTest {
       assertFalse(copy.isPresent(), "unreachable: an empty copy, never a failure");
     }
   }
+
+  /**
+   * EXO-89649. The SMTP server refusing the provider's material on the interactive
+   * send: one invalidation, a session on fresh material, the same message sent through
+   * it - once.
+   */
+  @Test
+  void resendsOnceWithFreshCredentialsWhenTheSmtpServerRefuses() throws Exception {
+    when(emailCredentialsResolver.retriesAfterRefusal(any())).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Session session = mock(Session.class);
+    when(session.getProperties()).thenReturn(new Properties());
+    Transport transport = mock(Transport.class);
+    when(session.getTransport(any(Address.class))).thenReturn(transport);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    Folder folder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(folder);
+    when(folder.listSubscribed("*")).thenReturn(new Folder[0]);
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      transportMock.when(() -> Transport.send(any(Message.class))).thenThrow(new AuthenticationFailedException("535"));
+      Email email = email(TEST_USER);
+      EmailRecipient bob = new EmailRecipient();
+      bob.setAddress("bob@example.com");
+      email.setTo(List.of(bob));
+
+      emailBoxService.sendEmail(email, TEST_USER);
+
+      verify(emailCredentialsResolver, times(1)).invalidate(any(), any(), eq(TEST_USER), eq(ConnectorCredentialsChannel.SMTP));
+      verify(transport, times(1)).connect();
+      verify(transport, times(1)).sendMessage(any(Message.class), any(Address[].class));
+    }
+  }
+
+  /** EXO-89649. A failure that is not an authentication refusal is the answer: no retry. */
+  @Test
+  void doesNotRetryASendThatFailsForAnotherReason() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Session session = mock(Session.class);
+    when(session.getProperties()).thenReturn(new Properties());
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      transportMock.when(() -> Transport.send(any(Message.class))).thenThrow(new MessagingException("Could not connect to SMTP host"));
+
+      Email email = email(TEST_USER);
+      assertThrows(Exception.class, () -> emailBoxService.sendEmail(email, TEST_USER));
+
+      verify(emailCredentialsResolver, never()).invalidate(any(), any(), any(), any());
+      verify(session, never()).getTransport(any(Address.class));
+    }
+  }
+
+  /**
+   * EXO-89649. A scheduled send refused at CONNECT - before a byte of the message was
+   * accepted - is rebuilt on fresh material and transmitted once more.
+   */
+  @Test
+  void retriesAScheduledSendRefusedAtConnectOnce() throws Exception {
+    when(emailCredentialsResolver.retriesAfterRefusal(any())).thenReturn(true);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    java.util.concurrent.atomic.AtomicInteger builds = new java.util.concurrent.atomic.AtomicInteger();
+    MimeMessage built = mock(MimeMessage.class);
+    doThrow(new SmtpTransmitter.TransmissionException(SmtpTransmitter.Phase.CONNECT, new AuthenticationFailedException("535")))
+        .doNothing()
+        .when(smtpTransmitter).transmit(built);
+
+    emailBoxService.transmitAsUser(TEST_USER, (session, from) -> {
+      builds.incrementAndGet();
+      return built;
+    });
+
+    assertEquals(2, builds.get(), "rebuilt on a session carrying fresh material");
+    verify(smtpTransmitter, times(2)).transmit(built);
+    verify(emailCredentialsResolver, times(1)).invalidate(any(), any(), eq(TEST_USER), eq(ConnectorCredentialsChannel.SMTP));
+  }
+
+  /** EXO-89649. A refusal at SEND is never retried: the server may already have accepted the message. */
+  @Test
+  void neverRetriesAScheduledSendThatFailedAtSend() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    MimeMessage built = mock(MimeMessage.class);
+    doThrow(new SmtpTransmitter.TransmissionException(SmtpTransmitter.Phase.SEND, new AuthenticationFailedException("535")))
+        .when(smtpTransmitter).transmit(built);
+
+    assertThrows(SmtpTransmitter.TransmissionException.class,
+                 () -> emailBoxService.transmitAsUser(TEST_USER, (session, from) -> built));
+
+    verify(smtpTransmitter, times(1)).transmit(built);
+    verify(emailCredentialsResolver, never()).invalidate(any(), any(), any(), any());
+  }
 }

@@ -7217,8 +7217,66 @@ public class EmailBoxService {
                        boolean reply,
                        String username,
                        UserEmailSetting userEmailSetting) throws MessagingException {
-    Transport.send(message);
+    try {
+      Transport.send(message);
+    } catch (MessagingException e) {
+      if (!EmailCredentialsResolver.isAuthenticationFailure(e) || !retriesAfterRefusal(userEmailSetting)) {
+        throw e;
+      }
+      resendWithFreshCredentials(message, username, userEmailSetting, e);
+    }
     afterTransmission(message, email, reply, username, userEmailSetting);
+  }
+
+  /**
+   * The one retry the credentials contract allows after the SMTP server refused the
+   * provider's material (EXO-89649): the material is invalidated, a session is built
+   * on fresh material, and the same message goes out through it. The refusal happened
+   * at authentication, before any byte of the message was accepted, so sending it
+   * again cannot duplicate it. A second refusal propagates.
+   *
+   * @param message the message the first attempt could not send
+   * @param username the sender
+   * @param userEmailSetting the sender's connector binding
+   * @param refusal the first attempt's failure, kept when the retry cannot be built
+   * @throws MessagingException when the retry fails too
+   */
+  private boolean retriesAfterRefusal(UserEmailSetting userEmailSetting) {
+    EmailConnector emailConnector =
+                                  emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+    return emailConnector != null && credentialsResolver().retriesAfterRefusal(emailConnector.getAuthProviderName());
+  }
+
+  private void resendWithFreshCredentials(MimeMessage message,
+                                          String username,
+                                          UserEmailSetting userEmailSetting,
+                                          MessagingException refusal) throws MessagingException {
+    EmailConnector emailConnector =
+                                  emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+    LOG.debug("The SMTP server refused the credentials of user {}; retrying once with fresh ones", username, refusal);
+    credentialsResolver().invalidate(emailConnector.getId(),
+                                     emailConnector.getAuthProviderName(),
+                                     username,
+                                     ConnectorCredentialsChannel.SMTP);
+    Session fresh;
+    try {
+      fresh = smtpSession(emailConnector, username);
+    } catch (ConnectorCredentialsException e) {
+      refusal.addSuppressed(e);
+      throw refusal;
+    }
+    message.saveChanges();
+    javax.mail.Address[] recipients = message.getAllRecipients();
+    if (recipients == null || recipients.length == 0) {
+      throw refusal;
+    }
+    Transport transport = fresh.getTransport(recipients[0]);
+    try {
+      transport.connect();
+      transport.sendMessage(message, recipients);
+    } finally {
+      transport.close();
+    }
   }
 
   /**
@@ -7305,7 +7363,43 @@ public class EmailBoxService {
     if (emailConnector == null) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE, username));
     }
-    MimeMessage message;
+    try {
+      smtpTransmitter.transmit(buildScheduled(factory, emailConnector, userEmailSetting, username));
+    } catch (SmtpTransmitter.TransmissionException e) {
+      // The one retry the credentials contract allows (EXO-89649), and only at
+      // CONNECT: the server refused the provider's material before accepting a byte
+      // of the message, so sending it again cannot duplicate it. A refusal at SEND,
+      // or a second one, is the answer.
+      if (e.getPhase() != SmtpTransmitter.Phase.CONNECT || !EmailCredentialsResolver.isAuthenticationFailure(e.getCause())
+          || !credentialsResolver().retriesAfterRefusal(emailConnector.getAuthProviderName())) {
+        throw e;
+      }
+      LOG.debug("The SMTP server refused the credentials of user {}; retrying the scheduled send once with fresh ones",
+                username,
+                e);
+      credentialsResolver().invalidate(emailConnector.getId(),
+                                       emailConnector.getAuthProviderName(),
+                                       username,
+                                       ConnectorCredentialsChannel.SMTP);
+      smtpTransmitter.transmit(buildScheduled(factory, emailConnector, userEmailSetting, username));
+    }
+  }
+
+  /**
+   * The scheduled message, built on an SMTP session carrying the provider's current
+   * material.
+   *
+   * @param factory what builds the message on a session
+   * @param emailConnector the sender's connector
+   * @param userEmailSetting the sender's connector binding
+   * @param username the sender
+   * @return the message to transmit
+   * @throws SmtpTransmitter.TransmissionException at PREPARE when it cannot be built
+   */
+  private MimeMessage buildScheduled(OutgoingMessageFactory factory,
+                                     EmailConnector emailConnector,
+                                     UserEmailSetting userEmailSetting,
+                                     String username) throws SmtpTransmitter.TransmissionException {
     try {
       // The address resolved exactly as buildOutgoingMessage resolves it.
       String resolved = credentialsResolver().senderAddress(emailConnector.getId(),
@@ -7313,12 +7407,11 @@ public class EmailBoxService {
                                                             username);
       String emailAddress = StringUtils.defaultIfBlank(resolved, userEmailSetting.getEmailAddress());
       Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
-      message = factory.build(smtpSession(emailConnector, username, true),
-                              new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
+      return factory.build(smtpSession(emailConnector, username, true),
+                           new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
     } catch (MessagingException | UnsupportedEncodingException | ConnectorCredentialsException | RuntimeException e) {
       throw new SmtpTransmitter.TransmissionException(SmtpTransmitter.Phase.PREPARE, e);
     }
-    smtpTransmitter.transmit(message);
   }
 
   /**

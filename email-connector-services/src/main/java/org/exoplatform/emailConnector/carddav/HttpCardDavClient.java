@@ -47,6 +47,7 @@ import org.w3c.dom.NodeList;
 import org.xml.sax.SAXException;
 
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -316,7 +317,8 @@ public class HttpCardDavClient implements CardDavClient {
 
     Element multistatus = parse(send(request(addressBook.url(), "REPORT", body.toString(), account).header("Depth",
                                                                                                                      "1")
-                                                                                                              .build()),
+                                                                                                              .build(),
+                                     account),
                                 addressBook.url());
     List<ContactResource> resources = new ArrayList<>();
     for (Element response : childElements(multistatus, DAV_NS, RESPONSE_ELEMENT)) {
@@ -337,7 +339,7 @@ public class HttpCardDavClient implements CardDavClient {
                                      .GET()
                                      .build();
     try {
-      HttpResponse<String> response = httpClient.send(request, BodyHandlers.ofString(StandardCharsets.UTF_8));
+      HttpResponse<String> response = exchange(request, account);
       int status = response.statusCode();
       if (status == 404 || status == 410) {
         // The entry is gone, which for an edit is a fact to report -- the sync
@@ -407,7 +409,7 @@ public class HttpCardDavClient implements CardDavClient {
     }
     HttpRequest request = builder.build();
     try {
-      HttpResponse<String> response = httpClient.send(request, BodyHandlers.ofString(StandardCharsets.UTF_8));
+      HttpResponse<String> response = exchange(request, account);
       int status = response.statusCode();
       // PUT's own accepted set, apart from send()'s 200/207 which belongs to the
       // read verbs: 201 is the created card, 204 and 200 are how some servers
@@ -629,7 +631,7 @@ public class HttpCardDavClient implements CardDavClient {
    * @return the multistatus element
    */
   private Element propfind(String url, String body, String depth, CardDavAccount account) {
-    return parse(send(request(url, "PROPFIND", body, account).header("Depth", depth).build()), url);
+    return parse(send(request(url, "PROPFIND", body, account).header("Depth", depth).build(), account), url);
   }
 
   /**
@@ -651,15 +653,49 @@ public class HttpCardDavClient implements CardDavClient {
   }
 
   /**
+   * Sends a request, and once more with fresh material when the server answers 401
+   * (EXO-89649): material can go stale between being produced and being used - a
+   * BlueMind session kept by the provider and dropped by a BlueMind restart. The
+   * provider is told once, the request goes out once more with a freshly produced
+   * header, and whatever the server then answers is the answer: never a loop. Only a
+   * 401 counts - a 407 is a proxy, a 403 a refusal - and a network failure proves
+   * nothing about the material. The request bodies here are strings, so the copy
+   * replays the same body.
+   *
+   * @param request the request as built, with the provider's header
+   * @param account whose address book this is
+   * @return the response, from the retry when there was one
+   * @throws IOException when the server cannot be reached
+   * @throws InterruptedException when interrupted while waiting
+   */
+  private HttpResponse<String> exchange(HttpRequest request, CardDavAccount account) throws IOException, InterruptedException {
+    HttpResponse<String> response = httpClient.send(request, BodyHandlers.ofString(StandardCharsets.UTF_8));
+    if (response.statusCode() != 401 || emailCredentialsResolver == null
+        || !emailCredentialsResolver.retriesAfterRefusal(account.getProviderName())) {
+      return response;
+    }
+    LOG.debug("The address book server refused the credentials of user {}; retrying once with fresh ones", account.getUsername());
+    emailCredentialsResolver.invalidate(account.getConnectorId(),
+                                        account.getProviderName(),
+                                        account.getUsername(),
+                                        ConnectorCredentialsChannel.HTTP);
+    HttpRequest retry = HttpRequest.newBuilder(request, (name, value) -> !"Authorization".equalsIgnoreCase(name))
+                                   .header("Authorization", authorization(account))
+                                   .build();
+    return httpClient.send(retry, BodyHandlers.ofString(StandardCharsets.UTF_8));
+  }
+
+  /**
    * Sends a request and returns its body, turning every unhappy answer into the
    * one exception the sync knows how to handle.
    *
    * @param request the request to send
+   * @param account whose address book this is, for the one retry on a 401
    * @return the response body
    */
-  private String send(HttpRequest request) {
+  private String send(HttpRequest request, CardDavAccount account) {
     try {
-      HttpResponse<String> response = httpClient.send(request, BodyHandlers.ofString(StandardCharsets.UTF_8));
+      HttpResponse<String> response = exchange(request, account);
       int status = response.statusCode();
       // 207 Multi-Status is the normal answer; 200 is tolerated because some
       // servers answer it for a single-resource PROPFIND.
