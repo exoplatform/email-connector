@@ -175,7 +175,8 @@ export function sharedMailboxCanFileInto(folder, role) {
  * and who can change that (EXO-90548).
  *
  * @param {String} folder a folder key
- * @param {Boolean} mayTakeOut whether the letters on that folder let mail be taken out
+ * @param {Boolean} mayTakeOut whether mail could be taken out of that folder were its
+ *        destinations shared (the letters allow it, and no Delete or Archive stands)
  * @returns {Object} the switcher entry, or null when no hint belongs there
  */
 export function inboxOnlyShareOf(folder, mayTakeOut) {
