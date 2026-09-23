@@ -601,7 +601,8 @@ public class EmailDelegationService {
    * @throws IllegalArgumentException {@code emailConnector.delegation.notChangeable} for a
    *           share that is no longer on the server (by its row, or by the INBOX ACL),
    *           was not written by eXo, has no preset, is on another mailbox than the one
-   *           connected, or is on a server that grants a whole mailbox at once
+   *           connected, or is on a server that grants a whole mailbox at once; also when
+   *           the share was revoked or went while the server was being asked
    * @throws MailboxAclException when the server cannot be asked, or no longer holds the
    *           share on INBOX ({@code NOT_RECORDED})
    */
@@ -651,15 +652,24 @@ public class EmailDelegationService {
       granted.addAll(grantRoleFolders(engine, session, identifier, delegation.getPreset(), missing, roleFolders));
     }
     MailboxRights inboxRights = written.rights() == null ? MailboxRights.NONE : written.rights();
-    delegation.setPreset(written.preset() == null || written.preset() == DelegationPreset.CUSTOM ? delegation.getPreset()
-                                                                                                  : written.preset());
-    delegation.setRights(inboxRights.letters());
-    delegation.setNativeRights(written.nativeRights());
-    delegation.setLastRightsCheckDate(new Date());
-    delegation.setGranteeMailbox(identifier);
-    delegation.setGrantedRoles(EmailDelegation.grantedRolesOf(granted));
-    delegation.setOwnerRoleFolders(roleFolders);
-    delegation = emailDelegationStorage.update(delegation);
+    DelegationPreset recorded = written.preset() == null || written.preset() == DelegationPreset.CUSTOM ? delegation.getPreset()
+                                                                                                        : written.preset();
+    // What the grants wrote, and only that, as changePreset records it (stack review
+    // N-1): the row read above is as old as the ACL round-trips, and a whole-row write
+    // from it would undo a leave or a revoke made meanwhile.
+    delegation = emailDelegationStorage.updateGrantedRights(ownerUsername,
+                                                           id,
+                                                           recorded,
+                                                           inboxRights.letters(),
+                                                           written.nativeRights(),
+                                                           identifier,
+                                                           new Date(),
+                                                           EmailDelegation.grantedRolesOf(granted),
+                                                           roleFolders);
+    if (delegation == null) {
+      // Revoked or gone meanwhile: the owner's next reconcile reads the server's ACL.
+      throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
+    }
     if (keptSeen != inboxRights.canKeepSeen()) {
       publish(EmailDelegationEvent.Type.RIGHTS_CHANGED, ownerUsername, delegation);
     }
