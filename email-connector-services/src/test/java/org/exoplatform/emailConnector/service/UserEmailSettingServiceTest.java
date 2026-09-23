@@ -786,4 +786,20 @@ public class UserEmailSettingServiceTest {
   private UserEmailSetting userEmailSetting() {
     return new UserEmailSetting("1", "testEmail", "testPassword", null, null, 0, 0L, null, null, null, true);
   }
+
+  /**
+   * A connector deleted while a sync that had read the setting is still running
+   * is refused with a sentence, before any provider is asked -- not an NPE in
+   * authenticatorFor.
+   */
+  @Test
+  @SneakyThrows
+  void connectingThroughAConnectorThatNoLongerExistsIsRefusedBeforeAnyProviderIsAsked() {
+    when(emailConnectorService.getEmailConnector(42L)).thenReturn(null);
+
+    MessagingException refused = assertThrows(MessagingException.class, () -> userEmailSettingService.connect("42", TEST_USER));
+
+    assertEquals("No email connector 42", refused.getMessage());
+    verifyNoInteractions(emailCredentialsResolver);
+  }
 }

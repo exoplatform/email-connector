@@ -433,13 +433,18 @@ public class UserEmailSettingService {
    *          configured provider derives the account from, and not something
    *          {@link UserEmailSetting} carries
    * @return store user box connected store
-   * @throws MessagingException when the mailbox cannot be reached
+   * @throws MessagingException when the mailbox cannot be reached, or the
+   *           connector no longer exists -- deleted while a sync that had read
+   *           the setting was still running
    * @throws ConnectorCredentialsException when the configured provider cannot
    *           produce credentials for this account
    */
   public Store connect(String emailConnectorId,
                        String username) throws MessagingException, ConnectorCredentialsException {
     EmailConnector emailConnector = emailConnectorService.getEmailConnector(Long.parseLong(emailConnectorId));
+    if (emailConnector == null) {
+      throw new MessagingException("No email connector " + emailConnectorId);
+    }
     return connect(emailConnector, authenticatorFor(emailConnector, username));
   }
 
