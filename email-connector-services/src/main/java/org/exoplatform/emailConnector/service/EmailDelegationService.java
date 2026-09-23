@@ -1269,6 +1269,13 @@ public class EmailDelegationService {
         row.setOrigin(DelegationOrigin.SERVER);
         row.setLastRightsCheckDate(new Date());
         row = createOrReread(row);
+      } else if (row != null && (row.getStatus() == DelegationStatus.REVOKED || row.getStatus() == DelegationStatus.GONE)) {
+        // The owner's own ACL names the grantee again (#443-2): the share stands on the
+        // server, so the row is not left dead in eXo -- offered to the grantee again,
+        // with the letters the ACL holds.
+        row.setRights(ace.rights().letters());
+        row.setNativeRights(ace.nativeRights());
+        row = reopen(row);
       } else if (row != null && row.getStatus() != DelegationStatus.ACCEPTED
                  && (!ace.rights().letters().equals(row.getRights())
                      || !StringUtils.equals(ace.nativeRights(), row.getNativeRights()))) {
@@ -1366,7 +1373,14 @@ public class EmailDelegationService {
       Set<String> listedRoots = new HashSet<>();
       for (SharedMailbox mailbox : shared) {
         listedRoots.add(mailbox.remoteRoot());
-        if (rowFor(rows, connector.getId(), mailbox) != null) {
+        EmailDelegation known = rowFor(rows, connector.getId(), mailbox);
+        if (known != null) {
+          if (known.getStatus() == DelegationStatus.REVOKED || known.getStatus() == DelegationStatus.GONE) {
+            // The server lists the share again (#443-2): a transient refusal, the stale
+            // rights window, a listing miss -- REVOKED was one negative answer, not the
+            // truth. Offered again, never subscribed on the grantee's behalf.
+            reopen(known);
+          }
           continue;
         }
         if (connected == null) {
@@ -1400,6 +1414,22 @@ public class EmailDelegationService {
         }
       }
     }
+  }
+
+  /**
+   * Offers again a share eXo had ended (REVOKED, GONE) that the server lists again
+   * (#443-2): back to AVAILABLE -- proposed to the grantee, never subscribed on their
+   * behalf -- with its revoke date cleared and its rights checked now.
+   *
+   * @param row the ended row
+   * @return the row as it now stands
+   */
+  private EmailDelegation reopen(EmailDelegation row) {
+    row.setStatus(DelegationStatus.AVAILABLE);
+    row.setRevokedDate(null);
+    row.setLastRightsCheckDate(new Date());
+    LOG.info("Mailbox delegation listed again by the server: grantee={} ownerMailbox={}", row.getGranteeId(), row.getOwnerMailbox());
+    return emailDelegationStorage.update(row);
   }
 
   /**
