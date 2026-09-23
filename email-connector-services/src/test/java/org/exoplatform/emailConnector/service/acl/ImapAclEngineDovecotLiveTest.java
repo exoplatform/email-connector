@@ -76,6 +76,10 @@ class ImapAclEngineDovecotLiveTest {
 
   private final ImapAclEngine engine = new ImapAclEngine();
 
+  /**
+   * Leaves the rig as each test expects and leaves it: no entry for bob on any of the
+   * role folders the tests touch.
+   */
   @BeforeEach
   @AfterEach
   void revokeEverythingBobHolds() {
@@ -192,6 +196,8 @@ class ImapAclEngineDovecotLiveTest {
   }
 
   /**
+   * One identifier's entry in a GETACL answer.
+   *
    * @param entries the entries
    * @param identifier the identifier
    * @return the identifier's entry, or null
