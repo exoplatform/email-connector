@@ -364,8 +364,6 @@ export default {
     recipientsToggleTooltip() {
       return this.expandedHeader ? this.$t('emailConnector.mailBox.list.drawer.detail.hideRecipients') : this.$t('emailConnector.mailBox.list.drawer.detail.displayRecipients');
     },
-    // Read off the message in script rather than in the template: the template
-    // compiler of the component tests (vue-jest) does not parse optional chaining.
     emailBody() {
       return this.email.content?.body;
     },
