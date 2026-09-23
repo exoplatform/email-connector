@@ -43,9 +43,8 @@ export const LIST_MIN_WIDTH_PX = 340;
 // What the reader keeps at least: a message's text stays readable, the wide ones scroll.
 export const READER_MIN_WIDTH_PX = 480;
 
-// The width of each handle's hit area. The handle between the columns takes no room; the
-// one at the pane's end takes this much of the list's (SEPARATOR_PLACEMENTS), so the
-// pane's width is the sum of the two columns'.
+// The width of each handle's hit area. A handle takes no room (SEPARATOR_PLACEMENTS), so
+// the pane's width is the sum of the two columns'.
 export const SEPARATOR_WIDTH_PX = 8;
 
 // What an arrow key moves a focused handle by.
@@ -217,18 +216,23 @@ export function separatorKeyWidth(event, value, range, rtl) {
   }
 }
 
-// Where each part of a handle sits, in CSS pixels from its anchor's start side (left in
-// a left-to-right page), and the anchor's own width. The hit areas keep off the columns'
-// scrollbars, which sit at each column's end, and nothing passes the left pane's edge --
-// the pane is a sideways scroller that clips what passes it and would scroll to show it:
-// - between the folder column and the list, the anchor is zero-wide on the boundary,
-//   the 1 px line is the list's first pixel, where the plain divider stood, and the hit
-//   area lies on the list's side, whose start holds no scrollbar;
-// - at the end of the pane, the anchor takes the hit area's width after the list, so the
-//   list's scrollbar ends where it begins, and the line is its last pixel: the pane's.
+// Where each part of a handle sits, in CSS pixels from its zero-wide anchor on the
+// boundary towards the start of the line (left in a left-to-right page). A handle takes
+// no room, so the columns and their rows' highlights reach the line, and its hit area
+// keeps off the columns' scrollbars, which sit at each column's end:
+// - between the folder column and the list, the 1 px line is the list's first pixel,
+//   where the plain divider stood, and the hit area lies on the list's side, whose
+//   start holds no scrollbar;
+// - at the end of the left pane the line is the pane's last pixel and the hit area lies
+//   over the reader's first pixels. The pane is a sideways scroller that clips what
+//   passes its edge, so that hit area is fixed-positioned: its containing block is then
+//   the drawer (a transformed box), outside the pane, which neither clips it nor
+//   scrolls to show it. Left at its static position -- every offset auto, which is what
+//   makes a browser use it -- it starts on the pane's edge at the columns' top, and it
+//   is as tall as the columns (the anchor's height, measured).
 const SEPARATOR_PLACEMENTS = {
-  between: { width: 0, hit: 0, line: 0, grip: -1 },
-  end: { width: SEPARATOR_WIDTH_PX, hit: 0, line: SEPARATOR_WIDTH_PX - 1, grip: SEPARATOR_WIDTH_PX - 3 },
+  between: { hit: 0, line: 0, grip: -1 },
+  end: { hit: null, line: -1, grip: -3 },
 };
 
 const SEPARATOR_GRIP_WIDTH_PX = 3;
@@ -237,22 +241,26 @@ const SEPARATOR_GRIP_WIDTH_PX = 3;
 const SEPARATOR_ACTIVE_COLOR = 'var(--allPagesPrimaryColor, #578dc9)';
 
 /**
- * The inline styles of a handle's parts (SEPARATOR_PLACEMENTS): its anchor, in the row
- * of columns; the hit area, the whole height of the columns; the 1 px line, a plain
- * vertical divider's own look (its border), primary while active; the grip across the
- * line half-way down, a muted grey at rest.
+ * The inline styles of a handle's parts (SEPARATOR_PLACEMENTS): its zero-wide anchor, in
+ * the row of columns; the hit area, the whole height of the columns; the 1 px line, a
+ * plain vertical divider's own look (its border), primary while active; the grip across
+ * the line half-way down, a muted grey at rest.
  *
  * @param {String} placement `between` two columns, or at the `end` of the left pane
  * @param {Boolean} rtl whether the page reads right to left: the offsets are mirrored
  * @param {Boolean} active whether the handle is pointed at, held or focused
+ * @param {Number} height the columns' height in CSS pixels, for the pane's end; unknown
+ *   (0), the drawer's
  * @returns {Object} `{ anchor, hit, line, grip }`
  */
-export function separatorStyles(placement, rtl, active) {
+export function separatorStyles(placement, rtl, active, height) {
   const offsets = SEPARATOR_PLACEMENTS[placement] || SEPARATOR_PLACEMENTS.between;
   const side = rtl ? 'right' : 'left';
   return {
-    anchor: { width: `${offsets.width}px`, minWidth: `${offsets.width}px`, alignSelf: 'stretch', zIndex: 1 },
-    hit: { top: 0, bottom: 0, [side]: `${offsets.hit}px`, width: `${SEPARATOR_WIDTH_PX}px`, touchAction: 'none' },
+    anchor: { width: 0, minWidth: 0, alignSelf: 'stretch', zIndex: 1 },
+    hit: offsets.hit === null
+      ? { position: 'fixed', height: height ? `${height}px` : '100%', width: `${SEPARATOR_WIDTH_PX}px`, zIndex: 1, touchAction: 'none' }
+      : { position: 'absolute', top: 0, bottom: 0, [side]: `${offsets.hit}px`, width: `${SEPARATOR_WIDTH_PX}px`, touchAction: 'none' },
     line: {
       top: 0,
       bottom: 0,
