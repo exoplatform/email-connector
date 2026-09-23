@@ -31,7 +31,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -65,6 +67,7 @@ import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailDelegation;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.GrantedDelegations;
@@ -229,6 +232,35 @@ public class UserEmailSettingRestTest {
                                                                         .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isBadRequest())
            .andExpect(status().reason("emailConnector.delegation.presetInvalid"));
+  }
+
+  /**
+   * EXO-90548 -- "Extend access" is the caller's, as owner: the extended row comes back
+   * with what it now covers and what could not be shared, never with the owner's own
+   * folder names; a share that is not the caller's is 404, one that cannot be extended
+   * 400 with its code.
+   */
+  @Test
+  void extendIsTheOwnersAndSaysWhatItCovers() throws Exception {
+    EmailDelegation extended = new EmailDelegation();
+    extended.setId(5L);
+    extended.setGrantedRoles("INBOX,SENT,ARCHIVE,JUNK");
+    extended.setOwnerRoleFolders(new EnumMap<>(Map.of(FolderRole.TRASH, "Corbeille", FolderRole.SENT, "Sent")));
+    when(emailDelegationService.extend(SIMPLE_USER, 5L)).thenReturn(extended);
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations/5/extend").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.grantedRoles").value("INBOX,SENT,ARCHIVE,JUNK"))
+           .andExpect(jsonPath("$.rolesNotShared[0]").value("TRASH"))
+           .andExpect(jsonPath("$.inboxOnly").value(false))
+           .andExpect(jsonPath("$.ownerRoleFolders").doesNotExist());
+
+    when(emailDelegationService.extend(SIMPLE_USER, 6L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations/6/extend").with(testSimpleUser())).andExpect(status().isNotFound());
+
+    when(emailDelegationService.extend(SIMPLE_USER, 7L)).thenThrow(new IllegalArgumentException("emailConnector.delegation.notChangeable"));
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations/7/extend").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.delegation.notChangeable"));
   }
 
   /**

@@ -37,7 +37,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.Date;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -71,6 +73,7 @@ import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailFolder;
 import org.exoplatform.emailConnector.model.FolderMessageCounts;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.GrantGranularity;
 import org.exoplatform.emailConnector.model.GrantedDelegations;
 import org.exoplatform.emailConnector.model.MailFolderView;
@@ -181,6 +184,9 @@ class EmailDelegationServiceTest {
     });
     lenient().when(emailDelegationStorage.update(any())).thenAnswer(invocation -> invocation.getArgument(0));
     lenient().when(engine.presetOf(any())).thenAnswer(invocation -> DelegationPreset.fromRights(invocation.getArgument(0)));
+    // By default the ACL cannot be read back after a grant, so a grant keeps what it
+    // wrote; the tests of the read-back (EXO-90548) stub it.
+    lenient().when(engine.listAcl(any(), eq(INBOX))).thenThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED, "GETACL"));
     Identity bob = new Identity("organization", GRANTEE);
     bob.setEnable(true);
     lenient().when(identityManager.getOrCreateUserIdentity(GRANTEE)).thenReturn(bob);
@@ -928,6 +934,372 @@ class EmailDelegationServiceTest {
 
     assertEquals(DelegationStatus.ACCEPTED, accepted.getStatus());
     verify(emailDelegationStorage, never()).update(any());
+  }
+
+  // ---------------------------------------------------------------------------------
+  // A shared mailbox's folders (EXO-90548)
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * On a per-folder server the grant covers, beside INBOX, the owner's Sent, Archive,
+   * Trash and Spam as the owner's session names them, each granted with its role; a
+   * folder the server refuses does not undo the share, and the row says what was shared
+   * and what could not be.
+   */
+  @Test
+  void inviteSharesTheOwnersRoleFoldersBesideInbox() throws Exception {
+    givenAGrantableInbox(DelegationPreset.EDITOR);
+    when(engine.findRoleFolders(any())).thenReturn(ownerRoleFolders());
+    when(engine.myRights(any(), anyString())).thenReturn(MailboxRights.of("lrswipkxtea"));
+    lenient().when(engine.grant(any(), eq("Corbeille"), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), any(), eq(FolderRole.TRASH)))
+                                                                                                                             .thenThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED,
+                                                                                                                                                                "NO"));
+
+    EmailDelegation delegation = service.invite(OWNER, GRANTEE, DelegationPreset.EDITOR);
+
+    verify(engine).grant(any(), eq("Sent"), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), any(), eq(FolderRole.SENT));
+    verify(engine).grant(any(), eq("Archive"), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), any(), eq(FolderRole.ARCHIVE));
+    verify(engine).grant(any(), eq("Spam"), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), any(), eq(FolderRole.JUNK));
+    verify(engine, never()).grant(any(), eq("Drafts"), any(), any(), any(), any());
+    assertEquals("INBOX,SENT,ARCHIVE,JUNK", delegation.getGrantedRoles());
+    assertEquals(List.of(FolderRole.TRASH), delegation.getRolesNotShared());
+    assertEquals(ownerRoleFolders(), delegation.getOwnerRoleFolders());
+    assertFalse(delegation.isInboxOnly());
+  }
+
+  /**
+   * On a server that grants a whole mailbox at once (BlueMind), the one grant covers
+   * every folder: no folder is looked for, none granted again.
+   */
+  @Test
+  void inviteOnAPerMailboxServerGrantsOnce() throws Exception {
+    givenAGrantableInbox(DelegationPreset.READER);
+    when(engine.probe(any())).thenReturn(new MailboxAclCapabilities(true, true, true, GrantGranularity.MAILBOX, false, false, null));
+
+    EmailDelegation delegation = service.invite(OWNER, GRANTEE, DelegationPreset.READER);
+
+    assertEquals(EmailDelegation.GRANTED_WHOLE_MAILBOX, delegation.getGrantedRoles());
+    assertTrue(delegation.grantsWholeMailbox());
+    assertEquals(List.of(), delegation.getRolesNotShared());
+    verify(engine, never()).findRoleFolders(any());
+    verify(engine, never()).grant(any(), any(), any(), any(), any(), any());
+  }
+
+  /**
+   * The grant is read back: the letters recorded are the server's; a server that
+   * accepted the SETACL and does not name the grantee afterwards shared nothing, and the
+   * owner is told -- no row, nothing else granted.
+   */
+  @Test
+  void inviteRecordsWhatTheServerHoldsAndRefusesAGrantItDidNotRecord() throws Exception {
+    givenAGrantableInbox(DelegationPreset.EDITOR);
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX.toUpperCase(Locale.ROOT), MailboxRights.of("lrswite")),
+                                                              MailboxAce.ofLetters(OWNER_MAILBOX, MailboxRights.of("lrswipkxtea"))));
+
+    EmailDelegation delegation = service.invite(OWNER, GRANTEE, DelegationPreset.EDITOR);
+    assertEquals("lrswite", delegation.getRights(), "the server's letters, read back");
+    assertEquals(DelegationPreset.EDITOR, delegation.getPreset());
+
+    when(emailDelegationStorage.getByKey(GRANTEE, CONNECTOR_ID, OWNER_MAILBOX)).thenReturn(null);
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(OWNER_MAILBOX, MailboxRights.of("lrswipkxtea"))));
+    MailboxAclException thrown = assertThrows(MailboxAclException.class, () -> service.invite(OWNER, GRANTEE, DelegationPreset.EDITOR));
+    assertEquals(MailboxAclException.NOT_RECORDED, thrown.getCode());
+    verify(emailDelegationStorage, times(1)).create(any());
+    verify(engine, times(1)).findRoleFolders(any());
+  }
+
+  /**
+   * Narrowing to Reader follows on every shared folder; a folder that refuses the
+   * narrower letters loses the access instead of keeping the wider one.
+   */
+  @Test
+  void changePresetNarrowsEverySharedFolderOrRemovesIt() throws Exception {
+    EmailDelegation accepted = aRowSharingRoleFolders();
+    givenTheOwnersRowToChange(accepted);
+    lenient().when(engine.grant(any(), eq("Corbeille"), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any(), eq(FolderRole.TRASH)))
+                                                                                                                             .thenThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED,
+                                                                                                                                                                "NO"));
+
+    EmailDelegation changed = service.changePreset(OWNER, 100L, DelegationPreset.READER);
+
+    verify(engine).grant(any(), eq("Sent"), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any(), eq(FolderRole.SENT));
+    verify(engine).revoke(any(), eq("Corbeille"), eq(GRANTEE_MAILBOX));
+    assertEquals("INBOX,SENT", changed.getGrantedRoles(), "Trash no longer shared rather than shared wider");
+  }
+
+  /**
+   * A folder that refuses both the narrower letters and the removal keeps the wider
+   * access: the owner is told, after the rest is recorded.
+   */
+  @Test
+  void changePresetSaysSoWhenAFolderKeepsTheWiderAccess() throws Exception {
+    EmailDelegation accepted = aRowSharingRoleFolders();
+    givenTheOwnersRowToChange(accepted);
+    lenient().when(engine.grant(any(), eq("Corbeille"), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any(), eq(FolderRole.TRASH)))
+                                                                                                                             .thenThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED,
+                                                                                                                                                                "NO"));
+    lenient().doThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED, "NO")).when(engine).revoke(any(), eq("Corbeille"), any());
+
+    MailboxAclException thrown = assertThrows(MailboxAclException.class, () -> service.changePreset(OWNER, 100L, DelegationPreset.READER));
+
+    assertEquals(MailboxAclException.NOT_NARROWED, thrown.getCode());
+    verify(emailDelegationStorage, never()).update(any());
+    verify(emailDelegationStorage).updateGrantedRights(eq(OWNER), eq(100L), any(), any(), any(), any(), any(), eq("INBOX,SENT,TRASH"), any());
+    assertEquals("INBOX,SENT,TRASH", accepted.getGrantedRoles(), "Trash still shared, and recorded as such");
+  }
+
+  /**
+   * "Extend access" does not revive a share the owner removed in another mail
+   * application: the INBOX ACL no longer naming the grantee, nothing is written.
+   */
+  @Test
+  void extendDoesNotReviveAShareRemovedElsewhere() throws Exception {
+    EmailDelegation inboxOnly = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(inboxOnly);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(OWNER_MAILBOX, MailboxRights.of("lrswipkxtea"))));
+
+    assertEquals(EmailDelegationService.NOT_CHANGEABLE_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> service.extend(OWNER, 100L)).getMessage());
+    verify(engine, never()).grant(any(), any(), any(), any(), any());
+    verify(emailDelegationStorage, never()).update(any());
+  }
+
+  /**
+   * A server that accepts the INBOX grant and does not record it (the Dovecot login
+   * shape) stops the extension there: nothing is shared beside it.
+   */
+  @Test
+  void extendRefusesWhenTheServerDoesNotRecordTheInboxGrant() throws Exception {
+    EmailDelegation inboxOnly = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(inboxOnly);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.myRights(any(), anyString())).thenReturn(MailboxRights.of("lrswipkxtea"));
+    when(engine.grant(any(), eq(INBOX), any(), any(), any())).thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswite")));
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswit"))),
+                                                      List.of(MailboxAce.ofLetters(OWNER_MAILBOX, MailboxRights.of("lrswipkxtea"))));
+
+    assertEquals(MailboxAclException.NOT_RECORDED,
+                 assertThrows(MailboxAclException.class, () -> service.extend(OWNER, 100L)).getCode());
+    verify(engine, never()).grant(any(), any(), any(), any(), any(), any());
+    verify(emailDelegationStorage, never()).update(any());
+  }
+
+  /**
+   * When a role now names another folder while the one eXo granted still exists (the
+   * server made "Deleted Items" the Trash), narrowing also narrows the folder eXo
+   * granted -- it would otherwise keep the Editor entry, with nobody told.
+   */
+  @Test
+  void changePresetAlsoNarrowsTheFolderARoleMovedAwayFrom() throws Exception {
+    EmailDelegation accepted = aRowSharingRoleFolders();
+    givenTheOwnersRowToChange(accepted);
+    Map<FolderRole, String> moved = new EnumMap<>(ownerRoleFolders());
+    moved.put(FolderRole.TRASH, "Deleted Items");
+    when(engine.findRoleFolders(any())).thenReturn(moved);
+    when(engine.listAcl(any(), eq("Corbeille"))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswit"))));
+
+    service.changePreset(OWNER, 100L, DelegationPreset.READER);
+
+    verify(engine).grant(any(), eq("Deleted Items"), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any(), eq(FolderRole.TRASH));
+    verify(engine).grant(any(), eq("Corbeille"), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any(), eq(FolderRole.TRASH));
+  }
+
+  /**
+   * A role folder eXo's grant never covered (refused at the grant, or Drafts) is not
+   * touched when the role moves: whatever was decided for it elsewhere stays.
+   */
+  @Test
+  void changePresetLeavesAFolderEXoNeverSharedAlone() throws Exception {
+    EmailDelegation accepted = aRowSharingRoleFolders();
+    accepted.setGrantedRoles("INBOX,SENT");
+    givenTheOwnersRowToChange(accepted);
+    Map<FolderRole, String> moved = new EnumMap<>(ownerRoleFolders());
+    moved.put(FolderRole.TRASH, "Deleted Items");
+    moved.put(FolderRole.DRAFTS, "Brouillons");
+    when(engine.findRoleFolders(any())).thenReturn(moved);
+
+    service.changePreset(OWNER, 100L, DelegationPreset.READER);
+
+    verify(engine, never()).listAcl(any(), eq("Corbeille"));
+    verify(engine, never()).listAcl(any(), eq("Drafts"));
+    verify(engine, never()).grant(any(), eq("Corbeille"), any(), any(), any(), any());
+    verify(engine, never()).revoke(any(), eq("Corbeille"), any());
+  }
+
+  /**
+   * And when the folder eXo granted refuses both the narrower letters and the removal,
+   * the owner is told.
+   */
+  @Test
+  void changePresetSaysSoWhenTheFolderARoleMovedAwayFromStaysWider() throws Exception {
+    EmailDelegation accepted = aRowSharingRoleFolders();
+    givenTheOwnersRowToChange(accepted);
+    Map<FolderRole, String> moved = new EnumMap<>(ownerRoleFolders());
+    moved.put(FolderRole.TRASH, "Deleted Items");
+    when(engine.findRoleFolders(any())).thenReturn(moved);
+    when(engine.listAcl(any(), eq("Corbeille"))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswit"))));
+    lenient().when(engine.grant(any(), eq("Corbeille"), any(), any(), any(), any()))
+             .thenThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED, "NO"));
+    lenient().doThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED, "NO")).when(engine).revoke(any(), eq("Corbeille"), any());
+
+    assertEquals(MailboxAclException.NOT_NARROWED,
+                 assertThrows(MailboxAclException.class, () -> service.changePreset(OWNER, 100L, DelegationPreset.READER)).getCode());
+  }
+
+  /**
+   * Narrowing writes the owner's folders as they are named now: a Trash renamed since the
+   * grant is narrowed under its new name, and the row keeps that name.
+   */
+  @Test
+  void changePresetNarrowsAFolderUnderItsCurrentName() throws Exception {
+    EmailDelegation accepted = aRowSharingRoleFolders();
+    givenTheOwnersRowToChange(accepted);
+    Map<FolderRole, String> renamed = new EnumMap<>(ownerRoleFolders());
+    renamed.put(FolderRole.TRASH, "Deleted Items");
+    when(engine.findRoleFolders(any())).thenReturn(renamed);
+
+    EmailDelegation changed = service.changePreset(OWNER, 100L, DelegationPreset.READER);
+
+    verify(engine).grant(any(), eq("Deleted Items"), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any(), eq(FolderRole.TRASH));
+    verify(engine, never()).grant(any(), eq("Corbeille"), any(), any(), any(), any());
+    assertEquals("Deleted Items", changed.getOwnerRoleFolders().get(FolderRole.TRASH));
+  }
+
+  /**
+   * "Remove access" removes every entry of the grantee on the owner's folders -- the
+   * ones the server lists, one written in another application included, and the ones the
+   * grant recorded -- INBOX once; a folder that refuses does not stop it.
+   */
+  @Test
+  void revokeRemovesTheGranteeFromEveryFolderOfTheOwner() throws Exception {
+    EmailDelegation accepted = aRowSharingRoleFolders();
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.foldersHolding(any(), eq(GRANTEE_MAILBOX))).thenReturn(List.of("INBOX", "Sent", "Projects"));
+    lenient().doThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED, "NO")).when(engine).revoke(any(), eq("Projects"), any());
+
+    service.revoke(OWNER, 100L);
+
+    verify(engine, times(1)).revoke(any(), eq(INBOX), eq(GRANTEE_MAILBOX));
+    verify(engine).revoke(any(), eq("Sent"), eq(GRANTEE_MAILBOX));
+    verify(engine).revoke(any(), eq("Projects"), eq(GRANTEE_MAILBOX));
+    verify(engine).revoke(any(), eq("Corbeille"), eq(GRANTEE_MAILBOX));
+    assertEquals(DelegationStatus.REVOKED, accepted.getStatus());
+  }
+
+  /**
+   * "Extend access": a share written before roles were recorded gets the owner's role
+   * folders with its own preset; only the owner's, only a share eXo wrote, only on a
+   * per-folder server.
+   */
+  @Test
+  void extendSharesTheRoleFoldersAPhaseOneShareLeftOut() throws Exception {
+    EmailDelegation inboxOnly = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(inboxOnly);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.findRoleFolders(any())).thenReturn(ownerRoleFolders());
+    when(engine.myRights(any(), anyString())).thenReturn(MailboxRights.of("lrswipkxtea"));
+    when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), any()))
+                                                                                                 .thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
+                                                                                                                                  MailboxRights.of("lrswite")));
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswite"))));
+    assertTrue(inboxOnly.isInboxOnly());
+
+    EmailDelegation extended = service.extend(OWNER, 100L);
+
+    // INBOX to today's Editor letters first: a phase-1 Editor held no e there.
+    verify(engine).grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), any());
+    assertEquals("lrswite", extended.getRights());
+    for (FolderRole role : FolderRole.GRANTED) {
+      verify(engine).grant(any(), eq(ownerRoleFolders().get(role)), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), any(), eq(role));
+    }
+    assertEquals("INBOX,SENT,ARCHIVE,TRASH,JUNK", extended.getGrantedRoles());
+    verify(emailDelegationStorage).update(inboxOnly);
+
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(row(DelegationStatus.ACCEPTED, DelegationOrigin.SERVER));
+    assertEquals(EmailDelegationService.NOT_CHANGEABLE_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> service.extend(OWNER, 100L)).getMessage(),
+                 "a share made in the server's own interface is never rewritten");
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO));
+    when(engine.probe(any())).thenReturn(new MailboxAclCapabilities(true, true, true, GrantGranularity.MAILBOX, false, false, null));
+    assertEquals(EmailDelegationService.NOT_CHANGEABLE_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> service.extend(OWNER, 100L)).getMessage(),
+                 "a per-mailbox grant already covers every folder");
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(null);
+    assertThrows(ObjectNotFoundException.class, () -> service.extend(OWNER, 100L));
+  }
+
+  /**
+   * The owner's folders by role, as the owner's session names them.
+   *
+   * @return the map
+   */
+  private Map<FolderRole, String> ownerRoleFolders() {
+    Map<FolderRole, String> roles = new EnumMap<>(FolderRole.class);
+    roles.put(FolderRole.SENT, "Sent");
+    roles.put(FolderRole.ARCHIVE, "Archive");
+    roles.put(FolderRole.TRASH, "Corbeille");
+    roles.put(FolderRole.JUNK, "Spam");
+    roles.put(FolderRole.DRAFTS, "Drafts");
+    return roles;
+  }
+
+  /**
+   * An accepted Editor share whose grant covered INBOX, Sent and Trash.
+   *
+   * @return the row
+   */
+  private EmailDelegation aRowSharingRoleFolders() {
+    EmailDelegation accepted = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    accepted.setGrantedRoles("INBOX,SENT,TRASH");
+    accepted.setOwnerRoleFolders(ownerRoleFolders());
+    return accepted;
+  }
+
+  /**
+   * The owner's row to change, on a per-folder server that answers every grant.
+   *
+   * @param row the row
+   */
+  private void givenTheOwnersRowToChange(EmailDelegation row) {
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(row);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.myRights(any(), anyString())).thenReturn(MailboxRights.of("lrswipkxtea"));
+    when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), any(), any())).thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
+                                                                                                           MailboxRights.of("lrs")));
+    // The targeted rights-and-roles write (stack review N-1), answered as the storage
+    // does: the written columns on the row, the rest of it as it stands.
+    lenient().when(emailDelegationStorage.updateGrantedRights(eq(OWNER),
+                                                              eq(100L),
+                                                              any(),
+                                                              any(),
+                                                              any(),
+                                                              any(),
+                                                              any(),
+                                                              anyString(),
+                                                              any()))
+             .thenAnswer(invocation -> {
+               row.setPreset(invocation.getArgument(2));
+               row.setRights(invocation.getArgument(3));
+               row.setNativeRights(invocation.getArgument(4));
+               row.setGranteeMailbox(invocation.getArgument(5));
+               row.setGrantedRoles(invocation.getArgument(7));
+               row.setOwnerRoleFolders(invocation.getArgument(8));
+               return row;
+             });
+  }
+
+  /**
+   * An owner's INBOX the engine grants a preset on.
+   *
+   * @param preset the preset asked
+   */
+  private void givenAGrantableInbox(DelegationPreset preset) {
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    lenient().when(engine.myRights(any(), eq(INBOX))).thenReturn(MailboxRights.of("lrswipkxtea"));
+    when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(preset), any())).thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
+                                                                                                                preset.rights()));
   }
 
   // ---------------------------------------------------------------------------------

@@ -117,6 +117,16 @@ public final class MailboxRights {
    */
   public static final MailboxRights  GRANTABLE       = of("lrswit");
 
+  /**
+   * The allowlist of an Editor's grant on the folders mail LEAVES from -- INBOX, Sent,
+   * Archive, Spam (EXO-90548, PO decision Q-1): {@link #GRANTABLE} plus {@code e}, the
+   * right RFC 4314 requires to expunge, without which a delete, an archive or a move
+   * copies the message and leaves the original behind (a silent tagged OK on Dovecot).
+   * Never on Trash, where {@code e} would be permanent deletion: Trash keeps
+   * {@link #GRANTABLE}.
+   */
+  public static final MailboxRights  GRANTABLE_WHERE_MAIL_LEAVES = of("lrswite");
+
   /** No right at all. */
   public static final MailboxRights  NONE            = of("");
 

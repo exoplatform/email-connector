@@ -17,9 +17,13 @@
 package org.exoplatform.emailConnector.service;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Date;
+import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -47,6 +51,8 @@ import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailFolder;
 import org.exoplatform.emailConnector.model.FolderMessageCounts;
+import org.exoplatform.emailConnector.model.FolderRole;
+import org.exoplatform.emailConnector.model.GrantGranularity;
 import org.exoplatform.emailConnector.model.GrantedDelegations;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailFolderView;
@@ -247,9 +253,13 @@ public class EmailDelegationService {
    * gone or available row of the same key so the unique key holds and the history
    * stays on one row.
    * <p>
-   * The grant is on the mailbox as a whole -- INBOX on a per-folder server -- on every
-   * engine in this phase (plan, section 3.4: BlueMind's {@code _acls} is per mailbox,
-   * so per-folder rights are a later phase, on per-folder engines only).
+   * On a per-folder server the grant covers INBOX and, beside it, the owner's Sent,
+   * Archive, Trash and Spam as the owner's own session names them, each with its role's
+   * letters -- an Editor holds {@code e} where mail leaves, never on Trash (EXO-90548,
+   * PO decisions Q-1, Q-2). INBOX is read back with GETACL: a server that accepted it
+   * and does not name the grantee afterwards shared nothing and is said so. A folder
+   * refused beside INBOX does not undo the share; the row records what was shared. On a
+   * per-mailbox server (BlueMind) the grant is one call that covers every folder.
    *
    * @param ownerUsername the caller
    * @param granteeUsername the eXo user to share with
@@ -281,8 +291,11 @@ public class EmailDelegationService {
 
     MailboxAclEngine engine = aclEngineRegistry.engineFor(connector);
     MailboxAce written;
+    String grantedRoles;
+    Map<FolderRole, String> roleFolders = new EnumMap<>(FolderRole.class);
     try (MailboxAclSession session = session(connector, ownerUsername, ownerMailbox)) {
-      requireSupported(engine.probe(session));
+      MailboxAclCapabilities capabilities = engine.probe(session);
+      requireSupported(capabilities);
       MailboxRights ownerRights = engine.myRights(session, OWNER_INBOX);
       if (!ownerRights.canAdminister()) {
         // NOT a refusal: 'a' is a positive signal, never a precondition -- the same
@@ -298,12 +311,22 @@ public class EmailDelegationService {
                   ownerUsername,
                   ownerRights.letters());
       }
-      written = engine.grant(session, OWNER_INBOX, granteeIdentifier, preset, ownerRights);
+      written = recorded(engine, session, granteeIdentifier, engine.grant(session, OWNER_INBOX, granteeIdentifier, preset, ownerRights));
+      // Beside INBOX, the owner's Sent, Archive, Trash and Spam (EXO-90548, PO decision
+      // Q-2), each with its role's letters; one call on a per-mailbox server.
+      if (capabilities.grantGranularity() == GrantGranularity.MAILBOX) {
+        grantedRoles = EmailDelegation.GRANTED_WHOLE_MAILBOX;
+      } else {
+        roleFolders = roleFoldersOf(engine, session);
+        grantedRoles = EmailDelegation.grantedRolesOf(grantRoleFolders(engine, session, granteeIdentifier, preset, FolderRole.GRANTED, roleFolders));
+      }
     }
     MailboxRights granted = written.rights() == null ? MailboxRights.NONE : written.rights();
 
     Date now = new Date();
     EmailDelegation delegation = existing == null ? new EmailDelegation() : existing;
+    delegation.setGrantedRoles(grantedRoles);
+    delegation.setOwnerRoleFolders(roleFolders);
     delegation.setGranteeId(granteeUsername);
     delegation.setOwnerId(ownerUsername);
     delegation.setOwnerMailbox(ownerMailbox);
@@ -321,12 +344,13 @@ public class EmailDelegationService {
     delegation.setRevokedDate(null);
     delegation.setLastRightsCheckDate(now);
     delegation = existing == null ? emailDelegationStorage.create(delegation) : emailDelegationStorage.update(delegation);
-    LOG.info("Mailbox delegation granted: actor={} ownerMailbox={} grantee={} identifier={} rights={}",
+    LOG.info("Mailbox delegation granted: actor={} ownerMailbox={} grantee={} identifier={} rights={} folders={}",
              ownerUsername,
              ownerMailbox,
              granteeUsername,
              granteeIdentifier,
-             granted.letters());
+             granted.letters(),
+             grantedRoles);
     publish(EmailDelegationEvent.Type.INVITED, ownerUsername, delegation);
     return delegation;
   }
@@ -334,9 +358,11 @@ public class EmailDelegationService {
   /**
    * Removes a grantee's access: DELETEACL on the caller's own INBOX, on the caller's
    * own session, for the identifier the grant was written to (kept on the row, so this
-   * works after the grantee disconnected their own mailbox from eXo). The row goes
-   * {@code REVOKED} and the grantee's registered folders of this mailbox are dropped,
-   * the mail mirrored under them with them ({@link #dropDelegatedFolders}).
+   * works after the grantee disconnected their own mailbox from eXo) -- then on every
+   * other folder of the caller whose ACL names that identifier, including an entry made
+   * in another mail application, and on the folders the grant recorded (EXO-90548). The
+   * row goes {@code REVOKED} and the grantee's registered folders of this mailbox are
+   * dropped, the mail mirrored under them with them ({@link #dropDelegatedFolders}).
    *
    * @param ownerUsername the caller
    * @param id the delegation id
@@ -365,6 +391,7 @@ public class EmailDelegationService {
       try (MailboxAclSession session = session(connector, ownerUsername, mailboxIdentifier(ownerSetting))) {
         requireSupported(engine.probe(session));
         engine.revoke(session, OWNER_INBOX, identifier);
+        revokeOtherFolders(engine, session, identifier, delegation);
       }
     }
     delegation.setStatus(DelegationStatus.REVOKED);
@@ -397,6 +424,12 @@ public class EmailDelegationService {
    * pending invitation stays pending with its new rights, and a leave made while the
    * server was asked stays a leave. A share revoked or gone meanwhile is refused as
    * not changeable.
+   * <p>
+   * The owner's other shared folders follow (EXO-90548), each with its role's letters.
+   * When the change narrows the access (to Reader), a folder that refuses the narrower
+   * letters has the grantee's entry removed instead; one that refuses that too keeps the
+   * wider access, and the call ends with {@code NOT_NARROWED} after recording the rest,
+   * so the owner is told rather than shown a Reader that is not one.
    * <p>
    * Owner only, and only the owner's own rows: the row is resolved with the caller as
    * owner, so a delegate -- or anybody else -- asking gets "no such delegation", which
@@ -440,22 +473,71 @@ public class EmailDelegationService {
     boolean keptSeen = delegation.getMailboxRights().canKeepSeen();
     MailboxAclEngine engine = aclEngineRegistry.engineFor(connector);
     MailboxAce written;
+    Set<FolderRole> kept = delegation.grantedRoleSet();
+    Set<FolderRole> notNarrowed = EnumSet.noneOf(FolderRole.class);
+    Map<FolderRole, String> roleFolders = new EnumMap<>(FolderRole.class);
+    if (delegation.getOwnerRoleFolders() != null) {
+      roleFolders.putAll(delegation.getOwnerRoleFolders());
+    }
+    // Only the folders eXo's own grant covered: a folder it never shared keeps whatever
+    // was decided for it elsewhere.
+    Map<FolderRole, String> recordedFolders = new EnumMap<>(FolderRole.class);
+    roleFolders.forEach((role, folder) -> {
+      if (kept.contains(role)) {
+        recordedFolders.put(role, folder);
+      }
+    });
     try (MailboxAclSession session = session(connector, ownerUsername, ownerMailbox)) {
       requireSupported(engine.probe(session));
       written = engine.grant(session, OWNER_INBOX, identifier, preset, engine.myRights(session, OWNER_INBOX));
+      if (!kept.isEmpty()) {
+        // The owner's folders as they are named NOW: a Trash renamed since the grant
+        // would otherwise be written at a name that no longer exists, every retry.
+        roleFolders.putAll(roleFoldersOf(engine, session));
+      }
+      // The owner's other shared folders follow the new preset (EXO-90548): a Reader
+      // left an Editor on Trash would be a share wider than the one the owner reads.
+      Set<FolderRole> changed = grantRoleFolders(engine, session, identifier, preset, kept, roleFolders);
+      if (preset == DelegationPreset.READER) {
+        // A folder that would not take the narrower access loses the access altogether
+        // rather than keep the wider one; one that refuses both is said to the owner.
+        for (FolderRole role : new ArrayList<>(kept)) {
+          if (changed.contains(role)) {
+            continue;
+          }
+          if (revokeRoleFolder(engine, session, identifier, role, roleFolders)) {
+            kept.remove(role);
+          } else {
+            notNarrowed.add(role);
+          }
+        }
+        notNarrowed.addAll(narrowFormerRoleFolders(engine, session, identifier, recordedFolders, roleFolders));
+      }
     }
     MailboxRights granted = written.rights() == null ? MailboxRights.NONE : written.rights();
     DelegationPreset recorded = written.preset() == null || written.preset() == DelegationPreset.CUSTOM ? preset : written.preset();
+    // A share recorded per folder keeps its folder roles in step with what was written;
+    // a whole-mailbox (or older) share has none, and they are left untouched.
+    boolean perFolder = delegation.getGrantedRoles() != null && !delegation.grantsWholeMailbox();
     // Only what was written on the server, and not over a share that ended while the
     // server was asked: the row read above is as old as the SETACL round-trip, and a
     // whole-row write from it would undo a leave made meanwhile (stack review N-1).
-    delegation = emailDelegationStorage.updateGrantedRights(ownerUsername,
-                                                           id,
-                                                           recorded,
-                                                           granted.letters(),
-                                                           written.nativeRights(),
-                                                           identifier,
-                                                           new Date());
+    delegation = perFolder ? emailDelegationStorage.updateGrantedRights(ownerUsername,
+                                                                       id,
+                                                                       recorded,
+                                                                       granted.letters(),
+                                                                       written.nativeRights(),
+                                                                       identifier,
+                                                                       new Date(),
+                                                                       EmailDelegation.grantedRolesOf(kept),
+                                                                       roleFolders)
+                           : emailDelegationStorage.updateGrantedRights(ownerUsername,
+                                                                       id,
+                                                                       recorded,
+                                                                       granted.letters(),
+                                                                       written.nativeRights(),
+                                                                       identifier,
+                                                                       new Date());
     if (delegation == null) {
       // Revoked or gone meanwhile. The owner's next reconcile reads the server's ACL
       // and offers the share again if this grant landed after the revoke.
@@ -471,7 +553,333 @@ public class EmailDelegationService {
       // The grantee's badge may count this inbox only while s is held (EXO-90546).
       publish(EmailDelegationEvent.Type.RIGHTS_CHANGED, ownerUsername, delegation);
     }
+    if (!notNarrowed.isEmpty()) {
+      // Said, not swallowed: the owner asked for less access than a folder still gives.
+      throw new MailboxAclException(MailboxAclException.NOT_NARROWED, "roles " + notNarrowed);
+    }
     return delegation;
+  }
+
+  /**
+   * Shares with the grantee the owner's folders a share written before EXO-90548 left
+   * out -- Sent, Archive, Trash and Spam, beside the INBOX it already covers -- with the
+   * share's own preset: the owner's "Extend access". The share must still be on INBOX --
+   * one the owner removed in another mail application is not revived
+   * ({@code notChangeable}). INBOX is then granted again, to the preset's letters of
+   * today (an Editor now holds {@code e} there), and read back ({@code NOT_RECORDED}
+   * when the server does not record it). Owner only, on the owner's own
+   * session, and only for a share eXo wrote: a share made in the mail server's own
+   * interface is never rewritten by eXo. Nothing is widened silently: this is the owner's
+   * explicit act, answered with the consent text of the drawer that asks it (plan,
+   * section S1.3, PO decision Q-4).
+   *
+   * @param ownerUsername the caller, the mailbox's owner
+   * @param id the delegation id
+   * @return the row as it now stands
+   * @throws ObjectNotFoundException when no such row belongs to the caller as owner
+   * @throws IllegalAccessException when the caller has no connected mailbox
+   * @throws IllegalArgumentException {@code emailConnector.delegation.notChangeable} for a
+   *           share that is no longer on the server (by its row, or by the INBOX ACL),
+   *           was not written by eXo, has no preset, is on another mailbox than the one
+   *           connected, or is on a server that grants a whole mailbox at once
+   * @throws MailboxAclException when the server cannot be asked, or no longer holds the
+   *           share on INBOX ({@code NOT_RECORDED})
+   */
+  public EmailDelegation extend(String ownerUsername, long id) throws ObjectNotFoundException, IllegalAccessException {
+    EmailDelegation delegation = asOwner(ownerUsername, id);
+    if (delegation.getStatus() == DelegationStatus.REVOKED || delegation.getStatus() == DelegationStatus.GONE
+        || delegation.getOrigin() != DelegationOrigin.EXO || delegation.getPreset() == null || !delegation.getPreset().isGrantable()
+        || delegation.grantsWholeMailbox()) {
+      throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
+    }
+    UserEmailSetting ownerSetting = connectedSetting(ownerUsername);
+    EmailConnector connector = connectorOf(ownerSetting);
+    String ownerMailbox = mailboxIdentifier(ownerSetting);
+    if (!connector.getId().equals(delegation.getConnectorId()) || !ownerMailbox.equalsIgnoreCase(delegation.getOwnerMailbox())) {
+      throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
+    }
+    String identifier = StringUtils.isNotBlank(delegation.getGranteeMailbox()) ? delegation.getGranteeMailbox()
+                                                                                : resolveGranteeIdentifier(delegation.getGranteeId(),
+                                                                                                           connector.getId());
+    Set<FolderRole> granted = delegation.grantedRoleSet();
+    Map<FolderRole, String> roleFolders = new EnumMap<>(FolderRole.class);
+    if (delegation.getOwnerRoleFolders() != null) {
+      roleFolders.putAll(delegation.getOwnerRoleFolders());
+    }
+    MailboxAclEngine engine = aclEngineRegistry.engineFor(connector);
+    MailboxAce written;
+    boolean keptSeen = delegation.getMailboxRights().canKeepSeen();
+    try (MailboxAclSession session = session(connector, ownerUsername, ownerMailbox)) {
+      MailboxAclCapabilities capabilities = engine.probe(session);
+      requireSupported(capabilities);
+      if (capabilities.grantGranularity() != GrantGranularity.FOLDER) {
+        throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
+      }
+      // Still on the server? A share the owner removed in another mail application is
+      // not revived by "Extend access": eXo never rewrites what was decided there.
+      requireOnInbox(engine, session, identifier);
+      // INBOX first, to the preset's letters of today -- a phase-1 Editor held no e
+      // there, and without it a delete from the shared INBOX leaves the original
+      // behind (PO decision Q-1). Read back, as a grant is.
+      written = recorded(engine,
+                         session,
+                         identifier,
+                         engine.grant(session, OWNER_INBOX, identifier, delegation.getPreset(), engine.myRights(session, OWNER_INBOX)));
+      roleFolders.putAll(roleFoldersOf(engine, session));
+      Set<FolderRole> missing = EnumSet.noneOf(FolderRole.class);
+      FolderRole.GRANTED.stream().filter(role -> !granted.contains(role)).forEach(missing::add);
+      granted.addAll(grantRoleFolders(engine, session, identifier, delegation.getPreset(), missing, roleFolders));
+    }
+    MailboxRights inboxRights = written.rights() == null ? MailboxRights.NONE : written.rights();
+    delegation.setPreset(written.preset() == null || written.preset() == DelegationPreset.CUSTOM ? delegation.getPreset()
+                                                                                                  : written.preset());
+    delegation.setRights(inboxRights.letters());
+    delegation.setNativeRights(written.nativeRights());
+    delegation.setLastRightsCheckDate(new Date());
+    delegation.setGranteeMailbox(identifier);
+    delegation.setGrantedRoles(EmailDelegation.grantedRolesOf(granted));
+    delegation.setOwnerRoleFolders(roleFolders);
+    delegation = emailDelegationStorage.update(delegation);
+    if (keptSeen != inboxRights.canKeepSeen()) {
+      publish(EmailDelegationEvent.Type.RIGHTS_CHANGED, ownerUsername, delegation);
+    }
+    LOG.info("Mailbox delegation extended: actor={} ownerMailbox={} grantee={} identifier={} folders={}",
+             ownerUsername,
+             delegation.getOwnerMailbox(),
+             delegation.getGranteeId(),
+             identifier,
+             delegation.getGrantedRoles());
+    return delegation;
+  }
+
+  /**
+   * Refuses to act on a share the INBOX ACL no longer names: removed in another mail
+   * application while its row still says otherwise. An ACL that cannot be read decides
+   * nothing here; the grant's own read-back follows.
+   *
+   * @param engine the engine
+   * @param session the owner's session
+   * @param identifier the grantee as the server names them
+   * @throws IllegalArgumentException {@code notChangeable} when the ACL does not name them
+   */
+  private void requireOnInbox(MailboxAclEngine engine, MailboxAclSession session, String identifier) {
+    List<MailboxAce> acl;
+    try {
+      acl = engine.listAcl(session, OWNER_INBOX);
+    } catch (MailboxAclException e) {
+      LOG.debug("The ACL could not be read before extending a share ({})", e.getCode());
+      return;
+    }
+    boolean named = acl.stream().anyMatch(ace -> ace != null && identifier != null && identifier.equalsIgnoreCase(ace.identifier()));
+    if (!named) {
+      throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
+    }
+  }
+
+  /**
+   * The entry the server holds for the grantee after a grant, read back with GETACL on
+   * INBOX -- the letters recorded are the server's, not eXo's wish. A server that
+   * accepted the SETACL and does not name the grantee afterwards shared nothing, and is
+   * said so ({@code NOT_RECORDED}), whatever it answered; a server whose ACL cannot be
+   * read back leaves the entry as written (EXO-90548).
+   *
+   * @param engine the engine
+   * @param session the owner's session
+   * @param identifier the grantee as the server names them
+   * @param written what the grant wrote
+   * @return the entry as the server holds it
+   * @throws MailboxAclException {@code NOT_RECORDED} when the ACL does not name the grantee
+   */
+  private MailboxAce recorded(MailboxAclEngine engine, MailboxAclSession session, String identifier, MailboxAce written) {
+    List<MailboxAce> acl;
+    try {
+      acl = engine.listAcl(session, OWNER_INBOX);
+    } catch (MailboxAclException e) {
+      LOG.debug("The ACL could not be read back after a grant ({}); keeping what was written", e.getCode());
+      return written;
+    }
+    for (MailboxAce ace : acl) {
+      if (ace != null && identifier != null && identifier.equalsIgnoreCase(ace.identifier())) {
+        return ace;
+      }
+    }
+    throw new MailboxAclException(MailboxAclException.NOT_RECORDED, identifier);
+  }
+
+  /**
+   * The owner's folders by role, from the owner's session. A server that cannot say is
+   * no reason to fail the share INBOX already holds: none are shared beside it.
+   *
+   * @param engine the engine
+   * @param session the owner's session
+   * @return the folder name of each role found, never null
+   */
+  private Map<FolderRole, String> roleFoldersOf(MailboxAclEngine engine, MailboxAclSession session) {
+    Map<FolderRole, String> roleFolders = new EnumMap<>(FolderRole.class);
+    try {
+      roleFolders.putAll(engine.findRoleFolders(session));
+    } catch (MailboxAclException e) {
+      LOG.info("The owner's folders could not be read ({}); only INBOX is shared", e.getCode());
+    }
+    return roleFolders;
+  }
+
+  /**
+   * Grants a preset on the owner's folder of each role, with that role's letters, and
+   * answers the roles the server accepted. One folder refused -- the server's NO, or
+   * nothing left once capped by the owner's rights on it -- does not undo the others nor
+   * INBOX: the row records what was actually shared, and the owner's list says what
+   * could not be.
+   *
+   * @param engine the engine
+   * @param session the owner's session
+   * @param identifier the grantee as the server names them
+   * @param preset READER or EDITOR
+   * @param roles the roles to grant
+   * @param roleFolders the owner's folder of each role
+   * @return the roles granted, never null
+   */
+  private Set<FolderRole> grantRoleFolders(MailboxAclEngine engine,
+                                           MailboxAclSession session,
+                                           String identifier,
+                                           DelegationPreset preset,
+                                           Collection<FolderRole> roles,
+                                           Map<FolderRole, String> roleFolders) {
+    Set<FolderRole> granted = EnumSet.noneOf(FolderRole.class);
+    for (FolderRole role : roles == null ? List.<FolderRole> of() : roles) {
+      String folder = roleFolders == null ? null : roleFolders.get(role);
+      if (StringUtils.isBlank(folder) || role == FolderRole.DRAFTS) {
+        continue;
+      }
+      try {
+        engine.grant(session, folder, identifier, preset, engine.myRights(session, folder), role);
+        granted.add(role);
+      } catch (MailboxAclException e) {
+        LOG.info("The owner's {} folder could not be shared ({})", role, e.getCode());
+      }
+    }
+    return granted;
+  }
+
+  /**
+   * Narrowing's second pass: the folder a grant was recorded on, when a role now names
+   * another folder -- the role moved (another folder became the Trash) rather than the
+   * folder being renamed, which carries its ACL with it. That folder still holds eXo's
+   * own wider grant: it is narrowed to Reader, else the grantee's entry removed. A
+   * recorded folder whose ACL no longer names the grantee -- the rename case, or a folder
+   * gone -- needs nothing; one whose ACL cannot be read is said not narrowed.
+   *
+   * @param engine the engine
+   * @param session the owner's session
+   * @param identifier the grantee as the server names them
+   * @param recordedFolders the folders eXo's grant covered, by role, as recorded
+   * @param currentFolders the role folders as the owner's session names them now
+   * @return the roles whose former folder keeps the wider access, never null
+   */
+  private Set<FolderRole> narrowFormerRoleFolders(MailboxAclEngine engine,
+                                                  MailboxAclSession session,
+                                                  String identifier,
+                                                  Map<FolderRole, String> recordedFolders,
+                                                  Map<FolderRole, String> currentFolders) {
+    Set<FolderRole> notNarrowed = EnumSet.noneOf(FolderRole.class);
+    Map<FolderRole, String> moved = new EnumMap<>(FolderRole.class);
+    recordedFolders.forEach((role, folder) -> {
+      if (StringUtils.isNotBlank(folder) && !folder.equals(currentFolders.get(role))) {
+        moved.put(role, folder);
+      }
+    });
+    if (moved.isEmpty()) {
+      return notNarrowed;
+    }
+    moved.forEach((role, folder) -> {
+      boolean named;
+      try {
+        // That one folder, asked directly: exact, and never cut off by a folder cap.
+        named = engine.listAcl(session, folder)
+                      .stream()
+                      .anyMatch(ace -> ace != null && identifier != null && identifier.equalsIgnoreCase(ace.identifier()));
+      } catch (MailboxAclException e) {
+        LOG.warn("The owner's former {} folder could not be checked while narrowing an access ({})", role, e.getCode());
+        notNarrowed.add(role);
+        return;
+      }
+      if (!named) {
+        return;
+      }
+      try {
+        engine.grant(session, folder, identifier, DelegationPreset.READER, engine.myRights(session, folder), role);
+      } catch (MailboxAclException e) {
+        if (!revokeRoleFolder(engine, session, identifier, role, Map.of(role, folder))) {
+          notNarrowed.add(role);
+        }
+      }
+    });
+    return notNarrowed;
+  }
+
+  /**
+   * Removes the grantee's entry from the owner's folder of one role.
+   *
+   * @param engine the engine
+   * @param session the owner's session
+   * @param identifier the grantee as the server names them
+   * @param role the role
+   * @param roleFolders the owner's folder of each role
+   * @return true when the entry is gone (or there is no such folder), false when the
+   *         server refused
+   */
+  private boolean revokeRoleFolder(MailboxAclEngine engine,
+                                   MailboxAclSession session,
+                                   String identifier,
+                                   FolderRole role,
+                                   Map<FolderRole, String> roleFolders) {
+    String folder = roleFolders == null ? null : roleFolders.get(role);
+    if (StringUtils.isBlank(folder)) {
+      return true;
+    }
+    try {
+      engine.revoke(session, folder, identifier);
+      return true;
+    } catch (MailboxAclException e) {
+      LOG.warn("The grantee's entry on the owner's {} folder could not be removed ({})", role, e.getCode());
+      return false;
+    }
+  }
+
+  /**
+   * "Remove access" beyond INBOX: every other folder of the owner whose ACL names the
+   * grantee -- including an entry written in another mail application -- and the folders
+   * the grant recorded, in case the ACLs cannot be listed. A folder that refuses is
+   * logged and left; INBOX, which is what the share is, has already gone.
+   *
+   * @param engine the engine
+   * @param session the owner's session
+   * @param identifier the grantee as the server names them
+   * @param delegation the row, for the folders its grant recorded
+   */
+  private void revokeOtherFolders(MailboxAclEngine engine, MailboxAclSession session, String identifier, EmailDelegation delegation) {
+    Set<String> folders = new LinkedHashSet<>();
+    try {
+      folders.addAll(engine.foldersHolding(session, identifier));
+    } catch (MailboxAclException e) {
+      LOG.debug("The owner's folders holding an access could not be listed ({})", e.getCode());
+    }
+    Map<FolderRole, String> roleFolders = delegation.getOwnerRoleFolders();
+    for (FolderRole role : delegation.grantedRoleSet()) {
+      if (roleFolders != null && StringUtils.isNotBlank(roleFolders.get(role))) {
+        folders.add(roleFolders.get(role));
+      }
+    }
+    for (String folder : folders) {
+      if (OWNER_INBOX.equalsIgnoreCase(folder)) {
+        continue;
+      }
+      try {
+        engine.revoke(session, folder, identifier);
+      } catch (MailboxAclException e) {
+        LOG.warn("An access on one of the owner's folders could not be removed ({})", e.getCode());
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------------
