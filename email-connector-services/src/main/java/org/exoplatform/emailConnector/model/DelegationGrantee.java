@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.model;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -33,6 +34,9 @@ import java.util.Map;
  * @param nativeRights the server's own vocabulary as observed -- the same letters on an
  *          IMAP engine, the verb list on BlueMind (see {@link MailboxAce#nativeRights()})
  * @param affordances the controls the letters unlock, see {@link MailboxRights#affordances()}
+ * @param extendableRoles the owner's role folders (Sent, Archive, Trash, Spam) her
+ *          mailbox has and eXo's share does not cover yet -- what "Extend access" would
+ *          add (EXO-90548); empty when there is nothing to extend or eXo cannot extend it
  */
 public record DelegationGrantee(String identifier,
                                 String granteeId,
@@ -40,7 +44,8 @@ public record DelegationGrantee(String identifier,
                                 DelegationPreset preset,
                                 String rights,
                                 String nativeRights,
-                                Map<String, Boolean> affordances) {
+                                Map<String, Boolean> affordances,
+                                List<FolderRole> extendableRoles) {
 
   /**
    * Builds an entry from an ACL entry and what eXo knows about it.
@@ -57,6 +62,17 @@ public record DelegationGrantee(String identifier,
                                  ace.preset(),
                                  ace.rights().letters(),
                                  ace.nativeRights(),
-                                 ace.rights().affordances());
+                                 ace.rights().affordances(),
+                                 List.of());
+  }
+
+  /**
+   * The same entry, saying which of the owner's role folders an Extend would add.
+   *
+   * @param roles the roles her mailbox has and the share does not cover
+   * @return the entry with those roles
+   */
+  public DelegationGrantee withExtendableRoles(List<FolderRole> roles) {
+    return new DelegationGrantee(identifier, granteeId, delegation, preset, rights, nativeRights, affordances, List.copyOf(roles));
   }
 }
