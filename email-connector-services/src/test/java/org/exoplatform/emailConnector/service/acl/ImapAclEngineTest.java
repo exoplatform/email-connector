@@ -56,6 +56,7 @@ import com.sun.mail.imap.Rights;
 
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.model.DelegationPreset;
+import org.exoplatform.emailConnector.model.DiscoveredFolder;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.GrantGranularity;
 import org.exoplatform.emailConnector.model.MailboxAce;
@@ -670,6 +671,31 @@ class ImapAclEngineTest {
     when(locked.getACL()).thenThrow(new MessagingException("NO"));
 
     assertEquals(List.of("INBOX", "Projects"), engine.foldersHolding(session(), IDENTIFIER));
+  }
+
+  /**
+   * EXO-90548 -- a shared mailbox's folders are listed by pattern from the default folder
+   * under its root, each with the attributes and selectability the listing carries; a
+   * lost connection is UNREACHABLE, not a refusal.
+   */
+  @Test
+  void theFoldersUnderASharedRootAreListedByPattern() throws MessagingException {
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    Folder sent = listed("Sent", "shared/alice/Sent");
+    Folder container = listed("Projects", "shared/alice/Projects", "\\Noselect");
+    when(root.list("shared/alice/*")).thenReturn(new Folder[] { sent, container });
+
+    List<DiscoveredFolder> folders = engine.listFoldersUnder(session(), "shared/alice/", "/");
+
+    assertEquals(List.of("shared/alice/Sent", "shared/alice/Projects"), folders.stream().map(DiscoveredFolder::fullName).toList());
+    assertTrue(folders.get(0).selectable());
+    assertFalse(folders.get(1).selectable());
+    assertEquals("Sent", folders.get(0).displayName());
+
+    when(root.list("shared/alice/*")).thenThrow(new StoreClosedException(store, "gone"));
+    assertEquals(MailboxAclException.UNREACHABLE,
+                 assertThrows(MailboxAclException.class, () -> engine.listFoldersUnder(session(), "shared/alice", "/")).getCode());
   }
 
   /**
