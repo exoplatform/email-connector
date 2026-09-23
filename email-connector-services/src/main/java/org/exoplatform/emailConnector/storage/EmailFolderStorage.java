@@ -26,6 +26,7 @@ import org.exoplatform.emailConnector.dao.EmailFolderDAO;
 import org.exoplatform.emailConnector.entity.EmailFolderEntity;
 import org.exoplatform.emailConnector.model.EmailFolder;
 import org.exoplatform.emailConnector.model.FolderRole;
+import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 
 /**
@@ -265,6 +266,18 @@ public class EmailFolderStorage {
    */
   public void adoptAsDelegated(String userId, long id, long delegationId, String type) {
     emailFolderDAO.adoptAsDelegated(id, userId, delegationId, type);
+  }
+
+  /**
+   * Makes a shared mailbox's next discovery run at once (EXO-90548): after the owner
+   * changed what the share covers -- Extend, a change of access, a re-grant -- the
+   * grantee's next pass reads the owner's folders again instead of waiting out the
+   * quarter-hour throttle.
+   *
+   * @param delegationId the share
+   */
+  public void markDiscoveryDue(long delegationId) {
+    emailFolderDAO.markDiscoveryDue(delegationId, MailFolderView.TYPE_DELEGATED_INBOX);
   }
 
   /**
