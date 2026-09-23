@@ -32,6 +32,7 @@ import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.util.ArrayList;
@@ -171,6 +172,19 @@ public class EmailScheduledSendServiceTest {
    *
    * @throws Exception never
    */
+  /**
+   * A user who may not use their mailbox is refused as such, before the input is
+   * judged: access comes before validation (backend-spring.md §5), so a bad date from a
+   * user with no mailbox is a 401, not a 400.
+   */
+  @Test
+  void aScheduleFromAUserWithoutAMailboxIsRefusedBeforeItsDateIsJudged() {
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    long now = service.now().getTime();
+    assertThrows(IllegalAccessException.class, () -> service.schedule(draft(), now + 30_000, "Mars/Olympus", USER));
+    verifyNoInteractions(emailBoxService);
+  }
+
   @Test
   void aScheduleIsValidatedAgainstTheClockBeforeAnythingIsTouched() throws Exception {
     long now = service.now().getTime();
