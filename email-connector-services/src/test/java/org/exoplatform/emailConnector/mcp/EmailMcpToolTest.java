@@ -66,6 +66,8 @@ import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
+import org.exoplatform.emailConnector.model.SharedMailboxFolder;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
@@ -786,7 +788,7 @@ class EmailMcpToolTest {
   @Test
   void listSharedMailboxesReadsTheMirrorOnly() {
     SharedMailboxEntry share = aliceShare();
-    when(emailDelegationService.getSharedMailboxes(USERNAME)).thenReturn(List.of(share));
+    when(emailDelegationService.getUsableSharedMailboxes(USERNAME)).thenReturn(List.of(share));
     when(emailDelegationService.getMirroredFolders(USERNAME, share)).thenReturn(List.of("INBOX", "SENT"));
 
     List<SharedMailboxModel> mailboxes = emailMcpTool.listSharedMailboxes();
@@ -896,12 +898,69 @@ class EmailMcpToolTest {
   /** The unread count of a shared inbox is the mirror's, reaching no mail server. */
   @Test
   void aSharedUnreadCountReadsTheMirror() throws Exception {
-    givenAliceShares();
+    SharedMailboxEntry share = givenAliceShares();
+    when(emailDelegationService.getMirroredFolderKey(USERNAME, share, MailFolder.INBOX)).thenReturn(SHARED_INBOX);
 
     String count = emailMcpTool.getUnreadCount(OWNER_MAILBOX);
 
     assertTrue(count.startsWith("3 unread") && count.contains("Alice Martin (alice@acme.com)"), count);
     Mockito.verifyNoInteractions(emailBoxService);
+  }
+
+  /** A shared inbox not synced yet has no count: said, never "0 unread". */
+  @Test
+  void aSharedUnreadCountOfAnInboxNotSyncedYetIsSaid() throws Exception {
+    SharedMailboxEntry share = givenAliceShares();
+    when(emailDelegationService.getMirroredFolderKey(USERNAME, share, MailFolder.INBOX)).thenReturn(null);
+
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> emailMcpTool.getUnreadCount(OWNER_MAILBOX));
+    assertTrue(refused.getMessage().contains("not available"), refused.getMessage());
+  }
+
+  /**
+   * A conversation read in a shared mailbox names each message's folder -- INBOX, SENT,
+   * ARCHIVE -- through the share's roles, never as a shared folder's key, so the
+   * "chain only from INBOX" rule applies there too.
+   */
+  @Test
+  void aSharedConversationNamesItsFoldersNeverTheirKeys() throws Exception {
+    SharedMailboxEntry share = new SharedMailboxEntry(100L,
+                                                      "alice",
+                                                      "Alice Martin",
+                                                      OWNER_MAILBOX,
+                                                      DelegationPreset.EDITOR,
+                                                      "lrswite",
+                                                      Map.of(),
+                                                      SHARED_INBOX,
+                                                      3,
+                                                      List.of(new SharedMailboxFolder("CUSTOM:6", FolderRole.SENT, "Sent", "lrs", Map.of(), true),
+                                                              new SharedMailboxFolder("CUSTOM:7", FolderRole.TRASH, "Trash", "lrs", Map.of(), true)),
+                                                      false,
+                                                      true);
+    when(emailDelegationService.getSharedMailbox(USERNAME, OWNER_MAILBOX)).thenReturn(share);
+    Email received = threadMessage("<1@x>", "Carol", "carol@acme.com", "<p>Hi</p>");
+    received.setFolder(SHARED_INBOX);
+    Email answered = threadMessage("<2@x>", "Alice", OWNER_MAILBOX, "<p>Hello</p>");
+    answered.setFolder("CUSTOM:6");
+    Email trashed = threadMessage("<3@x>", "Carol", "carol@acme.com", "<p>Again</p>");
+    trashed.setFolder("CUSTOM:7");
+    when(emailBoxService.getThread("thread-1", USERNAME, SHARED_INBOX)).thenReturn(List.of(received, answered, trashed));
+
+    List<EmailThreadMessageModel> thread = emailMcpTool.getEmailThread("thread-1", OWNER_MAILBOX);
+
+    assertEquals(java.util.Arrays.asList("INBOX", "SENT", null), thread.stream().map(EmailThreadMessageModel::getFolder).toList());
+  }
+
+  /** The user's own Sent is listed by name, with no shared mailbox involved. */
+  @Test
+  void theUsersOwnSentIsListedByName() throws Exception {
+    EmailBox sent = new EmailBox();
+    sent.setEmails(List.of(buildEmail(1L)));
+    when(emailBoxService.getEmailBox(USERNAME, MailFolder.SENT)).thenReturn(sent);
+
+    assertEquals(1, emailMcpTool.listEmails(null, null, null, "sent", null).size());
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.listEmails(null, null, null, "TRASH", null));
+    Mockito.verifyNoInteractions(emailDelegationService);
   }
 
   /** sync_now refuses a mailbox rather than syncing the user's own instead. */
