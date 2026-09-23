@@ -145,12 +145,19 @@ public class EmailDelegationStorage {
   }
 
   /**
-   * Drops every row a user appears on, as grantee or owner.
+   * The grantee's two toggles, written alone (#432-2): a row-wide write from an earlier
+   * read would put back whatever the owner changed since -- a status, a revoke date,
+   * rights. The update date is stamped.
    *
-   * @param userId the username
+   * @param granteeId the grantee, whose row it must be
+   * @param id the row id
+   * @param badgeIncluded whether the shared INBOX counts in the badge
+   * @param notifyNewMail whether new mail there notifies
+   * @return the row as it now stands, null when no such row of that grantee exists
    */
-  public void deleteByUser(String userId) {
-    emailDelegationDAO.deleteByUserId(userId);
+  public EmailDelegation updatePreferences(String granteeId, long id, boolean badgeIncluded, boolean notifyNewMail) {
+    emailDelegationDAO.updatePreferences(id, granteeId, badgeIncluded, notifyNewMail, new Date());
+    return getAsGrantee(granteeId, id);
   }
 
   /**
