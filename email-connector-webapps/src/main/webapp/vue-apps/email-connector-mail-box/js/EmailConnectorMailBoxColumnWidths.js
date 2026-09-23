@@ -216,23 +216,26 @@ export function separatorKeyWidth(event, value, range, rtl) {
   }
 }
 
-// Where each part of a handle sits, in CSS pixels from its zero-wide anchor on the
-// boundary towards the start of the line (left in a left-to-right page). A handle takes
-// no room, so the columns and their rows' highlights reach the line, and its hit area
-// keeps off the columns' scrollbars, which sit at each column's end:
-// - between the folder column and the list, the 1 px line is the list's first pixel,
-//   where the plain divider stood, and the hit area lies on the list's side, whose
-//   start holds no scrollbar;
-// - at the end of the left pane the line is the pane's last pixel and the hit area lies
-//   over the reader's first pixels. The pane is a sideways scroller that clips what
-//   passes its edge, so that hit area is fixed-positioned: its containing block is then
-//   the drawer (a transformed box), outside the pane, which neither clips it nor
-//   scrolls to show it. Left at its static position -- every offset auto, which is what
-//   makes a browser use it -- it starts on the pane's edge at the columns' top, and it
-//   is as tall as the columns (the anchor's height, measured).
+// Where a handle's hit area sits, in CSS pixels from its zero-wide anchor on the
+// boundary towards the start of the line (left in a left-to-right page); its 1 px line
+// and its grip are its first pixels, so what the user sees is what they grab. A handle
+// takes no room, so the columns and their rows' highlights reach the line, and its hit
+// area lies on the side of the boundary that holds no scrollbar -- a column's is at its
+// end:
+// - between the folder column and the list, over the list's start: the line is the
+//   list's first pixel, where the plain divider stood;
+// - at the end of the left pane, over the reader's start: the line is the reader's
+//   first pixel. The pane is a sideways scroller that clips what passes its edge, so
+//   that hit area is fixed-positioned (null): its containing block is then the drawer
+//   (a transformed box), outside the pane, which neither clips it nor scrolls to show
+//   it. Left at its static position -- every offset auto, which is what makes a browser
+//   use it -- it starts on the pane's edge at the columns' top, and it is as tall as the
+//   columns (the anchor's height, measured). Valid while the pane itself never scrolls
+//   vertically -- its columns scroll on their own: a static position ignores the scroll
+//   of a scroller outside the containing block's chain.
 const SEPARATOR_PLACEMENTS = {
-  between: { hit: 0, line: 0, grip: -1 },
-  end: { hit: null, line: -1, grip: -3 },
+  between: 0,
+  end: null,
 };
 
 const SEPARATOR_GRIP_WIDTH_PX = 3;
@@ -242,9 +245,9 @@ const SEPARATOR_ACTIVE_COLOR = 'var(--allPagesPrimaryColor, #578dc9)';
 
 /**
  * The inline styles of a handle's parts (SEPARATOR_PLACEMENTS): its zero-wide anchor, in
- * the row of columns; the hit area, the whole height of the columns; the 1 px line, a
- * plain vertical divider's own look (its border), primary while active; the grip across
- * the line half-way down, a muted grey at rest.
+ * the row of columns; the hit area, the whole height of the columns; inside it, at its
+ * start, the 1 px line, a plain vertical divider's own look (its border), primary while
+ * active, and the grip half-way down, a muted grey at rest.
  *
  * @param {String} placement `between` two columns, or at the `end` of the left pane
  * @param {Boolean} rtl whether the page reads right to left: the offsets are mirrored
@@ -254,24 +257,24 @@ const SEPARATOR_ACTIVE_COLOR = 'var(--allPagesPrimaryColor, #578dc9)';
  * @returns {Object} `{ anchor, hit, line, grip }`
  */
 export function separatorStyles(placement, rtl, active, height) {
-  const offsets = SEPARATOR_PLACEMENTS[placement] || SEPARATOR_PLACEMENTS.between;
+  const hit = placement in SEPARATOR_PLACEMENTS ? SEPARATOR_PLACEMENTS[placement] : SEPARATOR_PLACEMENTS.between;
   const side = rtl ? 'right' : 'left';
   return {
     anchor: { width: 0, minWidth: 0, alignSelf: 'stretch', zIndex: 1 },
-    hit: offsets.hit === null
+    hit: hit === null
       ? { position: 'fixed', height: height ? `${height}px` : '100%', width: `${SEPARATOR_WIDTH_PX}px`, zIndex: 1, touchAction: 'none' }
-      : { position: 'absolute', top: 0, bottom: 0, [side]: `${offsets.hit}px`, width: `${SEPARATOR_WIDTH_PX}px`, touchAction: 'none' },
+      : { position: 'absolute', top: 0, bottom: 0, [side]: `${hit}px`, width: `${SEPARATOR_WIDTH_PX}px`, touchAction: 'none' },
     line: {
       top: 0,
       bottom: 0,
       height: 'auto',
-      [side]: `${offsets.line}px`,
+      [side]: 0,
       pointerEvents: 'none',
       borderColor: active ? SEPARATOR_ACTIVE_COLOR : null,
     },
     grip: {
       top: '50%',
-      [side]: `${offsets.grip}px`,
+      [side]: 0,
       width: `${SEPARATOR_GRIP_WIDTH_PX}px`,
       height: '32px',
       marginTop: '-16px',
@@ -281,6 +284,23 @@ export function separatorStyles(placement, rtl, active, height) {
       opacity: active ? 1 : 0.4,
     },
   };
+}
+
+/**
+ * Follows an element's height: the callback gets it now and at every change, where the
+ * browser can tell (ResizeObserver); elsewhere it is never called.
+ *
+ * @param {Element} element the element
+ * @param {Function} callback called with the height, in CSS pixels
+ * @returns {Function|null} what stops following, or null when nothing follows it
+ */
+export function observeHeight(element, callback) {
+  if (!window.ResizeObserver) {
+    return null;
+  }
+  const observer = new window.ResizeObserver(() => callback(element.clientHeight));
+  observer.observe(element);
+  return () => observer.disconnect();
 }
 
 /**
