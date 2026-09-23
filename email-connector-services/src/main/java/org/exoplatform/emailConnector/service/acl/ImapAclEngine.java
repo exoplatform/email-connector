@@ -182,7 +182,7 @@ public class ImapAclEngine implements MailboxAclEngine {
       ACL[] acls = folder(session.store(), mailbox).getACL();
       List<MailboxAce> entries = new ArrayList<>();
       for (ACL acl : acls == null ? new ACL[0] : acls) {
-        entries.add(MailboxAce.ofLetters(acl.getName(), MailboxRights.fromRights(acl.getRights())));
+        entries.add(ace(acl.getName(), MailboxRights.fromRights(acl.getRights())));
       }
       return entries;
     } catch (MessagingException e) {
@@ -222,7 +222,85 @@ public class ImapAclEngine implements MailboxAclEngine {
     } catch (MessagingException e) {
       throw refused("SETACL", mailbox, e);
     }
-    return MailboxAce.ofLetters(identifier, letters);
+    return ace(identifier, letters);
+  }
+
+  /**
+   * The preset a set of observed letters reads as on an IMAP server: a preset's letters
+   * exactly, or a preset's letters plus only what the server adds by itself because it
+   * couples letters (RFC 4314 section 2.1.1). Stalwart answers {@code lrswit} as
+   * {@code tewsirl}: it stores {@code e} with {@code t}, so an Editor granted from eXo
+   * read back as CUSTOM (observed on the rig, 2026-09-23). The couplings admitted are
+   * the RFC's legacy ones and nothing else -- {@code e} and {@code d} beside {@code t},
+   * {@code c} beside {@code k} -- so a set granting more than coupling implies
+   * ({@code a}, {@code x}, {@code e} without {@code t}) is never a preset.
+   *
+   * @param rights the letters a server answered
+   * @return READER or EDITOR, CUSTOM when none matches
+   */
+  @Override
+  public DelegationPreset presetOf(MailboxRights rights) {
+    if (rights == null) {
+      return DelegationPreset.CUSTOM;
+    }
+    for (DelegationPreset preset : DelegationPreset.values()) {
+      if (preset.isGrantable() && readsAs(rights.letters(), preset.rights().letters())) {
+        return preset;
+      }
+    }
+    return DelegationPreset.CUSTOM;
+  }
+
+  /**
+   * Whether observed letters are a preset's letters, plus only letters the preset's own
+   * letters make a server add by coupling.
+   *
+   * @param observed the letters the server answered
+   * @param preset the preset's letters
+   * @return true when the observed set reads as the preset
+   */
+  private static boolean readsAs(String observed, String preset) {
+    for (char letter : preset.toCharArray()) {
+      if (observed.indexOf(letter) < 0) {
+        return false;
+      }
+    }
+    for (char letter : observed.toCharArray()) {
+      if (preset.indexOf(letter) < 0 && !impliedByCoupling(letter, preset)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Whether a server may add a letter by itself because the granted letters couple it
+   * (RFC 4314 section 2.1.1): {@code e} and the legacy {@code d} with {@code t}, the
+   * legacy {@code c} with {@code k}.
+   *
+   * @param letter the extra letter observed
+   * @param granted the letters granted
+   * @return true when the letter is implied by one granted
+   */
+  private static boolean impliedByCoupling(char letter, String granted) {
+    return switch (letter) {
+    case 'e', 'd' -> granted.indexOf('t') >= 0;
+    case 'c' -> granted.indexOf('k') >= 0;
+    default -> false;
+    };
+  }
+
+  /**
+   * One entry as this engine reads it: the letters, the letters again as the native
+   * form, and the preset they read as on an IMAP server ({@link #presetOf}).
+   *
+   * @param identifier the identifier
+   * @param rights the letters
+   * @return the entry
+   */
+  private MailboxAce ace(String identifier, MailboxRights rights) {
+    MailboxRights safe = rights == null ? MailboxRights.NONE : rights;
+    return new MailboxAce(identifier, safe, safe.letters(), presetOf(safe));
   }
 
   /**
