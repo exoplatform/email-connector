@@ -1356,7 +1356,32 @@ export function saveDraft(draft, push) {
       return null;
     }
     if (!resp?.ok) {
-      throw new Error('Error when saving draft');
+      // With the server's code when it sent one: a first save naming a mailbox that is
+      // not the user's is refused with its own (EXO-90595).
+      return refusal(resp, 'Error when saving draft');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * The mailbox shared with the user that one of their drafts belongs to (EXO-90595), as
+ * the server knows it: {delegationId, ownerFullName, ownerMailbox, shared}, or null for a
+ * draft of the user's own mailbox.
+ *
+ * @param {string} draftLocalId the draft's local id
+ * @returns {Promise<Object>} the mailbox, or null
+ */
+export function getDraftMailbox(draftLocalId) {
+  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}/mailbox`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (resp?.status === 204) {
+      return null;
+    }
+    if (!resp?.ok) {
+      return refusal(resp, 'Error when reading the mailbox of a draft');
     }
     return resp.json();
   });
