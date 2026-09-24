@@ -471,6 +471,28 @@ class EmailDelegationFolderAccessTest {
   }
 
   /**
+   * The name without INBOX is only a fallback for a folder of the owner's that no other
+   * folder of hers goes by: with {@code INBOX/Sub} not registered yet and the owner's own
+   * top-level {@code Sub} shared and registered, "Not shared" on {@code INBOX/Sub} never
+   * drops the copy of {@code Sub}; and a hook that has not listed the owner's folders
+   * names nothing it cannot be sure of.
+   */
+  @Test
+  void theFallbackNeverTakesAnotherFolderOfTheOwners() throws Exception {
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted());
+    answerTheFolderGrantsWrite();
+    when(engine.listOwnFolders(any())).thenReturn(List.of(own(INBOX, null), own("INBOX/Sub", null), own("Sub", null)));
+    List<EmailFolder> rows = granteeFolders();
+    rows.add(granteeFolder(21L, ROOT + "/Sub", MailFolderView.TYPE_DELEGATED, null, "lrs"));
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(rows);
+
+    service.setFolderAccess(OWNER, 100L, List.of(change("INBOX/Sub", FolderAccess.NONE)));
+    service.dropDelegatedFolderTree(accepted(), "INBOX/Other", false, null);
+
+    verify(emailFolderStorage, never()).deleteFolder(anyString(), anyLong());
+  }
+
+  /**
    * "Not shared" is recorded when it takes something away: a role folder the server
    * refused at the grant, sent back as it was shown, stays said refused and offered by
    * "Extend access" -- not turned into the owner's choice by an unrelated save.
