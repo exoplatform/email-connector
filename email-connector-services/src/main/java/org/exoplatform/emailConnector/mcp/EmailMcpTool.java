@@ -354,14 +354,11 @@ public class EmailMcpTool implements McpToolPlugin {
    * sender, unread state and age. The newest matches come back with the total the
    * server found, so the caller can tell how much of the answer it is holding.
    * <p>
-   * A hit is only chainable into the id-based tools ({@link #getEmailFull},
-   * {@code mark_read}, {@code reply_email}) when it is an INBOX hit that is already
-   * cached. Those tools take the folder-less overloads, which resolve against the
-   * INBOX mirror, and an IMAP UID is unique only within its own folder — so a SENT
-   * or ARCHIVE hit would silently address the unrelated inbox message holding the
-   * same UID, and an uncached hit is not in the mirror at all. The tool description
-   * states this so the model does not build the broken chain; widening it means
-   * backporting the folder-aware fetch path (EXO-88990 and later).
+   * A hit chains into the other tools by its email_id, which it carries whenever the
+   * message is in the local copy, whatever its folder. An IMAP UID is unique only within
+   * its own folder, so a hit hands out its mail_remote_id only for the user's own INBOX
+   * ({@link #chainableUid}); a hit that is not in the local copy has no email_id and
+   * cannot be opened by the other tools, which read that copy.
    *
    * @param query free text matched against the subject or the sender, may be blank
    * @param from text matched against the sender only, may be blank
@@ -1340,16 +1337,20 @@ public class EmailMcpTool implements McpToolPlugin {
     String username = getCurrentUserName();
     Email row = share == null ? emailBoxService.getOwnMailboxEmailById(emailId, username)
                               : emailBoxService.getSharedMailboxEmailById(emailId, username, share.delegationId());
-    if (row == null || row.getMailRemoteId() == null) {
+    if (row == null) {
       throw new ObjectNotFoundException(notFoundById(emailId, share));
+    }
+    if (row.getMailRemoteId() == null) {
+      throw new IllegalArgumentException(String.format("Email %d is a draft that is not on the mail server yet: this tool cannot act on it.",
+                                                       emailId));
     }
     return row;
   }
 
   /**
    * The refusal of an email_id that names no mail of the mailbox, in words that say
-   * which id and which mailbox -- and what an email_id is, since the likeliest cause is a
-   * mail_remote_id passed in its place (EXO-90555: an agent passed a search hit's UID).
+   * which id and which mailbox -- and what an email_id is, since the likeliest wrong input
+   * is a mail_remote_id passed in its place.
    *
    * @param emailId the id given
    * @param share the shared mailbox named, null for the user's own
