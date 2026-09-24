@@ -87,7 +87,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :categories="emailCategories"
           :category-view-id="categoryViewId"
           :sync-in-progress="syncInProgress"
-          hide-views />
+          hide-views
+          sync-button />
       </div>
     </template>
     <template #titleIcons>
