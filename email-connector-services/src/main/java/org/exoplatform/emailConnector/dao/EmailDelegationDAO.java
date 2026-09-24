@@ -185,6 +185,25 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   Date updated);
 
   /**
+   * The grantee's search toggle, and nothing else of the row (EXO-90554) -- the same
+   * narrow write as {@link #updatePreferences}, for the same reason.
+   *
+   * @param id the row id
+   * @param granteeId the grantee, whose row it must be
+   * @param searchIncluded whether the unified search returns this shared mailbox
+   * @param updated the update stamp
+   * @return the rows updated: one, or zero when no such row belongs to that grantee
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.searchIncluded = :searchIncluded, d.updatedDate = :updated WHERE d.id = :id AND d.granteeId = :granteeId")
+  int updateSearchIncluded(@Param("id")
+  long id, @Param("granteeId")
+  String granteeId, @Param("searchIncluded")
+  boolean searchIncluded, @Param("updated")
+  Date updated);
+
+  /**
    * What an owner's change of access wrote on the server, and nothing else of the row
    * (stack review N-1): the preset, the letters, the server's own words, the identifier
    * written and the check stamp. The status, the dates and the grantee's toggles stay as
