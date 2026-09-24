@@ -171,12 +171,11 @@ public class EmailMcpTool implements McpToolPlugin {
   /**
    * Retrieve one stored email by its local database id (plain-text body).
    * <p>
-   * Reads through {@link EmailBoxService#getOwnedEmailById}, not the plain lookup:
-   * that one finds a row by its technical id alone and lets the username merely
-   * decorate what comes back, which is right for a caller that has already established
-   * who owns the row and wrong for anything reached from outside. This is reached from
-   * outside — an agent hands it an id — and an id is guessable, so it is the same read
-   * {@code EmailBoxRest} does. It refuses another user's mail rather than returning it.
+   * Reads through the owning lookups ({@link EmailBoxService#getOwnMailboxEmailById},
+   * {@link EmailBoxService#getSharedMailboxEmailById}), never the plain one, which finds
+   * a row by its technical id alone. This is reached from outside -- an agent hands it an
+   * id -- and an id is guessable: another user's mail is answered as not found, stricter
+   * than the REST read, which answers "not allowed" and so says the row exists.
    *
    * With a {@code mailbox}, the row must sit in that shared mailbox (EXO-90555); without
    * one, in the user's own. An id of the other kind is not found, never another message.
@@ -187,7 +186,7 @@ public class EmailMcpTool implements McpToolPlugin {
    * @return the email, with its body flattened to plain text
    * @throws ObjectNotFoundException if no such email is cached in that mailbox, or no
    *           such mailbox is shared with the user
-   * @throws IllegalAccessException if the email belongs to somebody else
+   * @throws IllegalAccessException if the user has no usable mailbox
    */
   public EmailModel getEmailById(long emailId, String mailbox) throws ObjectNotFoundException, IllegalAccessException {
     // Own mailbox (EXO-90557) unless one is named: a row of a mailbox somebody shared
@@ -1303,7 +1302,7 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param share the shared mailbox named, null for the user's own
    * @return the mail
    * @throws ObjectNotFoundException when no such mail is in that mailbox
-   * @throws IllegalAccessException if the row belongs to somebody else
+   * @throws IllegalAccessException if the user has no usable mailbox
    */
   private MailRef mailOf(Long emailId, Long mailRemoteId, SharedMailboxEntry share) throws ObjectNotFoundException,
                                                                                     IllegalAccessException {
@@ -1331,7 +1330,7 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param share the shared mailbox named, null for the user's own
    * @return the row
    * @throws ObjectNotFoundException when it is not in that mailbox
-   * @throws IllegalAccessException if the row belongs to somebody else
+   * @throws IllegalAccessException if the user has no usable mailbox
    */
   private Email rowOf(long emailId, SharedMailboxEntry share) throws ObjectNotFoundException, IllegalAccessException {
     String username = getCurrentUserName();
@@ -1406,7 +1405,7 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param share the shared mailbox named, null for the user's own
    * @return the UIDs, never null
    * @throws ObjectNotFoundException when a mail is not in that mailbox
-   * @throws IllegalAccessException if a row belongs to somebody else
+   * @throws IllegalAccessException if the user has no usable mailbox
    */
   private List<Long> inboxUidsOf(List<Long> emailIds, List<Long> mailRemoteIds, SharedMailboxEntry share) throws ObjectNotFoundException,
                                                                                                         IllegalAccessException {
