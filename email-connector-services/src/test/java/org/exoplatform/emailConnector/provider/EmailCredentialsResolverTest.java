@@ -248,7 +248,7 @@ public class EmailCredentialsResolverTest {
     org.junit.jupiter.api.Assertions.assertFalse(resolver.retriesAfterRefusal("unknown"));
   }
 
-  /** Round 2: an invalidation that fails is swallowed - its callers run it inside failure handling. */
+  /** An invalidation that fails is swallowed - its callers run it inside failure handling. */
   @Test
   void anInvalidationThatFailsNeverThrows() {
     org.mockito.Mockito.doThrow(new IllegalStateException("provider broke")).when(connectorCredentialsService).invalidate(any());
