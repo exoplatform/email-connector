@@ -831,21 +831,34 @@ class EmailDelegationFolderAccessTest {
     service.changePreset(OWNER, 100L, DelegationPreset.READER);
 
     verify(emailFolderStorage).deleteFolder(GRANTEE, 22L);
+
+    // A folder that takes the narrower letters is narrowed by the same sure name.
+    when(engine.grant(any(), eq("INBOX/Courier"), anyString(), eq(DelegationPreset.READER), any(), any()))
+                                                                                                        .thenReturn(ace(GRANTEE_MAILBOX, "lrs"));
+    service.changePreset(OWNER, 100L, DelegationPreset.READER);
+
+    verify(emailFolderStorage).updateDelegatedRights(eq(GRANTEE), eq(22L), eq(100L), eq(FolderRole.SENT), eq("lrs"), any(Date.class));
   }
 
   /**
-   * After a delete, the delegates' copies go; nothing is asked of the server.
+   * After a delete, the delegates' copies go -- one under INBOX too, named for sure by the
+   * owner's listing; no grant is written.
    */
   @Test
   void aDeletedFolderLeavesTheDelegatesScreens() throws Exception {
     when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(accepted()));
-    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(granteeFolders());
+    List<EmailFolder> rows = granteeFolders();
+    rows.add(granteeFolder(19L, ROOT + "/Legacy", MailFolderView.TYPE_DELEGATED, null, "lrs"));
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(rows);
+    when(engine.listOwnFolders(any())).thenReturn(List.of(own(INBOX, null)));
 
     service.ownerFolderChanged(OWNER, "Projects", null);
+    service.ownerFolderChanged(OWNER, "INBOX/Legacy", null);
 
     verify(emailFolderStorage).deleteFolder(GRANTEE, 11L);
-    verify(engine, never()).listOwnFolders(any());
-    verify(emailFolderStorage).markDiscoveryDue(100L);
+    verify(emailFolderStorage).deleteFolder(GRANTEE, 19L);
+    verify(engine, never()).grant(any(), anyString(), anyString(), any(), any(), any());
+    verify(emailFolderStorage, org.mockito.Mockito.atLeastOnce()).markDiscoveryDue(100L);
   }
 
   /**
