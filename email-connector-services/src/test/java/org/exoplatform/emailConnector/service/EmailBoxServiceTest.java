@@ -12772,6 +12772,7 @@ public class EmailBoxServiceTest {
     own.setReceivedDate(new Date(1_000L));
     when(emailBoxStorage.getEmailsForSearch(TEST_USER, List.of("CUSTOM:8", "CUSTOM:9"))).thenReturn(List.of(own));
     Email shared = mirrored(2L, "budget, Alice's", "carol@acme.com", false, 0);
+    shared.setId(55L);
     when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, scopes.keySet())).thenReturn(List.of(shared));
 
     EmailSearchResultPage page = emailBoxService.searchCachedEmails(TEST_USER, "budget", false, 10);
