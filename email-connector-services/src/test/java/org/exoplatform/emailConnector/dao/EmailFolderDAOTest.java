@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.dao;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -396,6 +397,37 @@ public class EmailFolderDAOTest {
 
     assertEquals(1, emailFolderDAO.findByUserIdAndDelegationId(USERNAME, 43L).size());
     assertEquals(1, emailFolderDAO.findByUserIdAndDelegationId(OTHER, 42L).size());
+  }
+
+  /**
+   * EXO-90553 -- the new-mail boundary of a shared INBOX, on HSQLDB: the baseline is
+   * taken once, only where there is none; the claim of a range goes to exactly one of
+   * two callers that read the same boundary; a silent move and a reset need the value
+   * read to still be there; and a row of the user's own mailbox never takes one.
+   */
+  @Test
+  void theSharedInboxBoundaryIsTakenOnceAndOnlyOnADelegatedRow() {
+    Long shared = persistDelegated(USERNAME, "Other Users/anne/INBOX", 42L, true);
+    Long own = persist(USERNAME, "Factures", "Factures", true, false, new Date(1_000L));
+    entityManager.clear();
+
+    assertEquals(1, emailFolderDAO.initialiseNotifiedUid(shared, USERNAME, 10L), "the baseline, where there is none");
+    assertEquals(0, emailFolderDAO.initialiseNotifiedUid(shared, USERNAME, 99L), "and only there");
+    assertEquals(0, emailFolderDAO.initialiseNotifiedUid(own, USERNAME, 10L), "never on the user's own folder");
+    assertEquals(0, emailFolderDAO.initialiseNotifiedUid(shared, OTHER, 10L), "never on another user's row");
+
+    assertEquals(1, emailFolderDAO.advanceNotifiedUid(shared, USERNAME, 10L, 12L), "the first claim of (10, 12] takes it");
+    assertEquals(0, emailFolderDAO.advanceNotifiedUid(shared, USERNAME, 10L, 12L), "the second finds it taken");
+    assertEquals(0, emailFolderDAO.advanceNotifiedUid(shared, USERNAME, 10L, 20L), "and so does a later claim from the same stale read");
+    assertEquals(0, emailFolderDAO.advanceNotifiedUid(shared, USERNAME, 12L, 12L), "an empty range is no claim");
+    assertEquals(0, emailFolderDAO.advanceNotifiedUid(shared, USERNAME, 12L, 11L), "a claim never moves it down");
+
+    assertEquals(0, emailFolderDAO.replaceNotifiedUid(shared, USERNAME, 10L, 5L), "a silent move from a stale read is refused");
+    assertEquals(1, emailFolderDAO.replaceNotifiedUid(shared, USERNAME, 12L, 5L), "a re-baseline may go down");
+    assertEquals(1, emailFolderDAO.replaceNotifiedUid(shared, USERNAME, 5L, null), "and the reset clears it");
+    entityManager.clear();
+    assertNull(emailFolderDAO.findByIdAndUserId(shared, USERNAME).get(0).getNotifiedUid());
+    assertNull(emailFolderDAO.findByIdAndUserId(own, USERNAME).get(0).getNotifiedUid());
   }
 
   /**

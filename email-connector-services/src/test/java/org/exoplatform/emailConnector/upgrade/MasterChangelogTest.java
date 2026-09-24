@@ -630,6 +630,62 @@ public class MasterChangelogTest {
   }
 
   /**
+   * EXO-90553 -- 1.0.0-84 adds the nullable EMAIL_FOLDER.NOTIFIED_UID to a table that
+   * already holds a shared INBOX row, which keeps its values and gets no boundary; the
+   * changeset rolls back to a tag placed immediately before it, dropping the column and
+   * nothing else, and applies again.
+   *
+   * @throws Exception when the changeset does not apply or roll back
+   */
+  @Test
+  void theSharedInboxNotificationBoundaryRollsBackAndReapplies() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback84" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-84"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-shared-inbox-notification-boundary");
+      assertFalse(columnExists(connection, "EMAIL_FOLDER", "NOTIFIED_UID"), "not there before 1.0.0-84");
+      try (Statement statement = connection.createStatement()) {
+        statement.executeUpdate("INSERT INTO EMAIL_FOLDER (ID, USER_ID, REMOTE_NAME, DISPLAY_NAME, TYPE, SYNC_ENABLED, MISSING, DELEGATION_ID)"
+            + " VALUES (1, 'bob', 'Other Users/alice/INBOX', 'INBOX', 'DELEGATED_INBOX', TRUE, FALSE, 7)");
+      }
+      liquibase.update("");
+      assertTrue(columnExists(connection, "EMAIL_FOLDER", "NOTIFIED_UID"), "1.0.0-84 adds EMAIL_FOLDER.NOTIFIED_UID");
+      try (Statement statement = connection.createStatement();
+          ResultSet row = statement.executeQuery("SELECT NOTIFIED_UID, DELEGATION_ID, REMOTE_NAME FROM EMAIL_FOLDER WHERE ID = 1")) {
+        assertTrue(row.next());
+        assertEquals(0L, row.getLong(1));
+        assertTrue(row.wasNull(), "an existing row gets no boundary: its first pass baselines it");
+        assertEquals(7L, row.getLong(2));
+        assertEquals("Other Users/alice/INBOX", row.getString(3));
+      }
+      liquibase.rollback("before-shared-inbox-notification-boundary", "");
+      assertFalse(columnExists(connection, "EMAIL_FOLDER", "NOTIFIED_UID"), "the rollback drops it");
+      assertTrue(columnExists(connection, "EMAIL_FOLDER", "RIGHTS_CHECK_DATE"), "and nothing before it");
+      assertEquals(32, columnSize(connection, "EMAIL_DELEGATION", "RIGHTS"), "1.0.0-83 still stands");
+      liquibase.update("");
+      assertTrue(columnExists(connection, "EMAIL_FOLDER", "NOTIFIED_UID"), "the changeset applies again after its rollback");
+    }
+  }
+
+  /**
+   * EXO-90553 -- 1.0.0-84 as MySQL and PostgreSQL would run it: one nullable BIGINT,
+   * unquoted, and a rollback that drops it.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theSharedInboxNotificationBoundaryOnMySqlAndPostgreSql() throws Exception {
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-84").toUpperCase(Locale.ROOT);
+      assertTrue(update.contains("ALTER TABLE EMAIL_FOLDER ADD NOTIFIED_UID BIGINT"), vendor + ": " + update);
+      assertFalse(update.contains("NOT NULL"), vendor + " the column is nullable: " + update);
+      assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-84").toUpperCase(Locale.ROOT);
+      assertTrue(rollback.contains("ALTER TABLE EMAIL_FOLDER DROP COLUMN NOTIFIED_UID"), vendor + " rollback: " + rollback);
+    }
+  }
+
+  /**
    * The declared size of a column, from the JDBC metadata.
    *
    * @param connection the database

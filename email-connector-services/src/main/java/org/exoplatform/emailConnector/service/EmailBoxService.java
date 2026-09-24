@@ -181,6 +181,7 @@ import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.ThreadFingerprint;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.notification.plugin.DelegatedNewEmailsNotificationPlugin;
 import org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationPlugin;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
@@ -1905,7 +1906,7 @@ public class EmailBoxService {
       }
       for (EmailFolder delegatedFolder : emailDelegationService.getSyncableFolders(username, delegation.getId())) {
         try {
-          syncDelegatedFolder(store, delegatedFolder, username, userEmailSetting);
+          syncDelegatedFolder(store, delegatedFolder, username, userEmailSetting, delegation);
         } catch (Exception e) {
           // Stamped even on failure, exactly as a custom folder's is: a failed check is
           // a check, and the stamp is what keeps one unreachable shared folder from
@@ -1928,13 +1929,13 @@ public class EmailBoxService {
    * <ul>
    * <li><b>The window is the delegated one</b> ({@link #getDelegatedWindowSize}).</li>
    * <li><b>{@code notify} is false, and it is load-bearing.</b> The new-mail broadcast
-   * is what the notification plugins, the App Center badge's announce and the
-   * enterprise auto-categoriser all hang off; passing false is what keeps every one of
-   * them off somebody else's mail in this phase, for free and by construction rather
-   * than by a list of consumers each remembering to check. A delegate who wants to be
-   * told about the owner's new mail is a later, opted-in feature -- and the day it
-   * lands, this flag is the one line that decides it, which is the point of it being a
-   * flag.</li>
+   * is what the own-mailbox notification, the App Center badge's announce, the filters
+   * engine and the enterprise auto-categoriser all hang off; passing false is what keeps
+   * every one of them off somebody else's mail, for free and by construction rather
+   * than by a list of consumers each remembering to check. The delegate who asked to be
+   * told about the owner's new mail is told by a separate, narrower hook run after the
+   * sync, {@link #notifyDelegatedNewMail} (EXO-90553), which reads the cache and sends
+   * its own notification -- never the broadcast.</li>
    * </ul>
    * Presence is probed with {@code exists()} rather than through the connection's
    * remembered walk: that walk lists the user's OWN namespace, and a shared mailbox
@@ -1944,13 +1945,16 @@ public class EmailBoxService {
    * @param delegatedFolder the registered folder of the shared mailbox
    * @param username the delegate
    * @param userEmailSetting the delegate's connector binding
+   * @param passDelegation the share as the periodic pass read it, or null when the
+   *          delegate is opening the folder (the on-open refresh)
    * @throws MessagingException if the folder cannot be read
    * @throws IllegalAccessException if the user is not allowed to cache messages
    */
   private void syncDelegatedFolder(Store store,
                                    EmailFolder delegatedFolder,
                                    String username,
-                                   UserEmailSetting userEmailSetting) throws MessagingException, IllegalAccessException {
+                                   UserEmailSetting userEmailSetting,
+                                   EmailDelegation passDelegation) throws MessagingException, IllegalAccessException {
     Folder remote = store.getFolder(delegatedFolder.getRemoteName());
     if (!(remote instanceof IMAPFolder) || !remote.exists()) {
       // The share went away, or the owner renamed the folder. Marked missing rather
@@ -1992,6 +1996,163 @@ public class EmailBoxService {
       return;
     }
     emailFolderService.recordSync(username, delegatedFolder.getId(), captured[0]);
+    try {
+      notifyDelegatedNewMail(username, current, passDelegation, delegatedFolder.getSnapshot(), captured[0]);
+    } catch (RuntimeException e) {
+      // The mail is mirrored either way; a lost notification is the lesser failure.
+      LOG.warn("Could not notify user {} of the new mail of shared folder '{}'", username, delegatedFolder.getRemoteName(), e);
+    }
+  }
+
+  /**
+   * Tells a delegate about the new mail of a shared INBOX they asked to be told about
+   * (EXO-90553), after its sync -- a hook of its own, never the new-mail broadcast
+   * ({@link #syncDelegatedFolder} says why).
+   * <p>
+   * <b>The boundary.</b> The folder row's {@code NOTIFIED_UID} is the highest UID the
+   * delegate was told about or has seen; the range above it is taken with a conditional
+   * UPDATE ({@link EmailFolderService#advanceNotifiedUid}) before anything is counted,
+   * so one range of the owner's mail is notified once per delegate, whichever node
+   * syncs it. It is the delegate's shared-INBOX row, never the sync-state row the
+   * delegate's own INBOX claims on, so the two notifications cannot take each other's
+   * range.
+   * <p>
+   * <b>When nothing is sent, and the boundary moves silently instead.</b>
+   * <ul>
+   * <li>the share is not accepted, or its notification is off: the boundary is cleared,
+   * so turning it on later starts from the mail then present, not from a backlog;</li>
+   * <li>there is no boundary yet -- the first pass after the switch was turned on, or
+   * after the share was accepted -- or the server renumbered the folder (a new
+   * UIDVALIDITY): the boundary is set to the highest cached UID, and the mail already
+   * there is not news;</li>
+   * <li>the delegate is opening the folder ({@code passDelegation} null): they see the
+   * new mail, so the boundary follows what they see;</li>
+   * <li>the folder had not been checked for a while ({@link #wasDormant}): the share was
+   * out of use, and what arrived meanwhile arrived while the delegate was not using the
+   * mailbox (Q-5) -- whether or not the on-open refresh got to it first.</li>
+   * </ul>
+   * A share that is not in use is not synced at all ({@link #syncDelegatedFolders}, the
+   * activity window), so it notifies nothing: the switch never buys a sync of its own
+   * (Q-5). Only unread messages count, as for the own INBOX; the per-category
+   * preference does not apply, since shared mail is never categorised.
+   *
+   * @param username the delegate
+   * @param folder the shared folder's row, read after its sync and before its sync
+   *          memory was recorded
+   * @param passDelegation the share as the periodic pass read it, or null for the
+   *          on-open refresh
+   * @param previousSnapshot the folder's snapshot before this sync, may be null
+   * @param capturedSnapshot the snapshot this sync captured, may be null
+   */
+  void notifyDelegatedNewMail(String username,
+                              EmailFolder folder,
+                              EmailDelegation passDelegation,
+                              FolderSyncSnapshot previousSnapshot,
+                              FolderSyncSnapshot capturedSnapshot) {
+    if (folder == null || folder.getId() == null || !MailFolderView.TYPE_DELEGATED_INBOX.equals(folder.getType())) {
+      return;
+    }
+    Long boundary = folder.getNotifiedUid();
+    if (passDelegation == null) {
+      // Opened: whatever is cached now is in front of the delegate.
+      if (boundary != null) {
+        long maxUid = emailBoxStorage.getMaxUid(username, folder.getKey());
+        if (maxUid > boundary) {
+          emailFolderService.replaceNotifiedUid(username, folder.getId(), boundary, maxUid);
+        }
+      }
+      return;
+    }
+    if (!wantsNewMailNotification(passDelegation)) {
+      if (boundary != null) {
+        emailFolderService.replaceNotifiedUid(username, folder.getId(), boundary, null);
+      }
+      return;
+    }
+    long maxUid = emailBoxStorage.getMaxUid(username, folder.getKey());
+    if (boundary == null || isRenumbered(previousSnapshot, capturedSnapshot) || wasDormant(folder)) {
+      if (boundary == null || boundary != maxUid) {
+        emailFolderService.replaceNotifiedUid(username, folder.getId(), boundary, maxUid);
+      }
+      return;
+    }
+    if (maxUid <= boundary) {
+      return;
+    }
+    // Read again right before the range is taken: a share revoked, left or switched off
+    // since the pass read it notifies nothing (the next pass clears the boundary).
+    EmailDelegation current = emailDelegationService.delegationOf(username, folder.getKey());
+    if (current == null || !wantsNewMailNotification(current)) {
+      return;
+    }
+    if (!emailFolderService.advanceNotifiedUid(username, folder.getId(), boundary, maxUid)) {
+      LOG.debug("The new mail of shared folder {} of user {} up to UID {} was notified by another caller", folder.getKey(), username, maxUid);
+      return;
+    }
+    long newUnreadCount = emailBoxStorage.getSyncEmails(username, folder.getKey())
+                                         .stream()
+                                         .filter(email -> email.getMailRemoteId() != null && email.getMailRemoteId() > boundary
+                                             && email.getMailRemoteId() <= maxUid)
+                                         .filter(email -> !email.isRead())
+                                         .count();
+    if (newUnreadCount > 0) {
+      NotificationContext ctx = NotificationContextImpl.cloneInstance()
+                                                       .append(DelegatedNewEmailsNotificationPlugin.RECEIVER, username)
+                                                       .append(DelegatedNewEmailsNotificationPlugin.ACTOR,
+                                                               StringUtils.defaultString(current.getOwnerId()))
+                                                       .append(DelegatedNewEmailsNotificationPlugin.OWNER_MAILBOX,
+                                                               StringUtils.defaultString(current.getOwnerMailbox()))
+                                                       .append(DelegatedNewEmailsNotificationPlugin.DELEGATION_ID,
+                                                               String.valueOf(current.getId()))
+                                                       .append(DelegatedNewEmailsNotificationPlugin.NEW_EMAILS,
+                                                               String.valueOf(newUnreadCount));
+      ctx.getNotificationExecutor()
+         .with(ctx.makeCommand(PluginKey.key(NotificationConstants.DELEGATED_NEW_EMAILS_NOTIFICATION_PLUGIN)))
+         .execute(ctx);
+    }
+  }
+
+  /**
+   * Whether a shared INBOX was out of use before this pass: its previous check is older
+   * than twice the slowest period at which a mailbox in use is checked (the inactive
+   * sync period), or it was never checked. A share in use is checked every pass of its
+   * delegate's own sync; a gap beyond that means the passes had stopped -- the share
+   * left the activity window, or the delegate's connection or the platform was down for
+   * that long. Either way nothing above the boundary is announced: after an outage that
+   * long, the mail that arrived meanwhile is not notified, the lesser failure.
+   *
+   * @param folder the shared INBOX's row, as read before this pass recorded its check
+   * @return true when the mail above the boundary arrived while the share was not in use
+   */
+  private boolean wasDormant(EmailFolder folder) {
+    if (folder.getLastSyncDate() == null) {
+      return true;
+    }
+    long periodMs = TimeUnit.MINUTES.toMillis(Math.max(1, emailConnectorService.getEmailBoxInactiveSyncPeriod()));
+    return System.currentTimeMillis() - folder.getLastSyncDate().getTime() > 2 * periodMs;
+  }
+
+  /**
+   * Whether a share asks for its new mail to be notified: accepted, with the switch on.
+   *
+   * @param delegation the share
+   * @return true when its new mail notifies
+   */
+  private boolean wantsNewMailNotification(EmailDelegation delegation) {
+    return delegation.getStatus() == DelegationStatus.ACCEPTED && delegation.isNotifyNewMail();
+  }
+
+  /**
+   * Whether the server renumbered a folder between two syncs: both snapshots carry a
+   * UIDVALIDITY and they differ, so the UIDs remembered no longer name the same mail.
+   *
+   * @param previousSnapshot the snapshot before the sync, may be null
+   * @param capturedSnapshot the snapshot the sync captured, may be null
+   * @return true on a new UIDVALIDITY
+   */
+  private boolean isRenumbered(FolderSyncSnapshot previousSnapshot, FolderSyncSnapshot capturedSnapshot) {
+    return previousSnapshot != null && capturedSnapshot != null && previousSnapshot.getUidValidity() > 0
+        && capturedSnapshot.getUidValidity() > 0 && previousSnapshot.getUidValidity() != capturedSnapshot.getUidValidity();
   }
 
   /**
@@ -4987,7 +5148,9 @@ public class EmailBoxService {
       if (customFolder.getDelegationId() == null) {
         syncCustomFolder(store, customFolder, username, userEmailSetting);
       } else {
-        syncDelegatedFolder(store, customFolder, username, userEmailSetting);
+        // The delegate is looking at it: no notification, and what they see moves the
+        // new-mail boundary with it (EXO-90553).
+        syncDelegatedFolder(store, customFolder, username, userEmailSetting, null);
       }
     } catch (Exception e) {
       // Stamped as a check even though it failed: the listing asks for a refresh on

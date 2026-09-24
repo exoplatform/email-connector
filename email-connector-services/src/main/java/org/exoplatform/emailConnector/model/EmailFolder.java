@@ -74,6 +74,10 @@ public class EmailFolder {
   // EXO-90548: when those letters were last read.
   private Date               rightsCheckDate;
 
+  // EXO-90553: a shared INBOX's new-mail notification boundary -- the highest UID the
+  // delegate was told about or has seen; null when there is none.
+  private Long               notifiedUid;
+
   /**
    * The folder as it was before EXO-90548 gave delegated folders a role and letters of
    * their own: every existing positional caller keeps building it this way, with no role
@@ -109,7 +113,7 @@ public class EmailFolder {
                      FolderSyncSnapshot snapshot,
                      Long delegationId) {
     this(id, userId, remoteName, displayName, delimiter, type, syncEnabled, enabledDate, missing, discoveredDate, lastSeenDate,
-         lastSyncDate, snapshot, delegationId, null, null, null);
+         lastSyncDate, snapshot, delegationId, null, null, null, null);
   }
 
   /**

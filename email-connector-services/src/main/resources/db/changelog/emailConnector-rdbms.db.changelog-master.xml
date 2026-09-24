@@ -1705,4 +1705,26 @@
       <modifyDataType tableName="EMAIL_DELEGATION" columnName="RIGHTS" newDataType="VARCHAR(16)"/>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-84">
+    <comment>
+      EMAIL_FOLDER.NOTIFIED_UID (EXO-90553): the new-mail notification boundary of a
+      folder of a mailbox shared with the row's user -- the highest UID of that shared
+      INBOX the delegate has been told about, or has seen. Whoever notifies first moves
+      it with a conditional UPDATE, so one range of the owner's new mail is notified once
+      per delegate whichever node syncs it. A column of the delegate's own folder row, not
+      EMAIL_SYNC_STATE.NOTIFIED_UID (1.0.0-61), which is the delegate's own INBOX boundary
+      and is claimed by its own path: the two never race on one value.
+
+      Null means "no boundary": the share's notification is off, or was never baselined;
+      the first pass with the notification on sets it to the highest cached UID and
+      notifies nothing. Nullable, no default, no index (read with the row, written by
+      primary key). Rolled back explicitly.
+    </comment>
+    <addColumn tableName="EMAIL_FOLDER">
+      <column name="NOTIFIED_UID" type="BIGINT"/>
+    </addColumn>
+    <rollback>
+      <dropColumn tableName="EMAIL_FOLDER" columnName="NOTIFIED_UID"/>
+    </rollback>
+  </changeSet>
 </databaseChangeLog>
