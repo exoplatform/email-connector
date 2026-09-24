@@ -166,13 +166,6 @@ public class EmailScheduledSendServiceTest {
   }
 
   /**
-   * A date is refused below the minimum delay and beyond the horizon, measured on the
-   * clock; a zone must be a real one; a mail needs a recipient; nothing reaches the
-   * mailbox service when any of them fails.
-   *
-   * @throws Exception never
-   */
-  /**
    * A user who may not use their mailbox is refused as such, before the input is
    * judged: access comes before validation (backend-spring.md §5), so a bad date from a
    * user with no mailbox is a 401, not a 400.
@@ -185,6 +178,13 @@ public class EmailScheduledSendServiceTest {
     verifyNoInteractions(emailBoxService);
   }
 
+  /**
+   * A date is refused below the minimum delay and beyond the horizon, measured on the
+   * clock; a zone must be a real one; a mail needs a recipient; nothing reaches the
+   * mailbox service when any of them fails.
+   *
+   * @throws Exception never
+   */
   @Test
   void aScheduleIsValidatedAgainstTheClockBeforeAnythingIsTouched() throws Exception {
     long now = service.now().getTime();
