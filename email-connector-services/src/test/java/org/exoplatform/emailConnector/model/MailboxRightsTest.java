@@ -201,6 +201,27 @@ class MailboxRightsTest {
    * EXO-90548 -- taking mail out of a folder is offered with t AND e: without e a server
    * keeps the original (silently, on Dovecot).
    */
+  /**
+   * EXO-90556, live on Stalwart 0.11.8 -- a Reader granted {@code lrs} reads back
+   * {@code wsrl} (GETACL) and {@code rlsw} (MYRIGHTS): the {@code w} coupled with
+   * {@code s} is dropped, so the entry reads as the Reader it is and never stars; a
+   * {@code w} beside another write right (an Editor, {@code rlitesw} on Stalwart) or with
+   * no {@code s} beside it is kept.
+   */
+  @Test
+  void aWriteCoupledWithKeepSeenAloneIsAReadersNotAWrite() {
+    assertEquals("lrs", MailboxRights.of("wsrl").letters());
+    assertEquals("lrs", MailboxRights.of("rlsw").letters());
+    assertEquals(DelegationPreset.READER, DelegationPreset.fromRights(MailboxRights.of("wsrl")));
+    assertFalse(MailboxRights.of("rlsw").canWriteFlags());
+    assertFalse(MailboxRights.of("rlsw").affordances().get("star"));
+    assertTrue(MailboxRights.of("rlsw").canKeepSeen());
+    assertEquals("lrswite", MailboxRights.of("rlitesw").letters());
+    assertTrue(MailboxRights.of("rlitesw").canWriteFlags());
+    assertEquals("lrw", MailboxRights.of("lrw").letters());
+    assertEquals("lrswi", MailboxRights.of("lrswi").letters());
+  }
+
   @Test
   void movingMailOutNeedsDeleteAndExpunge() {
     assertTrue(MailboxRights.of("lrswite").affordances().get("moveOut"));
