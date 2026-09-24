@@ -909,11 +909,10 @@ public class EmailConnectorService {
   }
 
   /**
-   * Trims the server fields of a connector preset as it is saved (EXO-90555): the IMAP
-   * and SMTP hosts and ports and the SMTP security type. A host typed with a stray space
-   * was stored as is, and the mail library then looked up a host named " 127.0.0.1"
-   * ({@code UnknownHostException}) -- a send that fails for a reason no screen shows.
-   * The provider configuration, which may carry secrets, is left as it came.
+   * Trims the server fields of a connector preset as it is saved: the IMAP and SMTP hosts
+   * and ports and the SMTP security type. JavaMail resolves a host verbatim, so a value
+   * typed with surrounding whitespace is an unknown host, a failure no screen shows. The
+   * provider configuration, which may carry secrets, is left as it came.
    *
    * @param emailConnector the preset being saved
    */

@@ -643,8 +643,8 @@ public class UserEmailSettingService {
     props.setProperty("mail.store.protocol", "imaps");
     // Host and port both in the props now: the no-args connect() below reads the
     // endpoint from here, where the four-argument form used to carry it.
-    // Trimmed where used (EXO-90555): a preset saved before its fields were trimmed at
-    // save may still carry a stray space, which the mail library looks up as is.
+    // Trimmed where used: a stored value may carry surrounding whitespace, and JavaMail
+    // resolves the host and reads the port verbatim.
     props.setProperty("mail.imaps.host", StringUtils.trim(emailConnector.getImapUrl()));
     props.setProperty("mail.imaps.port", StringUtils.trim(emailConnector.getImapPort()));
     // Timeouts on the imaps store so a slow or stuck fetch can never hang the sync

@@ -5513,12 +5513,16 @@ public class EmailBoxService {
    * (EXO-90557). {@link #getOwnedEmailById} checks the row is this user's; a row of a
    * mailbox somebody shared with them is theirs too, as a mirror, but it is its owner's
    * mail, and the agent's write tools act on the user's own INBOX by UID, where that
-   * UID names another message. Answered as not found, like an id that is not theirs.
+   * UID names another message. Answered as not found, like an id that is not theirs --
+   * and so is the row of another user: row ids are global, and a guessed or mistaken id
+   * (a mail_remote_id passed in its place) must neither be told "not allowed" nor learn
+   * that such a row exists.
    *
    * @param id the local id
    * @param username the reader
    * @return the message, null when it is not in the user's own mailbox
-   * @throws IllegalAccessException if the row belongs to somebody else
+   * @throws IllegalAccessException never for a row of another user; declared for the
+   *           callers' existing contract
    */
   // Transactional on its own account, as getOwnedEmailById is: the call below is on
   // this instance, so it bypasses the proxy and runs without that method's transaction,
@@ -5526,7 +5530,7 @@ public class EmailBoxService {
   // attachments then fail to load (live regression, MCP get_email_by_id).
   @Transactional(noRollbackFor = IllegalAccessException.class)
   public Email getOwnMailboxEmailById(long id, String username) throws IllegalAccessException {
-    Email email = getOwnedEmailById(id, username);
+    Email email = ownedOrNull(id, username);
     if (email != null && emailDelegationService.delegationOf(username, email.getFolder()) != null) {
       return null;
     }
@@ -5540,22 +5544,41 @@ public class EmailBoxService {
    * a folder registered for THAT share, which is read by DELEGATION_ID
    * ({@link EmailDelegationService#getMailboxFolderKeys}) rather than inferred from the
    * folder key: a row of the user's own mailbox, or of another share, is answered as not
-   * found, like an id that is not theirs.
+   * found, like an id that is not theirs -- and another user's row too, as
+   * {@link #getOwnMailboxEmailById} does.
    *
    * @param id the local id
    * @param username the reader
    * @param delegationId the share the agent named, as the delegation service resolved it
    * @return the message, null when it is not in that shared mailbox
-   * @throws IllegalAccessException if the row belongs to somebody else
+   * @throws IllegalAccessException never for a row of another user; declared for the
+   *           callers' existing contract
    */
   // Transactional on its own account, for the reason getOwnMailboxEmailById is.
   @Transactional(noRollbackFor = IllegalAccessException.class)
   public Email getSharedMailboxEmailById(long id, String username, long delegationId) throws IllegalAccessException {
-    Email email = getOwnedEmailById(id, username);
+    Email email = ownedOrNull(id, username);
     if (email == null || !emailDelegationService.getMailboxFolderKeys(username, delegationId).contains(email.getFolder())) {
       return null;
     }
     return email;
+  }
+
+  /**
+   * {@link #getOwnedEmailById} for the agent's lookups: a row of another user reads as no
+   * row at all.
+   *
+   * @param id the local id
+   * @param username the reader
+   * @return the user's row, or null
+   */
+  private Email ownedOrNull(long id, String username) {
+    try {
+      return getOwnedEmailById(id, username);
+    } catch (IllegalAccessException e) {
+      LOG.debug("An agent of user {} named email {}, which is not theirs; answered as not found", username, id);
+      return null;
+    }
   }
 
   /**
@@ -8103,8 +8126,8 @@ public class EmailBoxService {
       props.put("mail.smtp.writetimeout", String.valueOf(SCHEDULED_SMTP_IO_TIMEOUT_MS));
     }
     props.put("mail.smtp.auth", "true");
-    // Trimmed where used too (EXO-90555): a preset saved before its fields were trimmed
-    // at save still carries a " 127.0.0.1", which the mail library looks up as is.
+    // Trimmed where used too: a stored value may carry surrounding whitespace, and
+    // JavaMail resolves the host and reads the port verbatim.
     props.put("mail.smtp." + StringUtils.trim(emailConnector.getSmtpSecurityType()) + ".enable", "true");
     props.put("mail.smtp.host", StringUtils.trim(emailConnector.getSmtpUrl()));
     props.put("mail.smtp.port", StringUtils.trim(emailConnector.getSmtpPort()));

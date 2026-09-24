@@ -12382,6 +12382,13 @@ public class EmailBoxServiceTest {
     assertSame(ofTheShare, emailBoxService.getSharedMailboxEmailById(5L, TEST_USER, 100L));
     assertNull(emailBoxService.getSharedMailboxEmailById(6L, TEST_USER, 100L), "the user's own row");
     assertNull(emailBoxService.getSharedMailboxEmailById(7L, TEST_USER, 100L), "another share's row");
+    // Row ids are global: another user's row reads as no row to an agent, in both
+    // lookups -- never "not allowed", which would say it exists.
+    Email somebodyElses = email("someone-else");
+    somebodyElses.setFolder(MailFolder.INBOX);
+    when(emailBoxStorage.getEmailById(eq(8L), eq(TEST_USER), any())).thenReturn(somebodyElses);
+    assertNull(emailBoxService.getOwnMailboxEmailById(8L, TEST_USER));
+    assertNull(emailBoxService.getSharedMailboxEmailById(8L, TEST_USER, 100L));
   }
 
   /**

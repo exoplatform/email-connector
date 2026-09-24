@@ -131,8 +131,14 @@ class AiToolDefinitionsTest {
     assertEquals(declaring, taking);
     assertEquals(16, taking.size(), "every email tool but the account, the categories and the listing of shares");
     String search = definitions.get("search_emails").path("description").asText();
-    assertTrue(search.contains("unique only within its own folder") && search.contains("With mailbox"),
+    assertTrue(search.contains("never a mail_remote_id in its place") && search.contains("With mailbox"),
                "the chaining rule and the mailbox sentence are the description the model reads");
+    // A hit not in the synced copy cannot be opened by the reading tools, which read that
+    // copy: no description may send the model to one with its mail_remote_id.
+    assertTrue(search.contains("A hit without an email_id is not in the synced copy"), search);
+    assertFalse(search.contains("use its mail_remote_id"), search);
+    String thread = definitions.get("get_email_thread").path("description").asText();
+    assertFalse(thread.contains("mail_remote_id) through get_email_full"), thread);
     JsonNode listing = definitions.get("list_shared_mailboxes");
     assertTrue(listing.path("annotations").path("readOnlyHint").asBoolean(false), "a read");
     assertFalse(listing.path("annotations").path("destructiveHint").asBoolean(true), "not destructive");
