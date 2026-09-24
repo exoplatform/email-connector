@@ -2116,8 +2116,10 @@ public class EmailBoxService {
    * Whether a shared INBOX was out of use before this pass: its previous check is older
    * than twice the slowest period at which a mailbox in use is checked (the inactive
    * sync period), or it was never checked. A share in use is checked every pass of its
-   * delegate's own sync; a gap beyond that means the passes had stopped, which only the
-   * activity window does.
+   * delegate's own sync; a gap beyond that means the passes had stopped -- the share
+   * left the activity window, or the delegate's connection or the platform was down for
+   * that long. Either way nothing above the boundary is announced: after an outage that
+   * long, the mail that arrived meanwhile is not notified, the lesser failure.
    *
    * @param folder the shared INBOX's row, as read before this pass recorded its check
    * @return true when the mail above the boundary arrived while the share was not in use
