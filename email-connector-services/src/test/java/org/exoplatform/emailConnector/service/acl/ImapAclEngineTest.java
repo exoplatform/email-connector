@@ -274,12 +274,25 @@ class ImapAclEngineTest {
    * Only what coupling implies is forgiven: a set granting more -- administer, delete
    * the mailbox, expunge without delete-messages -- is never a preset.
    */
+  /**
+   * EXO-90556, live on Stalwart 0.11.8 -- a Reader granted {@code lrs} reads back
+   * {@code wsrl}: still a Reader, never CUSTOM (no "set in your mail app" row, no replace
+   * confirmation), and a rename writes it again as the Reader it is.
+   */
+  @Test
+  void aStalwartReaderWithItsCoupledWriteReadsAsAReader() {
+    assertEquals(DelegationPreset.READER, engine.presetOf(MailboxRights.of("wsrl")));
+    assertEquals(DelegationPreset.EDITOR, engine.presetOf(MailboxRights.of("rlitesw")));
+  }
+
   @Test
   void aSetGrantingMoreThanCouplingImpliesIsNeverAPreset() {
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrse")), "e without t");
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswitea")), "a");
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswitex")), "x");
-    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrsw")), "a Reader plus star is neither");
+    // A w beside s alone is Stalwart's coupling of a Reader's s (EXO-90556): a Reader.
+    // Beside another write right it stays a write, and the set is neither preset.
+    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswi")), "a Reader plus star and insert is neither");
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(null));
   }
 
@@ -738,6 +751,22 @@ class ImapAclEngineTest {
                          new OwnFolder("Clients", "Clients", "/", null)),
                  own);
     verify(root, times(1)).list("*");
+  }
+
+  /**
+   * EXO-90556 -- INBOX is never a role folder, whatever attribute a server lists on it:
+   * a role's grant or removal never lands on the share itself.
+   */
+  @Test
+  void inboxIsNeverTakenForARoleFolder() throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    Folder[] listing = new Folder[] { listed("INBOX", "INBOX", "\\Trash"), listed("Deleted Items", "Deleted Items") };
+    when(root.list("*")).thenReturn(listing);
+
+    assertEquals(Map.of(FolderRole.TRASH, "Deleted Items"), engine.findRoleFolders(session()));
   }
 
   /**

@@ -127,6 +127,12 @@ public final class MailboxRights {
    */
   public static final MailboxRights  GRANTABLE_WHERE_MAIL_LEAVES = of("lrswite");
 
+  /**
+   * The write rights whose presence makes a {@code w} beside {@code s} a real write
+   * right rather than Stalwart's coupling of a Reader's {@code s} (see {@link #of}).
+   */
+  static final String                READER_COUPLED_WRITE_PARTNERS = "itekxpa";
+
   /** No right at all. */
   public static final MailboxRights  NONE            = of("");
 
@@ -157,6 +163,17 @@ public final class MailboxRights {
    * {@code OK Expunge ignored: Permission denied} (EXO-90552, observed 2026-09-23).
    * The members are {@code k}, {@code x} for {@code c} and {@code t}, {@code e},
    * {@code x} for {@code d} -- the widest of the two groupings the RFC allows a server.
+   * <p>
+   * <b>A {@code w} coupled with {@code s} is dropped.</b> Stalwart stores a Reader's
+   * {@code s} with {@code w}: {@code lrs} granted reads back {@code wsrl} (GETACL) and
+   * {@code rlsw} (MYRIGHTS). A {@code w} beside {@code s} with no other write right
+   * ({@code i t e k x p a}) is read as that coupling, so such an entry reads as the
+   * Reader it was granted -- never starring or setting flags from eXo, whatever the
+   * server would let the delegate do in another client. The letters are the reading,
+   * not the recorded preset, because a delegate's folder carries no preset of its own:
+   * one folder of a share may be an Editor's while its INBOX is a Reader's. An Editor
+   * ({@code rlitesw} on Stalwart) keeps its {@code w}. The server's own words stay in
+   * {@code NATIVE_RIGHTS}.
    *
    * @param rights the letters, possibly null or blank
    * @return the rights, never null
@@ -184,6 +201,12 @@ public final class MailboxRights {
           parsed.add(letter);
         }
       }
+    }
+    if (parsed.contains(WRITE) && parsed.contains(KEEP_SEEN) && READER_COUPLED_WRITE_PARTNERS.chars().noneMatch(letter -> parsed.contains((char) letter))) {
+      // Stalwart couples w with s: a Reader granted lrs is answered wsrl (GETACL) and
+      // rlsw (MYRIGHTS). A w with no other write right beside it is that coupling, and a
+      // Reader never stars nor sets flags from eXo (EXO-90556, observed 2026-09-24).
+      parsed.remove(WRITE);
     }
     Set<Character> ordered = new LinkedHashSet<>();
     for (char letter : CANONICAL_ORDER.toCharArray()) {

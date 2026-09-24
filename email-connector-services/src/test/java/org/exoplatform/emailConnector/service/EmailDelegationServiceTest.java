@@ -1968,6 +1968,34 @@ class EmailDelegationServiceTest {
   }
 
   /**
+   * EXO-90556, live on Stalwart 0.11.8 -- a Reader's letters read back {@code rlsw}: the
+   * guard never lets that Reader star or set flags, on a folder of the share or on its
+   * INBOX, while an Editor's folder of the same share keeps its {@code w}.
+   */
+  @Test
+  void aStalwartReaderNeverStarsWhateverItsCoupledWrite() throws Exception {
+    EmailDelegation share = aDovecotShare();
+    share.setRights("rlsw");
+    EmailFolder inbox = sharedInbox(share);
+    EmailFolder sent = delegated(21L, ROOT + "/Sent", true);
+    sent.setRights("rlsw");
+    sent.setRightsCheckDate(new Date());
+    EmailFolder projects = delegated(22L, ROOT + "/Projects", true);
+    projects.setRights("rlitesw");
+    projects.setRightsCheckDate(new Date());
+    when(emailFolderStorage.getFolder(GRANTEE, inbox.getId())).thenReturn(inbox);
+    when(emailFolderStorage.getFolder(GRANTEE, 21L)).thenReturn(sent);
+    when(emailFolderStorage.getFolder(GRANTEE, 22L)).thenReturn(projects);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(share);
+
+    assertThrows(MailboxRightMissingException.class, () -> service.checkRight(GRANTEE, sent.getKey(), MailboxRights.WRITE));
+    assertThrows(MailboxRightMissingException.class, () -> service.checkRight(GRANTEE, inbox.getKey(), MailboxRights.WRITE));
+    service.checkRight(GRANTEE, sent.getKey(), MailboxRights.KEEP_SEEN);
+    service.checkRight(GRANTEE, projects.getKey(), MailboxRights.WRITE);
+    assertFalse(service.rightsOn(GRANTEE, sent.getKey()).affordances().get("star"));
+  }
+
+  /**
    * The guard reads THAT folder's letters: an Editor may delete from the shared INBOX
    * ({@code e}) and not expunge the owner's Trash; a Reader's Trash is read-only.
    */
@@ -2479,7 +2507,7 @@ class EmailDelegationServiceTest {
     EmailDelegation revokedMeanwhile = accepted("lrs");
     clearInvocations(emailDelegationStorage);
     org.mockito.Mockito.reset(engine);
-    when(engine.myRights(any(), any())).thenReturn(MailboxRights.of("lrsw"));
+    when(engine.myRights(any(), any())).thenReturn(MailboxRights.of("lr"));
     when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(row(DelegationStatus.REVOKED, DelegationOrigin.EXO));
     assertNull(service.refreshGranteeRights(GRANTEE, revokedMeanwhile, store), "an owner's revoke made meanwhile is not undone");
     verify(emailDelegationStorage, never()).update(any());

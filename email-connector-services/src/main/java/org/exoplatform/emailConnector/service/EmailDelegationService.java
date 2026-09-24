@@ -987,7 +987,7 @@ public class EmailDelegationService {
     for (FolderRole role : roles == null ? List.<FolderRole> of() : roles) {
       String folder = roleFolders == null ? null : roleFolders.get(role);
       FolderAccess exception = exceptions == null ? null : exceptions.get(role);
-      if (StringUtils.isBlank(folder) || role == FolderRole.DRAFTS || exception == FolderAccess.NONE) {
+      if (StringUtils.isBlank(folder) || isInbox(folder) || role == FolderRole.DRAFTS || exception == FolderAccess.NONE) {
         continue;
       }
       DelegationPreset rolePreset = exception == null ? preset : exception.preset();
@@ -1024,7 +1024,7 @@ public class EmailDelegationService {
     Set<FolderRole> notNarrowed = EnumSet.noneOf(FolderRole.class);
     Map<FolderRole, String> moved = new EnumMap<>(FolderRole.class);
     recordedFolders.forEach((role, folder) -> {
-      if (StringUtils.isNotBlank(folder) && !folder.equals(currentFolders.get(role))) {
+      if (StringUtils.isNotBlank(folder) && !isInbox(folder) && !folder.equals(currentFolders.get(role))) {
         moved.put(role, folder);
       }
     });
@@ -1065,7 +1065,8 @@ public class EmailDelegationService {
    * @param identifier the grantee as the server names them
    * @param role the role
    * @param roleFolders the owner's folder of each role
-   * @return true when the entry is gone (or there is no such folder), false when the
+   * @return true when the entry is gone (or there is no such folder, or the name is
+   *         INBOX, which only "Remove access" touches), false when the
    *         server refused
    */
   private boolean revokeRoleFolder(MailboxAclEngine engine,
@@ -1074,7 +1075,8 @@ public class EmailDelegationService {
                                    FolderRole role,
                                    Map<FolderRole, String> roleFolders) {
     String folder = roleFolders == null ? null : roleFolders.get(role);
-    if (StringUtils.isBlank(folder)) {
+    if (StringUtils.isBlank(folder) || isInbox(folder)) {
+      // INBOX is the share itself: only "Remove access" removes the entry there.
       return true;
     }
     try {
@@ -1765,7 +1767,7 @@ public class EmailDelegationService {
   private static Map<FolderRole, String> rolesAsListed(List<OwnFolder> listed) {
     Map<FolderRole, String> roles = new EnumMap<>(FolderRole.class);
     for (OwnFolder folder : listed == null ? List.<OwnFolder> of() : listed) {
-      if (folder != null && folder.role() != null && folder.role() != FolderRole.DRAFTS) {
+      if (folder != null && folder.role() != null && folder.role() != FolderRole.DRAFTS && !isInbox(folder.fullName())) {
         roles.putIfAbsent(folder.role(), folder.fullName());
       }
     }
