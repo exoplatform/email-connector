@@ -53,6 +53,7 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
+import org.exoplatform.emailConnector.model.DelegationGrantee;
 import org.exoplatform.emailConnector.model.DelegationOrigin;
 import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
@@ -256,6 +257,23 @@ class EmailDelegationSendModeTest {
 
     assertNull(service.setSendMode(OWNER, ID, "NONE").getSendMode());
     verify(emailDelegationStorage).updateSendMode(OWNER, ID, SendMode.NONE);
+  }
+
+  /**
+   * A withdrawal is recorded before the server is asked anything: eXo's record, which the
+   * send path reads, never waits on a login.
+   */
+  @Test
+  void aWithdrawalIsRecordedBeforeTheServerIsAsked() throws Exception {
+    EmailDelegation consented = share(DelegationStatus.ACCEPTED);
+    consented.setSendMode(SendMode.AS);
+    when(emailDelegationStorage.getAsOwner(OWNER, ID)).thenReturn(consented);
+
+    service.setSendMode(OWNER, ID, "NONE");
+
+    InOrder order = inOrder(emailDelegationStorage, engine);
+    order.verify(emailDelegationStorage).updateSendMode(OWNER, ID, SendMode.NONE);
+    order.verify(engine).probe(any());
   }
 
   /**
@@ -540,27 +558,61 @@ class EmailDelegationSendModeTest {
   }
 
   /**
-   * The owner's list carries the declared shapes on the capabilities and whether an
-   * administrator left the Sent copy on; an unsupported server promises no copy.
+   * The owner's list carries the declared shapes, and for each live share eXo made what
+   * the consent to it says: the grantee's name, and whether the owner keeps a copy --
+   * from the grant for a pending share, from the grantee's discovered Sent once in use,
+   * never with the copy switched off; nothing on a server that accepts no shape.
    */
   @Test
   void theOwnersListSaysWhatTheConsentTextNeeds() throws Exception {
-    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of());
-    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of());
+    EmailDelegation pendingEditor = share(DelegationStatus.PENDING);
+    EmailDelegation pendingReader = share(DelegationStatus.PENDING);
+    pendingReader.setId(101L);
+    pendingReader.setGranteeId("carol");
+    pendingReader.setGranteeMailbox("carol@acme.com");
+    pendingReader.setPreset(DelegationPreset.READER);
+    EmailDelegation inUse = share(DelegationStatus.ACCEPTED);
+    inUse.setId(102L);
+    inUse.setGranteeId("dave");
+    inUse.setGranteeMailbox("dave@acme.com");
+    EmailFolder sentWithoutInsert = new EmailFolder();
+    sentWithoutInsert.setId(22L);
+    sentWithoutInsert.setType(MailFolderView.TYPE_DELEGATED);
+    sentWithoutInsert.setRole(org.exoplatform.emailConnector.model.FolderRole.SENT);
+    sentWithoutInsert.setRightsCheckDate(new Date());
+    sentWithoutInsert.setRights("lrs");
+    when(emailFolderStorage.getDelegatedFolders("dave", 102L)).thenReturn(List.of(sentWithoutInsert));
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(pendingEditor, pendingReader, inUse));
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswite")),
+                                                              MailboxAce.ofLetters("carol@acme.com", MailboxRights.of("lrs")),
+                                                              MailboxAce.ofLetters("dave@acme.com", MailboxRights.of("lrswite"))));
     when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
 
     GrantedDelegations granted = service.getGrantedDelegations(OWNER);
-    assertTrue(granted.sentCopyEnabled());
     assertEquals(Set.of(SendMode.ON_BEHALF, SendMode.AS), granted.capabilities().sendModes());
     assertFalse(granted.capabilities().sendModeOnServer());
+    assertTrue(grantee(granted, ID).ownerSentCopy(), "an Editor share covering Sent, pending: the grant says so");
+    assertEquals(GRANTEE_MAILBOX, grantee(granted, ID).granteeFullName(), "the name, the address when no profile is read");
+    assertFalse(grantee(granted, 101L).ownerSentCopy(), "a Reader cannot file a copy");
+    assertFalse(grantee(granted, 102L).ownerSentCopy(), "in use: the discovered Sent decides, and holds no i");
 
     when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(false);
-    assertFalse(service.getGrantedDelegations(OWNER).sentCopyEnabled());
+    assertFalse(grantee(service.getGrantedDelegations(OWNER), ID).ownerSentCopy(), "switched off");
 
-    when(engine.probe(any())).thenReturn(MailboxAclCapabilities.unsupported(MailboxAclException.UNSUPPORTED));
-    GrantedDelegations unsupported = service.getGrantedDelegations(OWNER);
-    assertFalse(unsupported.sentCopyEnabled());
-    assertTrue(unsupported.capabilities().sendModes().isEmpty());
+    System.setProperty(SendMode.MODES_PROPERTY_PREFIX + CONNECTOR_ID, "none");
+    DelegationGrantee undeclared = grantee(service.getGrantedDelegations(OWNER), ID);
+    assertNull(undeclared.granteeFullName(), "nothing to consent to, nothing computed");
+  }
+
+  /**
+   * One grantee of the owner's list, by row id.
+   *
+   * @param granted the list
+   * @param id the row id
+   * @return the entry
+   */
+  private static DelegationGrantee grantee(GrantedDelegations granted, long id) {
+    return granted.grantees().stream().filter(entry -> entry.delegation() != null && entry.delegation().getId() == id).findFirst().orElseThrow();
   }
 
   /**
