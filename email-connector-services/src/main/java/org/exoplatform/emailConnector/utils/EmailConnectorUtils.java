@@ -139,6 +139,11 @@ public class EmailConnectorUtils {
 
   public static final String   SEND_EMAIL              = "exo.email.sendEmail";
 
+  // Broadcast once a mail sent in a shared mailbox owner's name went out (EXO-90583):
+  // source = the sender, data = the shape, ON_BEHALF or AS. Beside SEND_EMAIL, whose
+  // String payload other add-ons may read, rather than inside it.
+  public static final String   SEND_EMAIL_IN_OWNERS_NAME = "exo.email.sendEmailInOwnersName";
+
   public static final String   ACCESS_WEBMAIL          = "exo.email.accessWebmail";
 
   // Broadcast after a sync when new emails were fetched: source = username,

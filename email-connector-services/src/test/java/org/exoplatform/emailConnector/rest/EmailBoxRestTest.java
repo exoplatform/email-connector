@@ -76,6 +76,9 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
+import org.exoplatform.emailConnector.model.SendMode;
+import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
+import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.exception.ReadReceiptConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
@@ -391,19 +394,19 @@ public class EmailBoxRestTest {
   void aSendFromASharedMailboxAnswersTheOwnersCopy() throws Exception {
     Email email = new Email();
     email.setTo(List.of(new EmailRecipient()));
-    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(5L))).thenReturn(EmailBoxService.OwnerCopy.FILED);
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(5L), isNull())).thenReturn(EmailBoxService.OwnerCopy.FILED);
     mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=5").with(testSimpleUser())
                                                                  .content(asJsonString(email))
                                                                  .contentType(MediaType.APPLICATION_JSON)
                                                                  .accept(MediaType.APPLICATION_JSON))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.ownerCopy").value("FILED"));
-    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(6L))).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(6L), isNull())).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
     mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=6").with(testSimpleUser())
                                                                  .content(asJsonString(email))
                                                                  .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isNotFound());
-    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(7L))).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(7L), isNull())).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
     mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=7").with(testSimpleUser())
                                                                  .content(asJsonString(email))
                                                                  .contentType(MediaType.APPLICATION_JSON))
@@ -415,18 +418,61 @@ public class EmailBoxRestTest {
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.ownerCopy").doesNotExist());
     // The composer's draft path answers the same (EXO-90551).
-    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), eq(5L))).thenReturn(EmailBoxService.OwnerCopy.SKIPPED);
+    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), eq(5L), isNull())).thenReturn(EmailBoxService.OwnerCopy.SKIPPED);
     mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/d1/send?delegationId=5").with(testSimpleUser())
                                                                            .content(asJsonString(email))
                                                                            .contentType(MediaType.APPLICATION_JSON)
                                                                            .accept(MediaType.APPLICATION_JSON))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.ownerCopy").value("SKIPPED"));
-    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), eq(7L))).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), eq(7L), isNull())).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
     mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/d1/send?delegationId=7").with(testSimpleUser())
                                                                            .content(asJsonString(email))
                                                                            .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isGone());
+  }
+
+  /**
+   * EXO-90583 -- the shape asked for a mail in the owner's name travels to the service
+   * as the request spells it, beside the share; the guard's refusals come back with
+   * their codes: 401 naming the shape the consent does not cover, 400 for a shape that
+   * cannot be used -- the owner's server's refusal included -- on both send endpoints.
+   */
+  @Test
+  void aSendInTheOwnersNameCarriesItsShapeAndItsRefusals() throws Exception {
+    Email email = new Email();
+    email.setTo(List.of(new EmailRecipient()));
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(5L), eq("ON_BEHALF"))).thenReturn(EmailBoxService.OwnerCopy.FILED);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=5&sendMode=ON_BEHALF").with(testSimpleUser())
+                                                                                    .content(asJsonString(email))
+                                                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                                                    .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.ownerCopy").value("FILED"));
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(6L), eq("AS"))).thenThrow(new SendModeMissingException(SendMode.AS));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=6&sendMode=AS").with(testSimpleUser())
+                                                                             .content(asJsonString(email))
+                                                                             .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isUnauthorized())
+           .andExpect(status().reason("emailConnector.sendMode.missing.AS"));
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(7L), eq("AS"))).thenThrow(new SendModeUnavailableException(SendModeUnavailableException.REFUSED_BY_SERVER));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=7&sendMode=AS").with(testSimpleUser())
+                                                                             .content(asJsonString(email))
+                                                                             .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(SendModeUnavailableException.REFUSED_BY_SERVER));
+    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), isNull(), eq("AS"))).thenThrow(new SendModeMissingException(SendMode.AS));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/d1/send?sendMode=AS").with(testSimpleUser())
+                                                                        .content(asJsonString(email))
+                                                                        .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isUnauthorized())
+           .andExpect(status().reason("emailConnector.sendMode.missing.AS"));
+    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), eq(8L), eq("ON_BEHALF"))).thenThrow(new SendModeUnavailableException(SendModeUnavailableException.REFUSED_BY_SERVER));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/d1/send?delegationId=8&sendMode=ON_BEHALF").with(testSimpleUser())
+                                                                                              .content(asJsonString(email))
+                                                                                              .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(SendModeUnavailableException.REFUSED_BY_SERVER));
   }
 
   @Test
@@ -766,7 +812,7 @@ public class EmailBoxRestTest {
     response.andExpect(status().isOk());
     // The path names the draft, whatever the body claims.
     ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
-    verify(emailBoxService).sendDraft(sent.capture(), anyString(), isNull());
+    verify(emailBoxService).sendDraft(sent.capture(), anyString(), isNull(), isNull());
     org.junit.jupiter.api.Assertions.assertEquals("draft-1", sent.getValue().getDraftLocalId());
   }
 
@@ -775,7 +821,7 @@ public class EmailBoxRestTest {
     Email draft = new Email();
     draft.setTo(List.of(mock(EmailRecipient.class)));
     doThrow(new ObjectNotFoundException("emailConnector.drafts.send.gone")).when(emailBoxService)
-                                                                          .sendDraft(any(Email.class), anyString(), isNull());
+                                                                          .sendDraft(any(Email.class), anyString(), isNull(), isNull());
     ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/gone/send").with(testSimpleUser())
                                                                                       .content(asJsonString(draft))
                                                                                       .contentType(MediaType.APPLICATION_JSON)
@@ -1406,7 +1452,7 @@ public class EmailBoxRestTest {
     Email draft = new Email();
     draft.setTo(List.of(new EmailRecipient("Bob", "bob@example.org", null, false)));
     doThrow(new IllegalArgumentException(EmailBoxService.MAILBOX_MISMATCH_CODE)).when(emailBoxService)
-                                                                                .sendDraft(any(Email.class), anyString(), eq(101L));
+                                                                                .sendDraft(any(Email.class), anyString(), eq(101L), isNull());
     mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send?delegationId=101").with(testSimpleUser())
                                                                                    .contentType(MediaType.APPLICATION_JSON)
                                                                                    .content(asJsonString(draft)))
@@ -1525,7 +1571,7 @@ public class EmailBoxRestTest {
                                                   .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isOk());
     ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
-    verify(emailBoxService).sendEmail(sent.capture(), eq(SIMPLE_USER), isNull());
+    verify(emailBoxService).sendEmail(sent.capture(), eq(SIMPLE_USER), isNull(), isNull());
     org.junit.jupiter.api.Assertions.assertTrue(sent.getValue().isReadReceiptRequested());
     org.junit.jupiter.api.Assertions.assertNull(sent.getValue().getReadReceiptTo(), "read-only: never from a payload");
     org.junit.jupiter.api.Assertions.assertNull(sent.getValue().getReadReceiptPrompt());

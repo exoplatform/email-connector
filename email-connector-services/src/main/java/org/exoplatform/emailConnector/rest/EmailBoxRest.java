@@ -62,6 +62,8 @@ import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
+import org.exoplatform.emailConnector.exception.SendModeMissingException;
+import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.model.ScheduledEmail;
 import org.exoplatform.emailConnector.rest.model.ReadReceiptRequest;
 import org.exoplatform.emailConnector.rest.model.ScheduleRequest;
@@ -1397,19 +1399,22 @@ public class EmailBoxRest {
   /**
    * Sends a composed mail, from the caller's own account; from a mailbox shared with the
    * caller when {@code delegationId} names it, in which case a copy is also filed in its
-   * owner's Sent folder (EXO-90551).
+   * owner's Sent folder (EXO-90551); and in that owner's name when {@code sendMode} asks
+   * for it and the owner consented (EXO-90583).
    *
    * @param request the caller's request, for the acting user
    * @param email the composed mail
    * @param delegationId the share the mail is sent from, or null
+   * @param sendMode {@code ON_BEHALF} or {@code AS} to write in the owner's name, or null
    * @return {@code ownerCopy}: FILED, FAILED or SKIPPED when a share is named; empty
    *         otherwise
    */
   @PostMapping("/send")
   @Secured("users")
-  @Operation(summary = "Sends email", method = "POST", description = "This will send email. With readReceiptRequested set, the message asks for a read receipt (Disposition-Notification-To naming the caller's sending address). With delegationId, the mail is sent from a mailbox shared with the caller: it still goes out from the caller's account, and a copy is also filed in the owner's Sent folder; the answer says what became of that copy (ownerCopy: FILED, FAILED or SKIPPED). A copy that could not be filed never makes the send fail.")
+  @Operation(summary = "Sends email", method = "POST", description = "This will send email. With readReceiptRequested set, the message asks for a read receipt (Disposition-Notification-To naming the caller's sending address). With delegationId, the mail is sent from a mailbox shared with the caller: it still goes out from the caller's account, and a copy is also filed in the owner's Sent folder; the answer says what became of that copy (ownerCopy: FILED, FAILED or SKIPPED). A copy that could not be filed never makes the send fail. With sendMode (ON_BEHALF or AS, beside delegationId), the mail goes out in the owner's name, as the owner allowed: ON_BEHALF shows the owner as the author and the caller as the sender, AS shows only the owner; the read-receipt request is then ignored, and the owner's copy carries X-Exo-Sent-By. NONE or no sendMode sends in the caller's own name.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "400", description = "Bad Request; for sendMode: emailConnector.sendMode.invalid, .noMailbox, .disabled, .unsupported, or .refusedByServer when the owner's mail server refuses a mail in the owner's name (nothing was sent)"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized; emailConnector.sendMode.missing.ON_BEHALF|AS when the owner's consent does not cover the shape"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found, or no such share of the caller"),
       @ApiResponse(responseCode = "409", description = "Conflict"),
@@ -1420,12 +1425,15 @@ public class EmailBoxRest {
                                        Email email,
                                        @Parameter(description = "The share the mail is sent from, when it is sent from a mailbox shared with the caller")
                                        @RequestParam(value = "delegationId", required = false)
-                                       Long delegationId) {
+                                       Long delegationId,
+                                       @Parameter(description = "ON_BEHALF or AS to send in the owner's name of the share delegationId names (EXO-90583); NONE or nothing for the caller's own")
+                                       @RequestParam(value = "sendMode", required = false)
+                                       String sendMode) {
     try {
       if (email == null || email.getTo() == null || email.getTo().isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      EmailBoxService.OwnerCopy ownerCopy = emailBoxService.sendEmail(email, request.getRemoteUser(), delegationId);
+      EmailBoxService.OwnerCopy ownerCopy = emailBoxService.sendEmail(email, request.getRemoteUser(), delegationId, sendMode);
       Map<String, String> response = new HashMap<>();
       if (ownerCopy != null) {
         response.put("ownerCopy", ownerCopy.name());
@@ -1435,6 +1443,14 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (DelegationRevokedException e) {
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
+    } catch (SendModeUnavailableException e) {
+      // A shape asked for that cannot be used, or the owner's server refused it: the
+      // code, never the server's words (EXO-90583).
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (SendModeMissingException e) {
+      // The add-on's 401, with the code naming the shape the consent does not cover, so
+      // the composer can fall back to the caller's own name and say why.
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
@@ -1489,15 +1505,17 @@ public class EmailBoxRest {
    * @param draftLocalId the draft's local id
    * @param draft the draft as the composer is showing it
    * @param delegationId the share the composer believes the draft belongs to, or null
+   * @param sendMode {@code ON_BEHALF} or {@code AS} to send in the owner's name of the
+   *          draft's share (EXO-90583), or null
    * @return {@code ownerCopy} when a share is named; empty otherwise
    */
   @PostMapping("/drafts/{draftLocalId}/send")
   @Secured("users")
   @Operation(summary = "Sends a draft", method = "POST",
-             description = "Sends the draft, in this order: the text the composer is showing is written to the draft's row, the mail is transmitted, the copy on the mail server is removed, and the local row is removed. A refused send changes nothing — the draft is still there, in both places. A send that succeeded but whose cleanup did not still removes the local row, deliberately: a draft of an already-sent mail is a worse outcome than a stray copy in a Drafts folder. The mail goes from the mailbox the draft was written in (its sendDelegationId): a draft of a mailbox shared with the caller is sent through that share and a copy filed in its owner's Sent (ownerCopy in the answer), whatever mailbox the composer shows now. delegationId, when given, must be the draft's own; any other value is refused with 400 emailConnector.drafts.send.mailboxMismatch before anything is saved or sent.")
+             description = "Sends the draft, in this order: the text the composer is showing is written to the draft's row, the mail is transmitted, the copy on the mail server is removed, and the local row is removed. A refused send changes nothing — the draft is still there, in both places. A send that succeeded but whose cleanup did not still removes the local row, deliberately: a draft of an already-sent mail is a worse outcome than a stray copy in a Drafts folder. The mail goes from the mailbox the draft was written in (its sendDelegationId): a draft of a mailbox shared with the caller is sent through that share and a copy filed in its owner's Sent (ownerCopy in the answer), whatever mailbox the composer shows now. delegationId, when given, must be the draft's own; any other value is refused with 400 emailConnector.drafts.send.mailboxMismatch before anything is saved or sent. sendMode (ON_BEHALF or AS) sends it in the owner's name of the draft's share, as the owner allowed (see POST /send); it is checked before anything is saved or sent, and a refusal by the owner's mail server leaves the draft as it was.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "No local id, a send of this draft is already in flight, or delegationId is not the draft's mailbox (emailConnector.drafts.send.mailboxMismatch)"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "400", description = "No local id, a send of this draft is already in flight, delegationId is not the draft's mailbox (emailConnector.drafts.send.mailboxMismatch), or sendMode cannot be used (emailConnector.sendMode.invalid, .noMailbox, .disabled, .unsupported, .refusedByServer)"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation; emailConnector.sendMode.missing.ON_BEHALF|AS when the owner's consent does not cover the shape"),
       @ApiResponse(responseCode = "404", description = "No draft under that local id"),
       @ApiResponse(responseCode = "409", description = "The draft is scheduled; it is sent through its schedule (emailConnector.scheduled.locked)"),
       @ApiResponse(responseCode = "410", description = "The named mailbox is no longer shared with the caller; nothing was sent"),
@@ -1511,7 +1529,10 @@ public class EmailBoxRest {
                                        Email draft,
                                        @Parameter(description = "The share the composer believes the draft belongs to; must be the draft's own (EXO-90595)")
                                        @RequestParam(value = "delegationId", required = false)
-                                       Long delegationId) {
+                                       Long delegationId,
+                                       @Parameter(description = "ON_BEHALF or AS to send in the owner's name of the draft's share (EXO-90583); NONE or nothing for the caller's own")
+                                       @RequestParam(value = "sendMode", required = false)
+                                       String sendMode) {
     try {
       if (draft == null || CollectionUtils.isEmpty(draft.getTo())) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
@@ -1519,7 +1540,7 @@ public class EmailBoxRest {
       // The path is what names the draft; a body claiming a different id would be two
       // answers to one question, and the addressable one wins.
       draft.setDraftLocalId(draftLocalId);
-      EmailBoxService.OwnerCopy ownerCopy = emailBoxService.sendDraft(draft, request.getRemoteUser(), delegationId);
+      EmailBoxService.OwnerCopy ownerCopy = emailBoxService.sendDraft(draft, request.getRemoteUser(), delegationId, sendMode);
       Map<String, String> response = new HashMap<>();
       if (ownerCopy != null) {
         response.put("ownerCopy", ownerCopy.name());
@@ -1529,6 +1550,8 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (ScheduledSendConflictException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    } catch (SendModeMissingException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (ObjectNotFoundException e) {

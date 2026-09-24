@@ -16,6 +16,14 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import com.sun.mail.smtp.SMTPAddressFailedException;
+import com.sun.mail.smtp.SMTPSendFailedException;
+import com.sun.mail.smtp.SMTPSenderFailedException;
+import org.exoplatform.emailConnector.exception.SendModeMissingException;
+import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
+import org.exoplatform.emailConnector.model.SendIdentity;
+import org.exoplatform.emailConnector.model.SendMode;
+import javax.mail.internet.AddressException;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -2427,6 +2435,485 @@ public class EmailBoxServiceTest {
       transportMock.verify(() -> Transport.send(any(Message.class)));
       verify(rig.ownSent()).appendMessages(any(Message[].class));
     }
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Writing in the owner's name (EXO-90583): the one seam, the envelope, the owner's
+  // copy, and the refusal of the owner's mail server.
+  // ---------------------------------------------------------------------------------
+
+  /** Alice's address: the owner of share 100. */
+  private static final String OWNER_ADDRESS    = "alice@acme.com";
+
+  /** Bob's address, as the credentials provider names it: the sender. */
+  private static final String DELEGATE_ADDRESS = "bob@acme.com";
+
+  /**
+   * EXO-90583 -- on Alice's behalf: From Alice with her name, Sender Bob, and the
+   * envelope Bob's own, set on the message's session -- without it JavaMail takes the
+   * envelope from From, and Stalwart refuses the mail at MAIL (EXO-90586, J4). No
+   * Reply-To (Q-6), no read-receipt request in her name even when the composer asked
+   * one, a Message-ID of her domain, and the static send: one connection for the one
+   * message. The share's consent was asked, with the shape the request named.
+   */
+  @Test
+  @SneakyThrows
+  void onBehalfIsFromTheOwnerWithTheSenderAndTheSendersEnvelope() {
+    givenASendableMailbox();
+    when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(DELEGATE_ADDRESS);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.ON_BEHALF)).thenReturn(ownersIdentity(SendMode.ON_BEHALF, "Alice Martin"));
+    Email email = composed();
+    email.setReadReceiptRequested(true);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertEquals(EmailBoxService.OwnerCopy.SKIPPED, emailBoxService.sendEmail(email, TEST_USER, 100L, "ON_BEHALF"));
+
+      MimeMessage sent = sentMessage(transportMock);
+      InternetAddress from = (InternetAddress) sent.getFrom()[0];
+      assertEquals(OWNER_ADDRESS, from.getAddress());
+      assertEquals("Alice Martin", from.getPersonal());
+      assertEquals(DELEGATE_ADDRESS, ((InternetAddress) sent.getSender()).getAddress());
+      assertEquals(DELEGATE_ADDRESS, sent.getSession().getProperty("mail.smtp.from"), "the envelope is the sender's own");
+      assertNull(sent.getHeader("Reply-To"), "replies go to the owner");
+      assertNull(sent.getHeader(EmailBoxService.HEADER_DISPOSITION_NOTIFICATION_TO), "no read receipt asked in her name");
+      // What Transport.send does first, which the mock does not.
+      sent.saveChanges();
+      assertTrue(sent.getMessageID().endsWith("@acme.com>"), "a Message-ID of the owner's domain: " + sent.getMessageID());
+      transportMock.verifyNoMoreInteractions();
+    }
+    verify(listenerService).broadcast(EmailConnectorUtils.SEND_EMAIL_IN_OWNERS_NAME, TEST_USER, "ON_BEHALF");
+  }
+
+  /**
+   * EXO-90583 -- as Alice: From Alice and nothing naming Bob, under her envelope, which
+   * the owner's mail server decides on.
+   */
+  @Test
+  @SneakyThrows
+  void asIsFromTheOwnerAloneUnderHerEnvelope() {
+    givenASendableMailbox();
+    when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(DELEGATE_ADDRESS);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(ownersIdentity(SendMode.AS, "Alice Martin"));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendEmail(composed(), TEST_USER, 100L, "AS");
+
+      MimeMessage sent = sentMessage(transportMock);
+      assertEquals(OWNER_ADDRESS, ((InternetAddress) sent.getFrom()[0]).getAddress());
+      assertNull(sent.getHeader("Sender"), "nothing names the sender");
+      assertEquals(OWNER_ADDRESS, sent.getSession().getProperty("mail.smtp.from"));
+    }
+    verify(listenerService).broadcast(EmailConnectorUtils.SEND_EMAIL_IN_OWNERS_NAME, TEST_USER, "AS");
+  }
+
+  /**
+   * EXO-90583 -- no shape, or NONE: exactly today's mail from a shared mailbox, in Bob's
+   * name -- From Bob, no Sender, the envelope JavaMail's default, the read receipt he
+   * asked for -- and the consent is never consulted. So is the MCP tools' send, which
+   * has no shape to give (EXO-90585): it cannot reach the owner's name.
+   */
+  @Test
+  @SneakyThrows
+  void withoutAShapeTheMailIsTheSendersAsEver() {
+    givenASendableMailbox();
+    when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(DELEGATE_ADDRESS);
+    Email email = composed();
+    email.setReadReceiptRequested(true);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendEmail(email, TEST_USER, 100L);
+      emailBoxService.sendEmail(email, TEST_USER, 100L, "NONE");
+      emailBoxService.sendEmail(email, TEST_USER, 100L, " ");
+
+      ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sent.capture()), times(3));
+      for (Message message : sent.getAllValues()) {
+        assertEquals(DELEGATE_ADDRESS, ((InternetAddress) message.getFrom()[0]).getAddress());
+        assertNull(message.getHeader("Sender"));
+        assertNull(message.getSession().getProperty("mail.smtp.from"), "JavaMail's own envelope, as ever");
+        assertEquals(DELEGATE_ADDRESS, message.getHeader(EmailBoxService.HEADER_DISPOSITION_NOTIFICATION_TO)[0]);
+      }
+    }
+    verify(emailDelegationService, never()).checkSendMode(anyString(), anyLong(), any());
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.SEND_EMAIL_IN_OWNERS_NAME), any(), any());
+  }
+
+  /**
+   * EXO-90583 -- a shape with no shared mailbox to be the owner's, or one this version
+   * cannot read, is refused before anything is built; nothing goes out.
+   */
+  @Test
+  @SneakyThrows
+  void aShapeNeedsASharedMailboxAndAKnownName() {
+    givenASendableMailbox();
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertEquals(SendModeUnavailableException.NO_MAILBOX,
+                   assertThrows(SendModeUnavailableException.class,
+                                () -> emailBoxService.sendEmail(composed(), TEST_USER, null, "AS")).getMessage());
+      assertEquals("emailConnector.sendMode.invalid",
+                   assertThrows(SendModeUnavailableException.class,
+                                () -> emailBoxService.sendEmail(composed(), TEST_USER, 100L, "OWNER")).getMessage());
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+    }
+    verify(emailDelegationService, never()).checkSendMode(anyString(), anyLong(), any());
+  }
+
+  /**
+   * EXO-90583 -- the guard's refusals come before anything is sent: a consent that does
+   * not cover the shape, a share withdrawn meanwhile. Nothing goes out, nothing is filed.
+   */
+  @Test
+  @SneakyThrows
+  void theGuardRefusesBeforeAnythingIsSent() {
+    SendRig rig = givenASendableMailbox();
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenThrow(new SendModeMissingException(SendMode.AS));
+    when(emailDelegationService.checkSendMode(TEST_USER, 101L, SendMode.AS)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertThrows(SendModeMissingException.class, () -> emailBoxService.sendEmail(composed(), TEST_USER, 100L, "AS"));
+      assertThrows(DelegationRevokedException.class, () -> emailBoxService.sendEmail(composed(), TEST_USER, 101L, "AS"));
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+    }
+    verify(rig.ownSent(), never()).appendMessages(any(Message[].class));
+  }
+
+  /**
+   * EXO-90583, PO decision Q-7 -- the copy in Alice's Sent says who sent it: X-Exo-Sent-By
+   * Bob, stamped after the send and after Bob's own copy, so neither the recipients' mail
+   * nor Bob's copy carries it. The same message, the same Message-ID.
+   */
+  @Test
+  @SneakyThrows
+  void theOwnersCopyAloneNamesWhoSentIt() {
+    SendRig rig = givenASendableMailbox();
+    when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(DELEGATE_ADDRESS);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(ownersIdentity(SendMode.AS, "Alice Martin"));
+    IMAPFolder ownerSent = givenTheOwnersSent();
+    List<String> sentByOnTheWire = new ArrayList<>();
+    List<String> sentByOnTheSendersCopy = new ArrayList<>();
+    doAnswer(invocation -> {
+      sentByOnTheSendersCopy.add(headerOf(((Message[]) invocation.getArgument(0))[0], "X-Exo-Sent-By"));
+      return null;
+    }).when(rig.ownSent()).appendMessages(any(Message[].class));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      transportMock.when(() -> Transport.send(any(Message.class)))
+                   .thenAnswer(invocation -> sentByOnTheWire.add(headerOf(invocation.getArgument(0), "X-Exo-Sent-By")));
+
+      assertEquals(EmailBoxService.OwnerCopy.FILED, emailBoxService.sendEmail(composed(), TEST_USER, 100L, "AS"));
+
+      MimeMessage sent = sentMessage(transportMock);
+      ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
+      verify(ownerSent).appendMessages(filed.capture());
+      assertSame(sent, filed.getValue()[0], "the very message that went out");
+      assertEquals(DELEGATE_ADDRESS, headerOf(filed.getValue()[0], "X-Exo-Sent-By"));
+      assertEquals(Arrays.asList((String) null), sentByOnTheWire, "not on the recipients' mail");
+      assertEquals(Arrays.asList((String) null), sentByOnTheSendersCopy, "not on the sender's own copy");
+    }
+  }
+
+  /**
+   * EXO-90583 -- a mail from a shared mailbox in Bob's own name: the owner's copy is
+   * filed as ever, without X-Exo-Sent-By -- its From already names Bob.
+   */
+  @Test
+  @SneakyThrows
+  void aMailInTheSendersNameLeavesTheOwnersCopyAsItWas() {
+    givenASendableMailbox();
+    IMAPFolder ownerSent = givenTheOwnersSent();
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertEquals(EmailBoxService.OwnerCopy.FILED, emailBoxService.sendEmail(composed(), TEST_USER, 100L, null));
+
+      ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
+      verify(ownerSent).appendMessages(filed.capture());
+      assertNull(filed.getValue()[0].getHeader("X-Exo-Sent-By"));
+    }
+  }
+
+  /**
+   * EXO-90583, EXO-90586 -- Stalwart's refusal of a mail as Alice, as JavaMail reports it
+   * (a send failure at MAIL caused by a sender failure, 501 5.5.4): recognised, recorded
+   * on the consent it was sent under, and answered with the fixed code. Nothing was
+   * sent, so nothing is filed anywhere, and nothing is retried in Bob's name.
+   */
+  @Test
+  @SneakyThrows
+  void stalwartsRefusalOfTheOwnersNameIsRecordedAndSaid() {
+    SendRig rig = givenASendableMailbox();
+    IMAPFolder ownerSent = givenTheOwnersSent();
+    SendIdentity identity = ownersIdentity(SendMode.AS, "Alice Martin");
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(identity);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      transportMock.when(() -> Transport.send(any(Message.class))).thenThrow(stalwartSenderRefusal());
+
+      SendModeUnavailableException refused = assertThrows(SendModeUnavailableException.class,
+                                                          () -> emailBoxService.sendEmail(composed(), TEST_USER, 100L, "AS"));
+
+      assertEquals(SendModeUnavailableException.REFUSED_BY_SERVER, refused.getMessage());
+      transportMock.verify(() -> Transport.send(any(Message.class)), times(1));
+    }
+    verify(emailDelegationService).markSendRefused(TEST_USER, identity);
+    verify(rig.ownSent(), never()).appendMessages(any(Message[].class));
+    verify(ownerSent, never()).appendMessages(any(Message[].class));
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.SEND_EMAIL_IN_OWNERS_NAME), any(), any());
+  }
+
+  /**
+   * EXO-90583, EXO-90586 -- Postfix's refusal, with a login map, reaches JavaMail as
+   * INVALID RECIPIENTS: a send failure listing the recipients, caused by a 553 at RCPT
+   * whose text is the sender's refusal. Read from the server's words, it is the owner's
+   * name that was refused, not the recipients.
+   */
+  @Test
+  @SneakyThrows
+  void postfixsRefusalReadAsBadRecipientsIsTheOwnersNameRefused() {
+    givenASendableMailbox();
+    SendIdentity identity = ownersIdentity(SendMode.AS, null);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(identity);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      transportMock.when(() -> Transport.send(any(Message.class))).thenThrow(postfixSenderRefusal());
+
+      assertEquals(SendModeUnavailableException.REFUSED_BY_SERVER,
+                   assertThrows(SendModeUnavailableException.class,
+                                () -> emailBoxService.sendEmail(composed(), TEST_USER, 100L, "AS")).getMessage());
+    }
+    verify(emailDelegationService).markSendRefused(TEST_USER, identity);
+  }
+
+  /**
+   * EXO-90583 -- the same refusal of a mail in Bob's own name is today's failure: it is
+   * no consent's refusal, and nothing is recorded on the share. A recipient the server
+   * does not know, on a mail in Alice's name, is not her name refused either.
+   */
+  @Test
+  @SneakyThrows
+  void onlyAMailInTheOwnersNameCanBeRefusedAsSuch() {
+    givenASendableMailbox();
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(ownersIdentity(SendMode.AS, null));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      transportMock.when(() -> Transport.send(any(Message.class))).thenThrow(postfixSenderRefusal());
+      assertThrows(IllegalStateException.class, () -> emailBoxService.sendEmail(composed(), TEST_USER, 100L, null));
+
+      transportMock.when(() -> Transport.send(any(Message.class)))
+                   .thenThrow(new SendFailedException("Invalid Addresses",
+                                                      new SMTPAddressFailedException(new InternetAddress("nobody@acme.com"),
+                                                                                     "RCPT TO:<nobody@acme.com>",
+                                                                                     550,
+                                                                                     "550 5.1.1 <nobody@acme.com>: Recipient address rejected: User unknown"),
+                                                      new Address[0],
+                                                      new Address[0],
+                                                      new Address[] { new InternetAddress("nobody@acme.com") }));
+      assertThrows(IllegalStateException.class, () -> emailBoxService.sendEmail(composed(), TEST_USER, 100L, "AS"));
+    }
+    verify(emailDelegationService, never()).markSendRefused(anyString(), any());
+  }
+
+  /**
+   * EXO-90583 -- what a sender-policy refusal is, read from the server's words anywhere
+   * in the failure: the observed Stalwart and Postfix chains, an Exchange-shaped send-as
+   * text with no SMTP exception around it; never a recipient refusal, a temporary
+   * failure with the same words, or a failure that is its own next exception.
+   */
+  @Test
+  @SneakyThrows
+  void aSenderRefusalIsReadFromTheServersWords() {
+    assertTrue(EmailBoxService.isSenderPolicyRefusal(stalwartSenderRefusal()));
+    assertTrue(EmailBoxService.isSenderPolicyRefusal(postfixSenderRefusal()));
+    assertTrue(EmailBoxService.isSenderPolicyRefusal(new MessagingException("send failed",
+                                                                            new MessagingException("550 5.7.60 SMTP; Client does not have permissions to send as this sender"))));
+    assertFalse(EmailBoxService.isSenderPolicyRefusal(new MessagingException("451 4.7.1 You are not allowed to send from this address, try later")));
+    assertFalse(EmailBoxService.isSenderPolicyRefusal(new MessagingException("550 5.1.1 User unknown")));
+    assertFalse(EmailBoxService.isSenderPolicyRefusal(new MessagingException("relay refused")));
+    MessagingException loop = new MessagingException("421 closing");
+    loop.setNextException(loop);
+    assertFalse(EmailBoxService.isSenderPolicyRefusal(loop), "a chain that loops ends");
+    assertFalse(EmailBoxService.isSenderPolicyRefusal(null));
+  }
+
+  /**
+   * EXO-90583, EXO-90586 (J6) -- a control character in the owner's profile name never
+   * reaches a header: JavaMail would quote and fold a line break rather than refuse it.
+   */
+  @Test
+  @SneakyThrows
+  void aDisplayNameNeverCarriesAControlCharacter() {
+    givenASendableMailbox();
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS))
+                                                                            .thenReturn(ownersIdentity(SendMode.AS, "Alice\r\nBcc: evil@example.com\u0000"));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendEmail(composed(), TEST_USER, 100L, "AS");
+
+      MimeMessage sent = sentMessage(transportMock);
+      assertEquals("Alice Bcc: evil@example.com", ((InternetAddress) sent.getFrom()[0]).getPersonal());
+      assertFalse(sent.getHeader("From")[0].matches("(?s).*\\p{Cntrl}.*"), sent.getHeader("From")[0]);
+      assertNull(sent.getHeader("Bcc"));
+    }
+    assertNull(EmailBoxService.displayName("\r\n"));
+    assertNull(EmailBoxService.displayName(null));
+  }
+
+  /**
+   * EXO-90583 -- a draft sent in Alice's name: checked against the consent on the
+   * DRAFT's share, sent From her, and it keeps the Message-ID it was given at its first
+   * save -- the draft and the mail it became stay one message.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftSentInTheOwnersNameKeepsItsOwnMessageId() {
+    mockDraftSendFixture().setSendDelegationId(100L);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.ON_BEHALF)).thenReturn(ownersIdentity(SendMode.ON_BEHALF, null));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendDraft(draft("draft-1"), TEST_USER, null, "ON_BEHALF");
+
+      MimeMessage sent = sentMessage(transportMock);
+      assertEquals(OWNER_ADDRESS, ((InternetAddress) sent.getFrom()[0]).getAddress());
+      sent.saveChanges();
+      assertEquals("<draft@example.org>", sent.getMessageID());
+      assertEquals("testEmail", sent.getSession().getProperty("mail.smtp.from"));
+    }
+  }
+
+  /**
+   * EXO-90583 -- a draft whose mail the owner's server refuses in her name is left as it
+   * was: the claim put back, nothing removed; and a draft of Bob's own mailbox asked in
+   * an owner's name is refused before it is even claimed.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftRefusedInTheOwnersNameIsLeftWhereItWas() {
+    // No mailbox stubs: a refused send never reaches the IMAP side.
+    Email stored = givenAStoredDraftOfMailbox(100L);
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    stored.setDraftState(DraftState.SYNCED);
+    SendIdentity identity = ownersIdentity(SendMode.AS, null);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(identity);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      transportMock.when(() -> Transport.send(any(Message.class))).thenThrow(stalwartSenderRefusal());
+      Email draft = draft("draft-1");
+      assertThrows(SendModeUnavailableException.class, () -> emailBoxService.sendDraft(draft, TEST_USER, 100L, "AS"));
+    }
+    verify(emailDelegationService).markSendRefused(TEST_USER, identity);
+    verify(emailBoxStorage).updateDraftState(TEST_USER, "draft-1", DraftState.DIRTY);
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+
+    stored.setSendDelegationId(null);
+    clearInvocations(emailBoxStorage);
+    Email ownDraft = draft("draft-1");
+    assertEquals(SendModeUnavailableException.NO_MAILBOX,
+                 assertThrows(SendModeUnavailableException.class, () -> emailBoxService.sendDraft(ownDraft, TEST_USER, null, "AS")).getMessage());
+    verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
+  }
+
+  /**
+   * Alice's identity on share 100, as the guard answers it.
+   *
+   * @param mode the shape
+   * @param name her display name, may be null
+   * @return the identity
+   */
+  private static SendIdentity ownersIdentity(SendMode mode, String name) {
+    return new SendIdentity(mode, 100L, OWNER_ADDRESS, name, new Date(1_000L));
+  }
+
+  /**
+   * A composed mail to Carol.
+   *
+   * @return the mail
+   */
+  private static Email composed() {
+    Email email = new Email();
+    email.setSubject("the quarterly figures");
+    email.setContent(new EmailContent("Here they are.", null, null));
+    email.setTo(List.of(new EmailRecipient("Carol", "carol@acme.com", null, false)));
+    return email;
+  }
+
+  /**
+   * Alice's Sent, shared with Bob, which the owner's copy of share 100 is filed into.
+   *
+   * @return the folder
+   */
+  @SneakyThrows
+  private IMAPFolder givenTheOwnersSent() {
+    // Lenient: a send refused before its copy is filed never opens the folder.
+    lenient().when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    lenient().when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    lenient().when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    lenient().when(ownerSent.exists()).thenReturn(true);
+    IMAPStore store = (IMAPStore) userEmailSettingService.connect("1", TEST_USER);
+    lenient().when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+    return ownerSent;
+  }
+
+  /**
+   * The one message handed to the static send.
+   *
+   * @param transportMock the send, mocked
+   * @return the message
+   */
+  private static MimeMessage sentMessage(MockedStatic<Transport> transportMock) {
+    ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
+    transportMock.verify(() -> Transport.send(sent.capture()));
+    return (MimeMessage) sent.getValue();
+  }
+
+  /**
+   * One header of a message, null when absent.
+   *
+   * @param message the message
+   * @param name the header
+   * @return its first value, or null
+   * @throws MessagingException when it cannot be read
+   */
+  private static String headerOf(Message message, String name) throws MessagingException {
+    String[] values = message.getHeader(name);
+    return values == null ? null : values[0];
+  }
+
+  /**
+   * Stalwart v0.11.8's refusal of a MAIL FROM that is not the login's, as JavaMail 1.6.2
+   * reported it on the rig (EXO-90586, J2).
+   *
+   * @return the failure
+   * @throws AddressException never, the addresses are literal
+   */
+  private static MessagingException stalwartSenderRefusal() throws AddressException {
+    String reply = "501 5.5.4 You are not allowed to send from this address.\n";
+    return new SMTPSendFailedException("MAIL FROM:<alice@acme.com>",
+                                       501,
+                                       reply,
+                                       new SMTPSenderFailedException(new InternetAddress(OWNER_ADDRESS), "MAIL FROM:<alice@acme.com>", 501, reply),
+                                       new Address[0],
+                                       new Address[] { new InternetAddress("carol@acme.com") },
+                                       new Address[0]);
+  }
+
+  /**
+   * Postfix 3.7's refusal with a login map, as JavaMail 1.6.2 reported it on the rig
+   * (EXO-90586, J2): invalid addresses listing the RECIPIENT, caused by the 553 at RCPT.
+   *
+   * @return the failure
+   * @throws AddressException never, the addresses are literal
+   */
+  private static MessagingException postfixSenderRefusal() throws AddressException {
+    InternetAddress carol = new InternetAddress("carol@acme.com");
+    return new SendFailedException("Invalid Addresses",
+                                   new SMTPAddressFailedException(carol,
+                                                                  "RCPT TO:<carol@acme.com>",
+                                                                  553,
+                                                                  "553 5.7.1 <alice@acme.com>: Sender address rejected: not owned by user bob@acme.com\n"),
+                                   new Address[0],
+                                   new Address[0],
+                                   new Address[] { carol });
   }
 
   /**
