@@ -802,7 +802,7 @@ public class EmailScheduledSendService {
          .with(ctx.makeCommand(PluginKey.key(NotificationConstants.SCHEDULED_EMAIL_FAILED_NOTIFICATION_PLUGIN)))
          .execute(ctx);
     } catch (RuntimeException | LinkageError e) {
-      LOG.warn("User {} could not be notified that a scheduled mail was not sent ({})", username, reason, e);
+      LOG.warn("User {} could not be notified about a scheduled mail ({})", username, reason, e);
     }
   }
 
