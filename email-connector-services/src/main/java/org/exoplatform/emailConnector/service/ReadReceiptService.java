@@ -254,6 +254,7 @@ public class ReadReceiptService {
         continue;
       }
       email.setReadReceiptAnswer(null);
+      email.setReadReceiptAddress(null);
       if (!carriesReceivedRequest(email)) {
         // The common case, decided without reading anything.
         email.setReadReceiptPrompt(ReadReceiptPrompt.NONE);
@@ -276,7 +277,12 @@ public class ReadReceiptService {
       String key = EmailReadReceiptAnswerStorage.messageIdHash(email.getMailHeaderId());
       ReadReceiptState stored = key == null ? null : answered.get(key);
       if (stored == null) {
-        email.setReadReceiptPrompt(promptFor(email, ownAddress, settings));
+        ReadReceiptPrompt prompt = promptFor(email, ownAddress, settings);
+        email.setReadReceiptPrompt(prompt);
+        if (prompt != ReadReceiptPrompt.NONE) {
+          // NONE unless isAnswerable, which requires exactly one address
+          email.setReadReceiptAddress(requestedAddresses(email.getReadReceiptTo())[0].getAddress());
+        }
       } else {
         // Answered before this copy existed: the store is what remembers it.
         email.setReadReceiptPrompt(ReadReceiptPrompt.NONE);
@@ -611,7 +617,8 @@ public class ReadReceiptService {
 
   /**
    * The addresses a request names, parsed leniently; none when it names none or cannot
-   * be read.
+   * be read. A group ({@code name: a@x, b@y;}) counts as none: the transport expands
+   * it into its members, so answering it would send to every one of them.
    *
    * @param readReceiptTo the stored Disposition-Notification-To value
    * @return the addresses, never null
@@ -622,6 +629,7 @@ public class ReadReceiptService {
     }
     try {
       return Stream.of(InternetAddress.parseHeader(readReceiptTo, false))
+                   .filter(address -> !address.isGroup())
                    .filter(address -> StringUtils.isNotBlank(address.getAddress()) && address.getAddress().contains("@"))
                    .toArray(InternetAddress[]::new);
     } catch (AddressException e) {

@@ -2227,7 +2227,7 @@ public class EmailBoxStorage {
                               // the draft's own files to the message builder.
                               null, false, null, null, null,
                               // The read-receipt fields, set below by name.
-                              false, null, null, false, null, null);
+                              false, null, null, false, null, null, null);
       email.setReadReceiptRequested(emailBoxEntity.isReadReceiptRequested());
       email.setReadReceiptTo(emailBoxEntity.getReadReceiptTo());
       email.setReadReceiptState(emailBoxEntity.getReadReceiptState());
