@@ -1871,7 +1871,7 @@ export default {
           // In a shared mailbox, a failure may be the share withdrawn: asked before it is
           // shown, and re-checked after, since a later search or a switch may have taken
           // over while the answer was on its way.
-          if (sharedMailbox && (await this.leftSharedMailboxAfterFailure(sharedMailbox, requestId)
+          if (sharedMailbox && (await this.leftSharedMailboxAfterFailure(sharedMailbox)
               || requestId !== this.searchRequestId)) {
             return;
           }
@@ -3281,25 +3281,24 @@ export default {
     /**
      * After a search of a shared mailbox failed (EXO-90590), asks the switcher's entries
      * whether that mailbox is still shared with the user, as a failed listing does: gone
-     * from them, the search ends, its field is emptied, and the user is taken back to
-     * their own mailbox and told why; still there, the failure is a hiccup the caller
-     * shows as one. A search superseded meanwhile, or a mailbox left meanwhile, is not
-     * this one's to act on.
+     * from them while the user is still in one of its folders, the user is taken back to
+     * their own mailbox and told why -- whatever search has started since, since the
+     * re-read already took the mailbox out of the switcher's state; still there, or left
+     * by the user meanwhile, the failure is the caller's to show or to drop.
      *
      * @param {Object} sharedMailbox the switcher entry the search ran in
-     * @param {Number} requestId the search's request id
      * @returns {Promise<Boolean>} true when the user was taken out of that mailbox
      */
-    async leftSharedMailboxAfterFailure(sharedMailbox, requestId) {
+    async leftSharedMailboxAfterFailure(sharedMailbox) {
       if (sharedMailbox.delegationId !== this.currentSharedMailbox?.delegationId) {
         return false;
       }
       await loadSharedMailboxes();
-      if (this.currentSharedMailbox || requestId !== this.searchRequestId) {
+      const stillIn = this.currentFolder === sharedMailbox.folderKey
+        || (sharedMailbox.folders || []).some(folder => folder.key === this.currentFolder);
+      if (sharedMailboxById(sharedMailbox.delegationId) || !stillIn) {
         return false;
       }
-      this.clearSearch();
-      this.resetSearchField();
       await this.leaveUnavailableSharedMailbox();
       return true;
     },
@@ -3310,6 +3309,12 @@ export default {
      * @returns {Promise<void>} resolved once the user's own inbox is listed
      */
     leaveUnavailableSharedMailbox() {
+      // A search running in that mailbox ends with it (EXO-90590): its hits are of a
+      // mailbox no longer shared, and would be listed in the user's own.
+      if (this.searchActive) {
+        this.clearSearch();
+        this.resetSearchField();
+      }
       setCurrentSharedMailbox(null);
       this.alertSharedMailboxGone();
       this.currentFolder = 'INBOX';
