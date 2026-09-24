@@ -2251,6 +2251,38 @@ public class EmailDelegationService {
   }
 
   /**
+   * The mailboxes a page of the writer's drafts or scheduled mails were written in
+   * (EXO-90595), each share looked up once however many of the page's mails it holds.
+   * A share that does not resolve -- not the writer's, or unreadable -- reads as not
+   * shared, never as the writer's own mailbox: that is the answer that stops a send.
+   * Never fails the page.
+   *
+   * @param granteeUsername the writer
+   * @param delegationIds the shares the page's drafts record; nulls are skipped
+   * @return the mailbox of each share, by id
+   */
+  public Map<Long, DraftMailbox> draftMailboxes(String granteeUsername, Collection<Long> delegationIds) {
+    Map<Long, DraftMailbox> mailboxes = new HashMap<>();
+    if (delegationIds == null) {
+      return mailboxes;
+    }
+    for (Long delegationId : delegationIds) {
+      if (delegationId == null || mailboxes.containsKey(delegationId)) {
+        continue;
+      }
+      DraftMailbox mailbox;
+      try {
+        mailbox = draftMailbox(granteeUsername, delegationId);
+      } catch (RuntimeException e) {
+        LOG.debug("The mailbox of a draft of user {} could not be named", granteeUsername, e);
+        mailbox = null;
+      }
+      mailboxes.put(delegationId, mailbox != null ? mailbox : new DraftMailbox(delegationId, null, null, false));
+    }
+    return mailboxes;
+  }
+
+  /**
    * A mailbox shared with the caller, named the way a person or an agent names it
    * (EXO-90555): by its address, or by its owner's eXo username, ignoring case. The ONE
    * place an agent's {@code mailbox} argument is resolved, and it resolves among

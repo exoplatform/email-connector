@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -576,6 +577,32 @@ public class EmailScheduledSendServiceTest {
   }
 
   /**
+   * EXO-90595 -- a scheduled mail of a shared mailbox that went out but whose copy could
+   * not be filed in the owner's Sent tells its sender so, through the scheduled-mail
+   * notification with a reason of its own; nothing about the send is recorded as a
+   * failure. A copy that was filed tells nothing.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aSentMailWhoseOwnerCopyFailedTellsItsSenderAndStaysSent() throws Exception {
+    when(emailBoxService.sendStoredDraft(eq(USER), eq(LOCAL_ID), any(Runnable.class)))
+                                                                                    .thenReturn(new EmailBoxService.StoredDraftSent("See you tomorrow",
+                                                                                                                                    EmailBoxService.OwnerCopy.FILED))
+                                                                                    .thenReturn(new EmailBoxService.StoredDraftSent("See you tomorrow",
+                                                                                                                                    EmailBoxService.OwnerCopy.FAILED));
+    service.runClaimed(claimedRow(1));
+    assertTrue(notified.isEmpty(), "a filed copy tells nothing");
+
+    service.runClaimed(claimedRow(1));
+
+    assertEquals(1, notified.size());
+    verify(notified.get(0)).append(ScheduledEmailFailedNotificationPlugin.REASON, EmailScheduledSendService.OWNER_COPY_FAILED_REASON);
+    verify(notified.get(0)).append(ScheduledEmailFailedNotificationPlugin.SUBJECT, "See you tomorrow");
+    verify(storage, never()).endRun(anyLong(), anyString(), any(), any(), any(), any(), any());
+  }
+
+  /**
    * EXO-90595 -- the "Scheduled" view names the shared mailbox each mail was written in,
    * as the writer's own share resolves it, an ended one included (marked no longer
    * shared); a mail of the owner's own mailbox names none, and a share that no longer
@@ -610,7 +637,10 @@ public class EmailScheduledSendServiceTest {
                                                                                       12L,
                                                                                       sameShareDraft));
     DraftMailbox anne = new DraftMailbox(100L, "Anne Dupont", "anne@example.org", false);
-    when(emailDelegationService.draftMailbox(USER, 100L)).thenReturn(anne);
+    when(emailDelegationService.draftMailboxes(eq(USER), anyCollection())).thenReturn(Map.of(100L,
+                                                                                             anne,
+                                                                                             7L,
+                                                                                             new DraftMailbox(7L, null, null, false)));
 
     List<ScheduledEmail> listed = service.getScheduledEmails(USER, 0, 20);
 
@@ -618,7 +648,7 @@ public class EmailScheduledSendServiceTest {
     assertEquals(anne, listed.get(1).getMailbox());
     assertEquals(new DraftMailbox(7L, null, null, false), listed.get(2).getMailbox());
     assertEquals(anne, listed.get(3).getMailbox());
-    verify(emailDelegationService, times(1)).draftMailbox(USER, 100L);
+    verify(emailDelegationService, times(1)).draftMailboxes(eq(USER), anyCollection());
   }
 
   /**

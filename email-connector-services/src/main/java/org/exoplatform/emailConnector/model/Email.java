@@ -204,4 +204,9 @@ public class Email {
   // ignored by every later save and by every send. Out on every read of a draft, so the
   // composer resumes it in its own mailbox whatever the switcher shows.
   private Long                 sendDelegationId;
+
+  // The mailbox named by sendDelegationId, as the Drafts listing shows it (EXO-90595):
+  // its owner, and whether it is still shared. Set on that listing, never stored.
+  @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+  private DraftMailbox         sendMailbox;
 }

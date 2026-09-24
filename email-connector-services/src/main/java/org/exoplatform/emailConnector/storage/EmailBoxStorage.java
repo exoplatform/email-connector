@@ -2337,7 +2337,7 @@ public class EmailBoxStorage {
                               // The read-receipt fields, set below by name.
                               false, null, null, false, null, null,
                               // The draft's mailbox (EXO-90595), set by name below.
-                              null);
+                              null, null);
       email.setReadReceiptRequested(emailBoxEntity.isReadReceiptRequested());
       email.setReadReceiptTo(emailBoxEntity.getReadReceiptTo());
       email.setReadReceiptState(emailBoxEntity.getReadReceiptState());

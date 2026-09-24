@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyChar;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -636,6 +637,36 @@ public class EmailBoxServiceTest {
     assertEquals(List.of("Veronika"),
                  emailBox.getThreadSummaries().get("thread-1").participants(),
                  "the draft row is named after the conversation, which the row itself cannot say");
+  }
+
+  /**
+   * EXO-90595 -- the Drafts listing names the shared mailbox each draft was written in,
+   * as the server resolves it, looking each share up once for the whole listing however
+   * many drafts it holds; a draft of the user's own mailbox names none.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void theDraftsListingNamesEachDraftsMailboxOncePerShare() throws Exception {
+    givenAUsableMailbox();
+    Email own = new Email();
+    own.setDraftLocalId("draft-own");
+    Email first = new Email();
+    first.setDraftLocalId("draft-a1");
+    first.setSendDelegationId(100L);
+    Email second = new Email();
+    second.setDraftLocalId("draft-a2");
+    second.setSendDelegationId(100L);
+    when(emailBoxStorage.getUnscheduledDrafts(TEST_USER)).thenReturn(List.of(own, first, second));
+    DraftMailbox anne = new DraftMailbox(100L, "Anne", "anne@example.org", true);
+    when(emailDelegationService.draftMailboxes(TEST_USER, List.of(100L))).thenReturn(Map.of(100L, anne));
+
+    List<Email> listed = emailBoxService.getEmailBox(TEST_USER, MailFolder.DRAFTS).getEmails();
+
+    assertNull(listed.get(0).getSendMailbox(), "the user's own mailbox");
+    assertEquals(anne, listed.get(1).getSendMailbox());
+    assertEquals(anne, listed.get(2).getSendMailbox());
+    verify(emailDelegationService, times(1)).draftMailboxes(anyString(), anyCollection());
   }
 
   @Test
@@ -7807,8 +7838,9 @@ public class EmailBoxServiceTest {
 
   /**
    * EXO-90595 -- the composer asks the server which mailbox a resumed draft belongs to:
-   * none for the user's own, the share's owner and whether it is still shared otherwise,
-   * and a share that no longer resolves reads as not shared -- never as the user's own.
+   * none for the user's own, and otherwise the share's owner and whether it is still
+   * shared, as the delegation service names it (which reads a share that no longer
+   * resolves as not shared).
    */
   @Test
   @SneakyThrows
@@ -7817,10 +7849,12 @@ public class EmailBoxServiceTest {
     assertNull(emailBoxService.getDraftMailbox("draft-1", TEST_USER));
     stored.setSendDelegationId(100L);
     DraftMailbox anne = new DraftMailbox(100L, "Anne", "anne@example.org", true);
-    when(emailDelegationService.draftMailbox(TEST_USER, 100L)).thenReturn(anne);
+    when(emailDelegationService.draftMailboxes(TEST_USER, List.of(100L))).thenReturn(Map.of(100L, anne));
     assertEquals(anne, emailBoxService.getDraftMailbox("draft-1", TEST_USER));
     stored.setSendDelegationId(7L);
-    assertEquals(new DraftMailbox(7L, null, null, false), emailBoxService.getDraftMailbox("draft-1", TEST_USER));
+    DraftMailbox unresolved = new DraftMailbox(7L, null, null, false);
+    when(emailDelegationService.draftMailboxes(TEST_USER, List.of(7L))).thenReturn(Map.of(7L, unresolved));
+    assertEquals(unresolved, emailBoxService.getDraftMailbox("draft-1", TEST_USER));
     assertThrows(ObjectNotFoundException.class, () -> emailBoxService.getDraftMailbox("draft-2", TEST_USER));
   }
 
@@ -9383,7 +9417,7 @@ public class EmailBoxServiceTest {
                      null,
                      null,
                      null, null, false, null, null, null,
-                     false, null, null, false, null, null, null);
+                     false, null, null, false, null, null, null, null);
   }
 
   private EmailConnector emailConnector() {
@@ -13460,15 +13494,55 @@ public class EmailBoxServiceTest {
     List<MimeMessage> transmitted = new ArrayList<>();
     doAnswer(invocation -> transmitted.add(invocation.getArgument(0))).when(smtpTransmitter).transmit(any(MimeMessage.class));
 
-    emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+    EmailBoxService.StoredDraftSent sent = emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
     });
 
+    assertEquals(EmailBoxService.OwnerCopy.FILED, sent.ownerCopy());
+    assertEquals("half a subject", sent.subject());
     ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
     InOrder order = inOrder(smtpTransmitter, ownerSent, emailBoxStorage);
     order.verify(smtpTransmitter).transmit(any(MimeMessage.class));
     order.verify(ownerSent).appendMessages(filed.capture());
     order.verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
     assertSame(transmitted.get(0), filed.getValue()[0], "the very message that went out");
+  }
+
+  /**
+   * EXO-90595 -- a scheduled mail of a shared mailbox whose copy cannot be filed in the
+   * owner's Sent is still sent, recorded and taken apart like any other; the answer
+   * says FAILED, for the caller to tell the sender. A mail of the sender's own mailbox
+   * answers no copy at all.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduledMailWhoseOwnerCopyFailsIsStillSentAndSaysSo() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setSendDelegationId(100L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    when(ownerSent.exists()).thenReturn(true);
+    when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+    doThrow(new MessagingException("NO [NOPERM]")).when(ownerSent).appendMessages(any(Message[].class));
+    Runnable onTransmitted = mock(Runnable.class);
+
+    EmailBoxService.StoredDraftSent sent = emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted);
+
+    assertEquals(EmailBoxService.OwnerCopy.FAILED, sent.ownerCopy());
+    verify(onTransmitted).run();
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+
+    stored.setSendDelegationId(null);
+    assertNull(emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+    }).ownerCopy(), "a mail of the sender's own mailbox has no owner's copy");
   }
 
   /**

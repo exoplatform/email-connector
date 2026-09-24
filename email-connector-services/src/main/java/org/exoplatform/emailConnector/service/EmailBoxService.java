@@ -3930,6 +3930,7 @@ public class EmailBoxService {
       // The Drafts folder leaves out the drafts scheduled to be sent: the "Scheduled"
       // view lists them, and they may not be edited while they wait.
       emails = emailBoxStorage.getUnscheduledDrafts(username);
+      nameDraftMailboxes(username, emails);
     } else {
       emails = emailBoxStorage.getEmails(username, folder);
     }
@@ -9849,19 +9850,21 @@ public class EmailBoxService {
    * share: checked again before anything else -- no longer the owner's, or no longer
    * accepted, and the send fails PERMANENT with {@link ScheduledSendError#MAILBOX_UNSHARED},
    * nothing sent -- and, once transmitted, a copy is filed in the mailbox owner's Sent
-   * as an interactive send files it.
+   * as an interactive send files it. What became of that copy is answered, for the
+   * caller to tell the sender when it could not be filed; the send stays a success.
    *
    * @param username the mailbox owner, as whom the mail is sent
    * @param draftLocalId the draft's handle
    * @param onTransmitted run once the mail server accepted the message
+   * @return the sent mail's subject and what became of the owner's copy
    * @throws ScheduledSendFailure classified: TRANSIENT (nothing reached the server),
    *           PERMANENT (refused before anything was accepted, a mailbox no longer
    *           shared included), AMBIGUOUS (may have been accepted)
    * @throws ObjectNotFoundException if the draft is gone
    */
-  public void sendStoredDraft(String username,
-                              String draftLocalId,
-                              Runnable onTransmitted) throws ScheduledSendFailure, ObjectNotFoundException {
+  public StoredDraftSent sendStoredDraft(String username,
+                                         String draftLocalId,
+                                         Runnable onTransmitted) throws ScheduledSendFailure, ObjectNotFoundException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -9876,6 +9879,7 @@ public class EmailBoxService {
     ReentrantLock lock = draftLocks.computeIfAbsent(lockKey, key -> new ReentrantLock());
     lock.lock();
     boolean sent = false;
+    OwnerCopy ownerCopy = null;
     try {
       Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
       if (stored == null) {
@@ -9941,17 +9945,29 @@ public class EmailBoxService {
       if (ownerSentKey != null) {
         // The owner's copy of a mail sent from their mailbox (EXO-90551), before the
         // cleanup frees the stored files its parts stream from. Fenced: the mail is out.
-        // Its outcome is not recorded on the schedule: a copy that could not be filed is
-        // logged at WARN by copyToOwnerSent, and the mail stays sent.
-        copyToOwnerSent(message, username, userEmailSetting, ownerSentKey);
+        // Its outcome is answered to the caller, never recorded as a send failure.
+        ownerCopy = copyToOwnerSent(message, username, userEmailSetting, ownerSentKey);
+      } else if (stored.getSendDelegationId() != null) {
+        ownerCopy = OwnerCopy.SKIPPED;
       }
       cleanupSentDraft(stored, username, userEmailSetting);
+      return new StoredDraftSent(stored.getSubject(), ownerCopy);
     } finally {
       lock.unlock();
       if (sent) {
         draftLocks.remove(lockKey);
       }
     }
+  }
+
+  /**
+   * What a scheduled send answers once its mail went out (EXO-90595).
+   *
+   * @param subject the sent mail's subject, for a notification about it
+   * @param ownerCopy what became of the copy in the shared mailbox owner's Sent, null
+   *          for a mail of the sender's own mailbox
+   */
+  public record StoredDraftSent(String subject, OwnerCopy ownerCopy) {
   }
 
   /**
@@ -12525,7 +12541,7 @@ public class EmailBoxService {
                                                 // The read-receipt fields, set by name just below.
                                                 false, null, null, false, null, null,
                                                 // A synced message is no draft of a shared mailbox (EXO-90595).
-                                                null);
+                                                null, null);
           captureReadReceiptRequest(message, cached, folderKey);
           alignReadReceiptAnswer(cached, username);
           emailBoxStorage.createEmail(cached);
@@ -15371,8 +15387,28 @@ public class EmailBoxService {
     if (delegationId == null) {
       return null;
     }
-    DraftMailbox mailbox = emailDelegationService.draftMailbox(username, delegationId);
-    return mailbox != null ? mailbox : new DraftMailbox(delegationId, null, null, false);
+    return emailDelegationService.draftMailboxes(username, List.of(delegationId)).get(delegationId);
+  }
+
+  /**
+   * Names, on each draft of a listing, the shared mailbox it was written in
+   * (EXO-90595), each share looked up once for the whole listing. A draft of the user's
+   * own mailbox names none.
+   *
+   * @param username the drafts' owner
+   * @param drafts the listing's drafts
+   */
+  private void nameDraftMailboxes(String username, List<Email> drafts) {
+    List<Long> shares = drafts.stream().map(Email::getSendDelegationId).filter(Objects::nonNull).distinct().toList();
+    if (shares.isEmpty()) {
+      return;
+    }
+    Map<Long, DraftMailbox> mailboxes = emailDelegationService.draftMailboxes(username, shares);
+    for (Email draft : drafts) {
+      if (draft.getSendDelegationId() != null) {
+        draft.setSendMailbox(mailboxes.get(draft.getSendDelegationId()));
+      }
+    }
   }
 
   /**
