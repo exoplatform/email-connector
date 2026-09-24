@@ -304,8 +304,11 @@ public final class MailboxRights {
    * is never offered nor allowed a star or a flag from eXo, whatever the server would let
    * them do in another client. The letters, not a recorded preset, decide: a delegate's
    * folder carries no preset of its own. The server's letters themselves are never
-   * changed ({@link #of} stays faithful), so a real {@code lrsw} set in another mail
-   * application still reads as it is to the owner.
+   * changed ({@link #of} stays faithful), but the letters cannot tell Stalwart's coupling
+   * from a {@code w} really given beside {@code s} in another mail application: such an
+   * entry reads as a Reader everywhere eXo reads a preset (the owner's folder list, a
+   * rename), and an owner's later save of it writes the Reader's letters -- a narrowing,
+   * never a widening. Accepted with the coupling (EXO-90556).
    *
    * @return the letters without the coupled w, or these letters
    */
