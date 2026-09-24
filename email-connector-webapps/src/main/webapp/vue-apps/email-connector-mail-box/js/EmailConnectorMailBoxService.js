@@ -1423,8 +1423,10 @@ export function getDraftMailbox(draftLocalId) {
  * @param {Object} draft the composed draft as the composer is showing it
  * @param {Number} delegationId the share the draft is sent from, or nothing -- a copy
  *        is then also filed in the owner's Sent (EXO-90551)
- * @param {String} sendMode ON_BEHALF or AS to send it in the owner's name of the
- *        draft's share (EXO-90583), or nothing
+ * @param {String} sendMode deprecated (EXO-90584): the draft's own sendMode, carried in
+ *        its body or stored, is the name it goes out in; this is read only for a draft
+ *        that records none, and refused (emailConnector.sendMode.mismatch) when it is not
+ *        the draft's. The composer passes nothing
  * @returns {Promise<Object>} resolves once the mail is out and the draft is gone, with
  *          { ownerCopy } when a share is named; rejects with a {@link refusal} error -- its
  *          code says a share is gone, or why the owner's name could not be used
