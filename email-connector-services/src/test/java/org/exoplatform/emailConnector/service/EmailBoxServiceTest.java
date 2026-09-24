@@ -12360,6 +12360,44 @@ public class EmailBoxServiceTest {
     }
   }
 
+  /**
+   * EXO-89649. Deciding whether to retry must not replace the refusal it decides
+   * about: when the connector cannot be read after the SMTP refusal, the send fails
+   * on the refusal, which carries the lookup failure, and nothing is retried.
+   */
+  @Test
+  void aFailureToDecideOnTheRetryKeepsTheSmtpRefusal() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    java.util.concurrent.atomic.AtomicBoolean refused = new java.util.concurrent.atomic.AtomicBoolean();
+    IllegalStateException lookupFailure = new IllegalStateException("database unavailable");
+    when(emailConnectorService.getEmailConnector(anyLong())).thenAnswer(invocation -> {
+      if (refused.get()) {
+        throw lookupFailure;
+      }
+      return emailConnector();
+    });
+    Session session = mock(Session.class);
+    when(session.getProperties()).thenReturn(new Properties());
+    AuthenticationFailedException refusal = new AuthenticationFailedException("535");
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      transportMock.when(() -> Transport.send(any(Message.class))).thenAnswer(invocation -> {
+        refused.set(true);
+        throw refusal;
+      });
+
+      Email email = email(TEST_USER);
+      // The send failure path handles the SMTP refusal; the lookup failure does not escape in its place.
+      IllegalStateException failure = assertThrows(IllegalStateException.class, () -> emailBoxService.sendEmail(email, TEST_USER));
+
+      assertTrue(failure.getMessage().startsWith("Error when sending email"), failure.getMessage());
+      assertTrue(java.util.Arrays.asList(refusal.getSuppressed()).contains(lookupFailure));
+      verify(emailCredentialsResolver, never()).invalidate(any(), any(), any(), any());
+    }
+  }
+
   /** EXO-89649. A failure that is not an authentication refusal is the answer: no retry. */
   @Test
   void doesNotRetryASendThatFailsForAnotherReason() throws Exception {
