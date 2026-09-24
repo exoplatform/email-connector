@@ -795,6 +795,45 @@ class EmailDelegationFolderAccessTest {
   }
 
   /**
+   * On a server that lists the owner's folders under INBOX to the delegate without it,
+   * the owner's listing -- read anyway after a rename, and by "Change access" when it had
+   * to remove a folder's entry -- names the delegate's copy for sure, and it goes at once;
+   * a server that cannot be asked still drops what needs no listing.
+   */
+  @Test
+  void theOwnersListingNamesACopyUnderInboxForSure() throws Exception {
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(accepted()));
+    List<EmailFolder> rows = granteeFolders();
+    rows.add(granteeFolder(19L, ROOT + "/Legacy", MailFolderView.TYPE_DELEGATED, null, "lrs"));
+    rows.add(granteeFolder(22L, ROOT + "/Courier", MailFolderView.TYPE_DELEGATED, FolderRole.SENT, "lrswite"));
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(rows);
+    when(engine.listOwnFolders(any())).thenReturn(List.of(own(INBOX, null), own("INBOX/Kept", null), own("INBOX/Courier", FolderRole.SENT)));
+
+    service.ownerFolderChanged(OWNER, "INBOX/Legacy", "INBOX/Kept");
+
+    verify(emailFolderStorage).deleteFolder(GRANTEE, 19L);
+
+    EmailDelegation share = accepted();
+    share.setGrantedRoles("INBOX,SENT");
+    Map<FolderRole, String> roles = new EnumMap<>(FolderRole.class);
+    roles.put(FolderRole.SENT, "INBOX/Courier");
+    share.setOwnerRoleFolders(roles);
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(share);
+    when(engine.findRoleFolders(any())).thenReturn(roles);
+    when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), any(), any())).thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
+                                                                                                           MailboxRights.of("lrs")));
+    when(engine.grant(any(), eq("INBOX/Courier"), anyString(), eq(DelegationPreset.READER), any(), any()))
+                                                                                                        .thenThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED,
+                                                                                                                                           "NO"));
+    when(emailDelegationStorage.updateGrantedRights(eq(OWNER), eq(100L), any(), any(), any(), any(), any(), anyString(), any()))
+                                                                                                                               .thenReturn(share);
+
+    service.changePreset(OWNER, 100L, DelegationPreset.READER);
+
+    verify(emailFolderStorage).deleteFolder(GRANTEE, 22L);
+  }
+
+  /**
    * After a delete, the delegates' copies go; nothing is asked of the server.
    */
   @Test
