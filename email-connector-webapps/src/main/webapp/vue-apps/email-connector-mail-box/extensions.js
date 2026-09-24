@@ -196,6 +196,18 @@ document.addEventListener('open-email-box-folder', event => {
   window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, {folder}));
 });
 
+/*
+ * Opens the mailbox on a mailbox somebody shared with the user, from anywhere in the
+ * platform: the web notification of new mail there uses it (EXO-90553). What the
+ * mailbox= deep link below does on a page load, without one.
+ *
+ * detail: {mailbox} -- the delegation id of the shared mailbox.
+ */
+document.addEventListener('open-email-box-mailbox', event => {
+  const mailbox = event?.detail?.mailbox;
+  window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, mailbox ? {mailbox: String(mailbox)} : null));
+});
+
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
   const urlParams = new URLSearchParams(window.location.search);
   const shouldOpenEmailBox = urlParams.get('openEmailBox') === 'true';
