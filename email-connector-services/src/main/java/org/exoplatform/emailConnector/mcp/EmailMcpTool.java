@@ -52,12 +52,15 @@ import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
+import org.exoplatform.emailConnector.exception.SendModeMissingException;
+import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
@@ -114,6 +117,18 @@ public class EmailMcpTool implements McpToolPlugin {
                                                                    "emailConnector.folder.notBrowsable",
                                                                    "folder must be one of INBOX, SENT or ARCHIVE.");
 
+  /**
+   * The {@code identity} word for the user's own name (EXO-90585): the default, and what
+   * an empty argument means.
+   */
+  static final String                   IDENTITY_ME          = "me";
+
+  /** The {@code identity} word for the owner's name, the user shown as the sender. */
+  static final String                   IDENTITY_OWNER_ON_BEHALF = "owner_on_behalf";
+
+  /** The {@code identity} word for the owner's name, the user not shown. */
+  static final String                   IDENTITY_OWNER       = "owner";
+
   private final EmailBoxService         emailBoxService;
 
   private final UserEmailSettingService userEmailSettingService;
@@ -160,8 +175,31 @@ public class EmailMcpTool implements McpToolPlugin {
                                                                       share.preset() == null ? "CUSTOM" : share.preset().name(),
                                                                       share.unreadCount(),
                                                                       emailDelegationService.getMirroredFolders(username, share),
-                                                                      share.sentCopy()))
+                                                                      share.sentCopy(),
+                                                                      identitiesOf(share)))
                                  .toList();
+  }
+
+  /**
+   * The {@code identity} words the user may pass for a mail from this shared mailbox
+   * besides {@value #IDENTITY_ME} (EXO-90585): the shapes the share lets them write in
+   * the owner's name in now, as the mirror computed them -- the same list the composer's
+   * picker is drawn from. A hint for the agent only: the send checks the share's row
+   * again, whatever this said.
+   *
+   * @param share the shared mailbox
+   * @return {@value #IDENTITY_OWNER_ON_BEHALF} and/or {@value #IDENTITY_OWNER}, in that
+   *         order; empty when the user may write in their own name only
+   */
+  private static List<String> identitiesOf(SharedMailboxEntry share) {
+    List<String> identities = new ArrayList<>();
+    if (share.sendModes().contains(SendMode.ON_BEHALF)) {
+      identities.add(IDENTITY_OWNER_ON_BEHALF);
+    }
+    if (share.sendModes().contains(SendMode.AS)) {
+      identities.add(IDENTITY_OWNER);
+    }
+    return identities;
   }
 
   // ---------------------------------------------------------------------------
@@ -652,9 +690,11 @@ public class EmailMcpTool implements McpToolPlugin {
   /**
    * Send a brand new email over real SMTP (also copied to the Sent folder).
    * Body is HTML. Optional cc/bcc recipients. Attachments are NOT supported by the
-   * backing service. From a mailbox shared with the user (EXO-90555), the mail still
-   * goes out from the user's own address, and a copy is filed in the owner's Sent
-   * where the share allows it -- the answer names the owner and says which.
+   * backing service. From a mailbox shared with the user (EXO-90555), a copy is filed
+   * in the owner's Sent where the share allows it -- the answer names the owner and says
+   * which. The mail goes out in the user's own name, from their own address, unless
+   * {@code identity} names the owner (EXO-90585, {@link #sendModeOf}): then in the
+   * owner's name, on her behalf or as her, when her consent on the share allows it.
    *
    * @param to the recipients
    * @param subject the subject
@@ -662,16 +702,22 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param cc the copied recipients
    * @param bcc the blind-copied recipients
    * @param mailbox the shared mailbox the mail is sent from, blank for the user's own
+   * @param identity in whose name the mail leaves: {@value #IDENTITY_ME} or blank for
+   *          the user's own, {@value #IDENTITY_OWNER_ON_BEHALF} or {@value #IDENTITY_OWNER}
+   *          for the owner of {@code mailbox}
    * @return the outcome, in words
    * @throws ObjectNotFoundException when no such mailbox is shared with the user
-   * @throws IllegalAccessException if the user may not send
+   * @throws IllegalAccessException if the user may not send, or not in the owner's name
+   * @throws IllegalArgumentException when {@code identity} is not one of its words, names
+   *           the owner with no mailbox, or cannot be used now; nothing was sent
    */
   public String sendEmail(List<String> to,
                           String subject,
                           String bodyHtml,
                           List<String> cc,
                           List<String> bcc,
-                          String mailbox) throws ObjectNotFoundException, IllegalAccessException {
+                          String mailbox,
+                          String identity) throws ObjectNotFoundException, IllegalAccessException {
     if (to == null || to.stream().filter(StringUtils::isNotBlank).findAny().isEmpty()) {
       throw new IllegalArgumentException("At least one recipient is required in 'to'");
     }
@@ -682,15 +728,21 @@ public class EmailMcpTool implements McpToolPlugin {
     email.setCc(toRecipients(cc));
     email.setBcc(toRecipients(bcc));
     SharedMailboxEntry share = sharedMailbox(mailbox);
-    String copy = send(email, getCurrentUserName(), share);
-    return String.format("Email sent to %s with subject \"%s\"%s.%s", String.join(", ", to), subject, fromMailbox(share), copy);
+    SendMode mode = sendModeOf(identity, share);
+    String copy = send(email, getCurrentUserName(), share, mode);
+    return String.format("Email sent to %s with subject \"%s\"%s.%s",
+                         String.join(", ", to),
+                         subject,
+                         fromMailbox(share, mode),
+                         copy);
   }
 
   /**
    * Reply to the sender of an existing email (by IMAP mailRemoteId). Threads the
    * reply by copying the original Message-ID into In-Reply-To/References. With a
    * {@code mailbox} (EXO-90555), the original is read in that shared mailbox's inbox
-   * and the reply is sent from it, as {@link #sendEmail} does.
+   * and the reply is sent from it, in the name {@code identity} names, as
+   * {@link #sendEmail} does.
    *
    * The original is named by its {@code email_id} -- in any folder of the mailbox
    * named, Sent and Archive included -- or by the UID of a mail of the user's own INBOX
@@ -700,19 +752,26 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param bodyHtml the HTML body
    * @param mailbox the shared mailbox, blank for the user's own
    * @param emailId the original's local id, or null
+   * @param identity in whose name the reply leaves, as {@link #sendEmail} takes it
    * @return the outcome, in words
    * @throws ObjectNotFoundException when the original or the mailbox is not found
-   * @throws IllegalAccessException if the user may not send
+   * @throws IllegalAccessException if the user may not send, or not in the owner's name
+   * @throws IllegalArgumentException when {@code identity} cannot be used; nothing was
+   *           sent
    */
-  public String replyEmail(Long mailRemoteId, String bodyHtml, String mailbox, Long emailId) throws ObjectNotFoundException,
-                                                                                             IllegalAccessException {
+  public String replyEmail(Long mailRemoteId,
+                           String bodyHtml,
+                           String mailbox,
+                           Long emailId,
+                           String identity) throws ObjectNotFoundException, IllegalAccessException {
     String username = getCurrentUserName();
     SharedMailboxEntry share = sharedMailbox(mailbox);
+    SendMode mode = sendModeOf(identity, share);
     Email original = fetch(mailOf(emailId, mailRemoteId, share), false, true, false);
     Email reply = buildReplyShell(original, bodyHtml);
     reply.setTo(senderAsRecipients(original));
-    String copy = send(reply, username, share);
-    return String.format("Reply sent to %s%s.%s", senderAddress(original), fromMailbox(share), copy);
+    String copy = send(reply, username, share, mode);
+    return String.format("Reply sent to %s%s.%s", senderAddress(original), fromMailbox(share, mode), copy);
   }
 
   /**
@@ -720,7 +779,9 @@ public class EmailMcpTool implements McpToolPlugin {
    * sender, Cc = original To + Cc minus the current user's own address. With a
    * {@code mailbox} (EXO-90555), the original is read in that shared mailbox's inbox,
    * the reply is sent from it, and the owner's address is left out of the Cc too: the
-   * owner is the mailbox the reply is sent from, and gets their copy in their Sent.
+   * owner is the mailbox the reply is sent from, and gets their copy in their Sent. So
+   * it is in the owner's name too ({@code identity}, EXO-90585): a reply as the owner
+   * never copies the owner.
    *
    * The original is named as {@link #replyEmail} names it.
    *
@@ -728,14 +789,21 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param bodyHtml the HTML body
    * @param mailbox the shared mailbox, blank for the user's own
    * @param emailId the original's local id, or null
+   * @param identity in whose name the reply leaves, as {@link #sendEmail} takes it
    * @return the outcome, in words
    * @throws ObjectNotFoundException when the original or the mailbox is not found
-   * @throws IllegalAccessException if the user may not send
+   * @throws IllegalAccessException if the user may not send, or not in the owner's name
+   * @throws IllegalArgumentException when {@code identity} cannot be used; nothing was
+   *           sent
    */
-  public String replyAll(Long mailRemoteId, String bodyHtml, String mailbox, Long emailId) throws ObjectNotFoundException,
-                                                                                           IllegalAccessException {
+  public String replyAll(Long mailRemoteId,
+                         String bodyHtml,
+                         String mailbox,
+                         Long emailId,
+                         String identity) throws ObjectNotFoundException, IllegalAccessException {
     String username = getCurrentUserName();
     SharedMailboxEntry share = sharedMailbox(mailbox);
+    SendMode mode = sendModeOf(identity, share);
     Email original = fetch(mailOf(emailId, mailRemoteId, share), false, true, false);
     Email reply = buildReplyShell(original, bodyHtml);
     reply.setTo(senderAsRecipients(original));
@@ -747,8 +815,8 @@ public class EmailMcpTool implements McpToolPlugin {
       ccRecipients.removeIf(recipient -> recipient.getAddress().equalsIgnoreCase(share.ownerMailbox()));
     }
     reply.setCc(ccRecipients);
-    String copy = send(reply, username, share);
-    return String.format("Reply-all sent to %s%s.%s", senderAddress(original), fromMailbox(share), copy);
+    String copy = send(reply, username, share, mode);
+    return String.format("Reply-all sent to %s%s.%s", senderAddress(original), fromMailbox(share, mode), copy);
   }
 
   /**
@@ -756,7 +824,8 @@ public class EmailMcpTool implements McpToolPlugin {
    * subject is prefixed with "Fwd:" and the original message is quoted below the
    * optional new note. Attachments are NOT carried over (the backing service cannot
    * attach files). With a {@code mailbox} (EXO-90555), the original is read in that
-   * shared mailbox's inbox and the forward is sent from it, as {@link #sendEmail} does.
+   * shared mailbox's inbox and the forward is sent from it, in the name {@code identity}
+   * names, as {@link #sendEmail} does.
    *
    * The original is named as {@link #replyEmail} names it.
    *
@@ -766,22 +835,27 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param cc the copied recipients
    * @param mailbox the shared mailbox, blank for the user's own
    * @param emailId the original's local id, or null
+   * @param identity in whose name the forward leaves, as {@link #sendEmail} takes it
    * @return the outcome, in words
    * @throws ObjectNotFoundException when the original is not there, or no such mailbox
    *           is shared with the user
-   * @throws IllegalAccessException if the user may not send
+   * @throws IllegalAccessException if the user may not send, or not in the owner's name
+   * @throws IllegalArgumentException when {@code identity} cannot be used; nothing was
+   *           sent
    */
   public String forwardEmail(Long mailRemoteId,
                              List<String> to,
                              String bodyHtml,
                              List<String> cc,
                              String mailbox,
-                             Long emailId) throws ObjectNotFoundException, IllegalAccessException {
+                             Long emailId,
+                             String identity) throws ObjectNotFoundException, IllegalAccessException {
     if (to == null || to.stream().filter(StringUtils::isNotBlank).findAny().isEmpty()) {
       throw new IllegalArgumentException("At least one recipient is required in 'to'");
     }
     String username = getCurrentUserName();
     SharedMailboxEntry share = sharedMailbox(mailbox);
+    SendMode mode = sendModeOf(identity, share);
     Email original = fetch(mailOf(emailId, mailRemoteId, share), false, true, false);
     Email forward = new Email();
     String subject = original.getSubject() == null ? "" : original.getSubject();
@@ -789,11 +863,11 @@ public class EmailMcpTool implements McpToolPlugin {
     forward.setContent(buildHtmlContent(buildForwardBody(original, bodyHtml)));
     forward.setTo(toRecipients(to));
     forward.setCc(toRecipients(cc));
-    String copy = send(forward, username, share);
+    String copy = send(forward, username, share, mode);
     return String.format("Email forwarded to %s with subject \"%s\"%s.%s",
                          String.join(", ", to),
                          forward.getSubject(),
-                         fromMailbox(share),
+                         fromMailbox(share, mode),
                          copy);
   }
 
@@ -1465,27 +1539,86 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
+   * The shape an {@code identity} argument asks a mail to go out under (EXO-90585): null
+   * -- the user's own name -- for {@value #IDENTITY_ME} and for an empty argument, which
+   * the approval card shows empty and which says "your own" there; {@link SendMode#ON_BEHALF}
+   * for {@value #IDENTITY_OWNER_ON_BEHALF}; {@link SendMode#AS} for {@value #IDENTITY_OWNER}.
+   * <p>
+   * The card the user approves is drawn from the tool's arguments before the tool runs,
+   * and shows this word as given. So the word must be exactly one of the three -- no
+   * other spelling, no mode name, nothing the card would show one way and this read
+   * another -- and an owner's word needs a shared mailbox, whose owner it names: without
+   * one there is no owner, and the mail is never sent in the user's name instead. What
+   * the owner allows is not decided here: the service checks the word against her
+   * consent on the share's row when the mail is sent ({@link #send}).
+   *
+   * @param identity the argument
+   * @param share the shared mailbox the mail is sent from, null for the user's own
+   * @return the shape, null for the user's own name
+   * @throws IllegalArgumentException when the word is not one of the three, or names the
+   *           owner with no shared mailbox; nothing has been sent
+   */
+  static SendMode sendModeOf(String identity, SharedMailboxEntry share) {
+    if (StringUtils.isBlank(identity) || IDENTITY_ME.equals(identity)) {
+      return null;
+    }
+    SendMode mode;
+    if (IDENTITY_OWNER_ON_BEHALF.equals(identity)) {
+      mode = SendMode.ON_BEHALF;
+    } else if (IDENTITY_OWNER.equals(identity)) {
+      mode = SendMode.AS;
+    } else {
+      throw new IllegalArgumentException(String.format("Nothing was sent: identity must be %s, %s or %s, exactly; it was \"%s\".",
+                                                       IDENTITY_ME,
+                                                       IDENTITY_OWNER_ON_BEHALF,
+                                                       IDENTITY_OWNER,
+                                                       identity));
+    }
+    if (share == null) {
+      throw new IllegalArgumentException(String.format("Nothing was sent: identity %s names the owner of a shared mailbox, and no "
+          + "mailbox was given. Pass the shared mailbox the mail is sent from, or leave identity empty to send it in the user's "
+          + "own name -- and ask the user to approve again with what you pass shown.", identity));
+    }
+    return mode;
+  }
+
+  /**
    * Sends through the service, from the shared mailbox when one is named, and says what
-   * became of the owner's copy.
+   * became of the owner's copy. In the user's own name, the service's 3-argument send,
+   * which cannot write in anyone else's (EXO-90583); in the owner's name, the
+   * 4-argument one, whose guard checks the shape against the owner's consent on the
+   * share's row before anything is built -- the owner's address and name come from
+   * that row, never from the agent (EXO-90585).
    *
    * @param email the mail
    * @param username the sender
    * @param share the shared mailbox, null for the user's own
+   * @param mode the owner's-name shape from {@link #sendModeOf}, null for the user's own
+   *          name
    * @return a sentence about the owner's copy, empty for the user's own mailbox
    * @throws ObjectNotFoundException when the share is not the sender's
-   * @throws IllegalAccessException if the user may not send
+   * @throws IllegalAccessException if the user may not send, or the owner does not let
+   *           them write in her name in that shape
+   * @throws IllegalArgumentException when the shape cannot be used now; nothing was sent
    */
-  private String send(Email email, String username, SharedMailboxEntry share) throws ObjectNotFoundException,
-                                                                             IllegalAccessException {
+  private String send(Email email, String username, SharedMailboxEntry share, SendMode mode) throws ObjectNotFoundException,
+                                                                                            IllegalAccessException {
     if (share == null) {
       emailBoxService.sendEmail(email, username);
       return "";
     }
     EmailBoxService.OwnerCopy copy;
     try {
-      copy = emailBoxService.sendEmail(email, username, share.delegationId());
+      copy = mode == null ? emailBoxService.sendEmail(email, username, share.delegationId())
+                          : emailBoxService.sendEmail(email, username, share.delegationId(), mode.name());
     } catch (DelegationRevokedException e) {
       throw refusedIn(share, "send from it", e);
+    } catch (SendModeMissingException e) {
+      IllegalAccessException refusal = new IllegalAccessException(identityRefusal(share, e.getRequested(), e.getMessage()));
+      refusal.initCause(e);
+      throw refusal;
+    } catch (SendModeUnavailableException e) {
+      throw new IllegalArgumentException(identityRefusal(share, mode, e.getMessage()), e);
     }
     if (copy == EmailBoxService.OwnerCopy.FILED) {
       return String.format(" A copy was filed in the Sent folder of %s.", ownerOf(share));
@@ -1530,13 +1663,61 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
-   * " from the mailbox of X" for a shared mailbox, nothing for the user's own.
+   * Why a mail could not go out in the owner's name, in words an agent can act on and
+   * pass on (EXO-90585): the service's refusal code, turned into its cause and what may
+   * still be done -- always in the user's own name at most, and only once the user
+   * approved that again, never by the agent's own choice. Nothing was sent.
+   *
+   * @param share the shared mailbox
+   * @param mode the shape asked for
+   * @param code the service's message code
+   * @return the sentence
+   */
+  private static String identityRefusal(SharedMailboxEntry share, SendMode mode, String code) {
+    String owner = ownerOf(share);
+    String shape = mode == SendMode.AS ? "as them" : "on their behalf";
+    String cause;
+    if (code != null && code.startsWith(SendModeMissingException.CODE_PREFIX)) {
+      cause = String.format("%s does not let you write %s", owner, shape);
+      if (mode == SendMode.AS && share.sendModes().contains(SendMode.ON_BEHALF)) {
+        cause += String.format(" (they let you write on their behalf: identity %s)", IDENTITY_OWNER_ON_BEHALF);
+      }
+    } else if (EmailDelegationService.SEND_MODE_DISABLED_MESSAGE.equals(code)) {
+      cause = "writing in another person's name is switched off by the administrator";
+    } else if (EmailDelegationService.SEND_MODE_UNSUPPORTED_MESSAGE.equals(code)) {
+      cause = String.format("the mail server of %s does not accept a mail written %s: the administrator has not declared it",
+                            owner,
+                            shape);
+    } else if (SendModeUnavailableException.REFUSED_BY_SERVER.equals(code)) {
+      cause = String.format("the mail server of %s refused a mail in their name; they must give their consent again before a mail "
+          + "can go out in their name", owner);
+    } else {
+      cause = String.format("the mail cannot go out in the name of %s (%s)", owner, code);
+    }
+    return String.format("Nothing was sent: %s. It can be sent in the user's own name instead (identity %s) -- ask the user, "
+        + "and have them approve again with that identity shown.", cause, IDENTITY_ME);
+  }
+
+  /**
+   * " from the mailbox of X" for a shared mailbox, and in whose name the mail left
+   * (EXO-90585): the user's own address, on behalf of X, or as X. Nothing for the user's
+   * own mailbox, where it can only be their own name.
    *
    * @param share the shared mailbox, null for the user's own
+   * @param mode the shape the mail went out under, null for the user's own name
    * @return the phrase
    */
-  private static String fromMailbox(SharedMailboxEntry share) {
-    return share == null ? "" : " from the mailbox of " + ownerOf(share) + ", sent from your own address";
+  private static String fromMailbox(SharedMailboxEntry share, SendMode mode) {
+    if (share == null) {
+      return "";
+    }
+    String owner = ownerOf(share);
+    if (mode == SendMode.ON_BEHALF) {
+      return " from the mailbox of " + owner + ", sent on behalf of " + owner + ": it shows them as its author and you as its sender";
+    } else if (mode == SendMode.AS) {
+      return " from the mailbox of " + owner + ", sent as " + owner + ": it shows them as its author and does not name you";
+    }
+    return " from the mailbox of " + owner + ", sent from your own address";
   }
 
   /**

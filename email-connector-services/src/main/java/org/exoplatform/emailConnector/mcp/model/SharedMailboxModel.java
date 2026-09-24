@@ -58,4 +58,12 @@ public class SharedMailboxModel {
   /** Whether a mail sent from this mailbox is also filed in the owner's Sent folder. */
   @JsonProperty("sent_copy")
   private boolean      sentCopy;
+
+  /**
+   * The {@code identity} values a mail from this mailbox may go out under besides
+   * {@code me} (EXO-90585): {@code owner_on_behalf} and/or {@code owner}, empty when the
+   * user may write in their own name only.
+   */
+  @JsonProperty("send_modes")
+  private List<String> sendModes;
 }

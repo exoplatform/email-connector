@@ -144,6 +144,87 @@ class AiToolDefinitionsTest {
     assertFalse(listing.path("annotations").path("destructiveHint").asBoolean(true), "not destructive");
   }
 
+  /** The tools that send a mail, and so take the name it leaves under (EXO-90585). */
+  private static final Set<String>    SENDING_TOOLS  = Set.of("send_email", "reply_email", "reply_all", "forward_email");
+
+  /**
+   * EXO-90585 -- the four sending tools, and only they, take and declare an optional
+   * {@code identity} limited to its three words; each stays approval-gated, and its
+   * description tells the model to name, before approval, in whose name the mail
+   * leaves, that the user's own is the default, and where the owner's allowed modes are
+   * read. The listing of shares says it gives them.
+   *
+   * @throws Exception when the definitions cannot be read
+   */
+  @Test
+  void anIdentityIsDeclaredOnTheFourSendingToolsAndTheApprovalMustNameIt() throws Exception {
+    Map<String, JsonNode> definitions = readDefinitions();
+    Set<String> taking = new TreeSet<>();
+    for (Method method : EmailMcpTool.class.getDeclaredMethods()) {
+      if (Modifier.isPublic(method.getModifiers()) && !method.isSynthetic()
+          && Arrays.stream(method.getParameters()).anyMatch(parameter -> "identity".equals(parameter.getName()))) {
+        taking.add(toSnakeCase(method.getName()));
+      }
+    }
+    Set<String> declaring = new TreeSet<>();
+    definitions.forEach((name, tool) -> {
+      if (tool.path("input_schema").path("properties").has("identity")) {
+        declaring.add(name);
+      }
+    });
+    assertEquals(new TreeSet<>(SENDING_TOOLS), taking);
+    assertEquals(new TreeSet<>(SENDING_TOOLS), declaring);
+    for (String name : SENDING_TOOLS) {
+      JsonNode tool = definitions.get(name);
+      JsonNode identity = tool.path("input_schema").path("properties").path("identity");
+      assertEquals("[\"me\",\"owner_on_behalf\",\"owner\"]", identity.path("enum").toString(), name);
+      tool.path("input_schema").path("required").forEach(required -> assertFalse("identity".equals(required.asText()),
+                                                                                 name + ": the user's own name is the default"));
+      assertTrue(tool.path("require_approval").asBoolean(false), name);
+      String description = tool.path("description").asText();
+      assertTrue(description.contains("goes out in the user's own name unless identity names the owner"), name + ": " + description);
+      assertTrue(description.contains("always say in words in whose name it leaves: 'as you', 'on behalf of <owner's name>' or 'as <owner's name>'"),
+                 name + ": " + description);
+      assertTrue(description.contains("send_modes"), name + ": " + description);
+      assertFalse(description.contains("from the user's own address, with a copy"), name + ": " + description);
+      assertFalse(description.contains("still goes out from the user's own address"), name + ": " + description);
+    }
+    assertTrue(definitions.get("reply_all").path("description").asText().contains("The owner is not copied, whatever the identity."));
+    assertTrue(definitions.get("list_shared_mailboxes").path("description").asText().contains("send_modes"));
+  }
+
+  /**
+   * EXO-90585 -- the approval card of each sending tool shows the identity argument as
+   * given, and says what an empty one and each of the three words mean: the card is
+   * drawn from the arguments before the tool runs, so it is where the user sees in whose
+   * name the mail leaves. The bundle ships in the webapp module, next door.
+   *
+   * @throws Exception when the bundle cannot be read
+   */
+  @Test
+  void theApprovalCardOfEachSendingToolShowsTheIdentity() throws Exception {
+    java.nio.file.Path bundle = java.nio.file.Path.of("..",
+                                                      "email-connector-webapps",
+                                                      "src",
+                                                      "main",
+                                                      "resources",
+                                                      "locale",
+                                                      "portlet",
+                                                      "AiAgentChat_en.properties");
+    assertTrue(java.nio.file.Files.isRegularFile(bundle), bundle.toAbsolutePath().toString());
+    java.util.Properties texts = new java.util.Properties();
+    try (java.io.Reader reader = java.nio.file.Files.newBufferedReader(bundle, java.nio.charset.StandardCharsets.UTF_8)) {
+      texts.load(reader);
+    }
+    for (String name : SENDING_TOOLS) {
+      String text = texts.getProperty("AiAgentChat.tool.confirm." + name);
+      assertTrue(text != null && text.contains("In whose name it leaves (empty or me: your own; owner_on_behalf: on behalf of the "
+          + "shared mailbox's owner, you shown as the sender; owner: as the shared mailbox's owner, you not named): "
+          + "<strong>{identity}</strong>"), name + ": " + text);
+      assertTrue(text.contains("<strong>{mailbox}</strong>"), name + ": " + text);
+    }
+  }
+
   /**
    * Reads the shipped tool definitions off the classpath, keyed by tool name.
    *
