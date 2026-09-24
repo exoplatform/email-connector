@@ -210,4 +210,11 @@ public class EmailBoxEntity {
   // decided at sync from the headers, which the cache does not otherwise keep.
   @Column(name = "READ_RECEIPT_RETURN_PATH_MATCH", nullable = false)
   private boolean                     readReceiptReturnPathMatch;
+
+  // On a draft, the mailbox shared with USER_ID that it was written in (EXO-90595): an
+  // EMAIL_DELEGATION id, settled at the draft's first save and never changed after; null
+  // for the writer's own mailbox and on every row that is not a draft. Declared last and
+  // set by name, like the read-receipt columns.
+  @Column(name = "DRAFT_DELEGATION_ID")
+  private Long                        draftDelegationId;
 }
