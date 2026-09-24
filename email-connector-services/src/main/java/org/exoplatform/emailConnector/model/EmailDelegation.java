@@ -117,6 +117,12 @@ public class EmailDelegation {
   private Map<FolderRole, String> ownerRoleFolders = new EnumMap<>(FolderRole.class);
 
   /**
+   * Whether the grantee's unified search returns this shared mailbox's mail, labelled
+   * with its owner (EXO-90554, PO decision Q-6): on by default, turned off per share.
+   */
+  private boolean                 searchIncluded   = true;
+
+  /**
    * The delegation as it was before EXO-90548 recorded what a grant covered: every
    * existing positional caller keeps building it this way.
    *
@@ -166,6 +172,61 @@ public class EmailDelegation {
     this(id, granteeId, ownerId, ownerMailbox, granteeMailbox, connectorId, remoteRoot, preset, rights, nativeRights, status, origin,
          badgeIncluded, notifyNewMail, lastActivityDate, lastRightsCheckDate, invitedDate, respondedDate, revokedDate, createdDate,
          updatedDate, null, new EnumMap<>(FolderRole.class));
+  }
+
+  /**
+   * A delegation searched by default: {@code searchIncluded} true.
+   *
+   * @param id the row id
+   * @param granteeId the grantee's username
+   * @param ownerId the owner's username, when an eXo user
+   * @param ownerMailbox the owner's mailbox identifier
+   * @param granteeMailbox the grantee's mailbox identifier
+   * @param connectorId the connector preset
+   * @param remoteRoot the shared root in the grantee's listing
+   * @param preset the preset
+   * @param rights the letters last observed
+   * @param nativeRights the server's own vocabulary last observed
+   * @param status the status
+   * @param origin who wrote the share
+   * @param badgeIncluded whether it counts in the badge
+   * @param notifyNewMail whether new mail notifies
+   * @param lastActivityDate the grantee's last use
+   * @param lastRightsCheckDate when the rights were last read
+   * @param invitedDate when invited
+   * @param respondedDate when answered
+   * @param revokedDate when revoked
+   * @param createdDate when created
+   * @param updatedDate when updated
+   * @param grantedRoles the roles eXo's grant wrote beside INBOX
+   * @param ownerRoleFolders the owner's role-to-folder-name map
+   */
+  public EmailDelegation(Long id,
+                         String granteeId,
+                         String ownerId,
+                         String ownerMailbox,
+                         String granteeMailbox,
+                         Long connectorId,
+                         String remoteRoot,
+                         DelegationPreset preset,
+                         String rights,
+                         String nativeRights,
+                         DelegationStatus status,
+                         DelegationOrigin origin,
+                         boolean badgeIncluded,
+                         boolean notifyNewMail,
+                         Date lastActivityDate,
+                         Date lastRightsCheckDate,
+                         Date invitedDate,
+                         Date respondedDate,
+                         Date revokedDate,
+                         Date createdDate,
+                         Date updatedDate,
+                         String grantedRoles,
+                         Map<FolderRole, String> ownerRoleFolders) {
+    this(id, granteeId, ownerId, ownerMailbox, granteeMailbox, connectorId, remoteRoot, preset, rights, nativeRights, status, origin,
+         badgeIncluded, notifyNewMail, lastActivityDate, lastRightsCheckDate, invitedDate, respondedDate, revokedDate, createdDate,
+         updatedDate, grantedRoles, ownerRoleFolders, true);
   }
 
   /**

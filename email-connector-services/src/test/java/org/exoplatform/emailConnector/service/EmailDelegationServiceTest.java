@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -88,6 +89,8 @@ import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.SharedMailboxFolder;
+import org.exoplatform.emailConnector.model.SharedMailboxSearchFolders;
+import org.exoplatform.emailConnector.model.SharedMailboxSearchScope;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngine;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngineRegistry;
@@ -2761,6 +2764,97 @@ class EmailDelegationServiceTest {
     verify(eventPublisher).publishEvent(event.capture());
     assertEquals(EmailDelegationEvent.Type.BADGE_PREFERENCE_CHANGED, event.getValue().type());
     assertEquals(GRANTEE, event.getValue().actor());
+  }
+
+  /**
+   * EXO-90554 -- the search toggle is written on its own and only when it changes; a
+   * null leaves it, and the two other toggles are written as before.
+   */
+  @Test
+  void theSearchToggleIsWrittenAloneAndOnlyWhenItChanges() throws Exception {
+    EmailDelegation accepted = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(accepted);
+    when(emailDelegationStorage.updatePreferences(GRANTEE, 100L, false, false)).thenReturn(accepted);
+    EmailDelegation optedOut = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    optedOut.setSearchIncluded(false);
+    when(emailDelegationStorage.updateSearchIncluded(GRANTEE, 100L, false)).thenReturn(optedOut);
+
+    assertTrue(accepted.isSearchIncluded(), "a share is searched by default (Q-6)");
+    assertSame(optedOut, service.updatePreferences(GRANTEE, 100L, null, null, false));
+    verify(emailDelegationStorage).updateSearchIncluded(GRANTEE, 100L, false);
+    verify(emailDelegationStorage, never()).updatePreferences(anyString(), anyLong(), anyBoolean(), anyBoolean());
+
+    service.updatePreferences(GRANTEE, 100L, null, null, true);
+    service.updatePreferences(GRANTEE, 100L, null, null, null);
+    service.updatePreferences(GRANTEE, 100L, false, false);
+    verify(emailDelegationStorage, times(1)).updateSearchIncluded(anyString(), anyLong(), anyBoolean());
+    verify(emailDelegationStorage, never()).update(any());
+  }
+
+  /**
+   * EXO-90554 -- in one pass, every folder of the shares in use (what the caller's own
+   * read leaves out), and the folders the unified search reads: an ACCEPTED share whose
+   * toggle is on, the folders the last discovery still
+   * listed and the caller may read, never the owner's Trash or Spam; each labelled with
+   * its share and its owner, whose name is resolved once per share, not per folder.
+   */
+  @Test
+  void theSearchableSharedFoldersAreTheReadableOnesOfTheIncludedAcceptedShares() {
+    EmailDelegation included = accepted("lrs");
+    EmailDelegation optedOut = accepted("lrs");
+    optedOut.setId(101L);
+    optedOut.setSearchIncluded(false);
+    EmailDelegation left = row(DelegationStatus.DECLINED, DelegationOrigin.EXO);
+    left.setId(102L);
+    when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(included, optedOut, left));
+    EmailFolder inbox = delegatedFolder(12L);
+    EmailFolder sent = sharedRoleFolder(13L, FolderRole.SENT, "lr");
+    EmailFolder trash = sharedRoleFolder(14L, FolderRole.TRASH, "lr");
+    EmailFolder junk = sharedRoleFolder(15L, FolderRole.JUNK, "lr");
+    EmailFolder unreadable = sharedRoleFolder(16L, FolderRole.ARCHIVE, "l");
+    EmailFolder gone = sharedRoleFolder(17L, null, "lr");
+    gone.setMissing(true);
+    EmailFolder custom = sharedRoleFolder(18L, null, "lr");
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(inbox, sent, trash, junk, unreadable, gone, custom));
+    // The opted-out share's folder, and one the declined share would answer with were it asked.
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 101L)).thenReturn(List.of(sharedRoleFolder(19L, null, "lr")));
+    lenient().when(emailFolderStorage.getDelegatedFolders(GRANTEE, 102L)).thenReturn(List.of(sharedRoleFolder(20L, null, "lr")));
+    Identity alice = new Identity("organization", OWNER);
+    Profile profile = new Profile(alice);
+    profile.setProperty(Profile.FULL_NAME, "Alice Martin");
+    alice.setProfile(profile);
+    when(identityManager.getOrCreateUserIdentity(OWNER)).thenReturn(alice);
+
+    SharedMailboxSearchFolders folders = service.getSharedMailboxSearchFolders(GRANTEE);
+    Map<String, SharedMailboxSearchScope> scopes = folders.searchable();
+
+    assertEquals(List.of("CUSTOM:12", "CUSTOM:13", "CUSTOM:14", "CUSTOM:15", "CUSTOM:16", "CUSTOM:17", "CUSTOM:18", "CUSTOM:19"),
+                 folders.sharedKeys(),
+                 "the own read leaves out every folder of every share in use, the opted-out one's included");
+    assertEquals(Set.of("CUSTOM:12", "CUSTOM:13", "CUSTOM:18"), scopes.keySet(),
+                 "the owner's Trash and Spam, a folder the caller cannot read and one no longer listed stay out");
+    assertEquals(new SharedMailboxSearchScope(100L, "Alice Martin"), scopes.get("CUSTOM:13"));
+    verify(identityManager, times(1)).getOrCreateUserIdentity(OWNER);
+    verify(emailFolderStorage, never()).getDelegatedFolders(GRANTEE, 102L);
+    assertSame(SharedMailboxSearchFolders.NONE, service.getSharedMailboxSearchFolders(null));
+  }
+
+  /**
+   * A folder of Alice's shared mailbox beside its INBOX, with its role and the letters
+   * discovery read on it.
+   *
+   * @param id the folder id
+   * @param role its role in Alice's mailbox, or null
+   * @param letters Bob's letters on it
+   * @return the folder
+   */
+  private EmailFolder sharedRoleFolder(long id, FolderRole role, String letters) {
+    EmailFolder folder = delegatedFolder(id);
+    folder.setType(MailFolderView.TYPE_DELEGATED);
+    folder.setRole(role);
+    folder.setRights(letters);
+    folder.setRightsCheckDate(new Date());
+    return folder;
   }
 
   // ---------------------------------------------------------------------------------

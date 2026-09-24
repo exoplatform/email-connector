@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.dao;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -146,6 +147,33 @@ public class EmailDelegationDAOTest {
     assertEquals(5_000L, read.getRevokedDate().getTime());
     assertTrue(read.isBadgeIncluded());
     assertTrue(read.isNotifyNewMail());
+  }
+
+  /**
+   * EXO-90554 -- the search toggle is written alone, in SQL, and on that grantee's row
+   * only: a revoke committed since the grantee's read stays revoked, and the badge and
+   * notification toggles keep what they held. A new row is searched by default.
+   */
+  @Test
+  void theSearchToggleWriteTouchesThatToggleOnly() {
+    Long id = persist(GRANTEE, OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    entityManager.clear();
+    EmailDelegationEntity revoked = emailDelegationDAO.findById(id).orElseThrow();
+    assertTrue(revoked.isSearchIncluded(), "searched by default");
+    revoked.setStatus("REVOKED");
+    revoked.setBadgeIncluded(true);
+    emailDelegationDAO.saveAndFlush(revoked);
+    entityManager.clear();
+
+    assertEquals(1, emailDelegationDAO.updateSearchIncluded(id, GRANTEE, false, new Date(6_000L)));
+    assertEquals(0, emailDelegationDAO.updateSearchIncluded(id, OTHER, true, new Date(7_000L)), "somebody else's row");
+    entityManager.clear();
+
+    EmailDelegationEntity read = emailDelegationDAO.findById(id).orElseThrow();
+    assertFalse(read.isSearchIncluded());
+    assertEquals("REVOKED", read.getStatus(), "the owner's revoke stands");
+    assertTrue(read.isBadgeIncluded(), "the badge toggle is not written");
+    assertEquals(6_000L, read.getUpdatedDate().getTime());
   }
 
   /**
