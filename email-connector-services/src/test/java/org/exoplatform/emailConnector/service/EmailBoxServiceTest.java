@@ -2998,6 +2998,34 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90555 -- a preset saved with a stray space around its SMTP host, port or
+   * security type is used trimmed: the mail library looked up " 127.0.0.1" as is, and
+   * every send failed on an unknown host.
+   */
+  @Test
+  @SneakyThrows
+  void aSendUsesTheSmtpServerFieldsTrimmed() {
+    SendRig rig = givenASendRig();
+    EmailConnector spaced = emailConnector();
+    spaced.setSmtpUrl(" 127.0.0.1 ");
+    spaced.setSmtpPort(" 1465");
+    spaced.setSmtpSecurityType(" ssl ");
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(spaced);
+    ArgumentCaptor<Properties> props = ArgumentCaptor.forClass(Properties.class);
+
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(props.capture(), any(Authenticator.class))).thenReturn(rig.session());
+
+      emailBoxService.sendEmail(email(TEST_USER), TEST_USER);
+
+      assertEquals("127.0.0.1", props.getValue().get("mail.smtp.host"));
+      assertEquals("1465", props.getValue().get("mail.smtp.port"));
+      assertEquals("true", props.getValue().get("mail.smtp.ssl.enable"));
+    }
+  }
+
+  /**
    * EXO-90551 -- a mail sent from a shared mailbox goes out from the sender's account as
    * ever, is filed in the sender's own Sent, and THEN a copy of the very same message,
    * marked read, is filed in the owner's Sent -- the folder the registry names for that
@@ -3006,7 +3034,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aSendFromASharedMailboxFilesTheOwnersCopyAfterTheSendersOwn() {
-    SendRig rig = givenASendableMailbox();
+    SendRig rig = givenASendRig();
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
     when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
     when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
@@ -3043,7 +3071,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aSendFromAShareThatIsNotTheSendersSendsNothing() {
-    SendRig rig = givenASendableMailbox();
+    SendRig rig = givenASendRig();
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 7L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 8L)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
 
@@ -3067,7 +3095,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aSendWithNoOwnersSentToFileIntoIsSkipped() {
-    SendRig rig = givenASendableMailbox();
+    SendRig rig = givenASendRig();
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn(null);
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 101L)).thenReturn("CUSTOM:10");
     when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(false);
@@ -3093,7 +3121,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aFailedOwnersCopyLeavesTheSendSuccessful() {
-    SendRig rig = givenASendableMailbox();
+    SendRig rig = givenASendRig();
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
     when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
     when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
@@ -3129,7 +3157,7 @@ public class EmailBoxServiceTest {
    * @return the rig
    */
   @SneakyThrows
-  private SendRig givenASendableMailbox() {
+  private SendRig givenASendRig() {
     // Lenient: a send refused before anything is touched uses none of it.
     lenient().when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
     lenient().when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -6657,7 +6685,7 @@ public class EmailBoxServiceTest {
     when(((UIDFolder) inbox).getUID(oldest)).thenReturn(11L);
     when(((UIDFolder) inbox).getUID(middle)).thenReturn(12L);
     when(((UIDFolder) inbox).getUID(newest)).thenReturn(13L);
-    when(emailBoxStorage.getCachedMailRemoteIds(TEST_USER, "INBOX", List.of(11L, 12L, 13L))).thenReturn(List.of(12L));
+    when(emailBoxStorage.getCachedEmailIds(TEST_USER, "INBOX", List.of(11L, 12L, 13L))).thenReturn(Map.of(12L, 112L));
 
     EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, "weekly", null, false, null, "INBOX", 20);
 
@@ -6669,9 +6697,11 @@ public class EmailBoxServiceTest {
     assertNull(first.getSender());
     assertTrue(first.isRead());
     assertFalse(first.isCached());
+    assertNull(first.getEmailId(), "not synced yet: no row to name");
     EmailSearchResult second = page.getResults().get(1);
     assertFalse(second.isRead());
     assertTrue(second.isCached());
+    assertEquals(112L, second.getEmailId(), "EXO-90555 -- the cached hit names its own row");
     assertEquals("bob@example.com", second.getSender().getAddress());
     // ONE batched fetch for the whole page, never one FETCH per hit.
     verify(inbox, times(1)).fetch(any(Message[].class), any(FetchProfile.class));
@@ -6702,7 +6732,7 @@ public class EmailBoxServiceTest {
     MimeMessage hit = searchHit("about the budget", "me@example.com", new Date(), true);
     when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { hit });
     when(((UIDFolder) inbox).getUID(hit)).thenReturn(21L);
-    when(emailBoxStorage.getCachedMailRemoteIds(TEST_USER, "INBOX", List.of(21L))).thenReturn(List.of());
+    when(emailBoxStorage.getCachedEmailIds(TEST_USER, "INBOX", List.of(21L))).thenReturn(Map.of());
 
     EmailSearchResultPage page =
                                emailBoxService.searchEmails(TEST_USER, null, null, "alice@example.com", false, false, null, "INBOX", 10);
@@ -6911,7 +6941,7 @@ public class EmailBoxServiceTest {
     when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { plain, favorited });
     when(((UIDFolder) inbox).getUID(plain)).thenReturn(11L);
     when(((UIDFolder) inbox).getUID(favorited)).thenReturn(12L);
-    when(emailBoxStorage.getCachedMailRemoteIds(TEST_USER, "INBOX", List.of(11L, 12L))).thenReturn(List.of());
+    when(emailBoxStorage.getCachedEmailIds(TEST_USER, "INBOX", List.of(11L, 12L))).thenReturn(Map.of());
 
     EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, "weekly", null, false, null, "INBOX", 20);
 
@@ -6954,7 +6984,7 @@ public class EmailBoxServiceTest {
     // Only the two newest ever get their UID read: the older three are never fetched.
     when(((UIDFolder) inbox).getUID(matches[3])).thenReturn(14L);
     when(((UIDFolder) inbox).getUID(matches[4])).thenReturn(15L);
-    when(emailBoxStorage.getCachedMailRemoteIds(TEST_USER, "INBOX", List.of(14L, 15L))).thenReturn(List.of());
+    when(emailBoxStorage.getCachedEmailIds(TEST_USER, "INBOX", List.of(14L, 15L))).thenReturn(Map.of());
 
     EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, null, "alice", false, 30, "INBOX", 2);
 
@@ -6989,7 +7019,7 @@ public class EmailBoxServiceTest {
     assertEquals(0, page.getTotalMatches());
     assertTrue(page.getResults().isEmpty());
     verify(inbox, never()).fetch(any(Message[].class), any(FetchProfile.class));
-    verify(emailBoxStorage, never()).getCachedMailRemoteIds(anyString(), anyString(), anyList());
+    verify(emailBoxStorage, never()).getCachedEmailIds(anyString(), anyString(), anyList());
     verify(inbox).close(false);
     verify(store).close();
   }
