@@ -131,7 +131,7 @@ class AiToolDefinitionsTest {
     assertEquals(declaring, taking);
     assertEquals(16, taking.size(), "every email tool but the account, the categories and the listing of shares");
     String search = definitions.get("search_emails").path("description").asText();
-    assertTrue(search.contains("folder INBOX AND cached true") && search.contains("With mailbox"),
+    assertTrue(search.contains("unique only within its own folder") && search.contains("With mailbox"),
                "the chaining rule and the mailbox sentence are the description the model reads");
     JsonNode listing = definitions.get("list_shared_mailboxes");
     assertTrue(listing.path("annotations").path("readOnlyHint").asBoolean(false), "a read");

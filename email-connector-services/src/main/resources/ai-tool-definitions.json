@@ -3,7 +3,7 @@
     {
       "name": "get_email_by_id",
       "title": "Get an email",
-      "description": "Retrieve email content identified by its local id. The email carries its mail_remote_id, to chain into the write tools, and its thread_id, to read the whole conversation with get_email_thread. An email that is not the current user's is refused. With mailbox, the email must be in that shared mailbox; an email of another mailbox is not found.",
+      "description": "Retrieve email content identified by its local id (email_id). The email carries its folder (INBOX, SENT, ARCHIVE, DRAFTS, TRASH or JUNK), its email_id to pass to the other tools, its thread_id to read the whole conversation with get_email_thread, and its mail_remote_id only when it is a mail of the user's own INBOX. An email that is not the current user's is refused. With mailbox, the email must be in that shared mailbox; an email of another mailbox is not found.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -22,7 +22,7 @@
     {
       "name": "list_emails",
       "title": "List emails",
-      "description": "Retrieve a page of the current user's emails from the synced inbox mirror. Paginated: 'offset' (default 0) and 'limit' (default 10) page through the mirror, and 'unread_only' keeps only unread emails. Each email carries its mail_remote_id to chain into other tools. Call sync_now first if you need the freshest messages. Each email also carries its thread_id, to read the whole conversation with get_email_thread. folder is INBOX (default), SENT or ARCHIVE. With mailbox, lists that shared mailbox's folder as the user's mirror holds it; a folder that is not shared or not synced yet is refused with a message saying so, never answered as empty. The mail_remote_id of a SENT or ARCHIVE message is not usable with the write tools, which act on the inbox.",
+      "description": "Retrieve a page of the current user's emails from the synced mirror of a folder. Paginated: 'offset' (default 0) and 'limit' (default 10) page through the mirror, and 'unread_only' keeps only unread emails. folder is INBOX (default), SENT or ARCHIVE. Each email carries its folder, its email_id to pass to the other tools, its thread_id to read the whole conversation with get_email_thread, and its mail_remote_id only when it is a mail of the user's own INBOX. Call sync_now first if you need the freshest messages. With mailbox, lists that shared mailbox's folder as the user's mirror holds it; a folder that is not shared or not synced yet is refused with a message saying so, never answered as empty.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -92,7 +92,7 @@
     {
       "name": "search_emails",
       "title": "Search emails",
-      "description": "Search the user's mailbox on the mail server itself (IMAP SEARCH), so it finds messages anywhere in the folder, not only in the recently synced local copy. At least one criterion is required. 'query' matches the subject or the sender, NOT the body — a body search is a linear scan of the whole folder on servers without a full-text index, so ask about a subject or a sender rather than words inside a message. 'from' matches the sender only, 'unread' keeps only unread messages, 'sinceDays' keeps only messages received in the last N days, 'folder' is INBOX (default), SENT or ARCHIVE, and 'limit' caps how many come back (default 20, max 50). Returns 'total_matches' — how many matched on the server — alongside the newest hits, so say what you did not see when the total is larger than the list. Each hit also carries 'read' (false when the message is unread) and 'starred' (true when the user favorited it). Chaining a hit into get_email_full, mark_read, reply_email or the other tools works only when the hit has folder INBOX AND cached true: those tools address the local INBOX copy by mail_remote_id, and an IMAP id is unique only within its own folder, so a SENT or ARCHIVE hit would resolve to an unrelated inbox message. For any other hit, report it from the search result itself and say the full message is not available. With mailbox, searches the user's synced copy of that shared mailbox's folder (subject or sender), not its mail server; a folder that is not shared or not synced yet is refused with a message saying so. A hit carries no thread_id (it is an envelope read off the server, not a cached row): fetch it with get_email_full first if you need the conversation.",
+      "description": "Search the user's mailbox on the mail server itself (IMAP SEARCH), so it finds messages anywhere in the folder, not only in the recently synced local copy. At least one criterion is required. 'query' matches the subject or the sender, NOT the body — a body search is a linear scan of the whole folder on servers without a full-text index, so ask about a subject or a sender rather than words inside a message. 'from' matches the sender only, 'unread' keeps only unread messages, 'sinceDays' keeps only messages received in the last N days, 'folder' is INBOX (default), SENT or ARCHIVE, and 'limit' caps how many come back (default 20, max 50). Returns 'total_matches' — how many matched on the server — alongside the newest hits, so say what you did not see when the total is larger than the list. Each hit also carries 'read' (false when the message is unread) and 'starred' (true when the user favorited it). A hit of the user's own INBOX carries its mail_remote_id, and chains into the other tools when it is cached; a hit of a shared mailbox carries its email_id instead. A SENT or ARCHIVE hit of the user's own mailbox carries neither: an IMAP id is unique only within its own folder, so report it from the search result itself and say the full message is not available. With mailbox, searches the user's synced copy of that shared mailbox's folder (subject or sender), not its mail server; a folder that is not shared or not synced yet is refused with a message saying so. A hit carries no thread_id (it is an envelope read off the server, not a cached row): fetch it with get_email_full first if you need the conversation.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -115,14 +115,15 @@
     {
       "name": "get_email_full",
       "title": "Get full email",
-      "description": "Fetch a single email in full by its IMAP mail_remote_id, including recipients, body and attachment metadata. Binary attachment content is not returned. The email carries its thread_id, to read the whole conversation with get_email_thread. With mailbox, mail_remote_id is read in that shared mailbox's inbox.",
+      "description": "Fetch a single email in full, including recipients, body and attachment metadata. Binary attachment content is not returned. The email carries its folder and its thread_id, to read the whole conversation with get_email_thread. Name a mail by its email_id, carried by every email the reading tools return, whatever folder or mailbox it is in; a mail_remote_id is given only for a mail of the user's own INBOX, and a mail_remote_id alone names a mail there. With mailbox, email_id names a mail of that shared mailbox.",
       "input_schema": {
         "type": "object",
         "properties": {
           "mail_remote_id": { "type": "integer" },
-          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." }
+          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
+          "email_id": { "type": "integer", "description": "The local id of the mail, as the reading tools return it." }
         },
-        "required": ["mail_remote_id"]
+        "required": []
       },
       "annotations": {
         "readOnlyHint": true,
@@ -134,14 +135,15 @@
     {
       "name": "list_attachments",
       "title": "List email attachments",
-      "description": "List the attachments of an email (identified by its IMAP mail_remote_id). Returns for each attachment its name, mime_type, attachment_id (the MIME part path) and a ready download_url pointing at the add-on's authenticated endpoint. The assistant should surface the attachment names and the download_url as a link the user opens in their own authenticated browser; the attachment bytes never pass through this tool. Returns an empty list if the email has no attachments. With mailbox, mail_remote_id is read in that shared mailbox's inbox.",
+      "description": "List the attachments of an email. Returns for each attachment its name, mime_type, attachment_id (the MIME part path) and a ready download_url pointing at the add-on's authenticated endpoint. The assistant should surface the attachment names and the download_url as a link the user opens in their own authenticated browser; the attachment bytes never pass through this tool. Returns an empty list if the email has no attachments. Name a mail by its email_id, carried by every email the reading tools return, whatever folder or mailbox it is in; a mail_remote_id is given only for a mail of the user's own INBOX, and a mail_remote_id alone names a mail there. With mailbox, email_id names a mail of that shared mailbox.",
       "input_schema": {
         "type": "object",
         "properties": {
           "mail_remote_id": { "type": "integer" },
-          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." }
+          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
+          "email_id": { "type": "integer", "description": "The local id of the mail, as the reading tools return it." }
         },
-        "required": ["mail_remote_id"]
+        "required": []
       },
       "annotations": {
         "readOnlyHint": true,
@@ -153,7 +155,7 @@
     {
       "name": "get_email_thread",
       "title": "Read a whole conversation",
-      "description": "Read every message of one conversation at once, oldest first. The thread_id is carried by every email returned by list_emails, get_email_by_id and get_email_full; a search_emails hit does NOT carry one (a hit is an envelope from the mail server, and a message outside the local sync window has no cached row and so no conversation id) — chain its mail_remote_id through get_email_full first to obtain the thread_id. Each message comes back with its email_id, its mail_remote_id, the folder that UID belongs to (INBOX, SENT, ARCHIVE or ALL_MAIL), its sender name and address, its date, its subject, its body as plain text and the names of its attachments. Use it before summarising or replying to a thread, instead of fetching its messages one by one. Unsent drafts are never included. Only the 25 most recent messages are returned, and each body is cut at 1500 characters and ends with '… [truncated]' when it was: treat a truncated body as a message you have only partly read, never assume the missing part agrees with the part you can see, and pass its email_id to get_email_by_id to read it whole. To act on a message of the conversation, use its ids rather than searching for it again: email_id goes to get_email_by_id, and mail_remote_id goes to reply_email, reply_all, forward_email, mark_read, list_attachments, archive_email and delete_email. Those mail_remote_id tools are INBOX-scoped and IMAP UIDs are numbered per folder, so pass a mail_remote_id ONLY from a message whose folder is INBOX; for a message in SENT, ARCHIVE or ALL_MAIL, or one that reports no folder at all, the same number names a different message and must not be used — read it with email_id instead, and thread a reply onto the most recent INBOX message of the conversation. With mailbox, the conversation as that shared mailbox holds it, each message's folder given as INBOX, SENT or ARCHIVE (the same rule: chain a mail_remote_id only from an INBOX message, with the same mailbox); without, the user's own rows only.",
+      "description": "Read every message of one conversation at once, oldest first. The thread_id is carried by every email returned by list_emails, get_email_by_id and get_email_full; a search_emails hit does NOT carry one (a hit is an envelope from the mail server, and a message outside the local sync window has no cached row and so no conversation id) — chain its mail_remote_id through get_email_full first to obtain the thread_id. Each message comes back with its email_id, its folder (INBOX, SENT, ARCHIVE...), its mail_remote_id only when it is a mail of the user's own INBOX, its sender name and address, its date, its subject, its body as plain text and the names of its attachments. Use it before summarising or replying to a thread, instead of fetching its messages one by one. Unsent drafts are never included. Only the 25 most recent messages are returned, and each body is cut at 1500 characters and ends with '… [truncated]' when it was: treat a truncated body as a message you have only partly read, never assume the missing part agrees with the part you can see, and pass its email_id to get_email_by_id to read it whole. To act on a message of the conversation, use its email_id rather than searching for it again: it goes to get_email_by_id, get_email_full, reply_email, reply_all, forward_email and list_attachments whatever its folder, and to mark_read, archive_email and delete_email for a message of the inbox. With mailbox, the conversation as that shared mailbox holds it, each message's folder given by name; without, the user's own rows only.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -172,14 +174,15 @@
     {
       "name": "mark_read",
       "title": "Mark emails read",
-      "description": "Mark one or more emails as read, both locally and on the IMAP server. Identify emails by their IMAP mail_remote_id (from list_emails/search_emails). With mailbox, acts on that shared mailbox's inbox, where the user's access must allow keeping read state.",
+      "description": "Mark one or more emails of the inbox as read, both locally and on the IMAP server. Name the emails by their email_ids; mail_remote_ids alone name mails of the user's own INBOX. A mail that is not in the inbox is refused and nothing is done. With mailbox, acts on that shared mailbox's inbox, where the user's access must allow keeping read state.",
       "input_schema": {
         "type": "object",
         "properties": {
           "mail_remote_ids": { "type": "array", "items": { "type": "integer" } },
-          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." }
+          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
+          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The local ids of the mails, as the reading tools return them." }
         },
-        "required": ["mail_remote_ids"]
+        "required": []
       },
       "annotations": {
         "readOnlyHint": false,
@@ -191,14 +194,15 @@
     {
       "name": "mark_unread",
       "title": "Mark emails unread",
-      "description": "Mark one or more emails as unread, both locally and on the IMAP server. Identify emails by their IMAP mail_remote_id (from list_emails/search_emails). With mailbox, acts on that shared mailbox's inbox, where the user's access must allow keeping read state.",
+      "description": "Mark one or more emails of the inbox as unread, both locally and on the IMAP server. Name the emails by their email_ids; mail_remote_ids alone name mails of the user's own INBOX. A mail that is not in the inbox is refused and nothing is done. With mailbox, acts on that shared mailbox's inbox, where the user's access must allow keeping read state.",
       "input_schema": {
         "type": "object",
         "properties": {
           "mail_remote_ids": { "type": "array", "items": { "type": "integer" } },
-          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." }
+          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
+          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The local ids of the mails, as the reading tools return them." }
         },
-        "required": ["mail_remote_ids"]
+        "required": []
       },
       "annotations": {
         "readOnlyHint": false,
@@ -234,15 +238,16 @@
     {
       "name": "reply_email",
       "title": "Reply to an email",
-      "description": "Reply to the sender of an existing email (identified by its IMAP mail_remote_id). The reply is threaded to the original and the subject is prefixed with 'Re:'. The body is HTML. IMPORTANT: this action is outward-facing and irreversible - only DRAFT the reply, surface the recipient, subject and body to the user for explicit confirmation, never auto-send, and never add recipients the user did not name. With mailbox, the original is read in that shared mailbox's inbox and the reply is sent from it (from the user's own address, with a copy in the owner's Sent when the share allows it). Always tell the user which mailbox the reply is sent from before they approve.",
+      "description": "Reply to the sender of an existing email, which may be in any folder (Sent and Archive included). The reply is threaded to the original and the subject is prefixed with 'Re:'. The body is HTML. Name a mail by its email_id, carried by every email the reading tools return, whatever folder or mailbox it is in; a mail_remote_id is given only for a mail of the user's own INBOX, and a mail_remote_id alone names a mail there. IMPORTANT: this action is outward-facing and irreversible - only DRAFT the reply, surface the recipient, subject and body to the user for explicit confirmation, never auto-send, and never add recipients the user did not name. With mailbox, email_id names a mail of that shared mailbox and the reply is sent from it (from the user's own address, with a copy in the owner's Sent when the share allows it). Always tell the user which mailbox the reply is sent from before they approve.",
       "input_schema": {
         "type": "object",
         "properties": {
           "mail_remote_id": { "type": "integer" },
           "body_html": { "type": "string" },
-          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." }
+          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
+          "email_id": { "type": "integer", "description": "The local id of the mail, as the reading tools return it." }
         },
-        "required": ["mail_remote_id", "body_html"]
+        "required": ["body_html"]
       },
       "require_approval": true,
       "annotations": {
@@ -255,15 +260,16 @@
     {
       "name": "reply_all",
       "title": "Reply all to an email",
-      "description": "Reply to everyone on an existing email (identified by its IMAP mail_remote_id): To = original sender, Cc = the original To and Cc minus the current user. The reply is threaded and the subject prefixed with 'Re:'. The body is HTML. IMPORTANT: this action is outward-facing and irreversible - only DRAFT the reply, surface ALL recipients (To and Cc), subject and body to the user for explicit confirmation, never auto-send, and never add recipients the user did not name. With mailbox, the original is read in that shared mailbox's inbox and the reply is sent from it (from the user's own address, with a copy in the owner's Sent when the share allows it); the owner is not copied. Always tell the user which mailbox the reply is sent from before they approve.",
+      "description": "Reply to everyone on an existing email, which may be in any folder (Sent and Archive included): To = original sender, Cc = the original To and Cc minus the current user. The reply is threaded and the subject prefixed with 'Re:'. The body is HTML. Name a mail by its email_id, carried by every email the reading tools return, whatever folder or mailbox it is in; a mail_remote_id is given only for a mail of the user's own INBOX, and a mail_remote_id alone names a mail there. IMPORTANT: this action is outward-facing and irreversible - only DRAFT the reply, surface ALL recipients (To and Cc), subject and body to the user for explicit confirmation, never auto-send, and never add recipients the user did not name. With mailbox, email_id names a mail of that shared mailbox and the reply is sent from it (from the user's own address, with a copy in the owner's Sent when the share allows it); the owner is not copied. Always tell the user which mailbox the reply is sent from before they approve.",
       "input_schema": {
         "type": "object",
         "properties": {
           "mail_remote_id": { "type": "integer" },
           "body_html": { "type": "string" },
-          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." }
+          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
+          "email_id": { "type": "integer", "description": "The local id of the mail, as the reading tools return it." }
         },
-        "required": ["mail_remote_id", "body_html"]
+        "required": ["body_html"]
       },
       "require_approval": true,
       "annotations": {
@@ -276,7 +282,7 @@
     {
       "name": "forward_email",
       "title": "Forward an email",
-      "description": "Forward an existing email (identified by its IMAP mail_remote_id) to brand new recipients. The subject is prefixed with 'Fwd:' and the original message is quoted below the optional new note ('body_html', HTML). Attachments of the original are NOT carried over. IMPORTANT: this action is outward-facing and irreversible - only DRAFT the forward, surface the exact recipient(s) (to and cc), subject and body to the user for explicit confirmation, never auto-send, and never add recipients the user did not name. With mailbox, the original is read in that shared mailbox's inbox and the forward is sent from it (from the user's own address, with a copy in the owner's Sent when the share allows it). Always tell the user which mailbox the forward is sent from before they approve.",
+      "description": "Forward an existing email, which may be in any folder (Sent and Archive included), to brand new recipients. The subject is prefixed with 'Fwd:' and the original message is quoted below the optional new note ('body_html', HTML). Attachments of the original are NOT carried over. Name a mail by its email_id, carried by every email the reading tools return, whatever folder or mailbox it is in; a mail_remote_id is given only for a mail of the user's own INBOX, and a mail_remote_id alone names a mail there. IMPORTANT: this action is outward-facing and irreversible - only DRAFT the forward, surface the exact recipient(s) (to and cc), subject and body to the user for explicit confirmation, never auto-send, and never add recipients the user did not name. With mailbox, email_id names a mail of that shared mailbox and the forward is sent from it (from the user's own address, with a copy in the owner's Sent when the share allows it). Always tell the user which mailbox the forward is sent from before they approve.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -284,9 +290,10 @@
           "to": { "type": "array", "items": { "type": "string" } },
           "body_html": { "type": "string" },
           "cc": { "type": "array", "items": { "type": "string" } },
-          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." }
+          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
+          "email_id": { "type": "integer", "description": "The local id of the mail, as the reading tools return it." }
         },
-        "required": ["mail_remote_id", "to"]
+        "required": ["to"]
       },
       "require_approval": true,
       "annotations": {
@@ -299,14 +306,15 @@
     {
       "name": "archive_email",
       "title": "Archive emails",
-      "description": "Move one or more emails (identified by their IMAP mail_remote_id) from the inbox to the Archive folder. Confirm the affected emails with the user before archiving. With mailbox, acts on that shared mailbox's inbox and files into its own Archive, where the user's access allows it. Always tell the user whose mailbox is changed before they approve.",
+      "description": "Move one or more emails from the inbox to the Archive folder. Name the emails by their email_ids; mail_remote_ids alone name mails of the user's own INBOX. A mail that is not in the inbox (in Sent or Archive, for instance) is refused and nothing is done. Confirm the affected emails with the user before archiving. With mailbox, acts on that shared mailbox's inbox and files into its own Archive, where the user's access allows it. Always tell the user whose mailbox is changed before they approve.",
       "input_schema": {
         "type": "object",
         "properties": {
           "mail_remote_ids": { "type": "array", "items": { "type": "integer" } },
-          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." }
+          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
+          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The local ids of the mails, as the reading tools return them." }
         },
-        "required": ["mail_remote_ids"]
+        "required": []
       },
       "require_approval": true,
       "annotations": {
@@ -319,14 +327,15 @@
     {
       "name": "delete_email",
       "title": "Delete emails",
-      "description": "Delete one or more emails (identified by their IMAP mail_remote_id): they are copied to Trash and expunged from the inbox. This is destructive and irreversible - always confirm the exact emails with the user before deleting. With mailbox, acts on that shared mailbox's inbox and moves into its own Trash, where the user's access allows it. Always tell the user whose mailbox is changed before they approve.",
+      "description": "Delete one or more emails of the inbox: they are copied to Trash and expunged from the inbox. Name the emails by their email_ids; mail_remote_ids alone name mails of the user's own INBOX. A mail that is not in the inbox is refused and nothing is done. This is destructive and irreversible - always confirm the exact emails with the user before deleting. With mailbox, acts on that shared mailbox's inbox and moves into its own Trash, where the user's access allows it. Always tell the user whose mailbox is changed before they approve.",
       "input_schema": {
         "type": "object",
         "properties": {
           "mail_remote_ids": { "type": "array", "items": { "type": "integer" } },
-          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." }
+          "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
+          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The local ids of the mails, as the reading tools return them." }
         },
-        "required": ["mail_remote_ids"]
+        "required": []
       },
       "require_approval": true,
       "annotations": {
@@ -351,14 +360,15 @@
     {
       "name": "add_email_category",
       "title": "Add a category to emails",
-      "description": "Tag one or more emails (identified by their IMAP mail_remote_id) with an existing category id obtained from list_email_categories. Emails already in the category are skipped. This is a low-risk, reversible label (use remove_email_category to undo), so it runs without a confirmation prompt.",
+      "description": "Tag one or more emails of the user's own inbox with an existing category id obtained from list_email_categories. Name the emails by their email_ids; mail_remote_ids alone name mails of the user's own INBOX. A mail that is not in the inbox is refused and nothing is done. Emails already in the category are skipped. This is a low-risk, reversible label (use remove_email_category to undo), so it runs without a confirmation prompt.",
       "input_schema": {
         "type": "object",
         "properties": {
           "mail_remote_ids": { "type": "array", "items": { "type": "integer" } },
-          "category_id": { "type": "integer" }
+          "category_id": { "type": "integer" },
+          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The local ids of the mails, as the reading tools return them." }
         },
-        "required": ["mail_remote_ids", "category_id"]
+        "required": ["category_id"]
       },
       "require_approval": false,
       "annotations": {
@@ -371,14 +381,15 @@
     {
       "name": "remove_email_category",
       "title": "Remove a category from emails",
-      "description": "Remove a category id from one or more emails (identified by their IMAP mail_remote_id). Emails not currently in the category are skipped. This is a low-risk, reversible label change (use add_email_category to re-apply), so it runs without a confirmation prompt.",
+      "description": "Remove a category id from one or more emails of the user's own inbox. Name the emails by their email_ids; mail_remote_ids alone name mails of the user's own INBOX. A mail that is not in the inbox is refused and nothing is done. Emails not currently in the category are skipped. This is a low-risk, reversible label change (use add_email_category to re-apply), so it runs without a confirmation prompt.",
       "input_schema": {
         "type": "object",
         "properties": {
           "mail_remote_ids": { "type": "array", "items": { "type": "integer" } },
-          "category_id": { "type": "integer" }
+          "category_id": { "type": "integer" },
+          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The local ids of the mails, as the reading tools return them." }
         },
-        "required": ["mail_remote_ids", "category_id"]
+        "required": ["category_id"]
       },
       "require_approval": false,
       "annotations": {
