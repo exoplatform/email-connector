@@ -65,7 +65,29 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :sent-copy="!!sharedMailbox.sentCopy"
         :copy-owner="ownerCopied"
         :owner-is-recipient="ownerInTo"
-        @update:copy-owner="setOwnerCopied" />
+        :send-modes="identityModes"
+        :send-mode="sendMode"
+        @update:copy-owner="setOwnerCopied"
+        @update:send-mode="setIdentity" />
+      <!-- The owner's mail server refused a mail in their name (EXO-90583): nothing went
+           out, the mail is still here, and one click sends it in the user's own name. -->
+      <v-alert
+        v-if="sendModeRefused"
+        class="mx-4 mt-2 mb-0 send-mode-refused-banner"
+        type="warning"
+        dense
+        text>
+        <div class="d-flex align-center flex-wrap">
+          <span class="me-2">{{ $t('emailConnector.mailBox.newEmail.drawer.send.sendModeRefused', { 0: sharedMailboxOwnerName }) }}</span>
+          <v-btn
+            :disabled="loading"
+            class="btn send-as-self-button"
+            small
+            @click="sendAsSelf">
+            {{ $t('emailConnector.mailBox.newEmail.drawer.send.sendAsSelf') }}
+          </v-btn>
+        </div>
+      </v-alert>
       <email-connector-recipient-field
         ref="toField"
         v-model="to"
@@ -148,8 +170,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :unpersist="unpersistAttachment" />
       <!-- The read receipt this mail asks for (EXO-90435), said where the user sees it
            before sending, and removable right here as well as from More options. -->
+      <!-- Never in the owner's name (EXO-90583): the receipt would come back to them. -->
       <div
-        v-if="readReceiptRequested"
+        v-if="readReceiptRequested && !inOwnersName"
         class="mx-4 mt-2 read-receipt-chip-row">
         <v-chip
           :aria-label="$t('emailConnector.mailBox.readReceipt.request.chip')"
@@ -188,7 +211,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <!-- More options (⋮), before Send (EXO-90435, PO option A): what the mail asks
              of its recipients rather than when it goes -- today, a read receipt, a
              checkable entry whose state the chip above the footer repeats. -->
+        <!-- Its one option, the read receipt, is not asked in the owner's name (EXO-90583). -->
         <v-menu
+          v-if="!inOwnersName"
           v-model="moreOptionsMenu"
           :close-on-content-click="false"
           offset-y
@@ -281,16 +306,26 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                       {{ $t('emailConnector.mailBox.scheduled.action.sendNow') }}
                     </v-list-item-title>
                   </v-list-item>
+                  <!-- Not in the owner's name yet (EXO-90583): a scheduled mail remembers no
+                       name and would go out in the user's own, which it must never do. -->
                   <v-list-item
                     :aria-label="scheduleActionLabel"
+                    :disabled="inOwnersName"
                     class="px-2 schedule-send-action"
                     @click="openScheduleMode">
                     <v-list-item-icon class="me-2 my-auto">
                       <v-icon size="16">fas fa-clock</v-icon>
                     </v-list-item-icon>
-                    <v-list-item-title>
-                      {{ scheduleActionLabel }}
-                    </v-list-item-title>
+                    <v-list-item-content>
+                      <v-list-item-title>
+                        {{ scheduleActionLabel }}
+                      </v-list-item-title>
+                      <v-list-item-subtitle
+                        v-if="inOwnersName"
+                        class="text-wrap schedule-not-in-owners-name">
+                        {{ $t('emailConnector.mailBox.newEmail.drawer.scheduled.notInOwnersName', { 0: sharedMailboxOwnerName }) }}
+                      </v-list-item-subtitle>
+                    </v-list-item-content>
                   </v-list-item>
                 </v-list>
               </v-menu>
@@ -377,6 +412,13 @@ export default {
       // whether the composer answers a message there, for the band's wording.
       sharedMailbox: null,
       sharedMailboxReply: false,
+      // The name the mail goes out in (EXO-90583): NONE -- the user's own -- or, when the
+      // owner of the mail's shared mailbox allowed it, ON_BEHALF or AS. The mail's, not
+      // the view's: a switch of mailbox while composing leaves it as it is.
+      sendMode: 'NONE',
+      // Whether the owner's mail server refused this mail in their name: the banner and
+      // its "Send as yourself" stay until the user sends again or changes the name.
+      sendModeRefused: false,
       // The mailbox the mail belongs to (EXO-90595): the share's delegation id, or null
       // for the user's own. Set when the composer opens -- from the switcher for a new
       // mail, from the draft itself for a resumed one -- and never from the switcher
@@ -511,6 +553,35 @@ export default {
     },
   },
   computed: {
+    /**
+     * The shapes the user may write in the owner's name in, for the mail's own shared
+     * mailbox only (EXO-90583) -- never another share's -- and none while a scheduled
+     * mail is edited, which goes out in the user's name.
+     *
+     * @returns {Array} ON_BEHALF and AS, as allowed now; empty otherwise
+     */
+    identityModes() {
+      if (!this.sharedMailbox || this.scheduledEdit || this.sharedMailbox.delegationId !== this.mailboxDelegationId) {
+        return [];
+      }
+      return this.sharedMailbox.sendModes || [];
+    },
+    /**
+     * Whether the mail goes out in the owner's name (EXO-90583).
+     *
+     * @returns {Boolean} true on behalf of the owner, or as them
+     */
+    inOwnersName() {
+      return this.sendMode !== 'NONE';
+    },
+    /**
+     * The shared mailbox owner's name, for the sentences about writing in it.
+     *
+     * @returns {String} the name, or their address
+     */
+    sharedMailboxOwnerName() {
+      return this.sharedMailbox?.ownerFullName || this.sharedMailbox?.ownerMailbox || '';
+    },
     /**
      * Whether the mail belongs to a shared mailbox the switcher no longer offers: a
      * resumed draft, or a scheduled mail being edited, whose share has ended (EXO-90595).
@@ -1371,11 +1442,60 @@ export default {
       this.sharedMailbox = this.$emailConnectorMailBoxService.sharedMailboxState().current;
       this.mailboxDelegationId = this.sharedMailbox?.delegationId || null;
       this.sharedMailboxReply = !!this.sharedMailbox && !!email && !forward;
+      // PO decision Q-4 (EXO-90583): in the owner's name, in the mode they granted --
+      // the widest the server accepts now -- when they allow it; the user's own
+      // otherwise. Always changeable in the band.
+      const modes = this.identityModes;
+      this.setIdentity(modes.length ? modes[modes.length - 1] : 'NONE');
+    },
+    /**
+     * The name the mail goes out in (EXO-90583), and what follows from it: the
+     * "Copy the owner" box -- ticked when the owner would otherwise have no copy, as
+     * PO decisions Q-3 (the user's own name) and Q-6 (the owner's) both say; in the
+     * owner's name with their copy filed the box is hidden and the owner not copied.
+     * Re-applied on each change of name, as it is when the composer opens. A refusal
+     * shown for the previous name is dropped.
+     *
+     * @param {String} mode - NONE, ON_BEHALF or AS
+     * @returns {void}
+     */
+    setIdentity(mode) {
+      this.sendMode = mode === 'ON_BEHALF' || mode === 'AS' ? mode : 'NONE';
+      this.sendModeRefused = false;
+      if (this.inOwnersName) {
+        // A date and time card open for the user's own name does not schedule this one.
+        this.scheduleMode = false;
+      }
       if (this.sharedMailbox) {
-        // PO decision Q-3 (EXO-90551): off when the copy into the owner's Sent will be
-        // filed -- the owner then finds the mail there -- on otherwise; always visible.
         this.setOwnerCopied(!this.sharedMailbox.sentCopy);
       }
+    },
+    /**
+     * Sends the mail on screen in the user's own name, after the owner's mail server
+     * refused it in theirs (EXO-90583): the same mail, one click.
+     *
+     * @returns {void}
+     */
+    sendAsSelf() {
+      this.setIdentity('NONE');
+      this.sendEmail();
+    },
+    /**
+     * Reads the switcher's entries again after the server said the owner's name can no
+     * longer be used as it was, so the band offers only what is left (EXO-90583).
+     *
+     * @returns {void}
+     */
+    reloadSharedMailbox() {
+      const delegationId = this.mailboxDelegationId;
+      const session = this.draftSession;
+      this.$emailConnectorMailBoxService.loadSharedMailboxes()
+        .then(() => {
+          if (session === this.draftSession && delegationId === this.mailboxDelegationId) {
+            this.sharedMailbox = this.sharedMailboxEntry(delegationId) || this.sharedMailbox;
+          }
+        })
+        .catch(() => null);
     },
     /**
      * Takes the mailbox a stored draft belongs to from the draft itself (EXO-90595),
@@ -1396,6 +1516,11 @@ export default {
       this.draftMailbox = null;
       this.sharedMailbox = this.sharedMailboxEntry(delegationId);
       this.sharedMailboxReply = !!draft?.inReplyTo;
+      // The user's own name (EXO-90583): a draft remembers no name yet (EXO-90584), and
+      // one saved in the user's name must never come back in the owner's. The band
+      // offers the owner's name all the same.
+      this.sendMode = 'NONE';
+      this.sendModeRefused = false;
       if (!delegationId || !draft.draftLocalId) {
         return;
       }
@@ -1611,6 +1736,8 @@ export default {
       this.bcc = [];
       this.sharedMailbox = null;
       this.sharedMailboxReply = false;
+      this.sendMode = 'NONE';
+      this.sendModeRefused = false;
       this.mailboxDelegationId = null;
       this.draftMailbox = null;
       // Reset with its siblings: the content template is v-if'd, so the field is
@@ -2264,15 +2391,23 @@ export default {
       // the switcher's: for a draft, the server checks it is the draft's (EXO-90595).
       const delegationId = this.mailboxDelegationId;
       const owner = this.sharedMailbox?.ownerFullName;
+      // In the owner's name when the band says so (EXO-90583); the server checks it
+      // against the owner's consent, on the mail's own share.
+      const sendMode = delegationId && this.inOwnersName ? this.sendMode : null;
+      this.sendModeRefused = false;
       const send = this.draftSession.localId
-        ? this.$emailConnectorMailBoxService.sendDraft(this.draftSession.localId, this.email, delegationId)
-        : this.$emailConnectorMailBoxService.sendEmail(this.email, delegationId);
+        ? this.$emailConnectorMailBoxService.sendDraft(this.draftSession.localId, this.email, delegationId, sendMode)
+        : this.$emailConnectorMailBoxService.sendEmail(this.email, delegationId, sendMode);
       // What the notice promised when the composer opened (Q-3): a copy in the owner's
-      // Sent. Anything short of it having been filed is said.
+      // Sent. Anything short of it having been filed is said -- louder for a mail in the
+      // owner's name, of which they then have no copy at all.
       const ownerCopyPromised = !!this.sharedMailbox?.sentCopy;
       send.then(result => {
         if (result?.ownerCopy === 'FAILED' || ownerCopyPromised && result?.ownerCopy !== 'FILED') {
-          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.ownerCopyFailed', { 0: owner }), 'warning');
+          const key = sendMode
+            ? 'emailConnector.mailBox.newEmail.drawer.send.ownerCopyFailed.inOwnersName'
+            : 'emailConnector.mailBox.newEmail.drawer.send.ownerCopyFailed';
+          this.$root.$emit('alert-message', this.$t(key, { 0: owner }), 'warning');
         } else {
           this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.success'), 'success');
         }
@@ -2288,10 +2423,23 @@ export default {
         this.$root.$emit('refresh-email-box');
         this.close();
       }).catch(error => {
-        // A share withdrawn while composing (EXO-90551): nothing went out, and retrying
-        // cannot help -- say so rather than "try again". Whether to offer a send from
-        // the user's own mailbox instead is a PO call, not made here.
-        if (delegationId && error?.code?.startsWith?.('emailConnector.delegation.')) {
+        // The owner's mail server refused the mail in their name (EXO-90583): nothing went
+        // out, the mail stays, and the banner offers to send it in the user's own name --
+        // never done without the user's click.
+        if (sendMode && error?.code === 'emailConnector.sendMode.refusedByServer') {
+          this.sendModeRefused = true;
+          this.reloadSharedMailbox();
+        } else if (sendMode && error?.code?.startsWith?.('emailConnector.sendMode.')) {
+          // The owner's name can no longer be used as it was -- consent withdrawn or
+          // narrowed, switched off, not declared: back to the user's own, said, and not
+          // sent until the user sends again.
+          this.setIdentity('NONE');
+          this.reloadSharedMailbox();
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.sendModeUnavailable', { 0: owner }), 'warning');
+        } else if (delegationId && error?.code?.startsWith?.('emailConnector.delegation.')) {
+          // A share withdrawn while composing (EXO-90551): nothing went out, and retrying
+          // cannot help -- say so rather than "try again". Whether to offer a send from
+          // the user's own mailbox instead is a PO call, not made here.
           this.$root.$emit('alert-message', owner
             ? this.$t('emailConnector.mailBox.newEmail.drawer.send.sharedMailboxGone', { 0: owner })
             : this.$t('emailConnector.mailBox.sharedMailbox.composer.unshared'), 'error');
@@ -2309,6 +2457,11 @@ export default {
      */
     openScheduleMode() {
       this.scheduleMenu = false;
+      // Never in the owner's name (EXO-90583): the menu item is disabled, and this is
+      // the one door to the date and time card.
+      if (this.inOwnersName) {
+        return;
+      }
       this.scheduleMode = true;
     },
     /**
