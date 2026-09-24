@@ -1765,4 +1765,22 @@
       <dropColumn tableName="EMAIL_BOX" columnName="DRAFT_DELEGATION_ID"/>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-86">
+    <comment>
+      EMAIL_DELEGATION.FOLDER_ACCESS (EXO-90556, phase-2 slice 2.8): the owner's
+      per-folder exceptions to the share's preset on the role folders a grant covers
+      beside INBOX, as ROLE=ACCESS pairs (TRASH=READER,JUNK=NONE); NONE is a role folder
+      the owner chose not to share, which tells it from one never covered. Null -- every
+      existing row -- means every role folder follows the preset, which is what they
+      did. The owner's other folders are never recorded here: the mail server's ACL is
+      their only truth. At most four pairs of known names, hence 100. Rolled back by
+      dropping the column.
+    </comment>
+    <addColumn tableName="EMAIL_DELEGATION">
+      <column name="FOLDER_ACCESS" type="VARCHAR(100)"/>
+    </addColumn>
+    <rollback>
+      <dropColumn tableName="EMAIL_DELEGATION" columnName="FOLDER_ACCESS"/>
+    </rollback>
+  </changeSet>
 </databaseChangeLog>

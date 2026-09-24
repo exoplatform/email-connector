@@ -46,8 +46,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :key="grantee.identifier"
           :grantee="grantee"
           :disabled="revokingId !== null || changingId !== null"
+          :per-folder="perFolder"
           @change-preset="askChangePreset(grantee, $event)"
           @extend="askExtend(grantee)"
+          @folders="openFolders(grantee)"
           @revoke="openRevoke(grantee)" />
       </v-list>
     </template>
@@ -122,6 +124,15 @@ export default {
       return !!this.capabilities?.supported;
     },
     /**
+     * Whether the mail server shares folder by folder (EXO-90556): only then are folders
+     * offered one by one; a server that shares a whole mailbox at once shows the presets.
+     *
+     * @returns {Boolean} true on a per-folder server
+     */
+    perFolder() {
+      return this.supported && this.capabilities?.grantGranularity === 'FOLDER';
+    },
+    /**
      * @returns {Boolean} whether a new share may be offered
      */
     canShare() {
@@ -156,6 +167,15 @@ export default {
      */
     canShare(value) {
       this.$emit('can-share', value);
+    },
+    /**
+     * Tells the drawer whether the invitation may offer folders one by one.
+     *
+     * @param {Boolean} value whether the server shares folder by folder
+     * @returns {void}
+     */
+    perFolder(value) {
+      this.$emit('per-folder', value);
     },
   },
   created() {
@@ -302,6 +322,16 @@ export default {
           this.load();
           this.$root.$emit('email-delegations-updated');
         });
+    },
+    /**
+     * A row's "Folders and access": the drawer that reads and sets each folder's access
+     * (EXO-90556), over this list.
+     *
+     * @param {Object} grantee the row
+     * @returns {void}
+     */
+    openFolders(grantee) {
+      this.$root.$emit('open-email-sharing-folders-drawer', grantee);
     },
     /**
      * A row's "Share ... too": asked first, with what it gives.

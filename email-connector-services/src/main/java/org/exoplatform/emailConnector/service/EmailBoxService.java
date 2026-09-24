@@ -4939,7 +4939,8 @@ public class EmailBoxService {
    * updated IN PLACE, after the server confirms the rename, never deleted and
    * re-created: see {@link EmailFolderService#renameFolder} for why that is what keeps
    * every mirrored row -- addressed by the row's id, never by its remote name (verified
-   * across this module) -- exactly where it was.
+   * across this module) -- exactly where it was. A folder the owner shares one by one
+   * follows its new name for its delegates ({@link EmailDelegationService#ownerFolderChanged}).
    *
    * @param username the mailbox owner
    * @param id the registry id
@@ -4992,6 +4993,8 @@ public class EmailBoxService {
       closeQuietly(null, store, username);
     }
     EmailFolder renamed = emailFolderService.renameFolder(username, id, newRemoteName, trimmedName);
+    // A folder shared one by one follows its new name for its delegates (EXO-90556).
+    emailDelegationService.ownerFolderChanged(username, customFolder.getRemoteName(), newRemoteName);
     return customFolderView(renamed, emailBoxStorage.getFolderMessageCounts(username));
   }
 
@@ -5010,7 +5013,8 @@ public class EmailBoxService {
    * choosing whether to take them with it. A folder already gone from the server (the
    * user deleted it from another client since the last walk) is treated as already
    * deleted: only the local mirror and registry row are cleared, nothing is sent to a
-   * server that no longer has anything to delete.
+   * server that no longer has anything to delete. The copies the owner's delegates hold of
+   * a folder shared one by one go with it ({@link EmailDelegationService#ownerFolderChanged}).
    *
    * @param username the mailbox owner
    * @param id the registry id
@@ -5052,6 +5056,8 @@ public class EmailBoxService {
     }
     deleteUserEmails(username, customFolder.getKey());
     emailFolderService.removeFolder(username, id);
+    // Its delegates' copies go with it (EXO-90556).
+    emailDelegationService.ownerFolderChanged(username, customFolder.getRemoteName(), null);
   }
 
   /**

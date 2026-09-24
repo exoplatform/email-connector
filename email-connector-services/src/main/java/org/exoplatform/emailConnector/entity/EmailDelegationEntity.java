@@ -148,4 +148,10 @@ public class EmailDelegationEntity {
   // (JSON): a delegate may see no special-use attribute on a shared folder (Dovecot).
   @Column(name = "OWNER_ROLE_FOLDERS")
   private String  ownerRoleFolders;
+
+  // The owner's per-folder exceptions to the preset on the role folders (EXO-90556):
+  // ROLE=ACCESS pairs, null when every role folder follows the preset. Added by
+  // changeset 1.0.0-86.
+  @Column(name = "FOLDER_ACCESS")
+  private String  folderAccess;
 }

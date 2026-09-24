@@ -207,4 +207,25 @@ class MailboxRightsTest {
     assertFalse(MailboxRights.of("lrswit").affordances().get("moveOut"));
     assertTrue(MailboxRights.of("lrswit").affordances().get("delete"), "the flag alone is still said as it is");
   }
+
+  /**
+   * EXO-90556, live on Stalwart 0.11.8 -- a Reader granted {@code lrs} reads back
+   * {@code wsrl} (GETACL) and {@code rlsw} (MYRIGHTS): the letters stay the server's, and
+   * the view eXo acts on for a delegate drops that coupled {@code w}, so such a Reader
+   * never stars; a {@code w} beside another write right (an Editor, {@code rlitesw}) or
+   * without {@code s} is a real one.
+   */
+  @Test
+  void aWriteCoupledWithKeepSeenAloneIsNeverActedOnAsAWrite() {
+    assertEquals("lrsw", MailboxRights.of("wsrl").letters(), "the server's letters, faithfully");
+    assertTrue(MailboxRights.of("rlsw").hasCoupledWrite());
+    assertEquals("lrs", MailboxRights.of("rlsw").withoutCoupledWrite().letters());
+    assertFalse(MailboxRights.of("rlsw").affordances().get("star"));
+    assertTrue(MailboxRights.of("rlsw").withoutCoupledWrite().canKeepSeen());
+    assertFalse(MailboxRights.of("rlitesw").hasCoupledWrite());
+    assertEquals("lrswite", MailboxRights.of("rlitesw").withoutCoupledWrite().letters());
+    assertTrue(MailboxRights.of("rlitesw").affordances().get("star"));
+    assertTrue(MailboxRights.of("lrw").affordances().get("star"), "no s: a real w");
+    assertFalse(MailboxRights.of("lrswi").hasCoupledWrite());
+  }
 }

@@ -1233,6 +1233,31 @@ class EmailDelegationServiceTest {
   }
 
   /**
+   * A row that recorded INBOX as a role's folder (a stale reading, EXO-90556) never makes
+   * INBOX a "former" role folder: narrowing the Trash that moved to "Deleted Items" writes
+   * no Trash letters on INBOX and removes nothing there -- only "Remove access" touches
+   * INBOX -- even though INBOX's ACL names the grantee.
+   */
+  @Test
+  void changePresetNeverNarrowsInboxAsAFormerRoleFolder() throws Exception {
+    EmailDelegation accepted = aRowSharingRoleFolders();
+    Map<FolderRole, String> stale = new EnumMap<>(ownerRoleFolders());
+    stale.put(FolderRole.TRASH, INBOX);
+    accepted.setOwnerRoleFolders(stale);
+    givenTheOwnersRowToChange(accepted);
+    Map<FolderRole, String> moved = new EnumMap<>(ownerRoleFolders());
+    moved.put(FolderRole.TRASH, "Deleted Items");
+    when(engine.findRoleFolders(any())).thenReturn(moved);
+    lenient().when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswit"))));
+
+    service.changePreset(OWNER, 100L, DelegationPreset.READER);
+
+    verify(engine).grant(any(), eq("Deleted Items"), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any(), eq(FolderRole.TRASH));
+    verify(engine, never()).grant(any(), eq(INBOX), any(), any(), any(), eq(FolderRole.TRASH));
+    verify(engine, never()).revoke(any(), eq(INBOX), any());
+  }
+
+  /**
    * "Remove access" removes every entry of the grantee on the owner's folders -- the
    * ones the server lists, one written in another application included, and the ones the
    * grant recorded -- INBOX once; a folder that refuses does not stop it.
@@ -1965,6 +1990,34 @@ class EmailDelegationServiceTest {
     service.discoverDelegatedFolders(GRANTEE, share, engine, session(), true);
 
     assertEquals(Set.of(ROOT + "/Corbeille", ROOT + "/Sent"), created.keySet());
+  }
+
+  /**
+   * EXO-90556, live on Stalwart 0.11.8 -- a Reader's letters read back {@code rlsw}: the
+   * guard never lets that Reader star or set flags, on a folder of the share or on its
+   * INBOX, while an Editor's folder of the same share keeps its {@code w}.
+   */
+  @Test
+  void aStalwartReaderNeverStarsWhateverItsCoupledWrite() throws Exception {
+    EmailDelegation share = aDovecotShare();
+    share.setRights("rlsw");
+    EmailFolder inbox = sharedInbox(share);
+    EmailFolder sent = delegated(21L, ROOT + "/Sent", true);
+    sent.setRights("rlsw");
+    sent.setRightsCheckDate(new Date());
+    EmailFolder projects = delegated(22L, ROOT + "/Projects", true);
+    projects.setRights("rlitesw");
+    projects.setRightsCheckDate(new Date());
+    when(emailFolderStorage.getFolder(GRANTEE, inbox.getId())).thenReturn(inbox);
+    when(emailFolderStorage.getFolder(GRANTEE, 21L)).thenReturn(sent);
+    when(emailFolderStorage.getFolder(GRANTEE, 22L)).thenReturn(projects);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(share);
+
+    assertThrows(MailboxRightMissingException.class, () -> service.checkRight(GRANTEE, sent.getKey(), MailboxRights.WRITE));
+    assertThrows(MailboxRightMissingException.class, () -> service.checkRight(GRANTEE, inbox.getKey(), MailboxRights.WRITE));
+    service.checkRight(GRANTEE, sent.getKey(), MailboxRights.KEEP_SEEN);
+    service.checkRight(GRANTEE, projects.getKey(), MailboxRights.WRITE);
+    assertFalse(service.rightsOn(GRANTEE, sent.getKey()).affordances().get("star"));
   }
 
   /**

@@ -127,6 +127,13 @@ public final class MailboxRights {
    */
   public static final MailboxRights  GRANTABLE_WHERE_MAIL_LEAVES = of("lrswite");
 
+  /**
+   * The write rights whose presence makes a {@code w} beside {@code s} a real write
+   * right rather than Stalwart's coupling of a Reader's {@code s} (see
+   * {@link #withoutCoupledWrite()}).
+   */
+  static final String                READER_COUPLED_WRITE_PARTNERS = "itekxpa";
+
   /** No right at all. */
   public static final MailboxRights  NONE            = of("");
 
@@ -278,6 +285,43 @@ public final class MailboxRights {
   }
 
   /**
+   * Whether the {@code w} held is Stalwart's coupling of a Reader's {@code s} rather than
+   * a write right given: a {@code w} beside {@code s} with none of {@code i t e k x p a}.
+   * Stalwart stores a Reader's {@code s} with {@code w} -- {@code lrs} granted reads back
+   * {@code wsrl} (GETACL) and {@code rlsw} (MYRIGHTS) -- while an Editor reads back
+   * {@code rlitesw} (EXO-90556, observed on Stalwart 0.11.8 on 2026-09-24).
+   *
+   * @return true when the w is read as that coupling
+   */
+  public boolean hasCoupledWrite() {
+    return letters.contains(WRITE) && letters.contains(KEEP_SEEN)
+        && READER_COUPLED_WRITE_PARTNERS.chars().noneMatch(letter -> letters.contains((char) letter));
+  }
+
+  /**
+   * The letters as eXo acts on them for a delegate: without a {@code w} that is only
+   * Stalwart's coupling of a Reader's {@code s} ({@link #hasCoupledWrite()}), so a Reader
+   * is never offered nor allowed a star or a flag from eXo, whatever the server would let
+   * them do in another client. The letters, not a recorded preset, decide: a delegate's
+   * folder carries no preset of its own. The server's letters themselves are never
+   * changed ({@link #of} stays faithful), but the letters cannot tell Stalwart's coupling
+   * from a {@code w} really given beside {@code s} in another mail application: such an
+   * entry reads as a Reader everywhere eXo reads a preset (the owner's folder list, a
+   * rename), and an owner's later save of it writes the Reader's letters -- a narrowing,
+   * never a widening. Accepted with the coupling (EXO-90556).
+   *
+   * @return the letters without the coupled w, or these letters
+   */
+  public MailboxRights withoutCoupledWrite() {
+    if (!hasCoupledWrite()) {
+      return this;
+    }
+    Set<Character> kept = new LinkedHashSet<>(letters);
+    kept.remove(WRITE);
+    return new MailboxRights(kept);
+  }
+
+  /**
    * @return whether messages can be copied or moved into the mailbox ({@code i})
    */
   public boolean canInsert() {
@@ -389,7 +433,8 @@ public final class MailboxRights {
     affordances.put("browse", canLookup());
     affordances.put("read", canRead());
     affordances.put("markRead", canKeepSeen());
-    affordances.put("star", canWriteFlags());
+    // Never a star for a Reader whose w is only Stalwart's coupling of s (EXO-90556).
+    affordances.put("star", canWriteFlags() && !hasCoupledWrite());
     affordances.put("moveTarget", canInsert());
     affordances.put("createFolder", canCreateMailbox());
     affordances.put("deleteFolder", canDeleteMailbox());
