@@ -321,6 +321,44 @@ public class EmailDelegationDAOTest {
   }
 
   /**
+   * EXO-90583 -- a refusal by the owner's mail server recorded, executed: the refusal's
+   * date and the update stamp on the grantee's live row still carrying the consent the
+   * mail was sent under, and nothing else; no write on another grantee's row, on a
+   * consent set again since (another date), on a row carrying no consent, or on an ended
+   * share.
+   */
+  @Test
+  void aSendRefusalIsMarkedOnTheConsentItWasSentUnderOnly() {
+    List<String> live = List.of("PENDING", "ACCEPTED");
+    Long id = persist(GRANTEE, OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    Long withoutConsent = persist(GRANTEE, OTHER, "carol@acme.com", 7L, "ACCEPTED");
+    Long ended = persist(GRANTEE, "dave", "dave@acme.com", 7L, "REVOKED");
+    for (Long row : List.of(id, ended)) {
+      EmailDelegationEntity entity = emailDelegationDAO.findById(row).orElseThrow();
+      entity.setSendMode("AS");
+      entity.setSendModeDate(new Date(1_000L));
+      emailDelegationDAO.saveAndFlush(entity);
+    }
+    entityManager.clear();
+
+    assertEquals(0, emailDelegationDAO.markSendRefused(id, OWNER, new Date(1_000L), new Date(5_000L), live), "the owner is not the sender");
+    assertEquals(0, emailDelegationDAO.markSendRefused(id, GRANTEE, new Date(1_001L), new Date(5_000L), live), "a consent set since");
+    assertEquals(0, emailDelegationDAO.markSendRefused(withoutConsent, GRANTEE, new Date(1_000L), new Date(5_000L), live), "no consent");
+    assertEquals(0, emailDelegationDAO.markSendRefused(ended, GRANTEE, new Date(1_000L), new Date(5_000L), live), "an ended share");
+    assertEquals(1, emailDelegationDAO.markSendRefused(id, GRANTEE, new Date(1_000L), new Date(5_000L), live));
+    entityManager.clear();
+
+    EmailDelegationEntity read = emailDelegationDAO.findById(id).orElseThrow();
+    assertEquals(5_000L, read.getSendRefusedDate().getTime());
+    assertEquals(5_000L, read.getUpdatedDate().getTime());
+    assertEquals("AS", read.getSendMode(), "the consent stays: the owner sets it again to clear the refusal");
+    assertEquals(1_000L, read.getSendModeDate().getTime());
+    assertEquals("ACCEPTED", read.getStatus());
+    assertEquals("lrs", read.getRights());
+    assertNull(emailDelegationDAO.findById(ended).orElseThrow().getSendRefusedDate());
+  }
+
+  /**
    * EXO-90582 -- the consent taken off an ended share, executed: the three columns go on
    * a row no longer live, a live row keeps them, and a row with nothing to take off is
    * not written at all.
