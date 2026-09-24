@@ -203,23 +203,23 @@ class MailboxRightsTest {
    */
   /**
    * EXO-90556, live on Stalwart 0.11.8 -- a Reader granted {@code lrs} reads back
-   * {@code wsrl} (GETACL) and {@code rlsw} (MYRIGHTS): the {@code w} coupled with
-   * {@code s} is dropped, so the entry reads as the Reader it is and never stars; a
-   * {@code w} beside another write right (an Editor, {@code rlitesw} on Stalwart) or with
-   * no {@code s} beside it is kept.
+   * {@code wsrl} (GETACL) and {@code rlsw} (MYRIGHTS): the letters stay the server's, and
+   * the view eXo acts on for a delegate drops that coupled {@code w}, so such a Reader
+   * never stars; a {@code w} beside another write right (an Editor, {@code rlitesw}) or
+   * without {@code s} is a real one.
    */
   @Test
-  void aWriteCoupledWithKeepSeenAloneIsAReadersNotAWrite() {
-    assertEquals("lrs", MailboxRights.of("wsrl").letters());
-    assertEquals("lrs", MailboxRights.of("rlsw").letters());
-    assertEquals(DelegationPreset.READER, DelegationPreset.fromRights(MailboxRights.of("wsrl")));
-    assertFalse(MailboxRights.of("rlsw").canWriteFlags());
+  void aWriteCoupledWithKeepSeenAloneIsNeverActedOnAsAWrite() {
+    assertEquals("lrsw", MailboxRights.of("wsrl").letters(), "the server's letters, faithfully");
+    assertTrue(MailboxRights.of("rlsw").hasCoupledWrite());
+    assertEquals("lrs", MailboxRights.of("rlsw").withoutCoupledWrite().letters());
     assertFalse(MailboxRights.of("rlsw").affordances().get("star"));
-    assertTrue(MailboxRights.of("rlsw").canKeepSeen());
-    assertEquals("lrswite", MailboxRights.of("rlitesw").letters());
-    assertTrue(MailboxRights.of("rlitesw").canWriteFlags());
-    assertEquals("lrw", MailboxRights.of("lrw").letters());
-    assertEquals("lrswi", MailboxRights.of("lrswi").letters());
+    assertTrue(MailboxRights.of("rlsw").withoutCoupledWrite().canKeepSeen());
+    assertFalse(MailboxRights.of("rlitesw").hasCoupledWrite());
+    assertEquals("lrswite", MailboxRights.of("rlitesw").withoutCoupledWrite().letters());
+    assertTrue(MailboxRights.of("rlitesw").affordances().get("star"));
+    assertTrue(MailboxRights.of("lrw").affordances().get("star"), "no s: a real w");
+    assertFalse(MailboxRights.of("lrswi").hasCoupledWrite());
   }
 
   @Test

@@ -280,9 +280,16 @@ class ImapAclEngineTest {
    * confirmation), and a rename writes it again as the Reader it is.
    */
   @Test
-  void aStalwartReaderWithItsCoupledWriteReadsAsAReader() {
+  void aStalwartReaderWithItsCoupledWriteReadsAsAReader() throws MessagingException {
     assertEquals(DelegationPreset.READER, engine.presetOf(MailboxRights.of("wsrl")));
     assertEquals(DelegationPreset.EDITOR, engine.presetOf(MailboxRights.of("rlitesw")));
+    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswt")), "w and t beside a Reader is neither");
+    // The entry keeps the w the server answered: its letters are read faithfully.
+    when(inbox.getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("wsrl")) });
+    MailboxAce ace = engine.listAcl(session(), "INBOX").get(0);
+    assertEquals(DelegationPreset.READER, ace.preset());
+    assertEquals("lrsw", ace.nativeRights());
+    assertEquals("lrsw", ace.rights().letters());
   }
 
   @Test
@@ -292,6 +299,7 @@ class ImapAclEngineTest {
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswitex")), "x");
     // A w beside s alone is Stalwart's coupling of a Reader's s (EXO-90556): a Reader.
     // Beside another write right it stays a write, and the set is neither preset.
+    assertEquals(DelegationPreset.READER, engine.presetOf(MailboxRights.of("lrsw")), "Stalwart's Reader");
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswi")), "a Reader plus star and insert is neither");
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(null));
   }

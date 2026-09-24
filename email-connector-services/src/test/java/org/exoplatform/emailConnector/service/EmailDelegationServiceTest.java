@@ -2507,7 +2507,7 @@ class EmailDelegationServiceTest {
     EmailDelegation revokedMeanwhile = accepted("lrs");
     clearInvocations(emailDelegationStorage);
     org.mockito.Mockito.reset(engine);
-    when(engine.myRights(any(), any())).thenReturn(MailboxRights.of("lr"));
+    when(engine.myRights(any(), any())).thenReturn(MailboxRights.of("lrsw"));
     when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(row(DelegationStatus.REVOKED, DelegationOrigin.EXO));
     assertNull(service.refreshGranteeRights(GRANTEE, revokedMeanwhile, store), "an owner's revoke made meanwhile is not undone");
     verify(emailDelegationStorage, never()).update(any());

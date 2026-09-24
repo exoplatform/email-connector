@@ -129,7 +129,8 @@ public final class MailboxRights {
 
   /**
    * The write rights whose presence makes a {@code w} beside {@code s} a real write
-   * right rather than Stalwart's coupling of a Reader's {@code s} (see {@link #of}).
+   * right rather than Stalwart's coupling of a Reader's {@code s} (see
+   * {@link #withoutCoupledWrite()}).
    */
   static final String                READER_COUPLED_WRITE_PARTNERS = "itekxpa";
 
@@ -163,17 +164,6 @@ public final class MailboxRights {
    * {@code OK Expunge ignored: Permission denied} (EXO-90552, observed 2026-09-23).
    * The members are {@code k}, {@code x} for {@code c} and {@code t}, {@code e},
    * {@code x} for {@code d} -- the widest of the two groupings the RFC allows a server.
-   * <p>
-   * <b>A {@code w} coupled with {@code s} is dropped.</b> Stalwart stores a Reader's
-   * {@code s} with {@code w}: {@code lrs} granted reads back {@code wsrl} (GETACL) and
-   * {@code rlsw} (MYRIGHTS). A {@code w} beside {@code s} with no other write right
-   * ({@code i t e k x p a}) is read as that coupling, so such an entry reads as the
-   * Reader it was granted -- never starring or setting flags from eXo, whatever the
-   * server would let the delegate do in another client. The letters are the reading,
-   * not the recorded preset, because a delegate's folder carries no preset of its own:
-   * one folder of a share may be an Editor's while its INBOX is a Reader's. An Editor
-   * ({@code rlitesw} on Stalwart) keeps its {@code w}. The server's own words stay in
-   * {@code NATIVE_RIGHTS}.
    *
    * @param rights the letters, possibly null or blank
    * @return the rights, never null
@@ -201,12 +191,6 @@ public final class MailboxRights {
           parsed.add(letter);
         }
       }
-    }
-    if (parsed.contains(WRITE) && parsed.contains(KEEP_SEEN) && READER_COUPLED_WRITE_PARTNERS.chars().noneMatch(letter -> parsed.contains((char) letter))) {
-      // Stalwart couples w with s: a Reader granted lrs is answered wsrl (GETACL) and
-      // rlsw (MYRIGHTS). A w with no other write right beside it is that coupling, and a
-      // Reader never stars nor sets flags from eXo (EXO-90556, observed 2026-09-24).
-      parsed.remove(WRITE);
     }
     Set<Character> ordered = new LinkedHashSet<>();
     for (char letter : CANONICAL_ORDER.toCharArray()) {
@@ -298,6 +282,40 @@ public final class MailboxRights {
    */
   public boolean canWriteFlags() {
     return has(WRITE);
+  }
+
+  /**
+   * Whether the {@code w} held is Stalwart's coupling of a Reader's {@code s} rather than
+   * a write right given: a {@code w} beside {@code s} with none of {@code i t e k x p a}.
+   * Stalwart stores a Reader's {@code s} with {@code w} -- {@code lrs} granted reads back
+   * {@code wsrl} (GETACL) and {@code rlsw} (MYRIGHTS) -- while an Editor reads back
+   * {@code rlitesw} (EXO-90556, observed on Stalwart 0.11.8 on 2026-09-24).
+   *
+   * @return true when the w is read as that coupling
+   */
+  public boolean hasCoupledWrite() {
+    return letters.contains(WRITE) && letters.contains(KEEP_SEEN)
+        && READER_COUPLED_WRITE_PARTNERS.chars().noneMatch(letter -> letters.contains((char) letter));
+  }
+
+  /**
+   * The letters as eXo acts on them for a delegate: without a {@code w} that is only
+   * Stalwart's coupling of a Reader's {@code s} ({@link #hasCoupledWrite()}), so a Reader
+   * is never offered nor allowed a star or a flag from eXo, whatever the server would let
+   * them do in another client. The letters, not a recorded preset, decide: a delegate's
+   * folder carries no preset of its own. The server's letters themselves are never
+   * changed ({@link #of} stays faithful), so a real {@code lrsw} set in another mail
+   * application still reads as it is to the owner.
+   *
+   * @return the letters without the coupled w, or these letters
+   */
+  public MailboxRights withoutCoupledWrite() {
+    if (!hasCoupledWrite()) {
+      return this;
+    }
+    Set<Character> kept = new LinkedHashSet<>(letters);
+    kept.remove(WRITE);
+    return new MailboxRights(kept);
   }
 
   /**
@@ -412,7 +430,8 @@ public final class MailboxRights {
     affordances.put("browse", canLookup());
     affordances.put("read", canRead());
     affordances.put("markRead", canKeepSeen());
-    affordances.put("star", canWriteFlags());
+    // Never a star for a Reader whose w is only Stalwart's coupling of s (EXO-90556).
+    affordances.put("star", canWriteFlags() && !hasCoupledWrite());
     affordances.put("moveTarget", canInsert());
     affordances.put("createFolder", canCreateMailbox());
     affordances.put("deleteFolder", canDeleteMailbox());
