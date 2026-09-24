@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
 import java.util.EnumMap;
@@ -44,6 +45,7 @@ import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.FolderRole;
+import org.exoplatform.emailConnector.model.SendMode;
 
 /**
  * Stack review #432-2 -- what a whole-row write may not put back, in SQL over the shipped
@@ -267,6 +269,74 @@ class EmailDelegationStorageWritesTest {
     EmailDelegation inUse = emailDelegationStorage.create(acceptedRow("ivan"));
     assertNull(emailDelegationStorage.updateOfferedRights("alice", inUse.getId(), "l", "l"), "a share in use is not written");
     assertEquals("lrs", emailDelegationStorage.getAsOwner("alice", inUse.getId()).getRights());
+  }
+
+  /**
+   * EXO-90582 -- the owner's consent to writing in her name, over the shipped changelog:
+   * written by its own statement on the owner's live share, with its date; withdrawn to
+   * no mode and no date; refused on another owner's id and on an ended share.
+   */
+  @Test
+  void theSendModeIsWrittenAloneOnTheOwnersLiveShare() {
+    EmailDelegation row = emailDelegationStorage.create(acceptedRow("jack"));
+
+    EmailDelegation consented = emailDelegationStorage.updateSendMode("alice", row.getId(), SendMode.AS);
+    assertEquals(SendMode.AS, consented.getSendMode());
+    assertNotNull(consented.getSendModeDate());
+    assertNull(consented.getSendRefusedDate());
+    assertEquals(DelegationStatus.ACCEPTED, consented.getStatus());
+    assertNull(emailDelegationStorage.updateSendMode("bob", row.getId(), SendMode.ON_BEHALF), "another owner's id writes nothing");
+
+    EmailDelegation withdrawn = emailDelegationStorage.updateSendMode("alice", row.getId(), SendMode.NONE);
+    assertNull(withdrawn.getSendMode(), "a withdrawal stores no mode");
+    assertNull(withdrawn.getSendModeDate(), "and no date: the row's shape before the feature");
+
+    EmailDelegationEntity ended = emailDelegationDAO.findById(row.getId()).orElseThrow();
+    ended.setStatus(DelegationStatus.REVOKED.name());
+    emailDelegationDAO.saveAndFlush(ended);
+    assertNull(emailDelegationStorage.updateSendMode("alice", row.getId(), SendMode.ON_BEHALF), "an ended share is not written");
+  }
+
+  /**
+   * EXO-90582 -- a whole-row write from a DTO read before the owner set, or withdrew, her
+   * consent neither undoes nor revives it: the consent's columns are never in that write.
+   * The stale DTO's own change lands.
+   */
+  @Test
+  void aStaleWholeRowWriteNeitherUndoesNorRevivesTheSendMode() {
+    EmailDelegation readBeforeTheConsent = emailDelegationStorage.create(acceptedRow("kate"));
+    emailDelegationStorage.updateSendMode("alice", readBeforeTheConsent.getId(), SendMode.ON_BEHALF);
+    readBeforeTheConsent.setRights("lrsw");
+    emailDelegationStorage.update(readBeforeTheConsent);
+    EmailDelegation read = emailDelegationStorage.getAsOwner("alice", readBeforeTheConsent.getId());
+    assertEquals("lrsw", read.getRights(), "the write itself landed");
+    assertEquals(SendMode.ON_BEHALF, read.getSendMode(), "and did not undo the consent given meanwhile");
+
+    EmailDelegation readBeforeTheWithdrawal = emailDelegationStorage.getAsOwner("alice", readBeforeTheConsent.getId());
+    emailDelegationStorage.updateSendMode("alice", readBeforeTheWithdrawal.getId(), SendMode.NONE);
+    readBeforeTheWithdrawal.setRights("lrs");
+    emailDelegationStorage.update(readBeforeTheWithdrawal);
+    assertNull(emailDelegationStorage.getAsOwner("alice", readBeforeTheWithdrawal.getId()).getSendMode(),
+               "nor revive the consent withdrawn meanwhile");
+  }
+
+  /**
+   * EXO-90582 -- the consent taken off a share once it ended, over the shipped changelog:
+   * nothing on a live share, all three columns on an ended one.
+   */
+  @Test
+  void theSendModeIsTakenOffAnEndedShareOnly() {
+    EmailDelegation row = emailDelegationStorage.create(acceptedRow("liam"));
+    emailDelegationStorage.updateSendMode("alice", row.getId(), SendMode.AS);
+    assertFalse(emailDelegationStorage.clearSendModeIfEnded(row.getId()), "a live share keeps it");
+
+    EmailDelegationEntity ended = emailDelegationDAO.findById(row.getId()).orElseThrow();
+    ended.setStatus(DelegationStatus.DECLINED.name());
+    emailDelegationDAO.saveAndFlush(ended);
+    assertTrue(emailDelegationStorage.clearSendModeIfEnded(row.getId()));
+    EmailDelegation read = emailDelegationStorage.getAsOwner("alice", row.getId());
+    assertNull(read.getSendMode());
+    assertNull(read.getSendModeDate());
   }
 
   /**
