@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.listener;
 import static org.exoplatform.emailConnector.utils.EmailConnectorUtils.ACCESS_WEBMAIL;
 import static org.exoplatform.emailConnector.utils.EmailConnectorUtils.OPEN_EMAIL;
 import static org.exoplatform.emailConnector.utils.EmailConnectorUtils.SEND_EMAIL;
+import static org.exoplatform.emailConnector.utils.EmailConnectorUtils.SEND_EMAIL_IN_OWNERS_NAME;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Profile;
@@ -47,7 +48,10 @@ public class AnalyticsEmailListener extends Listener<String, String> {
 
   private static final String   ACCESS_WEBMAIL_OPERATION_NAME = "accessWebmail";
 
-  private static final String[] LISTENER_EVENTS               = { OPEN_EMAIL, SEND_EMAIL, ACCESS_WEBMAIL };
+  /** A mail sent in a shared mailbox owner's name (EXO-90583), counted by shape. */
+  private static final String   SEND_EMAIL_IN_OWNERS_NAME_OPERATION_NAME = "sendEmailInOwnersName";
+
+  private static final String[] LISTENER_EVENTS               = { OPEN_EMAIL, SEND_EMAIL, ACCESS_WEBMAIL, SEND_EMAIL_IN_OWNERS_NAME };
 
   @Autowired
   private IdentityManager       identityManager;
@@ -55,6 +59,9 @@ public class AnalyticsEmailListener extends Listener<String, String> {
   @Autowired
   private ListenerService       listenerService;
 
+  /**
+   * Subscribes to the mail events the analytics count.
+   */
   @PostConstruct
   public void init() {
     for (String listener : LISTENER_EVENTS) {
@@ -62,6 +69,14 @@ public class AnalyticsEmailListener extends Listener<String, String> {
     }
   }
 
+  /**
+   * Records one mail event as a statistic of the user who caused it: the connector for
+   * an opened mail or the webmail, the kind of mail for a send, and the shape for a mail
+   * sent in a shared mailbox owner's name (EXO-90583) -- never the owner's address.
+   *
+   * @param event the event: source the user, data as each event defines it
+   * @throws Exception when the statistic cannot be recorded
+   */
   @Override
   public void onEvent(Event<String, String> event) throws Exception {
     String eventData = event.getData();
@@ -81,19 +96,34 @@ public class AnalyticsEmailListener extends Listener<String, String> {
       statisticData.addKeyword("connectorName", eventData);
     } else if (event.getEventName().equals(SEND_EMAIL)) {
       statisticData.addKeyword("emailType", eventData);
+    } else if (event.getEventName().equals(SEND_EMAIL_IN_OWNERS_NAME)) {
+      statisticData.addKeyword("sendMode", eventData);
     }
     AnalyticsUtils.addStatisticData(statisticData);
   }
 
+  /**
+   * The analytics operation of a mail event.
+   *
+   * @param eventName the event's name
+   * @return the operation
+   * @throws IllegalArgumentException for an event this listener does not subscribe to
+   */
   private String mapEventNameToOperation(String eventName) {
     return switch (eventName) {
     case OPEN_EMAIL -> OPEN_EMAIL_OPERATION_NAME;
     case SEND_EMAIL -> SEND_EMAIL_OPERATION_NAME;
     case ACCESS_WEBMAIL -> ACCESS_WEBMAIL_OPERATION_NAME;
+    case SEND_EMAIL_IN_OWNERS_NAME -> SEND_EMAIL_IN_OWNERS_NAME_OPERATION_NAME;
     default -> throw new IllegalArgumentException("Unknown event: " + eventName);
     };
   }
 
+  /**
+   * The identity manager, looked up from the container when it was not injected.
+   *
+   * @return the identity manager
+   */
   public IdentityManager getIdentityManager() {
     if (identityManager == null) {
       identityManager = ExoContainerContext.getService(IdentityManager.class);
