@@ -446,6 +446,47 @@ class EmailDelegationFolderAccessTest {
   }
 
   /**
+   * The delegate's copy of a folder under INBOX is found by the name discovery
+   * registered: on a Dovecot-style shared namespace {@code INBOX/Sub} is listed as
+   * {@code <root>/INBOX/Sub}, and a top-level {@code Sub} beside it is never taken for
+   * it; where only the name without INBOX is registered (a server that names the owner's
+   * folders under INBOX), that one is.
+   */
+  @Test
+  void aFolderUnderInboxIsFoundByTheNameDiscoveryRegistered() throws Exception {
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted());
+    answerTheFolderGrantsWrite();
+    when(engine.listOwnFolders(any())).thenReturn(List.of(own(INBOX, null), own("INBOX/ZZRev", null), own("ZZRev", null), own("INBOX/Legacy", null)));
+    List<EmailFolder> rows = granteeFolders();
+    rows.add(granteeFolder(17L, ROOT + "/INBOX/ZZRev", MailFolderView.TYPE_DELEGATED, null, "lrs"));
+    rows.add(granteeFolder(18L, ROOT + "/ZZRev", MailFolderView.TYPE_DELEGATED, null, "lrs"));
+    rows.add(granteeFolder(19L, ROOT + "/Legacy", MailFolderView.TYPE_DELEGATED, null, "lrs"));
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(rows);
+
+    service.setFolderAccess(OWNER, 100L, List.of(change("INBOX/ZZRev", FolderAccess.NONE), change("INBOX/Legacy", FolderAccess.NONE)));
+
+    verify(emailFolderStorage).deleteFolder(GRANTEE, 17L);
+    verify(emailFolderStorage, never()).deleteFolder(GRANTEE, 18L);
+    verify(emailFolderStorage).deleteFolder(GRANTEE, 19L);
+  }
+
+  /**
+   * "Not shared" is recorded when it takes something away: a role folder the server
+   * refused at the grant, sent back as it was shown, stays said refused and offered by
+   * "Extend access" -- not turned into the owner's choice by an unrelated save.
+   */
+  @Test
+  void aRoleFolderNobodyTouchedIsNotTurnedIntoTheOwnersChoice() throws Exception {
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted());
+    Map<String, Object> written = answerTheFolderGrantsWrite();
+
+    service.setFolderAccess(OWNER, 100L, List.of(change("Corbeille", FolderAccess.NONE), change("Sent", FolderAccess.NONE)));
+
+    assertEquals(Map.of(FolderRole.SENT, FolderAccess.NONE), written.get("folderAccess"), "Sent was shared: not sharing it is a choice");
+    assertEquals("INBOX", written.get("grantedRoles"));
+  }
+
+  /**
    * A folder narrowed to Reader narrows what the delegate's screens read at once, the
    * letters they held intersected with the ones written -- never widened from the
    * owner's side: a delegate who held less than Reader keeps less.
@@ -463,6 +504,25 @@ class EmailDelegationFolderAccessTest {
     verify(emailFolderStorage).updateDelegatedRights(eq(GRANTEE), eq(14L), eq(100L), eq(FolderRole.SENT), eq("lrs"), any(Date.class));
     verify(emailFolderStorage, never()).updateDelegatedRights(eq(GRANTEE), eq(15L), anyLong(), any(), anyString(), any());
     verify(emailFolderStorage, never()).updateDelegatedRights(eq(GRANTEE), eq(16L), anyLong(), any(), anyString(), any());
+  }
+
+  /**
+   * An Editor chosen over a wider entry narrows too: on the owner's Trash the grant
+   * writes no {@code e}, and the delegate's recorded letters lose it at once.
+   */
+  @Test
+  void anEditorOnTrashTakesThePermanentDeletionAwayAtOnce() throws Exception {
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted());
+    answerTheFolderGrantsWrite();
+    List<EmailFolder> rows = granteeFolders();
+    rows.add(granteeFolder(20L, ROOT + "/Corbeille", MailFolderView.TYPE_DELEGATED, FolderRole.TRASH, "lrswite"));
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(rows);
+    when(engine.grant(any(), eq("Corbeille"), anyString(), eq(DelegationPreset.EDITOR), any(), eq(FolderRole.TRASH)))
+                                                                                                                   .thenReturn(ace(GRANTEE_MAILBOX, "lrswit"));
+
+    service.setFolderAccess(OWNER, 100L, List.of(change("Corbeille", FolderAccess.EDITOR)));
+
+    verify(emailFolderStorage).updateDelegatedRights(eq(GRANTEE), eq(20L), eq(100L), eq(FolderRole.TRASH), eq("lrswit"), any(Date.class));
   }
 
   /**
