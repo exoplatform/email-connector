@@ -67,11 +67,19 @@ public class EmailSearchResult {
 
   // The local id of the cached row holding the message, whenever there is one -- for a
   // hit found on the server as for one read from the local copy: the key an agent names
-  // one mail by, which a UID, numbered per folder, is not. Null when it is not cached.
+  // one mail by, which a UID, numbered per folder, is not. Null when it is not cached,
+  // and on the unified search's hits, which open by UID and folder.
   private Long        emailId;
 
+  // The share a hit read from a mailbox shared with the user belongs to (EXO-90554),
+  // null for the user's own mail: what the mail drawer's mailbox= opening takes.
+  private Long        delegationId;
+
+  // That mailbox's owner, as the result card names them; null for the user's own mail.
+  private String      ownerFullName;
+
   /**
-   * A hit named by its folder and UID only, with no local id.
+   * A hit named by its folder and UID only, with no local id, no share and no owner.
    *
    * @param mailRemoteId the UID in the searched folder
    * @param folder the folder searched
@@ -79,7 +87,7 @@ public class EmailSearchResult {
    * @param sender the sender
    * @param receivedDate the reception date
    * @param read whether it is read
-   * @param starred whether it is starred
+   * @param starred whether it carries \Flagged
    * @param cached whether it is in the local cache
    * @param excerpt a piece of it around the match, or null
    */
@@ -93,5 +101,33 @@ public class EmailSearchResult {
                            boolean cached,
                            String excerpt) {
     this(mailRemoteId, folder, subject, sender, receivedDate, read, starred, cached, excerpt, null);
+  }
+
+  /**
+   * A hit with a local id, when it has one, and no share or owner: an agent's search
+   * hit, which names a shared mailbox otherwise (EXO-90555).
+   *
+   * @param mailRemoteId the UID in the searched folder
+   * @param folder the folder searched
+   * @param subject the subject
+   * @param sender the sender
+   * @param receivedDate the reception date
+   * @param read whether it is read
+   * @param starred whether it carries \Flagged
+   * @param cached whether it is in the local cache
+   * @param excerpt a piece of it around the match, or null
+   * @param emailId the cached row's local id, or null
+   */
+  public EmailSearchResult(Long mailRemoteId,
+                           String folder,
+                           String subject,
+                           EmailSender sender,
+                           Date receivedDate,
+                           boolean read,
+                           boolean starred,
+                           boolean cached,
+                           String excerpt,
+                           Long emailId) {
+    this(mailRemoteId, folder, subject, sender, receivedDate, read, starred, cached, excerpt, emailId, null, null);
   }
 }

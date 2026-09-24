@@ -396,12 +396,20 @@ public class UserEmailSettingRestTest {
     mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/5/leave").with(testSimpleUser())).andExpect(status().isOk());
     verify(emailDelegationService).leave(SIMPLE_USER, 5L);
 
-    when(emailDelegationService.updatePreferences(SIMPLE_USER, 5L, true, null)).thenReturn(delegation);
+    when(emailDelegationService.updatePreferences(SIMPLE_USER, 5L, true, null, null)).thenReturn(delegation);
     mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/5/preferences").with(testSimpleUser())
                                                                                .content(asJsonString(new DelegationPreferencesRequest(true, null)))
                                                                                .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isOk());
-    verify(emailDelegationService).updatePreferences(SIMPLE_USER, 5L, true, null);
+    verify(emailDelegationService).updatePreferences(SIMPLE_USER, 5L, true, null, null);
+
+    // EXO-90554: the search toggle travels alone.
+    when(emailDelegationService.updatePreferences(SIMPLE_USER, 5L, null, null, false)).thenReturn(delegation);
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/5/preferences").with(testSimpleUser())
+                                                                               .content("{\"searchIncluded\":false}")
+                                                                               .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailDelegationService).updatePreferences(SIMPLE_USER, 5L, null, null, false);
   }
 
   /**

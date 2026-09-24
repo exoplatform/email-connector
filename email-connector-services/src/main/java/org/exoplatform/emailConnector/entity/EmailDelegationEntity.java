@@ -112,6 +112,11 @@ public class EmailDelegationEntity {
   @Column(name = "NOTIFY_NEW_MAIL")
   private boolean notifyNewMail;
 
+  // Whether the unified search returns this shared mailbox's mirror (EXO-90554); on by
+  // default, added by changeset 1.0.0-85.
+  @Column(name = "SEARCH_INCLUDED")
+  private boolean searchIncluded = true;
+
   // When the grantee last opened this mailbox: the sync-tier signal, per delegation.
   @Column(name = "LAST_ACTIVITY_DATE")
   private Date    lastActivityDate;

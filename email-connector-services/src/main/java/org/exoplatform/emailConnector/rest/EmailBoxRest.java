@@ -507,7 +507,7 @@ public class EmailBoxRest {
   @GetMapping("/search/cached")
   @Secured("users")
   @Operation(summary = "Searches the locally cached mail", method = "GET",
-             description = "Filters the messages this add-on already holds locally, over their subject, sender and body. Answers immediately, without touching the mail server, which is what the platform's unified search needs: it queries every connector at once and shows the page when the slowest answers. Use /search to reach the whole mailbox.")
+             description = "Filters the messages this add-on already holds locally, over their subject, sender and body: the caller's own mail, and the caller's copy of each mailbox shared with them whose search toggle is on -- never its owner's Trash or Spam, and not under the favorites filter. A hit of a shared mailbox carries delegationId and ownerFullName; the caller's own hits carry neither. Answers immediately, without touching the mail server, which is what the platform's unified search needs: it queries every connector at once and shows the page when the slowest answers. Use /search to reach the whole mailbox.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request: no search text"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })

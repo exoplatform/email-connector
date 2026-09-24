@@ -190,6 +190,8 @@ import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
+import org.exoplatform.emailConnector.model.SharedMailboxSearchFolders;
+import org.exoplatform.emailConnector.model.SharedMailboxSearchScope;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSyncState;
 import org.exoplatform.emailConnector.model.EmailSender;
@@ -344,6 +346,7 @@ public class EmailBoxServiceTest {
     theProviderAnswersTheStoredAccount();
     theSyncResolvesAnAuthenticatorForItsWorkers();
     countNothingInTheCacheByDefault();
+    shareNoMailboxByDefault();
   }
 
   /**
@@ -408,6 +411,15 @@ public class EmailBoxServiceTest {
    */
   private void countNothingInTheCacheByDefault() {
     lenient().when(emailBoxStorage.getFolderCounts(anyString())).thenReturn(new FolderMessageCounts(Map.of(), Map.of()));
+  }
+
+  /**
+   * No mailbox shared with anybody, for the cached search in this class: an unstubbed
+   * mock answers null where the delegation service never does. Lenient like the
+   * defaults around it; the tests about shared mailboxes stub their own.
+   */
+  private void shareNoMailboxByDefault() {
+    lenient().when(emailDelegationService.getSharedMailboxSearchFolders(anyString())).thenReturn(SharedMailboxSearchFolders.NONE);
   }
 
   /**
@@ -12738,6 +12750,53 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90554 -- the unified search returns the searchable folders of the mailboxes
+   * shared with the user, each hit carrying its share and its owner's name, interleaved
+   * newest first with the user's own hits, which carry neither. The own read still
+   * leaves every shared folder out, so a shared row is never offered unlabelled; the
+   * shared rows are read in one query over the scope's keys; and the Favorites filter
+   * leaves them out.
+   */
+  @Test
+  void theCachedSearchLabelsTheSharedMailboxesHitsWithTheirOwner() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    Map<String, SharedMailboxSearchScope> scopes = Map.of("CUSTOM:8", new SharedMailboxSearchScope(100L, "Alice Martin"));
+    when(emailDelegationService.getSharedMailboxSearchFolders(TEST_USER)).thenReturn(new SharedMailboxSearchFolders(List.of("CUSTOM:8",
+                                                                                                                           "CUSTOM:9"),
+                                                                                                                  scopes));
+    Email own = email(TEST_USER);
+    own.setMailRemoteId(1L);
+    own.setFolder(MailFolder.INBOX);
+    own.setSubject("budget, mine");
+    own.setReceivedDate(new Date(1_000L));
+    when(emailBoxStorage.getEmailsForSearch(TEST_USER, List.of("CUSTOM:8", "CUSTOM:9"))).thenReturn(List.of(own));
+    Email shared = mirrored(2L, "budget, Alice's", "carol@acme.com", false, 0);
+    shared.setId(55L);
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, scopes.keySet())).thenReturn(List.of(shared));
+
+    EmailSearchResultPage page = emailBoxService.searchCachedEmails(TEST_USER, "budget", false, 10);
+
+    assertEquals(2, page.getTotalMatches());
+    EmailSearchResult sharedHit = page.getResults().get(0);
+    assertEquals("CUSTOM:8", sharedHit.getFolder(), "newest first, across both mailboxes");
+    assertEquals(100L, sharedHit.getDelegationId());
+    assertEquals("Alice Martin", sharedHit.getOwnerFullName());
+    assertNull(sharedHit.getEmailId(), "a unified-search hit opens by UID and folder, as the user's own do");
+    EmailSearchResult ownHit = page.getResults().get(1);
+    assertNull(ownHit.getDelegationId(), "the user's own mail names no share");
+    assertNull(ownHit.getOwnerFullName());
+    verify(emailBoxStorage).getEmailsForSearchInFolders(TEST_USER, scopes.keySet());
+
+    // The Favorites filter is the user's own favorites: a shared mailbox's star is its
+    // owner's (EXO-90550), so its starred mail stays out.
+    shared.setStarred(true);
+    own.setStarred(true);
+    EmailSearchResultPage favorites = emailBoxService.searchCachedEmails(TEST_USER, "budget", true, 10);
+    assertEquals(List.of(MailFolder.INBOX), favorites.getResults().stream().map(EmailSearchResult::getFolder).toList());
+  }
+
+  /**
    * One mirrored message of a shared mailbox's folder.
    *
    * @param uid its UID
@@ -12759,14 +12818,16 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * The cached search leaves the shared mailboxes out -- phase 1 offers them nowhere in
-   * the unified search -- and a user who shares nothing reads exactly as before.
+   * The cached search reads the user's own mail without the shared mailboxes' folders
+   * -- those come back only labelled with their owner, through the searchable scope
+   * (EXO-90554) -- and a user who shares nothing reads exactly as before.
    */
   @Test
   void theCachedSearchLeavesTheSharedMailboxesOut() throws Exception {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
     when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
-    when(emailDelegationService.getDelegatedFolderKeys(TEST_USER)).thenReturn(List.of("CUSTOM:8"));
+    when(emailDelegationService.getSharedMailboxSearchFolders(TEST_USER)).thenReturn(new SharedMailboxSearchFolders(List.of("CUSTOM:8"),
+                                                                                                                  Map.of()));
     when(emailBoxStorage.getEmailsForSearch(TEST_USER, List.of("CUSTOM:8"))).thenReturn(List.of());
 
     emailBoxService.searchCachedEmails(TEST_USER, "budget", false, 10);

@@ -86,6 +86,18 @@
             </v-list-item-title>
             <v-list-item-subtitle class="d-flex flex-column">
               <span class="d-flex flex-row align-center mx-auto full-width">
+                <!-- Whose mailbox a hit of a mailbox shared with the user comes from
+                     (EXO-90554): always shown, unlike the folder chip, since without
+                     it the owner's mail reads as the user's own. -->
+                <span
+                  v-if="ownerLabel"
+                  class="d-flex flex-row align-center flex-grow-0 flex-shrink-1 text-truncate me-2">
+                  <v-icon size="12" class="icon-default-color me-1">fas fa-user-friends</v-icon>
+                  <span class="text-truncate">{{ ownerLabel }}</span>
+                  <v-icon
+                    size="3"
+                    class="icon-default-color ms-2">fas fa-circle</v-icon>
+                </span>
                 <span class="text-subtitle text-truncate">{{ senderName }}</span>
                 <span class="d-flex flex-row align-center flex-grow-0 flex-shrink-0">
                   <v-icon
@@ -184,6 +196,11 @@ export default {
     senderName() {
       return this.result?.sender?.name || this.result?.sender?.address || '';
     },
+    ownerLabel() {
+      // Only a hit of a mailbox shared with the user names an owner (EXO-90554).
+      return this.result?.ownerFullName
+        && this.$t('emailConnector.search.connector.sharedMailbox', {0: this.result.ownerFullName}) || '';
+    },
     folderLabel() {
       // The inbox is where mail normally is, so only the other folders are worth a
       // chip: seeing "Sent" explains why a hit reads as something the user wrote.
@@ -234,6 +251,12 @@ export default {
         }}));
       });
     },
+    /**
+     * Opens the message in the mailbox's own reader -- on the shared mailbox it came
+     * from, for a hit of a mailbox shared with the user.
+     *
+     * @returns {void}
+     */
     openEmail() {
       // The mailbox owns the reader, wherever the user is standing. Requiring the
       // module first covers the page that has not loaded it yet; it is a no-op once
@@ -244,12 +267,17 @@ export default {
       // locally at all -- the mailbox pulls that one in before opening it. Sending
       // the id alone opened an empty reader for every hit that was not a cached
       // inbox message.
+      //
+      // A hit of a mailbox shared with the user names that mailbox too (EXO-90554): the
+      // drawer opens on it, as the switcher would, so the message reads with that
+      // mailbox's band and controls rather than as the user's own.
       window.require(['SHARED/emailConnectorQuickActionExtension'], () =>
         document.dispatchEvent(new CustomEvent('open-email-box-mail', {
           detail: {
             mailRemoteId: this.result?.mailRemoteId,
             folder: this.result?.folder,
             cached: this.result?.cached,
+            mailbox: this.result?.delegationId || null,
           },
         })));
     },
