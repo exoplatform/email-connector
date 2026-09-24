@@ -100,8 +100,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <div class="px-4 pt-2 pb-1 text-sub-title text-uppercase caption">
       {{ $t('emailConnector.mailBox.list.drawer.menu.actions') }}
     </div>
-    <!-- Synchronize now (progress is shown by the drawer's header bar while it runs). -->
+    <!-- Synchronize now (progress is shown by the drawer's header bar while it runs). Not
+         in full screen, where it is a button beside this menu (hideSync, EXO-90624). -->
     <v-list-item
+      v-if="!hideSync"
       class="height-auto"
       :disabled="syncInProgress"
       @click="synchronize()">
@@ -227,6 +229,12 @@ export default {
     // Whether FOLDERS and CATEGORIES are left out: in full screen they are the folder
     // column's, beside the list (EXO-90415), and the menu keeps the actions only.
     hideViews: {
+      type: Boolean,
+      default: false,
+    },
+    // Whether Synchronize is left out: in full screen it is a button beside the menu
+    // (EXO-90624).
+    hideSync: {
       type: Boolean,
       default: false,
     },
