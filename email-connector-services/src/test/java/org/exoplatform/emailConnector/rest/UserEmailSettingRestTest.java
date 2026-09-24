@@ -307,7 +307,8 @@ public class UserEmailSettingRestTest {
                                                                                                                                                         .affordances(),
                                                                                                                                            true)),
                                                                                                            true,
-                                                                                                           true)));
+                                                                                                           true,
+                                                                                                           List.of(SendMode.ON_BEHALF))));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/mailboxes").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$[0].delegationId").value(5))
@@ -325,7 +326,9 @@ public class UserEmailSettingRestTest {
            // What the band says: from the share, not from the folders found.
            .andExpect(jsonPath("$[0].inboxOnly").value(true))
            // EXO-90551: whether the composer's copy into the owner's Sent will be filed.
-           .andExpect(jsonPath("$[0].sentCopy").value(true));
+           .andExpect(jsonPath("$[0].sentCopy").value(true))
+           // EXO-90582: the shapes the delegate can write in the owner's name in now.
+           .andExpect(jsonPath("$[0].sendModes[0]").value("ON_BEHALF"));
     verify(emailDelegationService).getSharedMailboxes(SIMPLE_USER);
   }
 
@@ -492,18 +495,21 @@ public class UserEmailSettingRestTest {
     assertSendModeAnswer(10L, 404, null);
     assertSendModeAnswer(11L, 401, null);
 
+    DelegationGrantee bob = DelegationGrantee.of(MailboxAce.ofLetters("bob@acme.com", MailboxRights.of("lrswite")), "bob", consented)
+                                             .withConsentContext("Bob Martin", true);
     when(emailDelegationService.getGrantedDelegations(SIMPLE_USER)).thenReturn(new GrantedDelegations(MailboxAclCapabilities.imap(true,
                                                                                                                                   true,
                                                                                                                                   Set.of(SendMode.ON_BEHALF,
                                                                                                                                          SendMode.AS)),
                                                                                                     "simple@acme.com",
-                                                                                                    List.of(),
-                                                                                                    true));
+                                                                                                    List.of(bob)));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/granted").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.capabilities.sendModes.length()").value(2))
            .andExpect(jsonPath("$.capabilities.sendModeOnServer").value(false))
-           .andExpect(jsonPath("$.sentCopyEnabled").value(true));
+           .andExpect(jsonPath("$.grantees[0].granteeFullName").value("Bob Martin"))
+           .andExpect(jsonPath("$.grantees[0].ownerSentCopy").value(true))
+           .andExpect(jsonPath("$.grantees[0].delegation.sendMode").value("ON_BEHALF"));
   }
 
   /**
