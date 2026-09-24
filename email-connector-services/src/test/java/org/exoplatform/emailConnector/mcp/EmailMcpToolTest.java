@@ -48,6 +48,7 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.mcp.model.EmailAccountModel;
 import org.exoplatform.emailConnector.mcp.model.EmailAttachmentModel;
 import org.exoplatform.emailConnector.mcp.model.EmailModel;
+import org.exoplatform.emailConnector.mcp.model.EmailSearchHitModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchResultsModel;
 import org.exoplatform.emailConnector.mcp.model.EmailThreadMessageModel;
 import org.exoplatform.emailConnector.model.Email;
@@ -105,6 +106,7 @@ class EmailMcpToolTest {
     Email email = new Email();
     email.setId(id);
     email.setMailRemoteId(REMOTE_ID);
+    email.setFolder(MailFolder.INBOX);
     email.setUserId(USERNAME);
     email.setUserEmail("testuser1@example.com");
     email.setSubject("Hello");
@@ -384,7 +386,7 @@ class EmailMcpToolTest {
     email.getContent().setAttachments(List.of(attachment));
     when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(false), eq(false), eq(false))).thenReturn(email);
 
-    List<EmailAttachmentModel> attachments = emailMcpTool.listAttachments(REMOTE_ID, null);
+    List<EmailAttachmentModel> attachments = emailMcpTool.listAttachments(REMOTE_ID, null, null);
 
     assertEquals(1, attachments.size());
     EmailAttachmentModel model = attachments.get(0);
@@ -405,7 +407,7 @@ class EmailMcpToolTest {
     email.getContent().setAttachments(null);
     when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(false), eq(false), eq(false))).thenReturn(email);
 
-    assertTrue(emailMcpTool.listAttachments(REMOTE_ID, null).isEmpty());
+    assertTrue(emailMcpTool.listAttachments(REMOTE_ID, null, null).isEmpty());
   }
 
   // --- mark_read / mark_unread ---------------------------------------------
@@ -413,7 +415,7 @@ class EmailMcpToolTest {
   @Test
   void markReadDelegatesToService() throws Exception {
     when(emailBoxService.updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(true))).thenReturn(0);
-    String message = emailMcpTool.markRead(List.of(REMOTE_ID), null);
+    String message = emailMcpTool.markRead(List.of(REMOTE_ID), null, null);
     verify(emailBoxService).updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(true));
     assertEquals("Marked 1 email(s) as read.", message);
   }
@@ -421,7 +423,7 @@ class EmailMcpToolTest {
   @Test
   void markUnreadDelegatesToService() throws Exception {
     when(emailBoxService.updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX), eq(false), eq(true))).thenReturn(0);
-    String message = emailMcpTool.markUnread(List.of(REMOTE_ID), null);
+    String message = emailMcpTool.markUnread(List.of(REMOTE_ID), null, null);
     verify(emailBoxService).updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX), eq(false), eq(true));
     assertEquals("Marked 1 email(s) as unread.", message);
   }
@@ -429,7 +431,7 @@ class EmailMcpToolTest {
   @Test
   void markReadReportsAllFailuresAsFailure() throws Exception {
     when(emailBoxService.updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(true))).thenReturn(1);
-    String message = emailMcpTool.markRead(List.of(REMOTE_ID), null);
+    String message = emailMcpTool.markRead(List.of(REMOTE_ID), null, null);
     // When every email fails, the message must be phrased as a clear failure and
     // must not claim any success.
     assertTrue(message.startsWith("Failed to mark 1 email(s) as read"), message);
@@ -440,7 +442,7 @@ class EmailMcpToolTest {
   void markReadReportsPartialFailure() throws Exception {
     List<Long> ids = List.of(REMOTE_ID, 888L);
     when(emailBoxService.updateEmailReadStatus(eq(ids), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(true))).thenReturn(1);
-    String message = emailMcpTool.markRead(ids, null);
+    String message = emailMcpTool.markRead(ids, null, null);
     assertEquals("Marked 1 of 2 email(s) as read; 1 failed (message not found on server or IMAP write denied).", message);
   }
 
@@ -479,7 +481,7 @@ class EmailMcpToolTest {
     original.setSender(new EmailSender("Alice", "alice@example.com", null, null));
     when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), eq(MailFolder.INBOX), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(original);
 
-    emailMcpTool.replyEmail(REMOTE_ID, "<p>My answer</p>", null);
+    emailMcpTool.replyEmail(REMOTE_ID, "<p>My answer</p>", null, null);
 
     ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxService).sendEmail(captor.capture(), eq(USERNAME));
@@ -507,7 +509,7 @@ class EmailMcpToolTest {
     setting.setEmailAddress("testuser1@example.com");
     when(userEmailSettingService.getUserEmailSetting(eq(USERNAME))).thenReturn(setting);
 
-    emailMcpTool.replyAll(REMOTE_ID, "<p>Reply all body</p>", null);
+    emailMcpTool.replyAll(REMOTE_ID, "<p>Reply all body</p>", null, null);
 
     ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxService).sendEmail(captor.capture(), eq(USERNAME));
@@ -679,9 +681,11 @@ class EmailMcpToolTest {
 
     assertEquals(MailFolder.INBOX, thread.get(0).getFolder());
     assertEquals(MailFolder.SENT, thread.get(1).getFolder(), "a sent message must report SENT, not the reader's default");
-    // Same number, two different messages: the folder is the whole of what tells them
-    // apart.
-    assertEquals(thread.get(0).getMailRemoteId(), thread.get(1).getMailRemoteId());
+    // Same number, two different messages: only the INBOX one hands its UID out
+    // (EXO-90555), so the sent one can only be named by its email_id and never reaches
+    // the inbox message numbered like it.
+    assertEquals(101L, thread.get(0).getMailRemoteId());
+    assertNull(thread.get(1).getMailRemoteId(), "a UID outside the own INBOX is never handed out");
   }
 
   /**
@@ -728,7 +732,7 @@ class EmailMcpToolTest {
   @Test
   void archiveEmailDelegatesToService() throws Exception {
     when(emailBoxService.archiveEmail(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX))).thenReturn(0);
-    String result = emailMcpTool.archiveEmail(List.of(REMOTE_ID), null);
+    String result = emailMcpTool.archiveEmail(List.of(REMOTE_ID), null, null);
     verify(emailBoxService).archiveEmail(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX));
     assertTrue(result.contains("Archived 1 of 1"));
   }
@@ -736,7 +740,7 @@ class EmailMcpToolTest {
   @Test
   void deleteEmailDelegatesToService() throws Exception {
     when(emailBoxService.deleteEmail(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX))).thenReturn(0);
-    String result = emailMcpTool.deleteEmail(List.of(REMOTE_ID), null);
+    String result = emailMcpTool.deleteEmail(List.of(REMOTE_ID), null, null);
     verify(emailBoxService).deleteEmail(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX));
     assertTrue(result.contains("Deleted 1 of 1"));
   }
@@ -819,17 +823,17 @@ class EmailMcpToolTest {
                                                                   () -> emailMcpTool.listEmails(null, null, null, null, nobody),
                                                                   () -> emailMcpTool.getUnreadCount(nobody),
                                                                   () -> emailMcpTool.searchEmails("x", null, null, null, null, null, nobody),
-                                                                  () -> emailMcpTool.getEmailFull(REMOTE_ID, nobody),
-                                                                  () -> emailMcpTool.listAttachments(REMOTE_ID, nobody),
+                                                                  () -> emailMcpTool.getEmailFull(REMOTE_ID, null, nobody),
+                                                                  () -> emailMcpTool.listAttachments(REMOTE_ID, null, nobody),
                                                                   () -> emailMcpTool.getEmailThread("thread-1", nobody),
-                                                                  () -> emailMcpTool.markRead(List.of(REMOTE_ID), nobody),
-                                                                  () -> emailMcpTool.markUnread(List.of(REMOTE_ID), nobody),
+                                                                  () -> emailMcpTool.markRead(List.of(REMOTE_ID), null, nobody),
+                                                                  () -> emailMcpTool.markUnread(List.of(REMOTE_ID), null, nobody),
                                                                   () -> emailMcpTool.sendEmail(List.of("bob@acme.com"), "Hi", "<p>x</p>", null, null, nobody),
-                                                                  () -> emailMcpTool.replyEmail(REMOTE_ID, "<p>x</p>", nobody),
-                                                                  () -> emailMcpTool.replyAll(REMOTE_ID, "<p>x</p>", nobody),
-                                                                  () -> emailMcpTool.forwardEmail(REMOTE_ID, List.of("bob@acme.com"), "<p>x</p>", null, nobody),
-                                                                  () -> emailMcpTool.archiveEmail(List.of(REMOTE_ID), nobody),
-                                                                  () -> emailMcpTool.deleteEmail(List.of(REMOTE_ID), nobody));
+                                                                  () -> emailMcpTool.replyEmail(REMOTE_ID, "<p>x</p>", nobody, null),
+                                                                  () -> emailMcpTool.replyAll(REMOTE_ID, "<p>x</p>", nobody, null),
+                                                                  () -> emailMcpTool.forwardEmail(REMOTE_ID, List.of("bob@acme.com"), "<p>x</p>", null, nobody, null),
+                                                                  () -> emailMcpTool.archiveEmail(List.of(REMOTE_ID), nobody, null),
+                                                                  () -> emailMcpTool.deleteEmail(List.of(REMOTE_ID), nobody, null));
     for (org.junit.jupiter.api.function.Executable call : calls) {
       ObjectNotFoundException refused = assertThrows(ObjectNotFoundException.class, call);
       assertTrue(refused.getMessage().contains(nobody), refused.getMessage());
@@ -948,7 +952,8 @@ class EmailMcpToolTest {
 
     List<EmailThreadMessageModel> thread = emailMcpTool.getEmailThread("thread-1", OWNER_MAILBOX);
 
-    assertEquals(java.util.Arrays.asList("INBOX", "SENT", null), thread.stream().map(EmailThreadMessageModel::getFolder).toList());
+    assertEquals(java.util.Arrays.asList("INBOX", "SENT", "TRASH"), thread.stream().map(EmailThreadMessageModel::getFolder).toList());
+    assertTrue(thread.stream().allMatch(message -> message.getMailRemoteId() == null), "no UID is handed out for a shared mailbox's mail");
   }
 
   /** The user's own Sent is listed by name, with no shared mailbox involved. */
@@ -982,13 +987,15 @@ class EmailMcpToolTest {
     original.setSender(new EmailSender("Carol", "carol@acme.com", null, null));
     original.setTo(List.of(new EmailRecipient(null, OWNER_MAILBOX, null, false), new EmailRecipient(null, "dave@acme.com", null, false)));
     original.setCc(List.of(new EmailRecipient(null, "testuser1@example.com", null, false)));
+    original.setFolder(SHARED_INBOX);
+    when(emailBoxService.getSharedMailboxEmailById(EMAIL_ID, USERNAME, 100L)).thenReturn(original);
     when(emailBoxService.getEmailByMailRemoteIdAndUserId(REMOTE_ID, USERNAME, SHARED_INBOX, false, true, false, false)).thenReturn(original);
     UserEmailSetting setting = new UserEmailSetting();
     setting.setEmailAddress("testuser1@example.com");
     when(userEmailSettingService.getUserEmailSetting(USERNAME)).thenReturn(setting);
     when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(EmailBoxService.OwnerCopy.FILED);
 
-    String result = emailMcpTool.replyAll(REMOTE_ID, "<p>Noted</p>", OWNER_MAILBOX);
+    String result = emailMcpTool.replyAll(null, "<p>Noted</p>", OWNER_MAILBOX, EMAIL_ID);
 
     ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxService).sendEmail(sent.capture(), eq(USERNAME), eq(100L));
@@ -1005,13 +1012,16 @@ class EmailMcpToolTest {
   @Test
   void aForwardFromASharedMailboxReadsTheOriginalThere() throws Exception {
     givenAliceShares();
-    when(emailBoxService.getEmailByMailRemoteIdAndUserId(REMOTE_ID, USERNAME, SHARED_INBOX, false, true, false, false)).thenReturn(buildEmail(EMAIL_ID));
+    Email original = buildEmail(EMAIL_ID);
+    original.setFolder(SHARED_INBOX);
+    when(emailBoxService.getSharedMailboxEmailById(EMAIL_ID, USERNAME, 100L)).thenReturn(original);
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(REMOTE_ID, USERNAME, SHARED_INBOX, false, true, false, false)).thenReturn(original);
     when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(EmailBoxService.OwnerCopy.SKIPPED);
 
-    String result = emailMcpTool.forwardEmail(REMOTE_ID, List.of("bob@acme.com"), null, null, OWNER_MAILBOX);
+    String result = emailMcpTool.forwardEmail(null, List.of("bob@acme.com"), null, null, OWNER_MAILBOX, EMAIL_ID);
 
     assertTrue(result.contains("No copy was filed"), result);
-    assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.forwardEmail(888L, List.of("bob@acme.com"), null, null, OWNER_MAILBOX));
+    assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.forwardEmail(null, List.of("bob@acme.com"), null, null, OWNER_MAILBOX, 888L));
     verify(emailBoxService, never()).getEmailByMailRemoteIdAndUserId(anyLong(), any(), eq(MailFolder.INBOX), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean());
   }
 
@@ -1033,16 +1043,19 @@ class EmailMcpToolTest {
   @Test
   void aRefusedWriteInASharedMailboxNamesTheOwner() throws Exception {
     givenAliceShares();
+    Email inShare = buildEmail(EMAIL_ID);
+    inShare.setFolder(SHARED_INBOX);
+    when(emailBoxService.getSharedMailboxEmailById(EMAIL_ID, USERNAME, 100L)).thenReturn(inShare);
     when(emailBoxService.updateEmailReadStatus(List.of(REMOTE_ID), USERNAME, SHARED_INBOX, true, true)).thenThrow(new MailboxRightMissingException('s'));
     when(emailBoxService.archiveEmail(List.of(REMOTE_ID), USERNAME, SHARED_INBOX)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
     when(emailBoxService.deleteEmail(List.of(REMOTE_ID), USERNAME, SHARED_INBOX)).thenReturn(0);
 
-    IllegalAccessException marked = assertThrows(IllegalAccessException.class, () -> emailMcpTool.markRead(List.of(REMOTE_ID), OWNER_MAILBOX));
+    IllegalAccessException marked = assertThrows(IllegalAccessException.class, () -> emailMcpTool.markRead(null, List.of(EMAIL_ID), OWNER_MAILBOX));
     assertTrue(marked.getMessage().contains("does not allow you to change the read state") && marked.getMessage().contains("Alice Martin"),
                marked.getMessage());
-    IllegalAccessException archived = assertThrows(IllegalAccessException.class, () -> emailMcpTool.archiveEmail(List.of(REMOTE_ID), OWNER_MAILBOX));
+    IllegalAccessException archived = assertThrows(IllegalAccessException.class, () -> emailMcpTool.archiveEmail(null, OWNER_MAILBOX, List.of(EMAIL_ID)));
     assertTrue(archived.getMessage().contains("no longer shared with you"), archived.getMessage());
-    assertTrue(emailMcpTool.deleteEmail(List.of(REMOTE_ID), OWNER_MAILBOX).contains("in the mailbox of Alice Martin"));
+    assertTrue(emailMcpTool.deleteEmail(null, OWNER_MAILBOX, List.of(EMAIL_ID)).contains("in the mailbox of Alice Martin"));
   }
 
   /**
@@ -1058,11 +1071,174 @@ class EmailMcpToolTest {
     attachment.setName("invoice.pdf");
     attachment.setAttachmentRemoteId("1.2");
     withAttachment.getContent().setAttachments(List.of(attachment));
+    withAttachment.setFolder(SHARED_INBOX);
+    when(emailBoxService.getSharedMailboxEmailById(EMAIL_ID, USERNAME, 100L)).thenReturn(withAttachment);
     when(emailBoxService.getEmailByMailRemoteIdAndUserId(REMOTE_ID, USERNAME, SHARED_INBOX, true, false, false, false)).thenReturn(withAttachment);
 
     assertTrue(emailMcpTool.getEmailThread("thread-1", OWNER_MAILBOX).isEmpty());
     verify(emailBoxService, never()).getThread("thread-1", USERNAME);
     assertEquals("/email-connector/rest/email-box/attachments/" + REMOTE_ID + "/1.2?folder=CUSTOM%3A5",
-                 emailMcpTool.listAttachments(REMOTE_ID, OWNER_MAILBOX).get(0).getDownloadUrl());
+                 emailMcpTool.listAttachments(null, EMAIL_ID, OWNER_MAILBOX).get(0).getDownloadUrl());
+  }
+
+  // --- one mail, never another folder's mail with the same number (EXO-90555) ------
+
+  /** The local id of a mail of Sent, whose UID is also the UID of an INBOX mail. */
+  private static final long SENT_EMAIL_ID = 50L;
+
+  /**
+   * A mail of a folder other than the inbox, numbered like the inbox mail REMOTE_ID.
+   *
+   * @param folder the folder key it is cached under
+   * @return the row
+   */
+  private Email sentMail(String folder) {
+    Email sent = buildEmail(SENT_EMAIL_ID);
+    sent.setFolder(folder);
+    sent.setSubject("Our offer");
+    sent.setSender(new EmailSender("Me", "testuser1@example.com", null, null));
+    sent.setTo(List.of(new EmailRecipient(null, "client@acme.com", null, false)));
+    return sent;
+  }
+
+  /**
+   * A Sent mail named by its email_id is replied to and forwarded as itself -- read in
+   * Sent -- and the INBOX mail with the same UID is never read, let alone answered.
+   */
+  @Test
+  void aSentMailIsAnsweredAsItselfNeverAsTheInboxMailNumberedLikeIt() throws Exception {
+    Email sent = sentMail(MailFolder.SENT);
+    when(emailBoxService.getOwnMailboxEmailById(SENT_EMAIL_ID, USERNAME)).thenReturn(sent);
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(REMOTE_ID, USERNAME, MailFolder.SENT, false, true, false, false)).thenReturn(sent);
+
+    String replied = emailMcpTool.replyEmail(null, "<p>Any news?</p>", null, SENT_EMAIL_ID);
+    String forwarded = emailMcpTool.forwardEmail(null, List.of("boss@acme.com"), null, null, null, SENT_EMAIL_ID);
+
+    ArgumentCaptor<Email> out = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService, times(2)).sendEmail(out.capture(), eq(USERNAME));
+    assertEquals("Re: Our offer", out.getAllValues().get(0).getSubject(), replied);
+    assertEquals("Fwd: Our offer", out.getAllValues().get(1).getSubject(), forwarded);
+    verify(emailBoxService, never()).getEmailByMailRemoteIdAndUserId(anyLong(), any(), eq(MailFolder.INBOX), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean());
+  }
+
+  /**
+   * The same in a shared mailbox: its Sent mail is read in its Sent, never in its inbox
+   * nor in the user's own.
+   */
+  @Test
+  void aSharedSentMailIsAnsweredAsItself() throws Exception {
+    givenAliceShares();
+    Email sent = sentMail("CUSTOM:6");
+    when(emailBoxService.getSharedMailboxEmailById(SENT_EMAIL_ID, USERNAME, 100L)).thenReturn(sent);
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(REMOTE_ID, USERNAME, "CUSTOM:6", false, true, false, false)).thenReturn(sent);
+    when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(EmailBoxService.OwnerCopy.FILED);
+
+    emailMcpTool.replyEmail(null, "<p>Any news?</p>", OWNER_MAILBOX, SENT_EMAIL_ID);
+
+    verify(emailBoxService).sendEmail(any(Email.class), eq(USERNAME), eq(100L));
+    verify(emailBoxService, never()).getEmailByMailRemoteIdAndUserId(anyLong(), any(), eq(SHARED_INBOX), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean());
+    verify(emailBoxService, never()).getEmailByMailRemoteIdAndUserId(anyLong(), any(), eq(MailFolder.INBOX), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean());
+  }
+
+  /**
+   * An inbox tool given a Sent mail refuses and does nothing -- own or shared -- rather
+   * than archiving, deleting or marking the inbox mail numbered like it.
+   */
+  @Test
+  void anInboxToolGivenASentMailRefusesAndDoesNothing() throws Exception {
+    when(emailBoxService.getOwnMailboxEmailById(SENT_EMAIL_ID, USERNAME)).thenReturn(sentMail(MailFolder.SENT));
+    SharedMailboxEntry share = givenAliceShares();
+    when(emailBoxService.getSharedMailboxEmailById(SENT_EMAIL_ID, USERNAME, share.delegationId())).thenReturn(sentMail("CUSTOM:6"));
+
+    IllegalArgumentException archived = assertThrows(IllegalArgumentException.class,
+                                                     () -> emailMcpTool.archiveEmail(null, null, List.of(SENT_EMAIL_ID)));
+    assertTrue(archived.getMessage().contains("SENT folder") && archived.getMessage().contains("nothing was done"), archived.getMessage());
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.deleteEmail(null, null, List.of(SENT_EMAIL_ID)));
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.markRead(null, List.of(SENT_EMAIL_ID), null));
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.addEmailCategory(null, 3L, List.of(SENT_EMAIL_ID)));
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.archiveEmail(null, OWNER_MAILBOX, List.of(SENT_EMAIL_ID)));
+    verify(emailBoxService, never()).archiveEmail(any(), any(), any());
+    verify(emailBoxService, never()).deleteEmail(any(), any(), any());
+    verify(emailBoxService, never()).updateEmailReadStatus(any(), any(), any(), anyBoolean(), anyBoolean());
+    verify(emailBoxService, never()).linkEmailsToCategory(any(), anyLong(), any());
+  }
+
+  /**
+   * A mail_remote_id that is not the email_id's, a UID alone in a shared mailbox, and a
+   * row that is no longer where it was read are all refused, and nothing is sent.
+   */
+  @Test
+  void aMismatchIsRefusedAndNothingIsSent() throws Exception {
+    when(emailBoxService.getOwnMailboxEmailById(SENT_EMAIL_ID, USERNAME)).thenReturn(sentMail(MailFolder.SENT));
+    Email inbox = buildEmail(EMAIL_ID);
+    when(emailBoxService.getOwnMailboxEmailById(EMAIL_ID, USERNAME)).thenReturn(inbox);
+
+    IllegalArgumentException mismatch = assertThrows(IllegalArgumentException.class,
+                                                     () -> emailMcpTool.replyEmail(888L, "<p>x</p>", null, SENT_EMAIL_ID));
+    assertTrue(mismatch.getMessage().contains("not the same mail"), mismatch.getMessage());
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.archiveEmail(List.of(888L), null, List.of(EMAIL_ID)));
+    givenAliceShares();
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.replyAll(REMOTE_ID, "<p>x</p>", OWNER_MAILBOX, null));
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.deleteEmail(List.of(REMOTE_ID), OWNER_MAILBOX, null));
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.replyEmail(null, "<p>x</p>", null, null), "a mail must be named");
+    // The row found at that folder and number is another mail than the one named.
+    Email another = sentMail(MailFolder.SENT);
+    another.setId(99L);
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(REMOTE_ID, USERNAME, MailFolder.SENT, false, true, false, false)).thenReturn(another);
+    assertThrows(IllegalStateException.class, () -> emailMcpTool.forwardEmail(null, List.of("x@acme.com"), null, null, null, SENT_EMAIL_ID));
+
+    verify(emailBoxService, never()).sendEmail(any(Email.class), any());
+    verify(emailBoxService, never()).sendEmail(any(Email.class), any(), any());
+    verify(emailBoxService, never()).archiveEmail(any(), any(), any());
+    verify(emailBoxService, never()).deleteEmail(any(), any(), any());
+  }
+
+  /**
+   * An email names its folder, and hands out its UID only when it is a mail of the
+   * user's own INBOX: a Sent mail's model carries its email_id and folder, no UID; a
+   * mail of an own folder without a role names no folder.
+   */
+  @Test
+  void theModelCarriesTheFolderAndAUidOnlyForTheOwnInbox() throws Exception {
+    when(emailBoxService.getOwnMailboxEmailById(SENT_EMAIL_ID, USERNAME)).thenReturn(sentMail(MailFolder.SENT));
+    when(emailBoxService.getOwnMailboxEmailById(EMAIL_ID, USERNAME)).thenReturn(buildEmail(EMAIL_ID));
+    Email custom = buildEmail(51L);
+    custom.setFolder("CUSTOM:12");
+    when(emailBoxService.getOwnMailboxEmailById(51L, USERNAME)).thenReturn(custom);
+
+    EmailModel sent = emailMcpTool.getEmailById(SENT_EMAIL_ID, null);
+    assertEquals("SENT", sent.getFolder());
+    assertNull(sent.getMailRemoteId());
+    assertEquals(SENT_EMAIL_ID, sent.getId());
+    String json = new ObjectMapper().writeValueAsString(sent);
+    assertTrue(json.contains("\"folder\":\"SENT\"") && json.contains("\"email_id\":" + SENT_EMAIL_ID), json);
+    EmailModel inbox = emailMcpTool.getEmailById(EMAIL_ID, null);
+    assertEquals("INBOX", inbox.getFolder());
+    assertEquals(REMOTE_ID, inbox.getMailRemoteId());
+    assertNull(emailMcpTool.getEmailById(51L, null).getFolder(), "never an internal folder key");
+
+    SharedMailboxEntry share = givenAliceShares();
+    Email sharedInbox = buildEmail(EMAIL_ID);
+    sharedInbox.setFolder(SHARED_INBOX);
+    when(emailBoxService.getSharedMailboxEmailById(EMAIL_ID, USERNAME, share.delegationId())).thenReturn(sharedInbox);
+    EmailModel shared = emailMcpTool.getEmailById(EMAIL_ID, OWNER_MAILBOX);
+    assertEquals("INBOX", shared.getFolder());
+    assertNull(shared.getMailRemoteId(), "a shared mailbox's mail is named by email_id");
+  }
+
+  /** A search hit hands out a UID only for the user's own INBOX, and a shared hit its email_id. */
+  @Test
+  void aSearchHitHandsOutAUidOnlyForTheOwnInbox() throws Exception {
+    EmailSearchResult sentHit = new EmailSearchResult(REMOTE_ID, MailFolder.SENT, "Our offer", null, new Date(), true, false, true, null);
+    when(emailBoxService.searchEmails(USERNAME, "offer", null, false, null, MailFolder.SENT, 20)).thenReturn(new EmailSearchResultPage(List.of(sentHit), 1));
+    assertNull(emailMcpTool.searchEmails("offer", null, null, null, "SENT", null, null).getResults().get(0).getMailRemoteId());
+
+    SharedMailboxEntry share = givenAliceShares();
+    when(emailDelegationService.getMirroredFolderKey(USERNAME, share, "INBOX")).thenReturn(SHARED_INBOX);
+    EmailSearchResult sharedHit = new EmailSearchResult(REMOTE_ID, SHARED_INBOX, "Budget", null, new Date(), false, false, true, null, EMAIL_ID);
+    when(emailBoxService.searchSharedMailboxMirror(USERNAME, SHARED_INBOX, "budget", null, false, null, 20)).thenReturn(new EmailSearchResultPage(List.of(sharedHit), 1));
+    EmailSearchHitModel hit = emailMcpTool.searchEmails("budget", null, null, null, null, null, OWNER_MAILBOX).getResults().get(0);
+    assertNull(hit.getMailRemoteId());
+    assertEquals(EMAIL_ID, hit.getEmailId());
   }
 }
