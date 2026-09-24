@@ -71,6 +71,7 @@ import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.OwnFolder;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.SharedMailboxFolder;
@@ -221,6 +222,15 @@ public class EmailDelegationService {
   /** No accepted share of the caller's has the name an agent gave (EXO-90555). */
   public static final String      SHARED_MAILBOX_NOT_FOUND_MESSAGE = "emailConnector.delegation.sharedMailboxNotFound";
 
+  /** A send mode that is not NONE, ON_BEHALF or AS (EXO-90582). */
+  public static final String      SEND_MODE_INVALID_MESSAGE  = "emailConnector.sendMode.invalid";
+
+  /** A send mode the owner's connector does not declare (EXO-90582). */
+  public static final String      SEND_MODE_UNSUPPORTED_MESSAGE = "emailConnector.sendMode.unsupported";
+
+  /** Writing in another's name switched off by the administrator (EXO-90582). */
+  public static final String      SEND_MODE_DISABLED_MESSAGE = "emailConnector.sendMode.disabled";
+
   @Autowired
   private UserEmailSettingService userEmailSettingService;
 
@@ -264,7 +274,10 @@ public class EmailDelegationService {
    * the ACL no longer carries is moved to {@code REVOKED}. An identifier nobody eXo
    * knows holds is listed raw, with no row and no action.
    * <p>
-   * Unsupported server: the answer says why and lists eXo's own rows only.
+   * Unsupported server: the answer says why and lists eXo's own rows only. A supported
+   * one also says whether an administrator left the owner's Sent copy of a delegate's
+   * mail on, which the consent to writing in the owner's name tells her about
+   * (EXO-90582).
    *
    * @param ownerUsername the caller
    * @return the overview
@@ -280,7 +293,7 @@ public class EmailDelegationService {
     try (MailboxAclSession session = session(connector, ownerUsername, ownerMailbox)) {
       MailboxAclCapabilities capabilities = engine.probe(session);
       if (!capabilities.supported()) {
-        return new GrantedDelegations(capabilities, ownerMailbox, rowsOnly(rows));
+        return new GrantedDelegations(capabilities, ownerMailbox, rowsOnly(rows), false);
       }
       List<MailboxAce> acl = engine.listAcl(session, OWNER_INBOX);
       List<DelegationGrantee> grantees = merge(ownerUsername, ownerMailbox, connector, acl, rows);
@@ -296,7 +309,9 @@ public class EmailDelegationService {
                                                                               : grantee)
                            .toList();
       }
-      return new GrantedDelegations(capabilities, ownerMailbox, grantees);
+      // What the consent to writing in her name tells the owner about her copy
+      // (EXO-90582): read once for the whole list.
+      return new GrantedDelegations(capabilities, ownerMailbox, grantees, isSentCopyEnabled());
     }
   }
 
@@ -471,7 +486,9 @@ public class EmailDelegationService {
    * other folder of the caller whose ACL names that identifier, including an entry made
    * in another mail application, and on the folders the grant recorded (EXO-90548). The
    * row goes {@code REVOKED} and the grantee's registered folders of this mailbox are
-   * dropped, the mail mirrored under them with them ({@link #dropDelegatedFolders}).
+   * dropped, the mail mirrored under them with them ({@link #dropDelegatedFolders}). The
+   * owner's consent to the grantee writing in her name goes with the share (EXO-90582):
+   * inviting them again starts with none.
    *
    * @param ownerUsername the caller
    * @param id the delegation id
@@ -508,7 +525,7 @@ public class EmailDelegationService {
     // Back off by default (#441-1): a share taken up again must be chosen again to count
     // in the badge, as a new one is (plan 7.7).
     delegation.setBadgeIncluded(false);
-    delegation = emailDelegationStorage.update(delegation);
+    delegation = withoutSendMode(emailDelegationStorage.update(delegation));
     dropDelegatedFolders(delegation.getGranteeId(), delegation.getId());
     LOG.info("Mailbox delegation revoked: actor={} ownerMailbox={} grantee={} identifier={}",
              ownerUsername,
@@ -1377,6 +1394,192 @@ public class EmailDelegationService {
   }
 
   /**
+   * Sets, changes or withdraws the owner's consent to one grantee writing mail in her name
+   * (EXO-90582, phase 3): {@link SendMode#ON_BEHALF} -- the owner as the author, the
+   * grantee as the sender -- {@link SendMode#AS} -- the owner alone -- or
+   * {@link SendMode#NONE}. What is written is one field of the share and its date, and
+   * the server's last refusal cleared: a consent set again is a fresh one. Nothing here
+   * sends a mail or writes a header, and no ACL letter is written: RFC 4314 has no right
+   * that says "send", so on an IMAP server eXo alone holds the consent and, from the send
+   * path, enforces it; an engine that has a word for it on the server
+   * ({@code sendModeOnServer}) writes it there too.
+   * <p>
+   * Owner only, and only the owner's own row: resolved with the caller as owner, so
+   * anybody else asking gets "no such delegation", which does not even say the row
+   * exists. Only a share on offer or in use carries a consent -- a pending one may, and
+   * its grantee finds it on accepting (PO decision Q-B); never a share made in the mail
+   * server's own interface (PO decision Q-A). The preset, the folders and the share's
+   * status are left as they stand.
+   * <p>
+   * A consent is checked before anything is asked of the server: switched off, or a shape
+   * the connector does not declare, is refused without a session. Then, on the owner's
+   * own session: the server must support sharing, declare the shape too, and still name
+   * the grantee on INBOX -- a share removed in another mail application is not given a
+   * consent. A withdrawal is never refused for any of those: switched off, undeclared,
+   * unsupported or unreachable, taking the consent back is always the owner's to do, and
+   * a server-side copy that cannot be taken off is logged and left.
+   *
+   * @param ownerUsername the caller, the mailbox's owner
+   * @param id the delegation id
+   * @param requestedMode NONE, ON_BEHALF or AS, as the request names it
+   * @return the row as it now stands
+   * @throws ObjectNotFoundException when no such row belongs to the caller as owner
+   * @throws IllegalAccessException when the caller has no connected mailbox, for a
+   *           consent (a withdrawal needs none)
+   * @throws IllegalArgumentException {@code emailConnector.sendMode.invalid} for an
+   *           unknown mode, {@code .disabled} when switched off, {@code .unsupported} for a
+   *           shape the connector or the server does not declare,
+   *           {@code emailConnector.delegation.notChangeable} for a share that is not on
+   *           offer or in use, was made in the mail server's own interface, is of another
+   *           mailbox than the one connected, is no longer on INBOX, or ended while the
+   *           server was being asked
+   * @throws MailboxAclException when, for a consent, the server does not support sharing
+   *           or cannot be asked
+   */
+  public EmailDelegation setSendMode(String ownerUsername, long id, String requestedMode) throws ObjectNotFoundException,
+                                                                                           IllegalAccessException {
+    SendMode mode = SendMode.of(requestedMode);
+    if (mode == null) {
+      throw new IllegalArgumentException(SEND_MODE_INVALID_MESSAGE);
+    }
+    EmailDelegation delegation = asOwner(ownerUsername, id);
+    if (!isLive(delegation)) {
+      throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
+    }
+    SendMode previous = delegation.getSendMode() == null ? SendMode.NONE : delegation.getSendMode();
+    if (mode == SendMode.NONE) {
+      withdrawSendModeOnServer(ownerUsername, delegation);
+    } else {
+      grantSendMode(ownerUsername, delegation, mode);
+    }
+    EmailDelegation updated = emailDelegationStorage.updateSendMode(ownerUsername, id, mode);
+    if (updated == null) {
+      // Ended while the server was being asked: the owner's next reconcile reads it.
+      throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
+    }
+    LOG.info("Mailbox send mode set: actor={} ownerMailbox={} grantee={} mode={} previous={}",
+             ownerUsername,
+             updated.getOwnerMailbox(),
+             updated.getGranteeId(),
+             mode,
+             previous);
+    if (mode != previous) {
+      publish(EmailDelegationEvent.Type.SEND_MODE_CHANGED, ownerUsername, updated);
+    }
+    return updated;
+  }
+
+  /**
+   * The checks and the server's part of a consent to writing in the owner's name
+   * (EXO-90582): the administrator's declaration first, without a session; then, on the
+   * owner's own session, the server's support and declaration, and the grantee still on
+   * INBOX; the engine's own write where it has one.
+   *
+   * @param ownerUsername the owner
+   * @param delegation the owner's live row
+   * @param mode ON_BEHALF or AS
+   * @throws IllegalAccessException when the owner has no connected mailbox
+   * @throws IllegalArgumentException as {@link #setSendMode} says
+   * @throws MailboxAclException when the server does not support sharing or cannot be asked
+   */
+  private void grantSendMode(String ownerUsername, EmailDelegation delegation, SendMode mode) throws IllegalAccessException {
+    if (delegation.getOrigin() == DelegationOrigin.SERVER) {
+      // Never written into a share eXo did not make (PO decision Q-A).
+      throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
+    }
+    UserEmailSetting ownerSetting = connectedSetting(ownerUsername);
+    EmailConnector connector = connectorOf(ownerSetting);
+    String ownerMailbox = mailboxIdentifier(ownerSetting);
+    requireThisMailbox(delegation, connector, ownerMailbox);
+    // Before any session: a shape nobody declared costs no IMAP login.
+    if (!SendMode.isEnabled()) {
+      throw new IllegalArgumentException(SEND_MODE_DISABLED_MESSAGE);
+    }
+    if (!SendMode.declaredFor(connector.getId()).contains(mode)) {
+      throw new IllegalArgumentException(SEND_MODE_UNSUPPORTED_MESSAGE);
+    }
+    String identifier = identifierOf(delegation, connector);
+    MailboxAclEngine engine = aclEngineRegistry.engineFor(connector);
+    try (MailboxAclSession session = session(connector, ownerUsername, ownerMailbox)) {
+      MailboxAclCapabilities capabilities = engine.probe(session);
+      requireSupported(capabilities);
+      if (!capabilities.sendModes().contains(mode)) {
+        throw new IllegalArgumentException(SEND_MODE_UNSUPPORTED_MESSAGE);
+      }
+      // A share the owner removed in another mail application is not given a consent.
+      requireOnInbox(engine, session, identifier);
+      if (capabilities.sendModeOnServer()) {
+        engine.grantSendMode(session, identifier, mode);
+      }
+    }
+  }
+
+  /**
+   * The server's part of a withdrawal of the consent to writing in the owner's name
+   * (EXO-90582), best effort: only an engine that wrote it on the server has anything to
+   * take off, and only on the mailbox the owner is connected to now. Nothing here refuses
+   * the withdrawal -- eXo's own record is what the send path reads, and taking it back is
+   * always the owner's to do.
+   *
+   * @param ownerUsername the owner
+   * @param delegation the owner's live row
+   */
+  private void withdrawSendModeOnServer(String ownerUsername, EmailDelegation delegation) {
+    try {
+      UserEmailSetting ownerSetting = connectedSetting(ownerUsername);
+      EmailConnector connector = connectorOf(ownerSetting);
+      String ownerMailbox = mailboxIdentifier(ownerSetting);
+      if (!connector.getId().equals(delegation.getConnectorId()) || !ownerMailbox.equalsIgnoreCase(delegation.getOwnerMailbox())) {
+        return;
+      }
+      MailboxAclEngine engine = aclEngineRegistry.engineFor(connector);
+      try (MailboxAclSession session = session(connector, ownerUsername, ownerMailbox)) {
+        MailboxAclCapabilities capabilities = engine.probe(session);
+        if (capabilities.supported() && capabilities.sendModeOnServer()) {
+          engine.revokeSendMode(session, identifierOf(delegation, connector));
+        }
+      }
+    } catch (IllegalAccessException | IllegalArgumentException | MailboxAclException e) {
+      LOG.info("The consent to write in the name of {} could not be taken off the mail server for {}; eXo's is withdrawn",
+               delegation.getOwnerMailbox(),
+               delegation.getGranteeId());
+      LOG.debug("Withdrawal on the server failed", e);
+    }
+  }
+
+  /**
+   * Whether a share is on offer or in use: the only states a consent to writing in the
+   * owner's name lives in (EXO-90582).
+   *
+   * @param delegation the row
+   * @return true for PENDING or ACCEPTED
+   */
+  private static boolean isLive(EmailDelegation delegation) {
+    return delegation.getStatus() == DelegationStatus.PENDING || delegation.getStatus() == DelegationStatus.ACCEPTED;
+  }
+
+  /**
+   * Takes the owner's consent to writing in her name off a row the write just ended
+   * (EXO-90582): revoke, decline, leave, a share found withdrawn or gone, and one the
+   * server lists again. After the write and not before it, so a consent written while that
+   * write was on its way goes too; a row the write left live keeps its consent. The
+   * answer carries no consent either way the row now stands ended.
+   *
+   * @param written the row as the ending write left it
+   * @return the same row, without a consent when it is no longer live
+   */
+  private EmailDelegation withoutSendMode(EmailDelegation written) {
+    if (written == null || written.getId() == null || isLive(written)) {
+      return written;
+    }
+    emailDelegationStorage.clearSendModeIfEnded(written.getId());
+    written.setSendMode(null);
+    written.setSendModeDate(null);
+    written.setSendRefusedDate(null);
+    return written;
+  }
+
+  /**
    * After the owner renamed or deleted one of their folders from eXo (EXO-90556): the
    * delegates' copies under the old name go at once -- the server no longer has it -- and,
    * after a rename, each entry an eXo-made share holds on the renamed folder (or a folder
@@ -2222,7 +2425,8 @@ public class EmailDelegationService {
    * removing it would mean eXo acting as the owner on the grantee's request thread --
    * the unattended identity switch the design refuses. The owner is told (through the
    * event) and has a one-click remove; the caller can accept later, and the MYRIGHTS
-   * check of {@link #accept} decides then.
+   * check of {@link #accept} decides then. A consent the owner gave the pending share to
+   * write in her name goes with the "no" (EXO-90582): a later accept starts with none.
    *
    * @param granteeUsername the caller
    * @param id the delegation id
@@ -2237,7 +2441,7 @@ public class EmailDelegationService {
     }
     delegation.setStatus(DelegationStatus.DECLINED);
     delegation.setRespondedDate(new Date());
-    delegation = emailDelegationStorage.update(delegation);
+    delegation = withoutSendMode(emailDelegationStorage.update(delegation));
     LOG.info("Mailbox delegation declined: actor={} ownerMailbox={} (the server ACL is left in place)",
              granteeUsername,
              delegation.getOwnerMailbox());
@@ -2304,7 +2508,8 @@ public class EmailDelegationService {
 
   /**
    * A leave's own write: the row back to DECLINED (AVAILABLE for a share discovered on
-   * the server), answered now, and the caller's folders of the mailbox dropped.
+   * the server), answered now, the owner's consent to writing in her name taken off
+   * (EXO-90582), and the caller's folders of the mailbox dropped.
    *
    * @param granteeUsername the grantee
    * @param delegation an accepted row
@@ -2316,7 +2521,7 @@ public class EmailDelegationService {
     // Back off by default (#441-1): a share taken up again must be chosen again to count
     // in the badge, as a new one is (plan 7.7).
     delegation.setBadgeIncluded(false);
-    EmailDelegation updated = emailDelegationStorage.update(delegation);
+    EmailDelegation updated = withoutSendMode(emailDelegationStorage.update(delegation));
     dropDelegatedFolders(granteeUsername, updated.getId());
     return updated;
   }
@@ -2432,6 +2637,10 @@ public class EmailDelegationService {
    * <p>
    * Scoped to the caller by construction: only rows whose grantee is the caller, and
    * only folder rows the caller owns.
+   * <p>
+   * Each entry says in which shapes the caller can write mail in the owner's name now
+   * (EXO-90582): the owner's consent, narrowed to what the connector declares, none once
+   * the server refused one -- from the row and the properties alone, as the rest is.
    *
    * @param granteeUsername the caller
    * @return the entries, most recently changed share first, never null
@@ -2453,6 +2662,9 @@ public class EmailDelegationService {
     // Read once for the whole list (EXO-90551 review): the switcher is drawn every time
     // the drawer opens.
     boolean sentCopyEnabled = isSentCopyEnabled();
+    // What each connector declares, read once per connector for the whole list
+    // (EXO-90582): no server session, the switcher is drawn every time.
+    Map<Long, Set<SendMode>> declared = new HashMap<>();
     List<SharedMailboxEntry> entries = new ArrayList<>();
     for (EmailDelegation delegation : accepted) {
       List<EmailFolder> folders = emailFolderStorage.getDelegatedFolders(granteeUsername, delegation.getId());
@@ -2478,7 +2690,10 @@ public class EmailDelegationService {
                                          // mail server's interface records no roles either, and
                                          // may well cover its Trash.
                                          delegation.isInboxOnly() && delegation.getOrigin() == DelegationOrigin.EXO,
-                                         sentCopyEnabled && sentCopyOf(folders, delegation)));
+                                         sentCopyEnabled && sentCopyOf(folders, delegation),
+                                         SendMode.usable(delegation.getSendMode(),
+                                                         delegation.getSendRefusedDate(),
+                                                         declared.computeIfAbsent(delegation.getConnectorId(), SendMode::declaredFor))));
     }
     return entries;
   }
@@ -3933,7 +4148,9 @@ public class EmailDelegationService {
   /**
    * Offers again a share eXo had ended (REVOKED, GONE) that the server lists again
    * (#443-2): back to AVAILABLE -- proposed to the grantee, never subscribed on their
-   * behalf -- with its revoke date cleared and its rights checked now.
+   * behalf -- with its revoke date cleared and its rights checked now. It comes back
+   * with no consent to writing in the owner's name: whatever the ended share carried is
+   * never restored (EXO-90582).
    *
    * @param row the ended row
    * @return the row as it now stands
@@ -3943,7 +4160,7 @@ public class EmailDelegationService {
     row.setRevokedDate(null);
     row.setLastRightsCheckDate(new Date());
     LOG.info("Mailbox delegation listed again by the server: grantee={} ownerMailbox={}", row.getGranteeId(), row.getOwnerMailbox());
-    return emailDelegationStorage.update(row);
+    return withoutSendMode(emailDelegationStorage.update(row));
   }
 
   /**
@@ -4099,7 +4316,8 @@ public class EmailDelegationService {
   }
 
   /**
-   * Records that the server no longer grants a row's access.
+   * Records that the server no longer grants a row's access -- and takes the owner's
+   * consent to writing in her name off with it (EXO-90582).
    *
    * @param delegation the row
    * @param status REVOKED or GONE
@@ -4112,7 +4330,7 @@ public class EmailDelegationService {
     // Back off by default (#441-1): a share taken up again must be chosen again to count
     // in the badge, as a new one is (plan 7.7).
     delegation.setBadgeIncluded(false);
-    EmailDelegation updated = emailDelegationStorage.update(delegation);
+    EmailDelegation updated = withoutSendMode(emailDelegationStorage.update(delegation));
     dropDelegatedFolders(updated.getGranteeId(), updated.getId());
     if (wasInUse) {
       // Found gone by a reconciliation rather than by anybody's act: no notification
