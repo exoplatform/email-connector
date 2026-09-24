@@ -84,6 +84,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </div>
       <div v-if="delegation.ownerId" class="caption text-sub-title text-truncate">{{ delegation.ownerMailbox }}</div>
       <div class="caption text-sub-title text-wrap">{{ rightsSummary }}</div>
+      <!-- Whether the owner lets the user write mail in her name (EXO-90582), and whether
+           her mail server refused it since. -->
+      <div v-if="sendModeSummary" class="caption text-sub-title text-wrap">{{ sendModeSummary }}</div>
+      <div v-if="sendRefused" class="caption warning--text text-wrap">{{ sendRefused }}</div>
       <div v-if="note" class="caption text-sub-title text-wrap mt-1">{{ note }}</div>
       <!-- The badge choice, as a settings row: only where read state is kept (s),
            since without it there is no unread count to add. -->
@@ -179,6 +183,34 @@ export default {
       return this.delegation.preset
         ? this.$t(`UserSettings.emailConnector.sharing.preset.${this.delegation.preset}`)
         : this.$t('UserSettings.emailConnector.sharedWithMe.preset.CUSTOM');
+    },
+    /**
+     * Whether the owner lets the user write mail in her name, and in which shape
+     * (EXO-90582): the owner's consent as recorded, for a share on offer or in use.
+     *
+     * @returns {String} the sentence, or empty
+     */
+    sendModeSummary() {
+      const mode = this.delegation.sendMode;
+      const live = this.delegation.status === 'PENDING' || this.delegation.status === 'ACCEPTED';
+      return live && (mode === 'ON_BEHALF' || mode === 'AS')
+        ? this.$t(`UserSettings.emailConnector.sharedWithMe.sendMode.${mode}`)
+        : '';
+    },
+    /**
+     * Said when the owner's mail server refused a mail in her name since she set the
+     * consent: writing in her name does not work until she sets it again.
+     *
+     * @returns {String} the sentence, or empty
+     */
+    sendRefused() {
+      if (!this.sendModeSummary || !this.delegation.sendRefusedDate) {
+        return '';
+      }
+      const language = window.eXo?.env?.portal?.language || 'en';
+      return this.$t('UserSettings.emailConnector.sharedWithMe.sendMode.refused', {
+        0: new Date(this.delegation.sendRefusedDate).toLocaleDateString(language),
+      });
     },
     /**
      * One sentence of what the user can do in the mailbox, from the same rule the mail
