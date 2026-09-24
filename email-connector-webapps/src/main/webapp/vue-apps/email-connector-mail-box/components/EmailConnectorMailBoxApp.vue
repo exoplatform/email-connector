@@ -47,10 +47,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <email-connector-shared-mailbox-confirm-popup />
     <!-- The settings' "Mailbox sharing" drawer, reused whole, opened on its "Shared with
          me" tab by the mailbox switcher's "Manage shared mailboxes" (plan 7.3), with the
-         invite drawer its other tab's Share button opens; both registered by the
-         user-setting bundle, like the folders drawers above. -->
+         invite drawer its other tab's Share button opens and the "Folders and access"
+         drawer its rows open (EXO-90556); all registered by the user-setting bundle,
+         like the folders drawers above. -->
     <email-connector-user-setting-mailbox-sharing-drawer />
     <email-connector-user-setting-sharing-invite-drawer />
+    <email-connector-user-setting-folder-access-drawer />
     <email-connector-mail-box-move-to-folder-drawer />
     <email-connector-mail-box-drawer-attachments-drawer />
     <email-connector-mail-box-drawer-list-item-action-menu-drawer />

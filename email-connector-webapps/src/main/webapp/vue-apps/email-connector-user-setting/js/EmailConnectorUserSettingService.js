@@ -343,16 +343,22 @@ export function getReceivedDelegations(discover) {
  *
  * @param {String} granteeUsername the eXo username to share with
  * @param {String} preset READER or EDITOR
+ * @param {Object} folderAccess optionally, the owner's choice for Sent, Archive, Trash
+ *        and Spam, by role -- {TRASH: 'NONE'} (EXO-90556); a role absent follows the preset
  * @returns {Promise<Object>} the delegation as created
  */
-export function inviteDelegation(granteeUsername, preset) {
+export function inviteDelegation(granteeUsername, preset, folderAccess) {
+  const body = {granteeUsername, preset};
+  if (folderAccess && Object.keys(folderAccess).length) {
+    body.folderAccess = folderAccess;
+  }
   return fetch('/email-connector/rest/user-email-setting/delegations', {
     headers: {
       'Content-Type': 'application/json'
     },
     credentials: 'include',
     method: 'POST',
-    body: JSON.stringify({granteeUsername, preset})
+    body: JSON.stringify(body)
   }).then(resp => {
     if (resp?.ok) {
       return resp.json();
@@ -362,6 +368,76 @@ export function inviteDelegation(granteeUsername, preset) {
       .then(body => {
         throw new Error(body?.message || 'Error when sharing your mailbox');
       });
+  });
+}
+
+/**
+ * The caller's own folders that can be shared one by one, for the invitation's folder
+ * choice (EXO-90556): INBOX first, then Sent, Archive, Trash and Spam, then the caller's
+ * other folders as a tree; never Drafts. No access is read.
+ *
+ * @returns {Promise<Object>} {folders, truncated}; rejects with the server's message code
+ */
+export function getShareableFolders() {
+  return fetch('/email-connector/rest/user-email-setting/delegations/folders', {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json().catch(() => ({})).then(body => {
+      throw new Error(body?.message || 'Error when reading your folders');
+    });
+  });
+}
+
+/**
+ * The caller's folders with the access one person holds in each, as the mail server
+ * says it now (EXO-90556).
+ *
+ * @param {Number} id the delegation id
+ * @returns {Promise<Object>} {folders, truncated}; rejects with the server's message code
+ */
+export function getDelegationFolders(id) {
+  return fetch(`/email-connector/rest/user-email-setting/delegations/${id}/folders`, {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json().catch(() => ({})).then(body => {
+      throw new Error(body?.message || 'Error when reading what you share');
+    });
+  });
+}
+
+/**
+ * Sets the access one person holds in some of the caller's folders, on the mail server
+ * (EXO-90556). Each folder is its own write: the answer says what became of each.
+ *
+ * @param {Number} id the delegation id
+ * @param {Array} folders the changes, [{folder, access}] with access READER, EDITOR or NONE
+ * @returns {Promise<Object>} {delegation, results}; rejects with the server's message code
+ */
+export function setDelegationFolders(id, folders) {
+  return fetch(`/email-connector/rest/user-email-setting/delegations/${id}/folders`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({folders}),
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json().catch(() => ({})).then(body => {
+      throw new Error(body?.message || 'Error when changing what you share');
+    });
   });
 }
 

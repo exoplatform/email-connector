@@ -123,6 +123,15 @@ public class EmailDelegation {
   private boolean                 searchIncluded   = true;
 
   /**
+   * The owner's per-folder exceptions to the share's preset, on the role folders a grant
+   * covers beside INBOX (EXO-90556): {@code TRASH=READER}, or {@link FolderAccess#NONE}
+   * for a role folder the owner chose not to share. A role absent here follows the
+   * preset. The owner's other folders are never recorded: the mail server's ACL is their
+   * only truth, read when the owner opens the list. Never null.
+   */
+  private Map<FolderRole, FolderAccess> folderAccess = new EnumMap<>(FolderRole.class);
+
+  /**
    * The delegation as it was before EXO-90548 recorded what a grant covered: every
    * existing positional caller keeps building it this way.
    *
@@ -226,7 +235,7 @@ public class EmailDelegation {
                          Map<FolderRole, String> ownerRoleFolders) {
     this(id, granteeId, ownerId, ownerMailbox, granteeMailbox, connectorId, remoteRoot, preset, rights, nativeRights, status, origin,
          badgeIncluded, notifyNewMail, lastActivityDate, lastRightsCheckDate, invitedDate, respondedDate, revokedDate, createdDate,
-         updatedDate, grantedRoles, ownerRoleFolders, true);
+         updatedDate, grantedRoles, ownerRoleFolders, true, new EnumMap<>(FolderRole.class));
   }
 
   /**
@@ -298,7 +307,104 @@ public class EmailDelegation {
       return List.of();
     }
     Set<FolderRole> granted = grantedRoleSet();
-    return FolderRole.GRANTED.stream().filter(role -> ownerRoleFolders.containsKey(role) && !granted.contains(role)).toList();
+    // A folder the owner chose not to share is not one the server refused (EXO-90556).
+    return FolderRole.GRANTED.stream()
+                             .filter(role -> ownerRoleFolders.containsKey(role) && !granted.contains(role))
+                             .filter(role -> accessException(role) != FolderAccess.NONE)
+                             .toList();
+  }
+
+  /**
+   * The owner's exception for one role folder, null when it follows the preset
+   * (EXO-90556).
+   *
+   * @param role the role
+   * @return READER, EDITOR, NONE, or null
+   */
+  public FolderAccess accessException(FolderRole role) {
+    return folderAccess == null || role == null ? null : folderAccess.get(role);
+  }
+
+  /**
+   * What the delegate is to hold on the owner's folder of one role: the owner's
+   * exception, else the share's preset (EXO-90556).
+   *
+   * @param role the role
+   * @return READER, EDITOR or NONE; null when the share has no grantable preset
+   */
+  public FolderAccess accessOf(FolderRole role) {
+    FolderAccess exception = accessException(role);
+    return exception != null ? exception : FolderAccess.of(preset);
+  }
+
+  /**
+   * The stored form of per-folder exceptions: {@code ROLE=ACCESS} pairs in grant order,
+   * comma-separated; null when there is none, which is also how every share written
+   * before EXO-90556 reads.
+   *
+   * @param access the exceptions
+   * @return the stored form, or null
+   */
+  public static String folderAccessOf(Map<FolderRole, FolderAccess> access) {
+    if (access == null || access.isEmpty()) {
+      return null;
+    }
+    StringBuilder stored = new StringBuilder();
+    for (FolderRole role : FolderRole.GRANTED) {
+      FolderAccess value = access.get(role);
+      if (value != null) {
+        stored.append(stored.isEmpty() ? "" : ",").append(role.name()).append('=').append(value.name());
+      }
+    }
+    return stored.isEmpty() ? null : stored.toString();
+  }
+
+  /**
+   * The stored exceptions read back. A pair this version cannot read -- a role or an
+   * access it does not know -- is skipped: that folder then follows the preset.
+   *
+   * @param stored the stored form
+   * @return the exceptions, empty when none, never null
+   */
+  public static Map<FolderRole, FolderAccess> folderAccessFrom(String stored) {
+    Map<FolderRole, FolderAccess> access = new EnumMap<>(FolderRole.class);
+    if (stored == null || stored.isBlank()) {
+      return access;
+    }
+    for (String pair : stored.split(",")) {
+      int equals = pair.indexOf('=');
+      if (equals <= 0) {
+        continue;
+      }
+      FolderRole role = FolderRole.of(pair.substring(0, equals));
+      FolderAccess value = FolderAccess.of(pair.substring(equals + 1));
+      if (role != null && role != FolderRole.DRAFTS && value != null) {
+        access.put(role, value);
+      }
+    }
+    return access;
+  }
+
+  /**
+   * Exceptions without the ones that say what the preset says anyway: a role set to the
+   * share's own preset follows it again (EXO-90556, "Change access" keeps only real
+   * exceptions).
+   *
+   * @param access the exceptions
+   * @param preset the share's preset
+   * @return the exceptions that still differ, never null
+   */
+  public static Map<FolderRole, FolderAccess> withoutPreset(Map<FolderRole, FolderAccess> access, DelegationPreset preset) {
+    Map<FolderRole, FolderAccess> kept = new EnumMap<>(FolderRole.class);
+    FolderAccess follows = FolderAccess.of(preset);
+    if (access != null) {
+      access.forEach((role, value) -> {
+        if (role != null && value != null && value != follows) {
+          kept.put(role, value);
+        }
+      });
+    }
+    return kept;
   }
 
   /**
