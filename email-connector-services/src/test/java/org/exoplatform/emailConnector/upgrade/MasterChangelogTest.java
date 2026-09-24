@@ -926,6 +926,71 @@ public class MasterChangelogTest {
   }
 
   /**
+   * EXO-90584 -- 1.0.0-89 adds EMAIL_BOX.DRAFT_SEND_MODE, null on a draft that existed
+   * before it (it never said in which name it goes out) and leaving its mailbox as it was;
+   * rolls back to a tag placed immediately before it, dropping that column and nothing
+   * else, the draft kept; and applies again.
+   *
+   * @throws Exception when the changeset does not apply or roll back
+   */
+  @Test
+  void theDraftSendModeRollsBackAndReapplies() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback89" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-89"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-draft-send-mode");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "DRAFT_SEND_MODE"), "not before 1.0.0-89");
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "SEND_MODE"), "1.0.0-88 runs before it");
+      try (Statement statement = connection.createStatement()) {
+        statement.executeUpdate("INSERT INTO EMAIL_BOX (ID, USER_ID, SUBJECT, SENDER, RECEIVED_DATE, FOLDER, DRAFT_LOCAL_ID,"
+            + " DRAFT_DELEGATION_ID) VALUES (1, 'bob', 's', 'Bob,bob@example.org', CURRENT_TIMESTAMP, 'DRAFTS', 'draft-1', 100)");
+      }
+      liquibase.update("");
+      assertEquals(16, columnSize(connection, "EMAIL_BOX", "DRAFT_SEND_MODE"), "1.0.0-89 adds EMAIL_BOX.DRAFT_SEND_MODE");
+      try (Statement statement = connection.createStatement()) {
+        try (ResultSet row = statement.executeQuery("SELECT DRAFT_SEND_MODE, DRAFT_DELEGATION_ID FROM EMAIL_BOX WHERE ID = 1")) {
+          assertTrue(row.next());
+          assertNull(row.getString(1), "an existing draft never said in which name it goes out");
+          assertEquals(100L, row.getLong(2), "and keeps its mailbox");
+        }
+        statement.executeUpdate("UPDATE EMAIL_BOX SET DRAFT_SEND_MODE = 'ON_BEHALF' WHERE ID = 1");
+      }
+      liquibase.rollback("before-draft-send-mode", "");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "DRAFT_SEND_MODE"), "the rollback drops it");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "DRAFT_DELEGATION_ID"), "and nothing before it");
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "SEND_MODE"), "not 1.0.0-88 either");
+      try (Statement statement = connection.createStatement();
+          ResultSet row = statement.executeQuery("SELECT DRAFT_LOCAL_ID, DRAFT_DELEGATION_ID FROM EMAIL_BOX WHERE ID = 1")) {
+        assertTrue(row.next(), "the draft itself survives the rollback");
+        assertEquals("draft-1", row.getString(1));
+        assertEquals(100L, row.getLong(2));
+      }
+      liquibase.update("");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "DRAFT_SEND_MODE"), "the changeset applies again after its rollback");
+    }
+  }
+
+  /**
+   * EXO-90584 -- 1.0.0-89 as MySQL and PostgreSQL would run it, bounded to its own
+   * changeset: one nullable, unquoted VARCHAR(16) with no default, and a rollback that
+   * drops that column only.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theDraftSendModeOnMySqlAndPostgreSql() throws Exception {
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-89", "1.0.0-89").toUpperCase(Locale.ROOT);
+      assertTrue(update.contains("ALTER TABLE EMAIL_BOX ADD DRAFT_SEND_MODE VARCHAR(16)"), vendor + ": " + update);
+      assertFalse(update.contains("NOT NULL"), vendor + " the column is nullable: " + update);
+      assertFalse(update.contains("DEFAULT"), vendor + " no default: " + update);
+      assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-89", "1.0.0-89").toUpperCase(Locale.ROOT).trim();
+      assertEquals("ALTER TABLE EMAIL_BOX DROP COLUMN DRAFT_SEND_MODE;", rollback, vendor + " rollback drops that column only");
+    }
+  }
+
+  /**
    * The declared size of a column, from the JDBC metadata.
    *
    * @param connection the database
