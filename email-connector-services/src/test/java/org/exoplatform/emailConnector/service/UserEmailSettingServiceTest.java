@@ -289,6 +289,53 @@ public class UserEmailSettingServiceTest {
     verify(emailConnectorService).getEmailConnector(1L);
   }
 
+  /**
+   * EXO-89997. The read the Personal credentials source runs on every connection
+   * and every send is the settings read alone: the connector decoration is a
+   * database read that credentials never need.
+   */
+  @Test
+  @SneakyThrows
+  void theStoredSettingIsReadWithoutTheConnector() {
+    SettingValue userEmailSettingValue = mock(SettingValue.class);
+    when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenReturn(userEmailSettingValue);
+    when(userEmailSettingValue.getValue()).thenReturn("{\"emailConnectorId\":\"1\",\"emailAddress\":\"testEmail\",\"emailPassword\":\"cipher\"}");
+    AbstractCodec codec = mock(AbstractCodec.class);
+    when(codecInitializer.getCodec()).thenReturn(codec);
+    when(codec.decode("cipher")).thenReturn("clear");
+
+    UserEmailSetting stored = userEmailSettingService.getStoredUserEmailSetting(TEST_USER);
+
+    assertEquals("1", stored.getEmailConnectorId());
+    assertEquals("testEmail", stored.getEmailAddress());
+    assertEquals("clear", stored.getEmailPassword());
+    verifyNoInteractions(emailConnectorService);
+  }
+
+  /** EXO-89997. No stored document is no mailbox. */
+  @Test
+  void noStoredSettingIsNoStoredMailbox() {
+    when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenReturn(null);
+
+    UserEmailSetting stored = userEmailSettingService.getStoredUserEmailSetting(TEST_USER);
+
+    assertNull(stored.getEmailConnectorId());
+    assertNull(stored.getEmailPassword());
+    verifyNoInteractions(emailConnectorService, codecInitializer);
+  }
+
+  /** EXO-89997. A stored document naming no connector is no mailbox. */
+  @Test
+  void aSettingNamingNoConnectorIsNoStoredMailbox() {
+    SettingValue userEmailSettingValue = mock(SettingValue.class);
+    when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenReturn(userEmailSettingValue);
+    when(userEmailSettingValue.getValue()).thenReturn("{\"emailAddress\":\"testEmail\"}");
+
+    assertNull(userEmailSettingService.getStoredUserEmailSetting(TEST_USER).getEmailConnectorId());
+    assertNull(userEmailSettingService.getStoredUserEmailSetting(TEST_USER).getEmailAddress());
+    verifyNoInteractions(emailConnectorService);
+  }
+
   @Test
   @SneakyThrows
   void aPasswordThatIsNotSetNeverReachesTheCodec() {

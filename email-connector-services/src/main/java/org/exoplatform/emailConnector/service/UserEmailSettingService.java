@@ -427,31 +427,56 @@ public class UserEmailSettingService {
    * @return stored {@link UserEmailSetting} in datasource
    */
   public UserEmailSetting getUserEmailSetting(String username) {
-    UserEmailSetting userEmailSetting = new UserEmailSetting();
-    SettingValue<?> userEmailSettingValue = settingService.get(Context.USER.id(username),
-                                                               EMAIL_CONNECTOR_SCOPE,
-                                                               USER_EMAIL_SETTING_KEY);
-    if (userEmailSettingValue != null) {
-      UserEmailSetting storedUserEmailSetting = JsonUtils.fromJsonString(userEmailSettingValue.getValue().toString(),
-                                                                         UserEmailSetting.class);
-      if (storedUserEmailSetting.getEmailConnectorId() != null) {
-        userEmailSetting = storedUserEmailSetting;
-        String storedPassword = userEmailSetting.getEmailPassword();
-        userEmailSetting.setEmailPassword(decodePassword(storedPassword, username));
-        userEmailSetting.setPasswordUnreadable(StringUtils.isNotBlank(storedPassword) && userEmailSetting.getEmailPassword() == null);
-        EmailConnector emailConnector =
-                                      emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
-        if (emailConnector != null) {
-          userEmailSetting.setCarddavAvailable(StringUtils.isNotBlank(emailConnector.getCarddavUrl()));
-          userEmailSetting.setEmailConnectorImageUrl(emailConnector.getImageUrl());
-          userEmailSetting.setEmailConnectorIcon(emailConnector.getIcon());
-          userEmailSetting.setEmailConnectorName(emailConnector.getName());
-          userEmailSetting.setEmailConnectorWebmailUrl(emailConnector.getWebmailUrl());
-          userEmailSetting.setConnected(emailConnector.isActive());
-        }
+    UserEmailSetting userEmailSetting = getStoredUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() != null) {
+      EmailConnector emailConnector =
+                                    emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+      if (emailConnector != null) {
+        userEmailSetting.setCarddavAvailable(StringUtils.isNotBlank(emailConnector.getCarddavUrl()));
+        userEmailSetting.setEmailConnectorImageUrl(emailConnector.getImageUrl());
+        userEmailSetting.setEmailConnectorIcon(emailConnector.getIcon());
+        userEmailSetting.setEmailConnectorName(emailConnector.getName());
+        userEmailSetting.setEmailConnectorWebmailUrl(emailConnector.getWebmailUrl());
+        userEmailSetting.setConnected(emailConnector.isActive());
       }
     }
     return userEmailSetting;
+  }
+
+  /**
+   * The user's email setting as stored, password decoded, without the connector
+   * fields {@link #getUserEmailSetting(String)} decorates it with.
+   * <p>
+   * This is the read the Personal credentials source runs once per mailbox
+   * connection and once per send (EXO-89997): a {@link SettingService} read, served
+   * by the platform's {@code CacheSettingServiceImpl} from the
+   * {@code commons.SettingService} cache and updated by every {@code set} of the
+   * same key - so a changed password is visible at once. The connector decoration
+   * is a database read that credentials never need. Nothing may cache on top of
+   * this read: it would be a second cache over one value, with its own invalidation
+   * lifecycle.
+   *
+   * @param username the eXo login
+   * @return the stored setting, or an empty one when the user has no configured
+   *         mailbox
+   */
+  public UserEmailSetting getStoredUserEmailSetting(String username) {
+    SettingValue<?> userEmailSettingValue = settingService.get(Context.USER.id(username),
+                                                               EMAIL_CONNECTOR_SCOPE,
+                                                               USER_EMAIL_SETTING_KEY);
+    if (userEmailSettingValue == null) {
+      return new UserEmailSetting();
+    }
+    UserEmailSetting storedUserEmailSetting = JsonUtils.fromJsonString(userEmailSettingValue.getValue().toString(),
+                                                                       UserEmailSetting.class);
+    if (storedUserEmailSetting.getEmailConnectorId() == null) {
+      return new UserEmailSetting();
+    }
+    String storedPassword = storedUserEmailSetting.getEmailPassword();
+    storedUserEmailSetting.setEmailPassword(decodePassword(storedPassword, username));
+    storedUserEmailSetting.setPasswordUnreadable(StringUtils.isNotBlank(storedPassword)
+        && storedUserEmailSetting.getEmailPassword() == null);
+    return storedUserEmailSetting;
   }
 
   /**
