@@ -867,6 +867,24 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<Long> mailRemoteIds);
 
   /**
+   * Of the given IMAP UIDs, the cached ones in a folder of one user, each with its
+   * row's local id -- the (UID, id) pairs a search result list is decorated with, so a
+   * hit found on the mail server names its mail by the key the agent tools take
+   * (EXO-90555), in the same single IN statement as {@link #findCachedMailRemoteIds}.
+   * Scoped by owner and folder: a UID numbers a message within one folder only.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator scoping the UIDs
+   * @param mailRemoteIds the candidate IMAP UIDs
+   * @return {UID, id} pairs of the cached ones
+   */
+  @Query("SELECT email.mailRemoteId, email.id FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId IN :mailRemoteIds")
+  List<Object[]> findCachedIdsByMailRemoteIds(@Param("userId")
+  String userId, @Param("folder")
+  String folder, @Param("mailRemoteIds")
+  List<Long> mailRemoteIds);
+
+  /**
    * The identity of a conversation's real mail, newest first — what a stored summary
    * is checked against to decide whether it still describes the conversation.
    * <p>

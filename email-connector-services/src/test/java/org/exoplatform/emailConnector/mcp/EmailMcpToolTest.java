@@ -1244,4 +1244,48 @@ class EmailMcpToolTest {
     assertNull(hit.getMailRemoteId());
     assertEquals(EMAIL_ID, hit.getEmailId());
   }
+
+  // --- every hit names its mail by email_id; a UID is not an email_id (EXO-90555) --
+
+  /**
+   * An own-INBOX search hit already synced carries the email_id of its own row, and a
+   * hit not synced yet carries none -- the UID alone, for an own-INBOX hit.
+   */
+  @Test
+  void anOwnInboxSearchHitCarriesTheEmailIdOfItsRow() throws Exception {
+    EmailSearchResult synced = new EmailSearchResult(8L, MailFolder.INBOX, "From Alice", null, new Date(), false, false, true, null, 42L);
+    EmailSearchResult notYet = new EmailSearchResult(9L, MailFolder.INBOX, "From Carol", null, new Date(), false, false, false, null);
+    when(emailBoxService.searchEmails(USERNAME, "alice", null, false, null, MailFolder.INBOX, 20)).thenReturn(new EmailSearchResultPage(List.of(synced, notYet), 2));
+
+    List<EmailSearchHitModel> hits = emailMcpTool.searchEmails("alice", null, null, null, null, null, null).getResults();
+
+    assertEquals(42L, hits.get(0).getEmailId());
+    assertEquals(8L, hits.get(0).getMailRemoteId());
+    assertNull(hits.get(1).getEmailId(), "not synced yet");
+    assertEquals(9L, hits.get(1).getMailRemoteId());
+  }
+
+  /**
+   * A UID passed as an email_id is looked up as a row id and nothing else: with no such
+   * row it is refused in words that name the id and say what an email_id is, and no
+   * lookup by UID is ever tried in its place; given as both, it must be one row's.
+   */
+  @Test
+  void aUidPassedAsAnEmailIdNeverResolvesToAnotherMail() throws Exception {
+    when(emailBoxService.getOwnMailboxEmailById(8L, USERNAME)).thenReturn(null);
+
+    ObjectNotFoundException byId = assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.getEmailById(8L, null));
+    assertEquals("No email with email_id 8 in your mailbox. email_id is the local id every reading tool returns as email_id, "
+        + "not the mail_remote_id numbering a mail within its folder.", byId.getMessage());
+    ObjectNotFoundException toReply = assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.replyEmail(null, "<p>x</p>", null, 8L));
+    assertTrue(toReply.getMessage().startsWith("No email with email_id 8 in your mailbox."), toReply.getMessage());
+    // Row 8 exists, and is another mail than the one numbered 8 in the inbox.
+    Email rowEight = buildEmail(8L);
+    rowEight.setMailRemoteId(3L);
+    when(emailBoxService.getOwnMailboxEmailById(8L, USERNAME)).thenReturn(rowEight);
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.replyEmail(8L, "<p>x</p>", null, 8L), "the same number as both ids");
+
+    verify(emailBoxService, never()).getEmailByMailRemoteIdAndUserId(eq(8L), any(), any(), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean());
+    verify(emailBoxService, never()).sendEmail(any(Email.class), any());
+  }
 }

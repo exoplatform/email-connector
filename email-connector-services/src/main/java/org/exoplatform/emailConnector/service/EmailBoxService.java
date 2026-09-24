@@ -8103,9 +8103,11 @@ public class EmailBoxService {
       props.put("mail.smtp.writetimeout", String.valueOf(SCHEDULED_SMTP_IO_TIMEOUT_MS));
     }
     props.put("mail.smtp.auth", "true");
-    props.put("mail.smtp." + emailConnector.getSmtpSecurityType() + ".enable", "true");
-    props.put("mail.smtp.host", emailConnector.getSmtpUrl());
-    props.put("mail.smtp.port", emailConnector.getSmtpPort());
+    // Trimmed where used too (EXO-90555): a preset saved before its fields were trimmed
+    // at save still carries a " 127.0.0.1", which the mail library looks up as is.
+    props.put("mail.smtp." + StringUtils.trim(emailConnector.getSmtpSecurityType()) + ".enable", "true");
+    props.put("mail.smtp.host", StringUtils.trim(emailConnector.getSmtpUrl()));
+    props.put("mail.smtp.port", StringUtils.trim(emailConnector.getSmtpPort()));
     // The props are connector configuration and stay where they were; only the
     // authenticator moves, from one built here out of the stored setting to one
     // the configured provider produces.
@@ -12944,7 +12946,9 @@ public class EmailBoxService {
         pageUids.add(uidFolder.getUID(message));
       }
       // One IN query for the whole page — never a per-hit lookup.
-      Set<Long> cachedUids = new HashSet<>(emailBoxStorage.getCachedMailRemoteIds(username, folder, pageUids));
+      // The same single statement also names each cached hit's row (EXO-90555): the
+      // email_id an agent tool takes, which a UID -- numbered per folder -- is not.
+      Map<Long, Long> cachedIds = emailBoxStorage.getCachedEmailIds(username, folder, pageUids);
       List<EmailSearchResult> results = new ArrayList<>(page.length);
       for (int i = page.length - 1; i >= 0; i--) {
         try {
@@ -12958,10 +12962,11 @@ public class EmailBoxService {
                                             page[i].getReceivedDate(),
                                             page[i].isSet(Flags.Flag.SEEN),
                                             page[i].isSet(Flags.Flag.FLAGGED),
-                                            cachedUids.contains(messageUid),
+                                            cachedIds.containsKey(messageUid),
                                             // Envelope-only: quoting the body would cost
                                             // one round-trip per hit.
-                                            null));
+                                            null,
+                                            cachedIds.get(messageUid)));
         } catch (Exception e) {
           // One unreadable hit must not lose the rest of the page.
           LOG.debug("Skipping an unreadable search hit in folder {} for user {}", folder, username, e);
