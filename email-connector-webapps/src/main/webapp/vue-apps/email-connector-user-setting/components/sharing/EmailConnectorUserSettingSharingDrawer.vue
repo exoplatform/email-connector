@@ -107,8 +107,6 @@ export default {
     loading: false,
     loaded: false,
     capabilities: null,
-    // Whether an administrator left the owner's Sent copy of a delegate's mail on (EXO-90551).
-    sentCopyEnabled: false,
     grantees: [],
     revokingId: null,
     revokeTarget: null,
@@ -245,7 +243,6 @@ export default {
       return this.$emailConnectorUserSettingService.getGrantedDelegations()
         .then(answer => {
           this.capabilities = answer?.capabilities || null;
-          this.sentCopyEnabled = !!answer?.sentCopyEnabled;
           this.grantees = answer?.grantees || [];
           this.loaded = true;
           // The settings row's summary counts from this read rather than making its
@@ -379,7 +376,7 @@ export default {
         return;
       }
       const name = this.displayName(grantee);
-      const copy = this.$t(this.ownerKeepsACopy(grantee)
+      const copy = this.$t(grantee?.ownerSentCopy
         ? 'UserSettings.emailConnector.sharing.sendMode.confirm.copy'
         : 'UserSettings.emailConnector.sharing.sendMode.confirm.noCopy');
       this.pendingSendMode = { grantee, mode };
@@ -425,36 +422,14 @@ export default {
         });
     },
     /**
-     * Whether a mail the person sends in the owner's name will be filed in the owner's own
-     * Sent (EXO-90551): the share covers her Sent, with an Editor's access there, and an
-     * administrator left the copy on. What the consent says, so she knows before agreeing
-     * whether she will keep a copy.
-     *
-     * @param {Object} grantee the row
-     * @returns {Boolean} true when a copy is filed
-     */
-    ownerKeepsACopy(grantee) {
-      const delegation = grantee?.delegation;
-      if (!this.sentCopyEnabled || !delegation) {
-        return false;
-      }
-      const roles = (delegation.grantedRoles || '').split(',');
-      const wholeMailbox = delegation.grantedRoles === 'MAILBOX';
-      if (!wholeMailbox && !roles.includes('SENT')) {
-        return false;
-      }
-      const exception = delegation.folderAccess?.SENT;
-      return exception ? exception === 'EDITOR' : delegation.preset === 'EDITOR';
-    },
-    /**
-     * The person a row names, as the confirmations say it: their eXo name, else their
-     * identifier on the mail server.
+     * The person a row names, as the consent says it: their display name, as the server
+     * read it, else their username, else their identifier on the mail server.
      *
      * @param {Object} grantee the row
      * @returns {String} the name
      */
     displayName(grantee) {
-      return grantee?.granteeId || grantee?.identifier || '';
+      return grantee?.granteeFullName || grantee?.granteeId || grantee?.identifier || '';
     },
     /**
      * A row's "Folders and access": the drawer that reads and sets each folder's access
