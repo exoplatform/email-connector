@@ -95,33 +95,21 @@ export default {
     },
     /**
      * "{sender} asked for a read receipt", with the sender's name, or their address when
-     * the message carries no name -- and "... to be sent to {address}" when the one
-     * address the request names is not the sender's: the header is the sender's to
-     * write, so the user sees where the receipt would go before sending it. A request
-     * naming several addresses never reaches here (the server offers it as NONE).
+     * the message carries no name -- and "... to be sent to {address}" when the address
+     * the receipt would go to is not the sender's. That address is the server's
+     * (readReceiptAddress, parsed as the receipt is sent), never read from the header
+     * here, so the banner cannot show a destination other than the real one.
      *
      * @returns {String} the banner's sentence
      */
     label() {
       const sender = this.email?.sender?.name || this.email?.sender?.address || '';
-      const requested = this.requestedAddress;
+      const destination = (this.email?.readReceiptAddress || '').trim();
       const senderAddress = (this.email?.sender?.address || '').trim().toLowerCase();
-      if (requested && requested.toLowerCase() !== senderAddress) {
-        return this.$t('emailConnector.mailBox.readReceipt.bannerTo', { 0: sender, 1: requested });
+      if (destination && destination.toLowerCase() !== senderAddress) {
+        return this.$t('emailConnector.mailBox.readReceipt.bannerTo', { 0: sender, 1: destination });
       }
       return this.$t('emailConnector.mailBox.readReceipt.banner', { 0: sender });
-    },
-    /**
-     * The address the request names, read from its Disposition-Notification-To as the
-     * server holds it: the part between angle brackets when there is one, the whole
-     * value otherwise.
-     *
-     * @returns {String} the address, empty when the message names none
-     */
-    requestedAddress() {
-      const header = (this.email?.readReceiptTo || '').trim();
-      const bracketed = header.match(/<([^>]+)>/);
-      return (bracketed ? bracketed[1] : header).trim();
     },
     /**
      * What the message says was done about its request, once it is answered: "Read

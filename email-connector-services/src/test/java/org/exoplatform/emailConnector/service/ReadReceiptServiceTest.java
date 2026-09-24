@@ -285,16 +285,20 @@ class ReadReceiptServiceTest {
   }
 
   /**
-   * A request naming several addresses is never offered, under any policy: the header
-   * is the sender's, and each address would receive mail from the user's own account.
-   * One address that is not the sender's is still offered; the banner names it.
+   * A request naming several addresses is never offered, under any policy, whether it
+   * lists them or names a group: the header is the sender's, and each address would
+   * receive mail from the user's own account. One address that is not the sender's is
+   * still offered; the banner names it.
    */
   @Test
   void aRequestNamingSeveralAddressesIsNeverOffered() {
     Email several = incoming();
     several.setReadReceiptTo(SENDER + ", tracker@elsewhere.example");
+    Email group = incoming();
+    group.setReadReceiptTo("team: <" + SENDER + ">, tracker@elsewhere.example;");
     for (ReadReceiptPolicy policy : ReadReceiptPolicy.values()) {
       assertEquals(ReadReceiptPrompt.NONE, prompt(several, policy), "several addresses under " + policy);
+      assertEquals(ReadReceiptPrompt.NONE, prompt(group, policy), "a group under " + policy);
     }
     Email elsewhere = incoming();
     elsewhere.setReadReceiptTo("tracker@elsewhere.example");
@@ -348,6 +352,31 @@ class ReadReceiptServiceTest {
     Email safe = incoming();
     readReceiptService.decorate(safe, USER);
     assertEquals(ReadReceiptPrompt.ASK, safe.getReadReceiptPrompt());
+  }
+
+  /**
+   * The reader is told the destination the server would send to, parsed by the same
+   * parser as the send: a quoted display name that looks like an address is not the
+   * address, and a request with no prompt carries none.
+   */
+  @Test
+  void decoratingGivesTheReaderTheAddressTheReceiptWouldGoTo() {
+    Email quoted = incoming();
+    quoted.setReadReceiptTo("\"<" + SENDER + ">\" <victim@third.example>");
+    quoted.setReadReceiptReturnPathMatch(false);
+    readReceiptService.decorate(List.of(quoted), USER);
+    assertEquals(ReadReceiptPrompt.ASK, quoted.getReadReceiptPrompt());
+    assertEquals("victim@third.example", quoted.getReadReceiptAddress());
+
+    Email plain = incoming();
+    readReceiptService.decorate(List.of(plain), USER);
+    assertEquals(SENDER, plain.getReadReceiptAddress());
+
+    Email group = incoming();
+    group.setReadReceiptTo("team: <" + SENDER + ">, tracker@elsewhere.example;");
+    readReceiptService.decorate(List.of(group), USER);
+    assertEquals(ReadReceiptPrompt.NONE, group.getReadReceiptPrompt());
+    assertNull(group.getReadReceiptAddress());
   }
 
   /** Decorating reads the preferences once, and neither them nor the answer store when nothing asks. */
@@ -508,11 +537,14 @@ class ReadReceiptServiceTest {
     own.setSender(new EmailSender(null, OWN_ADDRESS, null, null));
     assertRefused(own, ReadReceiptAction.SEND, ReadReceiptService.NOT_ALLOWED);
 
-    // A request naming several addresses is never answered, by hand either: every one
-    // would receive mail from the user's own account (review of #434, F1)
+    // A request naming several addresses, as a list or as a group, is never answered,
+    // by hand either: every one would receive mail from the user's own account
     Email several = incoming();
     several.setReadReceiptTo(SENDER + ", tracker@elsewhere.example");
     assertRefused(several, ReadReceiptAction.SEND, ReadReceiptService.NOT_ALLOWED);
+    Email group = incoming();
+    group.setReadReceiptTo("team: <" + SENDER + ">, tracker@elsewhere.example;");
+    assertRefused(group, ReadReceiptAction.SEND, ReadReceiptService.NOT_ALLOWED);
 
     storedSettings(new ReadReceiptSettings(false, ReadReceiptPolicy.NEVER, false));
     assertRefused(incoming(), ReadReceiptAction.SEND, ReadReceiptService.NOT_ALLOWED);

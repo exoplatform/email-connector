@@ -197,4 +197,11 @@ public class Email {
   // readReceiptState is one cached copy's mirror of the answer, this is the answer.
   @JsonProperty(access = JsonProperty.Access.READ_ONLY)
   private ReadReceiptState     readReceiptAnswer;
+
+  // The one address a pending request would be answered to, parsed by the same
+  // parser the receipt is sent with (ReadReceiptService.requestedAddresses), so
+  // the banner shows the destination the server uses. Null when the prompt is
+  // NONE. Computed on the reads that feed the reader, never stored.
+  @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+  private String               readReceiptAddress;
 }
