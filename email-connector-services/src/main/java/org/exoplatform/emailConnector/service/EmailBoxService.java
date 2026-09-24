@@ -5832,7 +5832,8 @@ public class EmailBoxService {
                                                                                  email.isRead(),
                                                                                  email.isStarred(),
                                                                                  true,
-                                                                                 null))
+                                                                                 null,
+                                                                                 email.getId()))
                                              .toList();
     return new EmailSearchResultPage(results, matches.size());
   }
