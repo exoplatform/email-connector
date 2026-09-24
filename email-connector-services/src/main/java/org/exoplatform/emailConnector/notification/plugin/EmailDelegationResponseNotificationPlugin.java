@@ -30,7 +30,8 @@ import org.exoplatform.emailConnector.utils.NotificationConstants;
 /**
  * Tells one party of a share what the other party did with it (EXO-90503): the owner
  * that the grantee accepted, declined or left, and the grantee that the owner took the
- * access away.
+ * access away -- or set, changed or withdrew her consent to them writing mail in her
+ * name (EXO-90582, {@code SEND_MODE_ON_BEHALF|AS|NONE}).
  * <p>
  * One plugin and one notification preference for four transitions, because to the
  * person reading it they are one kind of news -- "where that share now stands" -- and
@@ -48,7 +49,10 @@ import org.exoplatform.emailConnector.utils.NotificationConstants;
  */
 public class EmailDelegationResponseNotificationPlugin extends BaseEmailDelegationNotificationPlugin {
 
-  /** Which transition: an {@code EmailDelegationEvent.Type} name. */
+  /**
+   * Which news: an {@code EmailDelegationEvent.Type} name, or {@code SEND_MODE_} and the
+   * consent to writing in the owner's name as it now stands.
+   */
   public static final ArgumentLiteral<String> RESPONSE            = new ArgumentLiteral<>(String.class, "response");
 
   private static final String                 TITLE_KEY_PREFIX    = "emailDelegationResponse.notification.title.";
