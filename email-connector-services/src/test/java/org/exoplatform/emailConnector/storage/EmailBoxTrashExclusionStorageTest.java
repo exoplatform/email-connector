@@ -118,6 +118,10 @@ public class EmailBoxTrashExclusionStorageTest {
 
   private static final String BADGE_USER        = "judy";
 
+  private static final String SHARED_USER       = "kim";
+
+  private static final String OTHER_SHARED_USER = "liam";
+
   private static final String THREAD_ID         = "<monday@example.org>";
 
   private static final long   MONDAY            = 1_000_000_000_000L;
@@ -250,6 +254,29 @@ public class EmailBoxTrashExclusionStorageTest {
     assertEquals(List.of("<monday@example.org>"),
                  emailBoxStorage.getEmailsForSearch(SEARCH_USER).stream().map(Email::getMailHeaderId).toList(),
                  "what the user threw away must not be searchable back out of the bin, nor what the server quarantined out of the spam");
+  }
+
+  /**
+   * EXO-90554 -- the read of the shared mailboxes' searchable folders answers those
+   * folders and nothing else: not the user's own mail, not another folder of the same
+   * share left out of the scope (the owner's Trash), and nothing at all -- no query --
+   * for an empty scope, where an empty IN is not valid SQL everywhere.
+   */
+  @Test
+  void theSharedMailboxSearchReadsTheScopedFoldersOnly() {
+    emailBoxStorage.createEmail(mail(SHARED_USER, MailFolder.INBOX, 1L, "<own@example.org>", MONDAY));
+    emailBoxStorage.createEmail(mail(SHARED_USER, "CUSTOM:12", 1L, "<shared-inbox@example.org>", TUESDAY));
+    emailBoxStorage.createEmail(mail(SHARED_USER, "CUSTOM:13", 2L, "<shared-sent@example.org>", WEDNESDAY));
+    emailBoxStorage.createEmail(mail(SHARED_USER, "CUSTOM:14", 3L, "<shared-trash@example.org>", WEDNESDAY + 1));
+    emailBoxStorage.createEmail(mail(OTHER_SHARED_USER, "CUSTOM:12", 9L, "<somebody-else@example.org>", WEDNESDAY + 2));
+
+    assertEquals(List.of("<shared-sent@example.org>", "<shared-inbox@example.org>"),
+                 emailBoxStorage.getEmailsForSearchInFolders(SHARED_USER, List.of("CUSTOM:12", "CUSTOM:13"))
+                                .stream()
+                                .map(Email::getMailHeaderId)
+                                .toList(),
+                 "the scoped folders of that user, newest first");
+    assertTrue(emailBoxStorage.getEmailsForSearchInFolders(SHARED_USER, List.of()).isEmpty());
   }
 
   /**
