@@ -46,9 +46,11 @@ import org.exoplatform.services.log.Log;
  * </ul>
  * What a connector's server accepts is the administrator's declaration, read from
  * properties at use time, as {@code email.connector.aclEngine[.<id>]} is: no mail server
- * can be asked whether it will accept a sender without sending (phase-3 plan, section
- * 16). {@link #declaredFor(Long)} is the one reading of it, which the capability probe,
- * the owner's write and the delegate's usable list share.
+ * can be asked whether it will accept a sender without sending, and a submission server
+ * decides from the envelope alone -- Stalwart refuses another's address at MAIL unless
+ * its administrator allows the pair, a default Postfix accepts any (EXO-90586).
+ * {@link #declaredFor(Long)} is the one reading of it, which the capability probe, the
+ * owner's write and the delegate's usable list share.
  */
 public enum SendMode {
 

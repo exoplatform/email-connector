@@ -176,8 +176,8 @@ export default {
     },
     /**
      * "You are in Alice's mailbox · Reader" in pieces, the owner's name and the level
-     * in bold, and " · may write on her behalf" after it when the user may (EXO-90582).
-     * Built from the one translated sentence, placeholders marked, so a
+     * in bold -- with " · may write on their behalf" when the user may (EXO-90582). Built
+     * from one translated sentence, placeholders marked, so a
      * translation may put them wherever its language wants them.
      *
      * @returns {Array} [{text, bold}]
@@ -186,18 +186,21 @@ export default {
       if (!this.entry) {
         return [];
       }
-      const sentence = this.$t('emailConnector.mailBox.sharedMailbox.band', { 0: OWNER_MARK, 1: LEVEL_MARK });
+      // Whether the user may write mail in the owner's name here (EXO-90582): the most
+      // transparent shape they can use now names it (PO decision Q-G), in a sentence of
+      // its own so a translation places it too.
+      const sendMode = this.entry.sendModes?.[0];
+      const sentence = sendMode
+        ? this.$t('emailConnector.mailBox.sharedMailbox.band.sendMode', {
+          0: OWNER_MARK,
+          1: LEVEL_MARK,
+          2: this.$t(`emailConnector.mailBox.sharedMailbox.band.sendMode.${sendMode}`),
+        })
+        : this.$t('emailConnector.mailBox.sharedMailbox.band', { 0: OWNER_MARK, 1: LEVEL_MARK });
       const values = { [OWNER_MARK]: this.entry.ownerFullName, [LEVEL_MARK]: this.levelLabel };
-      const parts = sentence.split(new RegExp(`(${OWNER_MARK}|${LEVEL_MARK})`))
+      return sentence.split(new RegExp(`(${OWNER_MARK}|${LEVEL_MARK})`))
         .filter(part => part)
         .map(part => (values[part] ? { text: values[part], bold: true } : { text: part, bold: false }));
-      // Whether the user may write mail in the owner's name here (EXO-90582): the most
-      // transparent shape they can use now names it (PO decision Q-G).
-      const sendMode = this.entry.sendModes?.[0];
-      if (sendMode) {
-        parts.push({ text: this.$t(`emailConnector.mailBox.sharedMailbox.band.sendMode.${sendMode}`), bold: false });
-      }
-      return parts;
     },
   },
 };
