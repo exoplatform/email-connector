@@ -298,6 +298,28 @@ export function scheduledActions(scheduled) {
 }
 
 /**
+ * The line naming the shared mailbox a draft or a scheduled mail was written in
+ * (EXO-90595), from the mailbox the server named: "From Anne's mailbox", with "no longer
+ * shared with you" once the share has ended; nothing for the user's own mailbox. One
+ * rule for the Drafts folder and the Scheduled view.
+ *
+ * @param {Object} mailbox the mailbox ({ownerFullName, ownerMailbox, shared}), may be null
+ * @param {Object} vm the component, for $t
+ * @returns {String} the line, or an empty string
+ */
+export function draftMailboxLabel(mailbox, vm) {
+  if (!mailbox) {
+    return '';
+  }
+  const owner = mailbox.ownerFullName || mailbox.ownerMailbox;
+  if (!owner) {
+    return vm.$t('emailConnector.mailBox.scheduled.mailbox.unknown');
+  }
+  return vm.$t(mailbox.shared ? 'emailConnector.mailBox.scheduled.mailbox' : 'emailConnector.mailBox.scheduled.mailbox.unshared',
+    { 0: owner });
+}
+
+/**
  * What to tell the user about a refused scheduled-send request: the server's message
  * code when the bundle translates it (every code the backend answers with has its key),
  * else the given fallback.
