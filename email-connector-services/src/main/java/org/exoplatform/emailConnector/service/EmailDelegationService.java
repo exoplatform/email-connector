@@ -2567,9 +2567,9 @@ public class EmailDelegationService {
    */
   private static MailboxRights folderRights(EmailFolder folder, String shareLetters) {
     if (folder != null && MailFolderView.TYPE_DELEGATED.equals(folder.getType()) && folder.getRightsCheckDate() != null) {
-      return MailboxRights.of(StringUtils.defaultString(folder.getRights()));
+      return MailboxRights.of(StringUtils.defaultString(folder.getRights())).withoutCoupledWrite();
     }
-    return MailboxRights.of(StringUtils.defaultString(shareLetters));
+    return MailboxRights.of(StringUtils.defaultString(shareLetters)).withoutCoupledWrite();
   }
 
   /**
