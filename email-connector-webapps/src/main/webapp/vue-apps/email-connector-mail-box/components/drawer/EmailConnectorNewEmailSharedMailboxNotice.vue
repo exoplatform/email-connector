@@ -21,10 +21,55 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        (EXO-90551). The owner's copy is offered either way, ticked by default only when
        the owner would otherwise have no trace of the mail (PO decision Q-3). The band is the identity cue's (7.6),
        with the access level's icon as everywhere else: the drawer's title already says
-       whether this is a reply. -->
+       whether this is a reply. When the owner lets the user write in their name
+       (EXO-90583), the band also says in whose name the mail goes -- and lets the user
+       choose, per mail. -->
   <email-connector-shared-mailbox-band :entry="entry">
     <!-- One block after the icon, so the sentence and the checkbox share its left edge. -->
     <div class="text-start" style="flex: 1 1 0; min-width: 0;">
+      <!-- The From picker (EXO-90583): only the shapes the owner allowed and the server
+           accepts now; the user's own name always. A text button rather than a select,
+           which would draw its own input box inside the tinted band. -->
+      <div
+        v-if="sendModes.length"
+        class="d-flex align-center flex-wrap mb-1 text--primary shared-mailbox-from">
+        <span class="me-1">{{ $t('emailConnector.mailBox.sharedMailbox.composer.from') }}</span>
+        <v-menu
+          offset-y
+          bottom
+          left>
+          <template #activator="{ on, attrs }">
+            <v-btn
+              :aria-label="$t('emailConnector.mailBox.sharedMailbox.composer.from.title')"
+              :title="$t('emailConnector.mailBox.sharedMailbox.composer.from.title')"
+              class="px-1 text-none font-weight-bold shared-mailbox-from-button"
+              small
+              text
+              v-bind="attrs"
+              v-on="on">
+              {{ identityLabel(sendMode) }}
+              <v-icon size="12" class="ms-1">fas fa-caret-down</v-icon>
+            </v-btn>
+          </template>
+          <v-list
+            class="pa-0"
+            dense>
+            <v-list-item
+              v-for="mode in identities"
+              :key="mode"
+              :aria-checked="mode === sendMode ? 'true' : 'false'"
+              :class="`shared-mailbox-from-${mode}`"
+              role="menuitemradio"
+              class="px-2"
+              @click="mode !== sendMode && $emit('update:send-mode', mode)">
+              <v-list-item-title>{{ identityLabel(mode) }}</v-list-item-title>
+              <v-list-item-action v-if="mode === sendMode" class="my-0">
+                <v-icon size="12" color="primary">fa-check</v-icon>
+              </v-list-item-action>
+            </v-list-item>
+          </v-list>
+        </v-menu>
+      </div>
       <div class="text--primary">
         <template v-for="(part, index) in noticeParts">
           <b v-if="part.bold" :key="index">{{ part.text }}</b>
@@ -34,7 +79,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <!-- A plain checkbox rather than v-checkbox: the latter draws its own white input
            slot, which sat as a white box inside the tinted band. Top-aligned with the
            label's first line; a wrapped label hangs under its own text. -->
+      <!-- In the owner's name with her copy filed, copying her is noise: hidden (Q-6). -->
       <label
+        v-if="!inOwnersName || !sentCopy"
         :title="copyOwnerTitle"
         for="emailSharedMailboxCopyOwner"
         class="d-flex align-start justify-start text-start mt-1 mb-0 text--primary"
@@ -75,8 +122,30 @@ export default {
     // cannot be unticked, since unticking only removes the Cc copy and the owner would
     // get the mail anyway.
     ownerIsRecipient: { type: Boolean, default: false },
+    // The shapes the user may write in the owner's name in now (EXO-90583), from the
+    // switcher entry: none hides the picker.
+    sendModes: { type: Array, default: () => [] },
+    // The name the mail goes out in: NONE (the user's own), ON_BEHALF or AS.
+    sendMode: { type: String, default: 'NONE' },
   },
   computed: {
+    /**
+     * Whether the mail goes out in the owner's name.
+     *
+     * @returns {Boolean} true on behalf of the owner, or as them
+     */
+    inOwnersName() {
+      return this.sendMode !== 'NONE';
+    },
+    /**
+     * The picker's choices: the user's own name, then the owner's shapes, the more
+     * transparent first.
+     *
+     * @returns {Array} NONE, then ON_BEHALF and AS as allowed
+     */
+    identities() {
+      return ['NONE', ...this.sendModes.filter(mode => mode === 'ON_BEHALF' || mode === 'AS')];
+    },
     /**
      * The checkbox's full meaning, for its title and accessible name -- the label says
      * only whom it copies, the sentence above already says why.
@@ -95,15 +164,32 @@ export default {
      */
     noticeParts() {
       // Where the sent copies go: the user's own Sent, and the owner's when it is filed
-      // there (EXO-90551).
-      const suffix = this.sentCopy ? '.filed' : '';
-      const key = this.reply
-        ? `emailConnector.mailBox.sharedMailbox.composer.reply${suffix}`
-        : `emailConnector.mailBox.sharedMailbox.composer.new${suffix}`;
+      // there (EXO-90551). In the owner's name, what recipients see and whether the owner
+      // keeps a copy (EXO-90583).
+      let key;
+      if (this.inOwnersName) {
+        key = `emailConnector.mailBox.sharedMailbox.composer.${this.sendMode}${this.sentCopy ? '' : '.noCopy'}`;
+      } else {
+        const suffix = this.sentCopy ? '.filed' : '';
+        key = this.reply
+          ? `emailConnector.mailBox.sharedMailbox.composer.reply${suffix}`
+          : `emailConnector.mailBox.sharedMailbox.composer.new${suffix}`;
+      }
       return this.$t(key, { 0: OWNER_MARK })
         .split(new RegExp(`(${OWNER_MARK})`))
         .filter(part => part)
         .map(part => (part === OWNER_MARK ? { text: this.entry.ownerFullName, bold: true } : { text: part, bold: false }));
+    },
+  },
+  methods: {
+    /**
+     * How the picker names a choice: the user, or the owner in a shape.
+     *
+     * @param {String} mode - NONE, ON_BEHALF or AS
+     * @returns {String} the label
+     */
+    identityLabel(mode) {
+      return this.$t(`emailConnector.mailBox.sharedMailbox.composer.from.${mode || 'NONE'}`, { 0: this.entry.ownerFullName || this.entry.ownerMailbox });
     },
   },
 };

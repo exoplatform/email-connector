@@ -46,6 +46,8 @@ import org.exoplatform.emailConnector.event.EmailDelegationEvent;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
+import org.exoplatform.emailConnector.exception.SendModeMissingException;
+import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.model.DelegationFolder;
 import org.exoplatform.emailConnector.model.DelegationFolders;
 import org.exoplatform.emailConnector.model.DelegationGrantee;
@@ -71,6 +73,7 @@ import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.OwnFolder;
+import org.exoplatform.emailConnector.model.SendIdentity;
 import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
@@ -3575,6 +3578,86 @@ public class EmailDelegationService {
    */
   public EmailDelegation requireOwnShare(String granteeUsername, long delegationId) throws ObjectNotFoundException {
     return asGrantee(granteeUsername, delegationId);
+  }
+
+  /**
+   * The name a mail of the delegate's goes out under, in the owner's name (EXO-90583):
+   * the one guard every send in another's name passes, called before anything is built
+   * or sent. On an IMAP server it is the only one -- a submission server checks the
+   * envelope, and an on-behalf mail's envelope is the delegate's own (EXO-90586) -- so
+   * the owner's address and name come from the share's row, never from the request: the
+   * caller says which of their shares and which shape, nothing else.
+   * <p>
+   * Checked in this order, so each refusal names its real cause: the share is the
+   * caller's (else "no such delegation") and accepted (else revoked); the owner's consent
+   * covers the shape ({@link SendMode#AS} covers on behalf too -- the more transparent
+   * shape is always available -- on behalf covers only itself); the administrator has not
+   * switched the feature off, and declares the shape for the connector; and the owner's
+   * mail server has not refused a mail in her name since she last gave her consent. The
+   * last three are the terms of {@link SendMode#usable}, which the delegate's picker is
+   * drawn from, so the picker and this guard cannot disagree.
+   *
+   * @param granteeUsername the sender, who must be the share's grantee
+   * @param delegationId the share
+   * @param requested the shape asked for, {@link SendMode#ON_BEHALF} or {@link SendMode#AS}
+   * @return the identity to build the mail with
+   * @throws ObjectNotFoundException when no such share belongs to the sender
+   * @throws DelegationRevokedException when the share is no longer accepted
+   * @throws SendModeMissingException when the owner's consent does not cover the shape
+   * @throws SendModeUnavailableException {@code emailConnector.sendMode.invalid} for no
+   *           shape, {@code .disabled}, {@code .unsupported} or {@code .refusedByServer}
+   */
+  public SendIdentity checkSendMode(String granteeUsername, long delegationId, SendMode requested) throws ObjectNotFoundException,
+                                                                                                  SendModeMissingException {
+    if (requested == null || requested == SendMode.NONE) {
+      throw new SendModeUnavailableException(SEND_MODE_INVALID_MESSAGE);
+    }
+    EmailDelegation delegation = asGrantee(granteeUsername, delegationId);
+    if (delegation.getStatus() != DelegationStatus.ACCEPTED) {
+      throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
+    }
+    if (!delegation.allowsSend(requested)) {
+      throw new SendModeMissingException(requested);
+    }
+    if (!SendMode.isEnabled()) {
+      throw new SendModeUnavailableException(SEND_MODE_DISABLED_MESSAGE);
+    }
+    if (!SendMode.declaredFor(delegation.getConnectorId()).contains(requested)) {
+      throw new SendModeUnavailableException(SEND_MODE_UNSUPPORTED_MESSAGE);
+    }
+    if (delegation.getSendRefusedDate() != null) {
+      throw new SendModeUnavailableException(SendModeUnavailableException.REFUSED_BY_SERVER);
+    }
+    String ownerName = ownerFullName(delegation);
+    return new SendIdentity(requested,
+                            delegationId,
+                            delegation.getOwnerMailbox(),
+                            // The name falls back on the address when the profile has none:
+                            // a display name that repeats the address says nothing more.
+                            StringUtils.equalsIgnoreCase(ownerName, delegation.getOwnerMailbox()) ? null : ownerName,
+                            delegation.getSendModeDate());
+  }
+
+  /**
+   * Records that the owner's mail server refused a mail the delegate sent in her name
+   * (EXO-90583), on the consent it was sent under: the owner's sharing screen and the
+   * delegate's band then say so, and the shape is no longer offered until the owner sets
+   * it again -- which clears the date. Written alone, by the grantee, and only while the
+   * row still carries that very consent: an owner who withdrew or set it again meanwhile
+   * is not overridden. The server's own text is never kept.
+   *
+   * @param granteeUsername the sender
+   * @param identity what the mail was sent under
+   * @return true when the refusal was recorded
+   */
+  public boolean markSendRefused(String granteeUsername, SendIdentity identity) {
+    boolean marked = emailDelegationStorage.markSendRefused(granteeUsername, identity.delegationId(), identity.consentDate());
+    LOG.warn("The mail server refused a mail sent in another's name: actor={} mode={} ownerMailbox={} recorded={}",
+             granteeUsername,
+             identity.mode(),
+             identity.ownerMailbox(),
+             marked);
+    return marked;
   }
 
   /**

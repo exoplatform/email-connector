@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UnsupportedEncodingException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -46,6 +47,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.Date;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -122,6 +124,9 @@ import com.sun.mail.imap.AppendUID;
 import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.IMAPStore;
 import com.sun.mail.imap.ResyncData;
+import com.sun.mail.smtp.SMTPAddressFailedException;
+import com.sun.mail.smtp.SMTPSendFailedException;
+import com.sun.mail.smtp.SMTPSenderFailedException;
 
 import org.exoplatform.commons.ObjectAlreadyExistsException;
 import org.exoplatform.commons.api.notification.NotificationContext;
@@ -141,6 +146,8 @@ import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
+import org.exoplatform.emailConnector.exception.SendModeMissingException;
+import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.event.MailboxResetEvent;
 import org.exoplatform.emailConnector.entity.EmailThreadAiSummaryEntity;
 import org.exoplatform.emailConnector.model.DiscoveredFolder;
@@ -154,6 +161,8 @@ import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
+import org.exoplatform.emailConnector.model.SendIdentity;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.ThreadSummary;
@@ -220,6 +229,26 @@ import jakarta.annotation.PreDestroy;
 @Service
 public class EmailBoxService {
 
+  /**
+   * The texts a mail server's refusal of a sender carries (EXO-90583, EXO-90586): Stalwart
+   * ("You are not allowed to send from this address"), Postfix with a login map ("Sender
+   * address rejected: not owned by user …"), and the send-as wording of servers that grant
+   * it per mailbox. Whole words, case ignored, looked for in a 5xx reply: a false match
+   * in the owner's name records a refusal that switches her consent off.
+   */
+  private static final Pattern    SENDER_POLICY_TEXT                                          =
+                                                     Pattern.compile("\\b(?:not allowed to send from|not owned by|send as|sendas|send on behalf)\\b",
+                                                                     Pattern.CASE_INSENSITIVE);
+
+  /** A reply code opening a server's text, for a failure that carries no code of its own. */
+  private static final Pattern    SMTP_REPLY_CODE                                             = Pattern.compile("^\\s*([2-5]\\d\\d)\\b");
+
+  /** How many failures of one chain are read for a sender refusal, at most. */
+  private static final int        SENDER_REFUSAL_CHAIN_LIMIT                                  = 32;
+
+  /** Control characters, which a display name never keeps. */
+  private static final Pattern    CONTROL_CHARACTERS                                          = Pattern.compile("\\p{Cntrl}");
+
   private static final Log        LOG                                                         =
                                       ExoLogger.getLogger(EmailBoxService.class);
 
@@ -257,6 +286,12 @@ public class EmailBoxService {
   // the envelope sender a request is checked against before any receipt may leave
   // without asking. Return-Path is read at sync, never stored as such.
   static final String             HEADER_DISPOSITION_NOTIFICATION_TO                          = "Disposition-Notification-To";
+
+  /**
+   * Who sent a mail written in the owner's name, on the copy filed in her Sent only
+   * (EXO-90583, PO decision Q-7).
+   */
+  static final String             HEADER_EXO_SENT_BY                                          = "X-Exo-Sent-By";
 
   private static final String     HEADER_RETURN_PATH                                          = "Return-Path";
 
@@ -8258,8 +8293,43 @@ public class EmailBoxService {
    */
   public OwnerCopy sendEmail(Email email, String username, Long delegationId) throws IllegalAccessException,
                                                                                   ObjectNotFoundException {
+    return sendEmail(email, username, delegationId, null);
+  }
+
+  /**
+   * {@link #sendEmail(Email, String, Long)}, in the shared mailbox owner's name when
+   * {@code sendMode} asks for it (EXO-90583): on her behalf -- {@code From:} the owner,
+   * {@code Sender:} the sender, the envelope the sender's -- or as her -- {@code From:}
+   * the owner and nothing naming the sender, the envelope hers. The shape is checked
+   * against the owner's consent on the share ({@link EmailDelegationService#checkSendMode})
+   * before anything is built or sent, and the owner's address and name come from the
+   * share, never from the request. The mail still goes out on the sender's own session,
+   * one connection per message, and is filed in the sender's Sent and -- when the share
+   * lets them -- in the owner's, where that copy also says who sent it
+   * ({@code X-Exo-Sent-By}). When the owner's mail server refuses a mail in her name, the
+   * refusal is recorded on the share and nothing is sent; the sender may send it again in
+   * their own name.
+   *
+   * @param email the composed email
+   * @param username the sender
+   * @param delegationId the share the mail is sent from, null for the sender's own mailbox
+   * @param sendMode {@code ON_BEHALF} or {@code AS} to write in the owner's name; null,
+   *          blank or {@code NONE} for the sender's own name
+   * @return what became of the owner's copy, null when no share is named
+   * @throws IllegalAccessException if the user may not send from their mailbox;
+   *           {@link SendModeMissingException} when the owner's consent does not cover
+   *           the shape
+   * @throws ObjectNotFoundException when the named share is not the sender's
+   * @throws DelegationRevokedException when the named share is no longer accepted
+   * @throws SendModeUnavailableException when the shape is unknown, named with no shared
+   *           mailbox, switched off, not declared for the connector, or refused by the
+   *           owner's mail server
+   */
+  public OwnerCopy sendEmail(Email email, String username, Long delegationId, String sendMode) throws IllegalAccessException,
+                                                                                                ObjectNotFoundException {
     // Before anything is sent: a refusal must never follow a delivered mail.
     String ownerSentKey = ownerSentKeyFor(username, delegationId);
+    SendIdentity identity = resolveSendIdentity(username, delegationId, sendMode);
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -8269,13 +8339,27 @@ public class EmailBoxService {
                                   emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
     List<String> uploadIds = new ArrayList<>();
     try {
-      MimeMessage message = buildOutgoingMessage(email, userEmailSetting, emailConnector, null, uploadIds, username);
+      // In the owner's name, the Message-ID names the owner's domain, as the From does:
+      // JavaMail's own would name this server's host.
+      MimeMessage message = buildOutgoingMessage(email,
+                                                 userEmailSetting,
+                                                 emailConnector,
+                                                 identity == null ? null : mintMessageId(identity.ownerMailbox()),
+                                                 uploadIds,
+                                                 username,
+                                                 false,
+                                                 identity);
       applyThreadingHeaders(message, email, username);
-      deliver(message, email, StringUtils.isNotEmpty(email.getMailHeaderId()), username, userEmailSetting);
+      deliver(message, email, StringUtils.isNotEmpty(email.getMailHeaderId()), username, userEmailSetting, identity);
       if (delegationId == null) {
         return null;
       }
-      return ownerSentKey == null ? OwnerCopy.SKIPPED : copyToOwnerSent(message, username, userEmailSetting, ownerSentKey);
+      return ownerSentKey == null ? OwnerCopy.SKIPPED
+                                  : copyToOwnerSent(message,
+                                                    username,
+                                                    userEmailSetting,
+                                                    ownerSentKey,
+                                                    sentByOf(identity, emailConnector, userEmailSetting, username));
     } catch (MessagingException | UnsupportedEncodingException | ConnectorCredentialsException e) {
       logSendFailure(username, emailConnector, e);
       throw new IllegalStateException(String.format("Error when sending email for user %s", username));
@@ -8283,6 +8367,62 @@ public class EmailBoxService {
       // Free the commons temporary upload resources only after the message (and its Sent-folder copy) has been built,
       // since the attachment body parts stream their bytes lazily from those temporary files.
       removeUploadResources(uploadIds);
+    }
+  }
+
+  /**
+   * The name a mail is sent under, from what the request asks (EXO-90583): none -- the
+   * sender's own -- unless a shape is named, in which case it must name a shared mailbox
+   * and pass the owner's consent on it. The one place a request's shape becomes an
+   * identity, for the composer's send and the send of a draft alike.
+   *
+   * @param username the sender
+   * @param delegationId the share the mail belongs to, null for the sender's own mailbox
+   * @param sendMode the requested shape, as the request spells it
+   * @return the identity, or null for the sender's own name
+   * @throws ObjectNotFoundException when the share is not the sender's
+   * @throws SendModeMissingException when the owner's consent does not cover the shape
+   * @throws SendModeUnavailableException when the shape is unknown, has no shared
+   *           mailbox to be the owner's, or cannot be used now
+   */
+  private SendIdentity resolveSendIdentity(String username, Long delegationId, String sendMode) throws ObjectNotFoundException,
+                                                                                               SendModeMissingException {
+    if (StringUtils.isBlank(sendMode)) {
+      return null;
+    }
+    SendMode requested = SendMode.of(sendMode);
+    if (requested == null) {
+      throw new SendModeUnavailableException(EmailDelegationService.SEND_MODE_INVALID_MESSAGE);
+    }
+    if (requested == SendMode.NONE) {
+      return null;
+    }
+    if (delegationId == null) {
+      throw new SendModeUnavailableException(SendModeUnavailableException.NO_MAILBOX);
+    }
+    return emailDelegationService.checkSendMode(username, delegationId, requested);
+  }
+
+  /**
+   * Who sent a mail in the owner's name, for the copy filed in her Sent (EXO-90583, PO
+   * decision Q-7): the sender's address, resolved as the message's own sender is. Null
+   * for a mail in the sender's own name, whose From already says it.
+   *
+   * @param identity the name the mail was sent under, null for the sender's own
+   * @param emailConnector the sender's connector
+   * @param userEmailSetting the sender's connector binding
+   * @param username the sender
+   * @return the sender's address, or null
+   */
+  private String sentByOf(SendIdentity identity, EmailConnector emailConnector, UserEmailSetting userEmailSetting, String username) {
+    if (identity == null) {
+      return null;
+    }
+    try {
+      return resolveSenderAddress(emailConnector, userEmailSetting, username);
+    } catch (ConnectorCredentialsException | RuntimeException e) {
+      LOG.debug("The sender of a mail sent in another's name could not be resolved for the owner's copy", e);
+      return userEmailSetting.getEmailAddress();
     }
   }
 
@@ -8341,7 +8481,38 @@ public class EmailBoxService {
   private Session smtpSession(EmailConnector emailConnector,
                               String username,
                               boolean bounded) throws ConnectorCredentialsException {
+    return smtpSession(emailConnector, username, bounded, null);
+  }
+
+  /**
+   * {@link #smtpSession(EmailConnector, String, boolean)}, with the envelope sender set
+   * when a mail goes out in another's name (EXO-90583). JavaMail otherwise takes the
+   * envelope ({@code MAIL FROM}) from the {@code From} header, which in the owner's name
+   * is the owner's: a submission server that checks the envelope against the login --
+   * Stalwart by default, Postfix with a login map -- then refuses a mail on the owner's
+   * behalf, which should go out under the sender's own envelope (EXO-90586, J4). Unset
+   * for a mail in the sender's own name, whose envelope stays what it always was.
+   * <p>
+   * The session is the message's own, and {@code Transport.send} opens one connection
+   * for that one message and closes it: a server's sender policy is looked up per
+   * connection, so a withdrawn permission is seen by the next message (EXO-90586, L-8).
+   *
+   * @param emailConnector the connector the user is bound to
+   * @param username the eXo login the session is authenticated for
+   * @param bounded whether to bound the connect, read and write timeouts
+   * @param envelopeFrom the envelope sender, or null for JavaMail's default
+   * @return the session
+   * @throws ConnectorCredentialsException when the configured provider cannot
+   *           produce credentials for this account
+   */
+  private Session smtpSession(EmailConnector emailConnector,
+                              String username,
+                              boolean bounded,
+                              String envelopeFrom) throws ConnectorCredentialsException {
     Properties props = new Properties();
+    if (StringUtils.isNotBlank(envelopeFrom)) {
+      props.put("mail.smtp.from", envelopeFrom.trim());
+    }
     if (bounded) {
       props.put("mail.smtp.connectiontimeout", String.valueOf(SCHEDULED_SMTP_CONNECT_TIMEOUT_MS));
       props.put("mail.smtp.timeout", String.valueOf(SCHEDULED_SMTP_IO_TIMEOUT_MS));
@@ -8392,7 +8563,7 @@ public class EmailBoxService {
                                            List<String> uploadIds,
                                            String username) throws MessagingException, UnsupportedEncodingException,
                                                                    ConnectorCredentialsException {
-    return buildOutgoingMessage(email, userEmailSetting, emailConnector, pinnedMessageId, uploadIds, username, false);
+    return buildOutgoingMessage(email, userEmailSetting, emailConnector, pinnedMessageId, uploadIds, username, false, null);
   }
 
   /**
@@ -8407,6 +8578,8 @@ public class EmailBoxService {
    * @param uploadIds mutable list populated with the upload ids that were attached
    * @param username the sender
    * @param boundedTimeouts whether the session bounds its socket timeouts
+   * @param identity the owner's name the mail goes out in (EXO-90583), null for the
+   *          sender's own -- the only default there is
    * @return the message
    * @throws MessagingException if the message cannot be built
    * @throws UnsupportedEncodingException if the display name cannot be encoded
@@ -8418,23 +8591,33 @@ public class EmailBoxService {
                                            String pinnedMessageId,
                                            List<String> uploadIds,
                                            String username,
-                                           boolean boundedTimeouts) throws MessagingException, UnsupportedEncodingException,
-                                                                    ConnectorCredentialsException {
-    // The address the message is sent AS, which is the provider's to name and not
-    // the setting's: Personal answers the stored address, so nothing changes for
-    // it, but a provider authenticating as a technical account sends for someone
-    // else. A provider naming no target leaves the stored address in place.
-    String resolved = credentialsResolver().senderAddress(emailConnector.getId(),
-                                                          emailConnector.getAuthProviderName(),
-                                                          username);
-    String emailAddress = StringUtils.defaultIfBlank(resolved, userEmailSetting.getEmailAddress());
-    MimeMessage message = new PinnedMessageIdMimeMessage(smtpSession(emailConnector, username, boundedTimeouts), pinnedMessageId);
+                                           boolean boundedTimeouts,
+                                           SendIdentity identity) throws MessagingException, UnsupportedEncodingException,
+                                                                  ConnectorCredentialsException {
+    String emailAddress = resolveSenderAddress(emailConnector, userEmailSetting, username);
+    // The one seam where a mail's name is decided (EXO-90583): every send builds its
+    // message here -- the composer's send, the interactive send of a draft and the
+    // scheduled one (both through buildOutgoingDraftMessage), the MCP tools' -- and only
+    // an identity checkSendMode made puts the owner in it. On behalf: From the owner,
+    // Sender the sender, envelope the sender. As: From the owner, envelope the owner.
+    // Never a Reply-To: replies go to the owner, whose correspondence it is (Q-6).
+    String envelopeFrom = identity == null ? null : identity.namesTheSender() ? emailAddress : identity.ownerMailbox();
+    MimeMessage message = new PinnedMessageIdMimeMessage(smtpSession(emailConnector, username, boundedTimeouts, envelopeFrom),
+                                                         pinnedMessageId);
     Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
-    message.setFrom(new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
-    // Here, because every send builds its message here: the composer's send, the
-    // interactive send of a draft and the scheduled one (both through
-    // buildOutgoingDraftMessage), the MCP tools'. One place, so no path can forget it.
-    applyReadReceiptRequest(message, email, emailAddress);
+    InternetAddress sender = new InternetAddress(emailAddress, displayName(userProfile != null ? userProfile.getFullName() : null));
+    if (identity == null) {
+      message.setFrom(sender);
+      // Here, for the same reason: one place, so no path can forget it.
+      applyReadReceiptRequest(message, email, emailAddress);
+    } else {
+      message.setFrom(new InternetAddress(identity.ownerMailbox(), displayName(identity.ownerFullName())));
+      if (identity.namesTheSender()) {
+        message.setSender(sender);
+      }
+      // No read receipt in the owner's name: it would come back into her mailbox as hers,
+      // and receipts are never the sender's business on the owner's mail.
+    }
     if (!CollectionUtils.isEmpty(email.getTo())) {
       String toRecipients = email.getTo()
                                  .stream()
@@ -8511,9 +8694,175 @@ public class EmailBoxService {
                        Email email,
                        boolean reply,
                        String username,
-                       UserEmailSetting userEmailSetting) throws MessagingException {
-    Transport.send(message);
+                       UserEmailSetting userEmailSetting,
+                       SendIdentity identity) throws MessagingException {
+    try {
+      // The static send: one connection for this one message (EXO-90586, L-8). Never a
+      // pooled or kept-open transport for a mail in another's name.
+      Transport.send(message);
+    } catch (MessagingException e) {
+      if (identity != null && isSenderPolicyRefusal(e)) {
+        throw refusedInOwnersName(username, identity, e);
+      }
+      throw e;
+    }
+    if (identity != null) {
+      recordSentInOwnersName(message, username, identity);
+    }
     afterTransmission(message, email, reply, username, userEmailSetting);
+  }
+
+  /**
+   * The owner's mail server refused a mail sent in her name (EXO-90583): recorded on the
+   * share -- so the owner's sharing screen and the sender's band say so, and the shape is
+   * no longer offered until the owner sets it again -- and answered with a fixed code.
+   * Nothing was sent, so nothing is retried: whether to send it in their own name
+   * instead is the sender's choice. The server's words go to DEBUG only.
+   *
+   * @param username the sender
+   * @param identity what the mail was sent under
+   * @param refusal what the server answered
+   * @return the refusal to throw
+   */
+  private SendModeUnavailableException refusedInOwnersName(String username, SendIdentity identity, MessagingException refusal) {
+    LOG.debug("The mail server's refusal of a mail sent in another's name by {}", username, refusal);
+    try {
+      emailDelegationService.markSendRefused(username, identity);
+    } catch (RuntimeException e) {
+      LOG.warn("The mail server refused a mail of user {} sent in another's name, and the refusal could not be recorded", username, e);
+    }
+    return new SendModeUnavailableException(SendModeUnavailableException.REFUSED_BY_SERVER, refusal);
+  }
+
+  /**
+   * The trail of a mail sent in another's name (EXO-90583): an INFO line naming who sent
+   * what in whose name, and an event the analytics count by shape. A mail sent as the
+   * owner carries nothing naming its sender, by definition, so this, the owner's copy's
+   * {@code X-Exo-Sent-By} and the share's consent are its whole record. Never fails the
+   * send: the mail is out.
+   *
+   * @param message the message that went out
+   * @param username the sender
+   * @param identity what it was sent under
+   */
+  private void recordSentInOwnersName(MimeMessage message, String username, SendIdentity identity) {
+    try {
+      Address[] recipients = message.getAllRecipients();
+      LOG.info("Mail sent in another's name: actor={} mode={} ownerMailbox={} messageId={} recipients={}",
+               username,
+               identity.mode(),
+               identity.ownerMailbox(),
+               message.getMessageID(),
+               recipients == null ? 0 : recipients.length);
+      listenerService.broadcast(EmailConnectorUtils.SEND_EMAIL_IN_OWNERS_NAME, username, identity.mode().name());
+    } catch (Exception e) {
+      LOG.warn("A mail of user {} was sent in another's name, and its trail could not be written", username, e);
+    }
+  }
+
+  /**
+   * Whether a failed transmission is the mail server refusing the envelope or the author
+   * a mail in another's name may carry (EXO-90583) -- a sender-policy refusal -- rather
+   * than anything else a send can meet. Read from what the server said, anywhere in the
+   * failure: its reply code (5xx) and its text, never the exception's type, because the
+   * same refusal arrives in different shapes. Stalwart refuses at MAIL, which JavaMail
+   * reports as a send failure caused by a sender failure ({@code 501 5.5.4 You are not
+   * allowed to send from this address}); Postfix with a login map refuses at RCPT, which
+   * JavaMail reports as INVALID RECIPIENTS ({@code 553 5.7.1 <owner>: Sender address
+   * rejected: not owned by user <sender>}) -- a recipient-refusal reading of that would
+   * be wrong (EXO-90586). A recipient the server does not know is not one of these.
+   * Package-visible and static for the scheduled send's classifier (EXO-90584), which
+   * must ask it before reading invalid addresses as refused recipients.
+   *
+   * @param failure the failure
+   * @return true when some part of it is a sender-policy refusal
+   */
+  static boolean isSenderPolicyRefusal(Throwable failure) {
+    Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+    Deque<Throwable> toRead = new ArrayDeque<>();
+    if (failure != null) {
+      toRead.add(failure);
+    }
+    while (!toRead.isEmpty() && seen.size() < SENDER_REFUSAL_CHAIN_LIMIT) {
+      Throwable link = toRead.poll();
+      if (!seen.add(link)) {
+        continue;
+      }
+      if (isSenderPolicyReply(link)) {
+        return true;
+      }
+      if (link.getCause() != null) {
+        toRead.add(link.getCause());
+      }
+      if (link instanceof MessagingException messaging && messaging.getNextException() != null) {
+        toRead.add(messaging.getNextException());
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether one failure is a server's permanent refusal worded as a sender-policy one:
+   * a 5xx reply -- the SMTP exceptions' code, else a code opening the text -- whose text
+   * says the sender may not use that address.
+   *
+   * @param link one failure of the chain
+   * @return true for a sender-policy refusal
+   */
+  private static boolean isSenderPolicyReply(Throwable link) {
+    String text = StringUtils.defaultString(link.getMessage()).toLowerCase(Locale.ROOT);
+    int code = -1;
+    if (link instanceof SMTPSendFailedException smtp) {
+      code = smtp.getReturnCode();
+    } else if (link instanceof SMTPSenderFailedException smtp) {
+      code = smtp.getReturnCode();
+    } else if (link instanceof SMTPAddressFailedException smtp) {
+      code = smtp.getReturnCode();
+    } else {
+      Matcher leading = SMTP_REPLY_CODE.matcher(text);
+      if (leading.find()) {
+        code = Integer.parseInt(leading.group(1));
+      }
+    }
+    if (code < 500 || code > 599) {
+      return false;
+    }
+    return SENDER_POLICY_TEXT.matcher(text).find();
+  }
+
+  /**
+   * The address a user's mail is sent from: the provider's to name and not the
+   * setting's -- Personal answers the stored address, so nothing changes for it, but a
+   * provider authenticating as a technical account sends for someone else. A provider
+   * naming no target leaves the stored address in place.
+   *
+   * @param emailConnector the user's connector
+   * @param userEmailSetting the user's connector binding
+   * @param username the user
+   * @return the address
+   * @throws ConnectorCredentialsException when the configured provider cannot answer
+   */
+  private String resolveSenderAddress(EmailConnector emailConnector,
+                                      UserEmailSetting userEmailSetting,
+                                      String username) throws ConnectorCredentialsException {
+    String resolved = credentialsResolver().senderAddress(emailConnector.getId(), emailConnector.getAuthProviderName(), username);
+    return StringUtils.defaultIfBlank(resolved, userEmailSetting.getEmailAddress());
+  }
+
+  /**
+   * A profile name as a mail's display name: without control characters, which JavaMail
+   * neither encodes nor refuses -- a line break in a name comes out quoted and folded, a
+   * broken display name (EXO-90586, J6) -- and null when nothing is left.
+   *
+   * @param name the profile name, may be null
+   * @return the display name, or null
+   */
+  static String displayName(String name) {
+    if (name == null) {
+      return null;
+    }
+    String cleaned = CONTROL_CHARACTERS.matcher(name).replaceAll(" ").trim().replaceAll(" {2,}", " ");
+    return cleaned.isEmpty() ? null : cleaned;
   }
 
   /**
@@ -9209,6 +9558,34 @@ public class EmailBoxService {
    */
   public OwnerCopy sendDraft(Email draft, String username, Long delegationId) throws IllegalAccessException,
                                                                                   ObjectNotFoundException {
+    return sendDraft(draft, username, delegationId, null);
+  }
+
+  /**
+   * {@link #sendDraft(Email, String, Long)}, in the owner's name when {@code sendMode}
+   * asks for it (EXO-90583), as {@link #sendEmail(Email, String, Long, String)} sends
+   * one: the shape is checked against the consent on the DRAFT's share -- the mailbox it
+   * was written in, never another -- before the draft is claimed, so a refusal leaves it
+   * exactly where it was, and so does a refusal by the owner's mail server. The draft
+   * keeps the Message-ID it was given at its first save.
+   *
+   * @param draft the composed draft as the composer is showing it
+   * @param username the sender
+   * @param delegationId the share the composer believes the draft belongs to, or null
+   * @param sendMode {@code ON_BEHALF} or {@code AS} to write in the owner's name; null,
+   *          blank or {@code NONE} for the sender's own
+   * @return what became of the owner's copy, null for a draft of the sender's own mailbox
+   * @throws IllegalAccessException if the user may not send from their mailbox;
+   *           {@link SendModeMissingException} when the consent does not cover the shape
+   * @throws ObjectNotFoundException if the user has no draft under that local id, or the
+   *           draft's share is not theirs
+   * @throws DelegationRevokedException when the draft's share is no longer accepted
+   * @throws IllegalArgumentException {@value #MAILBOX_MISMATCH_CODE} when
+   *           {@code delegationId} is not the draft's; {@link SendModeUnavailableException}
+   *           as {@link #sendEmail(Email, String, Long, String)} says
+   */
+  public OwnerCopy sendDraft(Email draft, String username, Long delegationId, String sendMode) throws IllegalAccessException,
+                                                                                                ObjectNotFoundException {
     OwnerCopy ownerCopy = null;
     Long share = null;
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
@@ -9248,6 +9625,10 @@ public class EmailBoxService {
         throw new IllegalArgumentException(MAILBOX_MISMATCH_CODE);
       }
       String ownerSentKey = draftShareSentKey(username, stored);
+      // The name it goes out under, checked against the consent on the draft's own share.
+      // The shape is the request's: a draft does not remember one yet. EXO-90584 records it
+      // on the row, and this is the line that then reads it (the request's as a fallback).
+      SendIdentity identity = resolveSendIdentity(username, share, sendMode);
       // The files the draft has been carrying since some earlier session, read once and
       // checked BEFORE anything is written or claimed. A send that cannot carry every
       // file it shows must leave the draft exactly where it was: nothing saved, nothing
@@ -9257,7 +9638,7 @@ public class EmailBoxService {
       DraftState stateBeforeSend = saveDraftBeforeSend(draft, stored);
       emailBoxStorage.updateDraftState(username, draftLocalId, DraftState.SENDING);
       try {
-        ownerCopy = transmitDraft(draft, stored, storedAttachments, username, userEmailSetting, ownerSentKey);
+        ownerCopy = transmitDraft(draft, stored, storedAttachments, username, userEmailSetting, ownerSentKey, identity);
       } catch (RuntimeException e) {
         // Nothing has been removed, here or on the server. Put the claim back down at
         // exactly the state the row was in and let the composer report the refusal.
@@ -9387,6 +9768,8 @@ public class EmailBoxService {
    * @param username the mailbox owner
    * @param userEmailSetting the user's connector binding
    * @param ownerSentKey the shared mailbox owner's Sent to file a copy into, or null
+   * @param identity the owner's name the draft goes out in (EXO-90583), null for the
+   *          sender's own
    * @return what became of the owner's copy: SKIPPED when there is none to file
    */
   private OwnerCopy transmitDraft(Email draft,
@@ -9394,7 +9777,8 @@ public class EmailBoxService {
                                   List<EmailAttachment> storedAttachments,
                                   String username,
                                   UserEmailSetting userEmailSetting,
-                                  String ownerSentKey) {
+                                  String ownerSentKey,
+                                  SendIdentity identity) {
     EmailConnector emailConnector =
                                   emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
     List<String> uploadIds = new ArrayList<>();
@@ -9406,11 +9790,17 @@ public class EmailBoxService {
                                                       userEmailSetting,
                                                       emailConnector,
                                                       uploadIds,
-                                                      false);
-      deliver(message, draft, StringUtils.isNotBlank(stored.getInReplyTo()), username, userEmailSetting);
+                                                      false,
+                                                      identity);
+      deliver(message, draft, StringUtils.isNotBlank(stored.getInReplyTo()), username, userEmailSetting, identity);
       // The owner's copy of a mail sent from a shared mailbox (EXO-90551), here and not
       // after: its parts stream from the uploads freed below, as the sender's own copy's.
-      return ownerSentKey == null ? OwnerCopy.SKIPPED : copyToOwnerSent(message, username, userEmailSetting, ownerSentKey);
+      return ownerSentKey == null ? OwnerCopy.SKIPPED
+                                  : copyToOwnerSent(message,
+                                                    username,
+                                                    userEmailSetting,
+                                                    ownerSentKey,
+                                                    sentByOf(identity, emailConnector, userEmailSetting, username));
     } catch (MessagingException | UnsupportedEncodingException | ConnectorCredentialsException e) {
       logSendFailure(username, emailConnector, e);
       throw new IllegalStateException(String.format("Error when sending email for user %s", username));
@@ -9448,6 +9838,8 @@ public class EmailBoxService {
    * @param emailConnector the connector the user is bound to
    * @param uploadIds mutable list populated with the upload ids that were attached
    * @param boundedTimeouts whether the SMTP session bounds its socket timeouts
+   * @param identity the owner's name the draft goes out in (EXO-90583), null for the
+   *          sender's own; its Message-ID stays the one minted at the first save
    * @return the message, ready for the wire
    * @throws MessagingException if the message cannot be built
    * @throws UnsupportedEncodingException if the display name cannot be encoded
@@ -9460,7 +9852,8 @@ public class EmailBoxService {
                                                 UserEmailSetting userEmailSetting,
                                                 EmailConnector emailConnector,
                                                 List<String> uploadIds,
-                                                boolean boundedTimeouts) throws MessagingException,
+                                                boolean boundedTimeouts,
+                                                SendIdentity identity) throws MessagingException,
                                                                          UnsupportedEncodingException,
                                                                          ConnectorCredentialsException {
     content.setStoredAttachments(storedAttachments);
@@ -9470,7 +9863,8 @@ public class EmailBoxService {
                                                stored.getMailHeaderId(),
                                                uploadIds,
                                                username,
-                                               boundedTimeouts);
+                                               boundedTimeouts,
+                                               identity);
     applyStoredThreadingHeaders(message, stored);
     return message;
   }
@@ -9952,7 +10346,7 @@ public class EmailBoxService {
         // The owner's copy of a mail sent from their mailbox (EXO-90551), before the
         // cleanup frees the stored files its parts stream from. Fenced: the mail is out.
         // Its outcome is answered to the caller, never recorded as a send failure.
-        ownerCopy = copyToOwnerSent(message, username, userEmailSetting, ownerSentKey);
+        ownerCopy = copyToOwnerSent(message, username, userEmailSetting, ownerSentKey, null);
       } else if (stored.getSendDelegationId() != null) {
         ownerCopy = OwnerCopy.SKIPPED;
       }
@@ -10086,7 +10480,19 @@ public class EmailBoxService {
     // send must not free (they belong to the draft until cleanupSentDraft).
     List<String> uploadIds = new ArrayList<>();
     try {
-      return buildOutgoingDraftMessage(stored, stored, storedAttachments, username, userEmailSetting, emailConnector, uploadIds, true);
+      // In the sender's own name: a scheduled draft remembers no identity yet, and the
+      // schedule is refused in the owner's name (EXO-90583). EXO-90584 passes the one
+      // checkSendMode resolves from the row at dispatch, and fails the send rather than
+      // send it in the sender's name when the consent is gone.
+      return buildOutgoingDraftMessage(stored,
+                                       stored,
+                                       storedAttachments,
+                                       username,
+                                       userEmailSetting,
+                                       emailConnector,
+                                       uploadIds,
+                                       true,
+                                       null);
     } catch (ConnectorCredentialsException e) {
       throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.AUTHENTICATION, e);
     } catch (AddressException e) {
@@ -15485,9 +15891,17 @@ public class EmailBoxService {
    * @param username the sender
    * @param userEmailSetting the sender's connector binding
    * @param ownerSentKey the owner's Sent folder key, as {@link EmailDelegationService#ownerSentFolderKey} resolved it
+   * @param sentBy for a mail sent in the owner's name (EXO-90583), the sender's address,
+   *          stamped on this copy only as {@code X-Exo-Sent-By} (PO decision Q-7) -- after
+   *          the send and after the sender's own copy, so neither the recipients' mail nor
+   *          the sender's copy carries it; null for a mail in the sender's own name
    * @return FILED, or FAILED
    */
-  private OwnerCopy copyToOwnerSent(MimeMessage message, String username, UserEmailSetting userEmailSetting, String ownerSentKey) {
+  private OwnerCopy copyToOwnerSent(MimeMessage message,
+                                    String username,
+                                    UserEmailSetting userEmailSetting,
+                                    String ownerSentKey,
+                                    String sentBy) {
     Store store = null;
     IMAPFolder ownerSent = null;
     try {
@@ -15503,6 +15917,11 @@ public class EmailBoxService {
       // The owner's copy of mail that was sent, not new mail to them: the flag travels
       // with the APPEND.
       message.setFlag(Flags.Flag.SEEN, true);
+      if (StringUtils.isNotBlank(sentBy)) {
+        // For the owner reading her own Sent in any client: a mail sent as her carries
+        // nothing else saying she did not write it. The Message-ID is not re-minted.
+        message.setHeader(HEADER_EXO_SENT_BY, sentBy.trim());
+      }
       ownerSent.appendMessages(new Message[] { message });
       scheduleFolderRefresh(username, ownerSentKey, FolderRefreshCause.SENT_COPY);
       return OwnerCopy.FILED;

@@ -1301,15 +1301,19 @@ export function synchronize() {
  * From a mailbox shared with the user when `delegationId` names it, in which case a
  * copy is also filed in its owner's Sent folder (EXO-90551).
  *
+ * In the owner's name when `sendMode` asks for it (EXO-90583): ON_BEHALF or AS, as the
+ * owner allowed; the server checks it against her consent.
+ *
  * @param {Object} email the composed email, including its optional attachments
  * @param {Number} delegationId the share the mail is sent from, or nothing
+ * @param {String} sendMode ON_BEHALF or AS to write in the owner's name, or nothing
  * @returns {Promise<Object>} resolves once the email has been sent, with { ownerCopy } --
  *          FILED, FAILED or SKIPPED -- when a share is named; rejects with a
- *          {@link refusal} error -- its code says a share is gone
+ *          {@link refusal} error -- its code says a share is gone, or why the owner's
+ *          name could not be used
  */
-export function sendEmail(email, delegationId) {
-  const query = delegationId ? `?delegationId=${encodeURIComponent(delegationId)}` : '';
-  return fetch(`/email-connector/rest/email-box/send${query}`, {
+export function sendEmail(email, delegationId, sendMode) {
+  return fetch(`/email-connector/rest/email-box/send${sendQuery(delegationId, sendMode)}`, {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -1322,6 +1326,25 @@ export function sendEmail(email, delegationId) {
     }
     return resp.json().catch(() => ({}));
   });
+}
+
+/**
+ * The query of a send: the share the mail belongs to, and the owner's name it goes out
+ * in (EXO-90583) -- neither when the mail is the user's own.
+ *
+ * @param {Number} delegationId the share, or nothing
+ * @param {String} sendMode ON_BEHALF or AS, or nothing (NONE is the user's own name)
+ * @returns {String} the query, with its '?', or ''
+ */
+function sendQuery(delegationId, sendMode) {
+  const params = [];
+  if (delegationId) {
+    params.push(`delegationId=${encodeURIComponent(delegationId)}`);
+  }
+  if (sendMode && sendMode !== 'NONE') {
+    params.push(`sendMode=${encodeURIComponent(sendMode)}`);
+  }
+  return params.length ? `?${params.join('&')}` : '';
 }
 
 /**
@@ -1400,12 +1423,14 @@ export function getDraftMailbox(draftLocalId) {
  * @param {Object} draft the composed draft as the composer is showing it
  * @param {Number} delegationId the share the draft is sent from, or nothing -- a copy
  *        is then also filed in the owner's Sent (EXO-90551)
+ * @param {String} sendMode ON_BEHALF or AS to send it in the owner's name of the
+ *        draft's share (EXO-90583), or nothing
  * @returns {Promise<Object>} resolves once the mail is out and the draft is gone, with
- *          { ownerCopy } when a share is named; rejects with a {@link refusal} error -- its code says a share is gone
+ *          { ownerCopy } when a share is named; rejects with a {@link refusal} error -- its
+ *          code says a share is gone, or why the owner's name could not be used
  */
-export function sendDraft(draftLocalId, draft, delegationId) {
-  const query = delegationId ? `?delegationId=${encodeURIComponent(delegationId)}` : '';
-  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}/send${query}`, {
+export function sendDraft(draftLocalId, draft, delegationId, sendMode) {
+  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}/send${sendQuery(delegationId, sendMode)}`, {
     headers: {
       'Content-Type': 'application/json'
     },
