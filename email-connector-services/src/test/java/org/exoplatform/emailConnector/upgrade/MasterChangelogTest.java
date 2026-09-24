@@ -735,6 +735,68 @@ public class MasterChangelogTest {
   }
 
   /**
+   * EXO-90595 -- 1.0.0-87 adds EMAIL_BOX.DRAFT_DELEGATION_ID, null on a row that existed
+   * before it (a draft of its writer's own mailbox), rolls back to a tag placed
+   * immediately before it without touching the rows or the columns before it, and applies
+   * again.
+   *
+   * @throws Exception when the changeset does not apply or roll back
+   */
+  @Test
+  void theDraftsMailboxRollsBackAndReapplies() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback87" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-87"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-draft-mailbox");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "DRAFT_DELEGATION_ID"), "not before 1.0.0-87");
+      try (Statement statement = connection.createStatement()) {
+        statement.executeUpdate("INSERT INTO EMAIL_BOX (ID, USER_ID, SUBJECT, SENDER, RECEIVED_DATE, FOLDER, DRAFT_LOCAL_ID)"
+            + " VALUES (1, 'bob', 's', 'Bob,bob@example.org', CURRENT_TIMESTAMP, 'DRAFTS', 'draft-1')");
+      }
+      liquibase.update("");
+      try (Statement statement = connection.createStatement();
+          ResultSet row = statement.executeQuery("SELECT DRAFT_DELEGATION_ID FROM EMAIL_BOX WHERE ID = 1")) {
+        assertTrue(row.next());
+        row.getLong(1);
+        assertTrue(row.wasNull(), "an existing draft is its writer's own");
+      }
+      try (Statement statement = connection.createStatement()) {
+        statement.executeUpdate("UPDATE EMAIL_BOX SET DRAFT_DELEGATION_ID = 100 WHERE ID = 1");
+      }
+      liquibase.rollback("before-draft-mailbox", "");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "DRAFT_DELEGATION_ID"), "the rollback drops it");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "DRAFT_LOCAL_ID"), "and nothing before it");
+      try (Statement statement = connection.createStatement();
+          ResultSet row = statement.executeQuery("SELECT DRAFT_LOCAL_ID FROM EMAIL_BOX WHERE ID = 1")) {
+        assertTrue(row.next(), "the draft itself survives the rollback");
+        assertEquals("draft-1", row.getString(1));
+      }
+      liquibase.update("");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "DRAFT_DELEGATION_ID"), "the changeset applies again after its rollback");
+    }
+  }
+
+  /**
+   * EXO-90595 -- 1.0.0-87 as MySQL and PostgreSQL would run it, bounded to its own
+   * changeset: one nullable BIGINT, unquoted, no foreign key, and a rollback that drops
+   * it.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theDraftsMailboxOnMySqlAndPostgreSql() throws Exception {
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-87", "1.0.0-87").toUpperCase(Locale.ROOT);
+      assertTrue(update.contains("ALTER TABLE EMAIL_BOX ADD DRAFT_DELEGATION_ID BIGINT"), vendor + ": " + update);
+      assertFalse(update.contains("NOT NULL"), vendor + " the column is nullable: " + update);
+      assertFalse(update.contains("FOREIGN KEY") || update.contains("REFERENCES"), vendor + " no foreign key: " + update);
+      assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-87", "1.0.0-87").toUpperCase(Locale.ROOT).trim();
+      assertEquals("ALTER TABLE EMAIL_BOX DROP COLUMN DRAFT_DELEGATION_ID;", rollback, vendor + " rollback drops that column only");
+    }
+  }
+
+  /**
    * The declared size of a column, from the JDBC metadata.
    *
    * @param connection the database
@@ -974,11 +1036,29 @@ public class MasterChangelogTest {
    * @throws Exception when it cannot be generated
    */
   private String offlineRollbackSql(String vendor, String fromId) throws Exception {
+    return offlineRollbackSql(vendor, fromId, null);
+  }
+
+  /**
+   * The rollback SQL of the changesets from an id through another, last first, as
+   * {@link #offlineRollbackSql(String, String)} renders it: what a test of one changeset
+   * asserts on, so a changeset appended later cannot change its answer.
+   *
+   * @param vendor the offline URL's vendor part
+   * @param fromId the first changeset rolled back
+   * @param throughId the last one, null for the end of the file
+   * @return the SQL, one statement per line
+   * @throws Exception when it cannot be generated
+   */
+  private String offlineRollbackSql(String vendor, String fromId, String throughId) throws Exception {
     StringBuilder sql = new StringBuilder();
     Database database = offlineDatabase(vendor);
     List<ChangeSet> changeSets = new ArrayList<>(changeSetsFrom(database, vendor, fromId));
     java.util.Collections.reverse(changeSets);
     for (ChangeSet changeSet : changeSets) {
+      if (throughId != null && sequenceNumber(changeSet.getId()) > sequenceNumber(throughId)) {
+        continue;
+      }
       for (Change change : changeSet.getRollback().getChanges()) {
         appendSql(sql, change.generateStatements(database), database);
       }
