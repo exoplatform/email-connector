@@ -33,11 +33,11 @@ import org.exoplatform.emailConnector.utils.NotificationConstants;
  * access away -- or set, changed or withdrew her consent to them writing mail in her
  * name (EXO-90582, {@code SEND_MODE_ON_BEHALF|AS|NONE}).
  * <p>
- * One plugin and one notification preference for four transitions, because to the
- * person reading it they are one kind of news -- "where that share now stands" -- and
- * splitting them would make a user switch off "declined" and lose "revoked" with it.
- * {@link #RESPONSE} carries which transition it was, and the sentence is chosen from
- * it in the receiver's language.
+ * One plugin and one notification preference for every change in where a share stands
+ * -- four transitions and the owner's consent to writing in her name -- because to the
+ * person reading it they are one kind of news, and splitting them would make a user
+ * switch off "declined" and lose "revoked" with it. {@link #RESPONSE} carries which news
+ * it is, and the sentence is chosen from it in the receiver's language.
  * <p>
  * <b>The owner-facing ones are gated, and the gate is not here.</b> A server that
  * e-mails the owner on every rights change of its own accord -- BlueMind does, four
