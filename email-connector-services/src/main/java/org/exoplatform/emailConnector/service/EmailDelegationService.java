@@ -2524,9 +2524,9 @@ public class EmailDelegationService {
     // "Discovery has read this folder" is its stamp, not its letters: no letter at all is
     // stored as an empty string, which Oracle reads back as null.
     if (folder != null && MailFolderView.TYPE_DELEGATED.equals(folder.getType()) && folder.getRightsCheckDate() != null) {
-      return MailboxRights.of(StringUtils.defaultString(folder.getRights()));
+      return MailboxRights.of(StringUtils.defaultString(folder.getRights())).withoutCoupledWrite();
     }
-    return delegation.getMailboxRights();
+    return delegation.getMailboxRights().withoutCoupledWrite();
   }
 
   /**
@@ -2540,9 +2540,9 @@ public class EmailDelegationService {
    */
   private static MailboxRights folderRights(EmailFolder folder, String shareLetters) {
     if (folder != null && MailFolderView.TYPE_DELEGATED.equals(folder.getType()) && folder.getRightsCheckDate() != null) {
-      return MailboxRights.of(StringUtils.defaultString(folder.getRights()));
+      return MailboxRights.of(StringUtils.defaultString(folder.getRights())).withoutCoupledWrite();
     }
-    return MailboxRights.of(StringUtils.defaultString(shareLetters));
+    return MailboxRights.of(StringUtils.defaultString(shareLetters)).withoutCoupledWrite();
   }
 
   /**

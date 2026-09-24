@@ -583,8 +583,10 @@ public class ImapAclEngine implements MailboxAclEngine {
    * exactly, or a preset's letters plus only what the server adds by itself because it
    * couples letters (RFC 4314 section 2.1.1). Stalwart answers {@code lrswit} as
    * {@code tewsirl}: it stores {@code e} with {@code t}, so an Editor granted from eXo
-   * read back as CUSTOM (observed on the rig, 2026-09-23). The only coupling admitted is
-   * {@code e} beside {@code t}, so a set granting more than coupling implies
+   * read back as CUSTOM (observed on the rig, 2026-09-23), and it stores a Reader's
+   * {@code s} with {@code w}: {@code lrs} reads back {@code wsrl} (2026-09-24). The only
+   * couplings admitted are {@code e} beside {@code t} and {@code w} beside {@code s}, so a
+   * set granting more than coupling implies
    * ({@code a}, {@code x}, {@code e} without {@code t}) is never a preset. The virtual
    * {@code c}/{@code d} Dovecot adds never reach here: {@link MailboxRights#of(String)}
    * drops them (EXO-90552).
@@ -629,7 +631,8 @@ public class ImapAclEngine implements MailboxAclEngine {
 
   /**
    * Whether a server may add a letter by itself because the granted letters couple it
-   * (RFC 4314 section 2.1.1): {@code e} with {@code t}. The legacy {@code d} and
+   * (RFC 4314 section 2.1.1): {@code e} with {@code t}, and {@code w} with {@code s} --
+   * Stalwart answers a Reader granted {@code lrs} as {@code wsrl} (EXO-90556). The legacy {@code d} and
    * {@code c} are kept as a guard only: {@link MailboxRights#letters()} never holds
    * them (folded or dropped by {@link MailboxRights#of(String)}), so those two arms are
    * unreachable today and would only matter if a caller built rights another way.
@@ -641,6 +644,8 @@ public class ImapAclEngine implements MailboxAclEngine {
   private static boolean impliedByCoupling(char letter, String granted) {
     return switch (letter) {
     case 'e', 'd' -> granted.indexOf('t') >= 0;
+    // Stalwart stores a Reader's s with w (EXO-90556): lrs reads back wsrl.
+    case 'w' -> granted.indexOf('s') >= 0;
     case 'c' -> granted.indexOf('k') >= 0;
     default -> false;
     };
