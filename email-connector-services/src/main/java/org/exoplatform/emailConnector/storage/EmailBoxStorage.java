@@ -1146,7 +1146,6 @@ public class EmailBoxStorage {
     return ids;
   }
 
-
   /**
    * Collapses several conversations into one: every row of {@code threadIds} is
    * rewritten onto {@code canonicalThreadId}, and the summaries written about the ids
