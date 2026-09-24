@@ -326,18 +326,6 @@ public class EmailDelegation {
   }
 
   /**
-   * What the delegate is to hold on the owner's folder of one role: the owner's
-   * exception, else the share's preset (EXO-90556).
-   *
-   * @param role the role
-   * @return READER, EDITOR or NONE; null when the share has no grantable preset
-   */
-  public FolderAccess accessOf(FolderRole role) {
-    FolderAccess exception = accessException(role);
-    return exception != null ? exception : FolderAccess.of(preset);
-  }
-
-  /**
    * The stored form of per-folder exceptions: {@code ROLE=ACCESS} pairs in grant order,
    * comma-separated; null when there is none, which is also how every share written
    * before EXO-90556 reads.

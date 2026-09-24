@@ -1305,8 +1305,13 @@ public class EmailDelegationService {
         FolderRole role = folder.role();
         if (role != null && FolderRole.GRANTED.contains(role)) {
           if (gone) {
-            granted.remove(role);
-            exceptions.put(role, FolderAccess.NONE);
+            // "Not shared" is the owner's choice when it takes something away -- a role
+            // the share covered or set apart -- or when this save is the consent of a
+            // share of INBOX alone (PO decision P-4). A role folder the server refused
+            // and nobody touched stays what it was: said refused, offered by Extend.
+            if (granted.remove(role) || exceptions.containsKey(role) || consentToShareMore) {
+              exceptions.put(role, FolderAccess.NONE);
+            }
           } else if (outcome == FolderAccessResult.Outcome.DONE) {
             granted.add(role);
             exceptions.put(role, access);
@@ -1413,7 +1418,7 @@ public class EmailDelegationService {
       }
       shares.forEach(share -> markDiscoveryDue(share.getId()));
     } catch (IllegalAccessException | RuntimeException e) {
-      LOG.warn("The shares of a folder {} renamed or deleted could not follow it", ownerUsername, e);
+      LOG.warn("The shares of {}'s renamed or deleted folder could not follow it", ownerUsername, e);
     }
   }
 
@@ -1448,7 +1453,7 @@ public class EmailDelegationService {
         try {
           acl = engine.listAcl(session, folder.fullName());
         } catch (MailboxAclException e) {
-          LOG.debug("The ACL of renamed folder {} could not be read ({})", folder.fullName(), e.getCode());
+          LOG.debug("The ACL of a renamed folder could not be read ({})", e.getCode());
           continue;
         }
         for (EmailDelegation share : shares) {
@@ -1472,7 +1477,7 @@ public class EmailDelegationService {
             }
             engine.grant(session, folder.fullName(), identifier, preset, ownerRights, folder.role());
           } catch (MailboxAclException e) {
-            LOG.info("A share of renamed folder {} could not be written again ({})", folder.fullName(), e.getCode());
+            LOG.info("A share of a renamed folder could not be written again ({})", e.getCode());
           }
         }
       }
@@ -1489,7 +1494,7 @@ public class EmailDelegationService {
    * @param identifier the grantee as the server names them
    * @param folder the owner's folder
    * @param access the access asked for
-   * @param narrowed where to record the letters written by a Reader grant, by folder
+   * @param narrowed where to record the letters written by a grant, by folder
    * @return the outcome
    * @throws MailboxAclException {@code UNREACHABLE} when the server can no longer be asked
    */
@@ -1510,9 +1515,9 @@ public class EmailDelegationService {
                                         access.preset(),
                                         engine.myRights(session, folder.fullName()),
                                         folder.role());
-      if (access == FolderAccess.READER) {
-        narrowed.put(folder.fullName(), written.rights() == null ? DelegationPreset.READER.rights() : written.rights());
-      }
+      // What was written bounds what the delegate's screens read, now: an intersection,
+      // so an Editor over a wider entry narrows too and nothing ever widens.
+      narrowed.put(folder.fullName(), written.rights() == null ? access.preset().rights() : written.rights());
       return FolderAccessResult.Outcome.DONE;
     } catch (MailboxAclException e) {
       rethrowUnreachable(e);
@@ -1855,7 +1860,7 @@ public class EmailDelegationService {
   void dropDelegatedFolderTree(EmailDelegation delegation, String ownerName, boolean withDescendants) {
     List<EmailFolder> rows = granteeFolders(delegation);
     String delimiter = delimiterOf(rows);
-    String shared = sharedNameOf(delegation, ownerName, delimiter);
+    String shared = registeredNameOf(rows, delegation, ownerName, delimiter);
     if (shared == null) {
       return;
     }
@@ -1889,7 +1894,7 @@ public class EmailDelegationService {
       return;
     }
     List<EmailFolder> rows = granteeFolders(delegation);
-    String shared = sharedNameOf(delegation, ownerName, delimiterOf(rows));
+    String shared = registeredNameOf(rows, delegation, ownerName, delimiterOf(rows));
     if (shared == null) {
       return;
     }
@@ -1939,6 +1944,33 @@ public class EmailDelegationService {
                .filter(StringUtils::isNotEmpty)
                .findFirst()
                .orElse("/");
+  }
+
+  /**
+   * The name the delegate's registered copy of one of the owner's folders goes by, read
+   * from what discovery actually registered: the owner's name as it is under the share's
+   * root when a copy (or a folder inside it) is registered at that name -- a Dovecot-style
+   * shared namespace lists {@code INBOX/Sub} as {@code <root>/INBOX/Sub} -- else the name
+   * without its INBOX prefix, for a server that names the owner's folders under INBOX and
+   * lists them under the root without it. Never a guess that could reach a different
+   * folder: the verbatim name wins whenever it is registered, so a top-level {@code Sub}
+   * beside {@code INBOX/Sub} is never taken for it.
+   *
+   * @param rows the delegate's registered folders of the share
+   * @param delegation the share
+   * @param ownerName the folder's full name on the owner's session
+   * @param delimiter the hierarchy delimiter
+   * @return the name, or null when the share has no root yet
+   */
+  private static String registeredNameOf(List<EmailFolder> rows, EmailDelegation delegation, String ownerName, String delimiter) {
+    if (delegation == null || StringUtils.isBlank(delegation.getRemoteRoot()) || StringUtils.isBlank(ownerName)) {
+      return null;
+    }
+    String verbatim = StringUtils.removeEnd(delegation.getRemoteRoot(), delimiter) + delimiter + ownerName;
+    boolean registered = rows.stream()
+                             .map(EmailFolder::getRemoteName)
+                             .anyMatch(name -> name != null && (name.equals(verbatim) || name.startsWith(verbatim + delimiter)));
+    return registered ? verbatim : sharedNameOf(delegation, ownerName, delimiter);
   }
 
   /**
