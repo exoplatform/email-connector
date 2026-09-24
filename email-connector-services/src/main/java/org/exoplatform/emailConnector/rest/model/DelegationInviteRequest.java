@@ -16,14 +16,19 @@
  */
 package org.exoplatform.emailConnector.rest.model;
 
+import java.util.Map;
+
 import org.exoplatform.emailConnector.model.DelegationPreset;
+import org.exoplatform.emailConnector.model.FolderAccess;
+import org.exoplatform.emailConnector.model.FolderRole;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * The body of a share request: who, and which preset. The mailbox is never here -- it
+ * The body of a share request: who, which preset, and optionally the owner's choice for
+ * the role folders (EXO-90556). The mailbox is never here -- it
  * is always the caller's own -- and the grantee is an eXo username the service resolves
  * server-side, never a mail login.
  */
@@ -32,7 +37,23 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class DelegationInviteRequest {
 
-  private String           granteeUsername;
+  private String                        granteeUsername;
 
-  private DelegationPreset preset;
+  private DelegationPreset              preset;
+
+  /**
+   * The owner's choice for Sent, Archive, Trash and Spam, made before the share exists
+   * (EXO-90556): a role absent follows the preset, NONE is never shared. Optional.
+   */
+  private Map<FolderRole, FolderAccess> folderAccess;
+
+  /**
+   * A share request with the preset on every folder the grant covers.
+   *
+   * @param granteeUsername the eXo user to share with
+   * @param preset READER or EDITOR
+   */
+  public DelegationInviteRequest(String granteeUsername, DelegationPreset preset) {
+    this(granteeUsername, preset, null);
+  }
 }
