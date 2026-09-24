@@ -594,6 +594,7 @@ public class EmailDelegationService {
     kept.stream().filter(role -> !exceptions.containsKey(role)).forEach(following::add);
     Set<FolderRole> notNarrowed = EnumSet.noneOf(FolderRole.class);
     Set<FolderRole> removed = EnumSet.noneOf(FolderRole.class);
+    Set<String> ownerNames = null;
     Map<FolderRole, String> roleFolders = new EnumMap<>(FolderRole.class);
     if (delegation.getOwnerRoleFolders() != null) {
       roleFolders.putAll(delegation.getOwnerRoleFolders());
@@ -632,6 +633,10 @@ public class EmailDelegationService {
           }
         }
         notNarrowed.addAll(narrowFormerRoleFolders(engine, session, identifier, recordedFolders, roleFolders));
+        if (!removed.isEmpty()) {
+          // The owner's names, so the delegate's copy of a removed folder is named for sure.
+          ownerNames = ownerNamesOf(engine, session);
+        }
       }
     }
     MailboxRights granted = written.rights() == null ? MailboxRights.NONE : written.rights();
@@ -681,7 +686,7 @@ public class EmailDelegationService {
       // folder whose access was removed instead leaves them now.
       for (FolderRole role : following) {
         if (removed.contains(role)) {
-          dropDelegatedFolderTree(delegation, roleFolders.get(role), false, null);
+          dropDelegatedFolderTree(delegation, roleFolders.get(role), false, ownerNames);
         } else {
           narrowDelegatedFolder(delegation, roleFolders.get(role), DelegationPreset.READER.rights(), null);
         }
@@ -1412,11 +1417,19 @@ public class EmailDelegationService {
       if (shares.isEmpty()) {
         return;
       }
-      for (EmailDelegation share : shares) {
-        dropDelegatedFolderTree(share, oldName, true, null);
-      }
+      // After a rename the owner's listing is read anyway, and names the delegates' old
+      // copies for sure; after a delete nothing is listed.
+      Set<String> ownerNames = null;
       if (newName != null) {
-        regrantRenamed(connector, ownerUsername, ownerMailbox, shares, newName);
+        try {
+          ownerNames = regrantRenamed(connector, ownerUsername, ownerMailbox, shares, newName);
+        } catch (RuntimeException e) {
+          // The old copies still go, by the names that need no listing.
+          LOG.info("The shares of {}'s renamed folder could not be written again", ownerUsername, e);
+        }
+      }
+      for (EmailDelegation share : shares) {
+        dropDelegatedFolderTree(share, oldName, true, ownerNames);
       }
       shares.forEach(share -> markDiscoveryDue(share.getId()));
     } catch (IllegalAccessException | RuntimeException e) {
@@ -1433,19 +1446,23 @@ public class EmailDelegationService {
    * @param ownerMailbox the owner's mailbox
    * @param shares the owner's shares in use or on offer on that mailbox
    * @param newName the renamed folder's full name
+   * @return every folder name of the owner's mailbox, as listed; null on a server that
+   *         does not share folder by folder
    */
-  private void regrantRenamed(EmailConnector connector,
-                              String ownerUsername,
-                              String ownerMailbox,
-                              List<EmailDelegation> shares,
-                              String newName) {
+  private Set<String> regrantRenamed(EmailConnector connector,
+                                     String ownerUsername,
+                                     String ownerMailbox,
+                                     List<EmailDelegation> shares,
+                                     String newName) {
     MailboxAclEngine engine = aclEngineRegistry.engineFor(connector);
     try (MailboxAclSession session = session(connector, ownerUsername, ownerMailbox)) {
       if (engine.probe(session).grantGranularity() != GrantGranularity.FOLDER) {
-        return;
+        return null;
       }
-      List<OwnFolder> renamed = engine.listOwnFolders(session)
-                                      .stream()
+      List<OwnFolder> listed = engine.listOwnFolders(session);
+      Set<String> ownerNames = new HashSet<>();
+      listed.forEach(folder -> ownerNames.add(folder.fullName()));
+      List<OwnFolder> renamed = listed.stream()
                                       .filter(folder -> folder.fullName().equals(newName)
                                           || folder.fullName().startsWith(newName + folder.delimiter()))
                                       .limit(getMaxFolders())
@@ -1483,6 +1500,26 @@ public class EmailDelegationService {
           }
         }
       }
+      return ownerNames;
+    }
+  }
+
+  /**
+   * Every folder name of the owner's mailbox, for naming a delegate's copy for sure; null
+   * when the server cannot list them, which names nothing.
+   *
+   * @param engine the engine
+   * @param session the owner's session
+   * @return the names, or null
+   */
+  private static Set<String> ownerNamesOf(MailboxAclEngine engine, MailboxAclSession session) {
+    try {
+      Set<String> names = new HashSet<>();
+      engine.listOwnFolders(session).forEach(folder -> names.add(folder.fullName()));
+      return names;
+    } catch (MailboxAclException e) {
+      LOG.debug("The owner's folders could not be listed ({})", e.getCode());
+      return null;
     }
   }
 
