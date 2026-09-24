@@ -26,7 +26,9 @@ import org.exoplatform.commons.api.notification.model.PluginKey;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
 import org.exoplatform.emailConnector.event.EmailDelegationEventType;
+import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailDelegation;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.notification.plugin.BaseEmailDelegationNotificationPlugin;
 import org.exoplatform.emailConnector.notification.plugin.EmailDelegationInvitationPlugin;
 import org.exoplatform.emailConnector.notification.plugin.EmailDelegationResponseNotificationPlugin;
@@ -61,7 +63,13 @@ import org.exoplatform.services.log.Log;
 @Component
 public class EmailDelegationNotificationListener {
 
-  private static final Log       LOG = ExoLogger.getLogger(EmailDelegationNotificationListener.class);
+  private static final Log       LOG                       = ExoLogger.getLogger(EmailDelegationNotificationListener.class);
+
+  /**
+   * The response a consent to writing in the owner's name is told under, before the
+   * mode's name: {@code SEND_MODE_ON_BEHALF}, {@code SEND_MODE_AS}, {@code SEND_MODE_NONE}.
+   */
+  static final String            SEND_MODE_RESPONSE_PREFIX = "SEND_MODE_";
 
   /**
    * Routes one delegation transition to the person it concerns.
@@ -79,6 +87,7 @@ public class EmailDelegationNotificationListener {
       case INVITED -> notifyGrantee(delegation);
       case ACCEPTED, DECLINED, LEFT -> notifyOwner(delegation, event.type());
       case REVOKED -> notifyRevokedGrantee(delegation);
+      case SEND_MODE_CHANGED -> notifySendMode(delegation);
       // A transition added to the enum without a line here would otherwise notify
       // nobody in silence; this says so in the log rather than in nothing at all.
       default -> LOG.debug("Delegation {} went {}, which nothing here is written to tell anybody about",
@@ -147,7 +156,7 @@ public class EmailDelegationNotificationListener {
     if (StringUtils.isBlank(delegation.getOwnerId()) || StringUtils.isBlank(delegation.getGranteeId())) {
       return;
     }
-    dispatchResponse(delegation.getOwnerId(), delegation.getGranteeId(), delegation, type);
+    dispatchResponse(delegation.getOwnerId(), delegation.getGranteeId(), delegation, type.name());
   }
 
   /**
@@ -163,7 +172,26 @@ public class EmailDelegationNotificationListener {
     dispatchResponse(delegation.getGranteeId(),
                      delegation.getOwnerId(),
                      delegation,
-                     EmailDelegationEventType.REVOKED);
+                     EmailDelegationEventType.REVOKED.name());
+  }
+
+  /**
+   * Tells the grantee the owner set, changed or withdrew her consent to them writing mail
+   * in her name (EXO-90582), as one more "where that share now stands" news -- the
+   * response names the consent as it now stands: {@code SEND_MODE_ON_BEHALF},
+   * {@code SEND_MODE_AS} or {@code SEND_MODE_NONE}. Only a grantee using the share is
+   * told: one still invited has the invitation, and reads the consent on the share when
+   * they accept it (PO decision Q-B). Never gated: no mail server tells the grantee.
+   *
+   * @param delegation the row, carrying the consent as it now stands
+   */
+  private void notifySendMode(EmailDelegation delegation) {
+    if (delegation.getStatus() != DelegationStatus.ACCEPTED || StringUtils.isBlank(delegation.getGranteeId())
+        || StringUtils.isBlank(delegation.getOwnerId())) {
+      return;
+    }
+    SendMode mode = delegation.getSendMode() == null ? SendMode.NONE : delegation.getSendMode();
+    dispatchResponse(delegation.getGranteeId(), delegation.getOwnerId(), delegation, SEND_MODE_RESPONSE_PREFIX + mode.name());
   }
 
   /**
@@ -172,15 +200,15 @@ public class EmailDelegationNotificationListener {
    * @param receiver who is told
    * @param actor whose act it was
    * @param delegation the row
-   * @param type the transition
+   * @param response which news it is: a transition's name, or a consent's
    */
-  private void dispatchResponse(String receiver, String actor, EmailDelegation delegation, EmailDelegationEventType type) {
+  private void dispatchResponse(String receiver, String actor, EmailDelegation delegation, String response) {
     NotificationContext ctx = NotificationContextImpl.cloneInstance()
                                                      .append(BaseEmailDelegationNotificationPlugin.RECEIVER, receiver)
                                                      .append(BaseEmailDelegationNotificationPlugin.ACTOR, actor)
                                                      .append(BaseEmailDelegationNotificationPlugin.DELEGATION_ID,
                                                              String.valueOf(delegation.getId()))
-                                                     .append(EmailDelegationResponseNotificationPlugin.RESPONSE, type.name());
+                                                     .append(EmailDelegationResponseNotificationPlugin.RESPONSE, response);
     dispatch(ctx, NotificationConstants.EMAIL_DELEGATION_RESPONSE_NOTIFICATION_PLUGIN);
   }
 

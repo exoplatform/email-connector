@@ -25,7 +25,6 @@ import java.util.Set;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -38,7 +37,6 @@ import lombok.NoArgsConstructor;
  */
 @Data
 @NoArgsConstructor
-@AllArgsConstructor
 public class EmailDelegation {
 
   /** {@link #grantedRoles} of a grant made in one call on a per-mailbox server. */
@@ -130,6 +128,104 @@ public class EmailDelegation {
    * only truth, read when the owner opens the list. Never null.
    */
   private Map<FolderRole, FolderAccess> folderAccess = new EnumMap<>(FolderRole.class);
+
+  /**
+   * The owner's consent to the grantee writing mail in the owner's name (EXO-90582):
+   * {@link SendMode#ON_BEHALF} or {@link SendMode#AS}, null for none -- never
+   * {@link SendMode#NONE}. Kept out of the positional constructors: only the owner's
+   * targeted write sets it, and the storage reads it back.
+   */
+  private SendMode                      sendMode;
+
+  /** When the owner last set {@link #sendMode}, null when never set. */
+  private Date                          sendModeDate;
+
+  /**
+   * When the owner's mail server last refused a mail in the owner's name for this
+   * grantee, null for never; cleared when the owner sets the consent again.
+   */
+  private Date                          sendRefusedDate;
+
+  /**
+   * Every column but the owner's consent to writing in her name, in the row's order.
+   *
+   * @param id the row id
+   * @param granteeId the grantee's username
+   * @param ownerId the owner's username, when an eXo user
+   * @param ownerMailbox the owner's mailbox identifier
+   * @param granteeMailbox the grantee's mailbox identifier
+   * @param connectorId the connector preset
+   * @param remoteRoot the shared root in the grantee's listing
+   * @param preset the preset
+   * @param rights the letters last observed
+   * @param nativeRights the server's own vocabulary last observed
+   * @param status the status
+   * @param origin who wrote the share
+   * @param badgeIncluded whether it counts in the badge
+   * @param notifyNewMail whether new mail notifies
+   * @param lastActivityDate the grantee's last use
+   * @param lastRightsCheckDate when the rights were last read
+   * @param invitedDate when invited
+   * @param respondedDate when answered
+   * @param revokedDate when revoked
+   * @param createdDate when created
+   * @param updatedDate when updated
+   * @param grantedRoles the roles eXo's grant wrote beside INBOX
+   * @param ownerRoleFolders the owner's role-to-folder-name map
+   * @param searchIncluded whether the unified search returns this mailbox
+   * @param folderAccess the owner's per-folder exceptions to the preset
+   */
+  public EmailDelegation(Long id,
+                         String granteeId,
+                         String ownerId,
+                         String ownerMailbox,
+                         String granteeMailbox,
+                         Long connectorId,
+                         String remoteRoot,
+                         DelegationPreset preset,
+                         String rights,
+                         String nativeRights,
+                         DelegationStatus status,
+                         DelegationOrigin origin,
+                         boolean badgeIncluded,
+                         boolean notifyNewMail,
+                         Date lastActivityDate,
+                         Date lastRightsCheckDate,
+                         Date invitedDate,
+                         Date respondedDate,
+                         Date revokedDate,
+                         Date createdDate,
+                         Date updatedDate,
+                         String grantedRoles,
+                         Map<FolderRole, String> ownerRoleFolders,
+                         boolean searchIncluded,
+                         Map<FolderRole, FolderAccess> folderAccess) {
+    this.id = id;
+    this.granteeId = granteeId;
+    this.ownerId = ownerId;
+    this.ownerMailbox = ownerMailbox;
+    this.granteeMailbox = granteeMailbox;
+    this.connectorId = connectorId;
+    this.remoteRoot = remoteRoot;
+    this.preset = preset;
+    this.rights = rights;
+    this.nativeRights = nativeRights;
+    this.status = status;
+    this.origin = origin;
+    this.badgeIncluded = badgeIncluded;
+    this.notifyNewMail = notifyNewMail;
+    this.lastActivityDate = lastActivityDate;
+    this.lastRightsCheckDate = lastRightsCheckDate;
+    this.invitedDate = invitedDate;
+    this.respondedDate = respondedDate;
+    this.revokedDate = revokedDate;
+    this.createdDate = createdDate;
+    this.updatedDate = updatedDate;
+    this.grantedRoles = grantedRoles;
+    this.ownerRoleFolders = ownerRoleFolders;
+    this.searchIncluded = searchIncluded;
+    this.folderAccess = folderAccess;
+  }
 
   /**
    * The delegation as it was before EXO-90548 recorded what a grant covered: every
@@ -236,6 +332,18 @@ public class EmailDelegation {
     this(id, granteeId, ownerId, ownerMailbox, granteeMailbox, connectorId, remoteRoot, preset, rights, nativeRights, status, origin,
          badgeIncluded, notifyNewMail, lastActivityDate, lastRightsCheckDate, invitedDate, respondedDate, revokedDate, createdDate,
          updatedDate, grantedRoles, ownerRoleFolders, true, new EnumMap<>(FolderRole.class));
+  }
+
+  /**
+   * Whether the owner's consent covers a shape of writing in her name (EXO-90582): the
+   * consent alone, not what the server accepts nor whether the share is in use -- the
+   * send guard checks those beside it.
+   *
+   * @param requested the shape a mail would go out under
+   * @return true when the owner consented to it
+   */
+  public boolean allowsSend(SendMode requested) {
+    return sendMode != null && sendMode.allows(requested);
   }
 
   /**
