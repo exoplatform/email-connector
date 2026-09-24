@@ -1406,6 +1406,11 @@ export default {
             return;
           }
           this.draftMailbox = mailbox;
+          if (mailbox?.shared === false) {
+            // An entry the switcher loaded before the share ended is not the truth.
+            this.sharedMailbox = null;
+            return;
+          }
           if (mailbox?.shared && !this.sharedMailbox) {
             return this.$emailConnectorMailBoxService.loadSharedMailboxes().then(() => {
               if (session === this.draftSession) {
