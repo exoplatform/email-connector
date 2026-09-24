@@ -12464,7 +12464,7 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * Round 1: the real scheduled send - sendStoredDraft - refused at CONNECT on the
+   * The real scheduled send - sendStoredDraft - refused at CONNECT on the
    * provider's material: one invalidation, the message rebuilt on fresh material, sent
    * once, recorded once.
    */
@@ -12500,7 +12500,7 @@ public class EmailBoxServiceTest {
     verify(onTransmitted, times(1)).run();
   }
 
-  /** Round 2: a second refusal at CONNECT is the answer - no third attempt, nothing recorded as sent. */
+  /** A second refusal at CONNECT is the answer - no third attempt, nothing recorded as sent. */
   @Test
   void doesNotRetryAStoredDraftTwice() throws Exception {
     givenAUsableMailbox();
@@ -12525,7 +12525,7 @@ public class EmailBoxServiceTest {
     verify(onTransmitted, never()).run();
   }
 
-  /** Round 1: a stored draft refused at SEND is never retried - the server may have accepted it. */
+  /** A stored draft refused at SEND is never retried - the server may have accepted it. */
   @Test
   void neverRetriesAStoredDraftRefusedAtSend() throws Exception {
     givenAUsableMailbox();
