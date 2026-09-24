@@ -274,10 +274,23 @@ class ImapAclEngineTest {
    * Only what coupling implies is forgiven: a set granting more -- administer, delete
    * the mailbox, expunge without delete-messages -- is never a preset.
    */
+  @Test
+  void aSetGrantingMoreThanCouplingImpliesIsNeverAPreset() {
+    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrse")), "e without t");
+    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswitea")), "a");
+    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswitex")), "x");
+    // A w beside s alone is Stalwart's coupling of a Reader's s (EXO-90556): a Reader.
+    // Beside another write right it stays a write, and the set is neither preset.
+    assertEquals(DelegationPreset.READER, engine.presetOf(MailboxRights.of("lrsw")), "Stalwart's Reader");
+    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswi")), "a Reader plus star and insert is neither");
+    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(null));
+  }
+
   /**
    * EXO-90556, live on Stalwart 0.11.8 -- a Reader granted {@code lrs} reads back
    * {@code wsrl}: still a Reader, never CUSTOM (no "set in your mail app" row, no replace
-   * confirmation), and a rename writes it again as the Reader it is.
+   * confirmation). What a rename does with it is the service's, pinned by
+   * {@code EmailDelegationFolderAccessTest#aRenameLeavesAStalwartReaderAsItIs}.
    */
   @Test
   void aStalwartReaderWithItsCoupledWriteReadsAsAReader() throws MessagingException {
@@ -290,18 +303,6 @@ class ImapAclEngineTest {
     assertEquals(DelegationPreset.READER, ace.preset());
     assertEquals("lrsw", ace.nativeRights());
     assertEquals("lrsw", ace.rights().letters());
-  }
-
-  @Test
-  void aSetGrantingMoreThanCouplingImpliesIsNeverAPreset() {
-    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrse")), "e without t");
-    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswitea")), "a");
-    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswitex")), "x");
-    // A w beside s alone is Stalwart's coupling of a Reader's s (EXO-90556): a Reader.
-    // Beside another write right it stays a write, and the set is neither preset.
-    assertEquals(DelegationPreset.READER, engine.presetOf(MailboxRights.of("lrsw")), "Stalwart's Reader");
-    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswi")), "a Reader plus star and insert is neither");
-    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(null));
   }
 
   /**
