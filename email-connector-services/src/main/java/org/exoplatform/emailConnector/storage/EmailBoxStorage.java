@@ -316,6 +316,9 @@ public class EmailBoxStorage {
     entity.setReadReceiptRequested(draft.isReadReceiptRequested());
     // DRAFT_DELEGATION_ID is deliberately not written here (EXO-90595): the mailbox a
     // draft belongs to is settled by its first save, and an edit never moves it.
+    // DRAFT_SEND_MODE is (EXO-90584): the name the draft goes out in is the writer's to
+    // change until it is sent, and the service hands over the one to keep.
+    entity.setDraftSendMode(draft.getSendMode());
     return saveDraftRow(entity, draft.getUserId());
   }
 
@@ -2293,7 +2296,8 @@ public class EmailBoxStorage {
                                                          null,
                                                          null,
                                                          false,
-                                                         // The draft's mailbox, set by name below.
+                                                         // The draft's mailbox and name, set by name below.
+                                                         null,
                                                          null);
       emailBoxEntity.setReadReceiptRequested(email.isReadReceiptRequested());
       emailBoxEntity.setReadReceiptTo(email.getReadReceiptTo());
@@ -2302,6 +2306,8 @@ public class EmailBoxStorage {
       // A draft's mailbox is written by its first save, which is this path (EXO-90595);
       // saveDraft's edit path leaves the column alone, so no later save can move it.
       emailBoxEntity.setDraftDelegationId(email.getSendDelegationId());
+      // And the name it is to go out in (EXO-90584), which every later save rewrites.
+      emailBoxEntity.setDraftSendMode(email.getSendMode());
       List<EmailAttachmentEntity> attachments = email.getContent() != null
           && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
             return toEmailAttachmentEntity(attachment, emailBoxEntity);
@@ -2458,14 +2464,16 @@ public class EmailBoxStorage {
                               null, false, null, null, null,
                               // The read-receipt fields, set below by name.
                               false, null, null, false, null, null, null,
-                              // The draft's mailbox (EXO-90595), set by name below.
-                              null, null);
+                              // The draft's mailbox (EXO-90595) and name (EXO-90584), set by name below.
+                              null, null, null);
       email.setReadReceiptRequested(emailBoxEntity.isReadReceiptRequested());
       email.setReadReceiptTo(emailBoxEntity.getReadReceiptTo());
       email.setReadReceiptState(emailBoxEntity.getReadReceiptState());
       email.setReadReceiptReturnPathMatch(emailBoxEntity.isReadReceiptReturnPathMatch());
       // The mailbox a draft was written in (EXO-90595), on every read of it.
       email.setSendDelegationId(emailBoxEntity.getDraftDelegationId());
+      // And the name it is to go out in (EXO-90584).
+      email.setSendMode(emailBoxEntity.getDraftSendMode());
 
       // A draft carries its recipients on EVERY read, whatever the caller asked for.
       //
