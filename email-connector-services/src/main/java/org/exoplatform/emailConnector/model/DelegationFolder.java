@@ -23,6 +23,8 @@ package org.exoplatform.emailConnector.model;
  *
  * @param folder the folder's full name on the owner's session -- the key a change names
  * @param displayName its last path segment
+ * @param delimiter the hierarchy delimiter, so a choice can reach every folder inside
+ *          this one, a container that cannot hold mail in between included
  * @param parent the full name of its parent folder, null at the top
  * @param depth how deep it sits, 0 at the top
  * @param role its role in the owner's mailbox, null for INBOX and the owner's own folders
@@ -35,6 +37,7 @@ package org.exoplatform.emailConnector.model;
  */
 public record DelegationFolder(String folder,
                                String displayName,
+                               String delimiter,
                                String parent,
                                int depth,
                                FolderRole role,

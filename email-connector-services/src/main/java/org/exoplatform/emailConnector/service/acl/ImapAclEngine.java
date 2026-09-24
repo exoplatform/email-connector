@@ -309,7 +309,8 @@ public class ImapAclEngine implements MailboxAclEngine {
   /**
    * The owner's own folders, each with its role (EXO-90556): one {@code LIST "*"}, read
    * as {@link #findRoleFolders} reads it, so the role a folder is shared with is the role
-   * the grant loop gives it. The folder's separator as listed, "/" when none.
+   * the grant loop gives it -- and every folder carrying {@code \Drafts} as Drafts, not
+   * only the first. The folder's separator as listed, "/" when none.
    *
    * @param session the owner's session
    * @return the folders in listing order, INBOX included, never null
@@ -325,10 +326,13 @@ public class ImapAclEngine implements MailboxAclEngine {
       for (IMAPFolder folder : folders) {
         // Read off the listing: a folder listed carries its separator, no round trip.
         char separator = folder.getSeparator();
-        own.add(new OwnFolder(folder.getFullName(),
-                              folder.getName(),
-                              separator == 0 ? "/" : String.valueOf(separator),
-                              roleByName.get(folder.getFullName())));
+        FolderRole role = roleByName.get(folder.getFullName());
+        if (role == null && roleOfAttributes(folder) == FolderRole.DRAFTS) {
+          // Every folder the server calls Drafts is Drafts here, not only the one the
+          // role goes to: none is ever shared (PO decision Q-2).
+          role = FolderRole.DRAFTS;
+        }
+        own.add(new OwnFolder(folder.getFullName(), folder.getName(), separator == 0 ? "/" : String.valueOf(separator), role));
       }
     } catch (MessagingException e) {
       if (isConnectionFailure(e)) {

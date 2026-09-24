@@ -396,7 +396,7 @@ public class UserEmailSettingRestTest {
    */
   @Test
   void theOwnersFolderListsAndSave() throws Exception {
-    DelegationFolder sent = new DelegationFolder("Sent", "Sent", null, 0, FolderRole.SENT, FolderAccess.READER, null, true, true);
+    DelegationFolder sent = new DelegationFolder("Sent", "Sent", "/", null, 0, FolderRole.SENT, FolderAccess.READER, null, true, true);
     when(emailDelegationService.getOwnFolders(SIMPLE_USER)).thenReturn(new DelegationFolders(List.of(sent), true));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/folders").with(testSimpleUser()))
            .andExpect(status().isOk())
