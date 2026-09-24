@@ -145,6 +145,42 @@ class AiToolDefinitionsTest {
   }
 
   /**
+   * EXO-90592 -- the reply tools declare, and require, the recipients the approval card
+   * shows: every argument the method takes is declared (an undeclared one is never
+   * sent, and the reply would be refused), and to -- with cc for reply_all -- is
+   * required, so the card never goes out without them. The reading tools say where the
+   * model reads them from.
+   */
+  @Test
+  void theReplyToolsRequireTheRecipientsTheApprovalShows() throws Exception {
+    Map<String, JsonNode> definitions = readDefinitions();
+    Map<String, List<String>> requiredRecipients = Map.of("reply_email", List.of("to"), "reply_all", List.of("to", "cc"));
+    for (Method method : EmailMcpTool.class.getDeclaredMethods()) {
+      String name = toSnakeCase(method.getName());
+      if (!Modifier.isPublic(method.getModifiers()) || !requiredRecipients.containsKey(name)) {
+        continue;
+      }
+      JsonNode schema = definitions.get(name).path("input_schema");
+      Set<String> declared = new TreeSet<>();
+      schema.path("properties").fieldNames().forEachRemaining(declared::add);
+      Set<String> taken = new TreeSet<>();
+      for (java.lang.reflect.Parameter parameter : method.getParameters()) {
+        taken.add(toSnakeCase(parameter.getName()));
+      }
+      assertEquals(declared, taken, name + " declares exactly what it takes");
+      Set<String> required = new TreeSet<>();
+      schema.path("required").forEach(field -> required.add(field.asText()));
+      for (String recipients : requiredRecipients.get(name)) {
+        assertTrue(required.contains(recipients), name + " requires " + recipients);
+        assertEquals("array", schema.path("properties").path(recipients).path("type").asText(), name + "." + recipients);
+      }
+      assertTrue(definitions.get(name).path("description").asText().contains("refused and nothing is sent"), name);
+    }
+    assertTrue(definitions.get("get_email_thread").path("description").asText().contains("(to) and copied to (cc)"));
+    assertTrue(definitions.get("get_email_by_id").path("description").asText().contains("its to and cc recipients"));
+  }
+
+  /**
    * Reads the shipped tool definitions off the classpath, keyed by tool name.
    *
    * @return the name → definition map
