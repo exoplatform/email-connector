@@ -8441,7 +8441,7 @@ public class EmailBoxService {
                        .sum()
           + uploads.stream().mapToLong(upload -> Math.max(upload.getSize(), 0)).sum();
       if (total > MAX_OUTGOING_ATTACHMENTS_SIZE) {
-        throw new IllegalArgumentException("emailConnector.mailBox.newEmail.attach.maxSize.error");
+        throw new IllegalArgumentException(MAX_SIZE_ERROR_CODE);
       }
       for (Long attachmentId : removed) {
         emailBoxStorage.removeDraftAttachment(username, draftLocalId, attachmentId);
@@ -8811,7 +8811,7 @@ public class EmailBoxService {
       // be sent is never stored: the cap is the one the send path already enforces,
       // and a draft that has gone over it is a draft that cannot leave.
       if (storedAttachmentsSize(username, draftLocalId) + Math.max(attachment.getSize(), 0) > MAX_OUTGOING_ATTACHMENTS_SIZE) {
-        throw new IllegalArgumentException("emailConnector.mailBox.newEmail.attach.maxSize.error");
+        throw new IllegalArgumentException(MAX_SIZE_ERROR_CODE);
       }
       if (emailBoxStorage.addDraftAttachment(username,
                                              draftLocalId,
