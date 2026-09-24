@@ -186,8 +186,8 @@ document.addEventListener('open-email-box-search', event => {
 
 /*
  * Opens the mailbox on one of its built-in folders or views, from anywhere in the
- * platform: the web notification of a scheduled mail that was not sent uses it to open
- * the Scheduled view (EXO-90434).
+ * platform: the web notification of a scheduled mail uses it to open the Scheduled
+ * view (EXO-90434), or Sent for a mail that went out without its owner copy (EXO-90595).
  *
  * detail: {folder} -- the folder key, SCHEDULED for the Scheduled view.
  */
