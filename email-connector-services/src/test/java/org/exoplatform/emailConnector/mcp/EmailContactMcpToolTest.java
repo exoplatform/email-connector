@@ -230,7 +230,9 @@ class EmailContactMcpToolTest {
   @Test
   void getContactOfAnotherUserAnswersNotFound() {
     when(emailContactService.getContact(eq(CONTACT_ID), eq(USERNAME))).thenReturn(null);
-    assertThrows(ObjectNotFoundException.class, () -> contactMcpTool.getContact(CONTACT_ID));
+    ObjectNotFoundException notFound = assertThrows(ObjectNotFoundException.class, () -> contactMcpTool.getContact(CONTACT_ID));
+    // Said with the id, never a raw "%s" (EXO-90555).
+    assertEquals("No contact with id " + CONTACT_ID + " in your address book.", notFound.getMessage());
   }
 
   // --- suggest_recipients --------------------------------------------------

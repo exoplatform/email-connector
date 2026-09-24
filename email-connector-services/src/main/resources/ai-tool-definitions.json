@@ -7,7 +7,7 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "email_id": { "type": "integer" },
+          "email_id": { "type": "integer", "description": "The email_id field of the mail, as a reading tool or a search hit returned it. Never a mail_remote_id: the two are different numbers." },
           "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." }
         },
         "required": ["email_id"]
@@ -92,7 +92,7 @@
     {
       "name": "search_emails",
       "title": "Search emails",
-      "description": "Search the user's mailbox on the mail server itself (IMAP SEARCH), so it finds messages anywhere in the folder, not only in the recently synced local copy. At least one criterion is required. 'query' matches the subject or the sender, NOT the body — a body search is a linear scan of the whole folder on servers without a full-text index, so ask about a subject or a sender rather than words inside a message. 'from' matches the sender only, 'unread' keeps only unread messages, 'sinceDays' keeps only messages received in the last N days, 'folder' is INBOX (default), SENT or ARCHIVE, and 'limit' caps how many come back (default 20, max 50). Returns 'total_matches' — how many matched on the server — alongside the newest hits, so say what you did not see when the total is larger than the list. Each hit also carries 'read' (false when the message is unread) and 'starred' (true when the user favorited it). A hit of the user's own INBOX carries its mail_remote_id, and chains into the other tools when it is cached; a hit of a shared mailbox carries its email_id instead. A SENT or ARCHIVE hit of the user's own mailbox carries neither: an IMAP id is unique only within its own folder, so report it from the search result itself and say the full message is not available. With mailbox, searches the user's synced copy of that shared mailbox's folder (subject or sender), not its mail server; a folder that is not shared or not synced yet is refused with a message saying so. A hit carries no thread_id (it is an envelope read off the server, not a cached row): fetch it with get_email_full first if you need the conversation.",
+      "description": "Search the user's mailbox on the mail server itself (IMAP SEARCH), so it finds messages anywhere in the folder, not only in the recently synced local copy. At least one criterion is required. 'query' matches the subject or the sender, NOT the body — a body search is a linear scan of the whole folder on servers without a full-text index, so ask about a subject or a sender rather than words inside a message. 'from' matches the sender only, 'unread' keeps only unread messages, 'sinceDays' keeps only messages received in the last N days, 'folder' is INBOX (default), SENT or ARCHIVE, and 'limit' caps how many come back (default 20, max 50). Returns 'total_matches' — how many matched on the server — alongside the newest hits, so say what you did not see when the total is larger than the list. Each hit also carries 'read' (false when the message is unread) and 'starred' (true when the user favorited it). Every hit already synced to the local copy carries its email_id, in the user's own mailbox and in a shared one: pass that email_id to the other tools, never a mail_remote_id in its place. A hit with a null email_id is not synced yet: call sync_now and search again, or, for a hit of the user's own INBOX only, use its mail_remote_id; a SENT or ARCHIVE hit of the user's own mailbox has no mail_remote_id (an IMAP id is unique only within its own folder), so report it from the search result itself. With mailbox, searches the user's synced copy of that shared mailbox's folder (subject or sender), not its mail server; a folder that is not shared or not synced yet is refused with a message saying so. A hit carries no thread_id (it is an envelope read off the server, not a cached row): fetch it with get_email_full first if you need the conversation.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -121,7 +121,7 @@
         "properties": {
           "mail_remote_id": { "type": "integer" },
           "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
-          "email_id": { "type": "integer", "description": "The local id of the mail, as the reading tools return it." }
+          "email_id": { "type": "integer", "description": "The email_id field of the mail, as a reading tool or a search hit returned it. Never a mail_remote_id: the two are different numbers." }
         },
         "required": []
       },
@@ -141,7 +141,7 @@
         "properties": {
           "mail_remote_id": { "type": "integer" },
           "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
-          "email_id": { "type": "integer", "description": "The local id of the mail, as the reading tools return it." }
+          "email_id": { "type": "integer", "description": "The email_id field of the mail, as a reading tool or a search hit returned it. Never a mail_remote_id: the two are different numbers." }
         },
         "required": []
       },
@@ -155,7 +155,7 @@
     {
       "name": "get_email_thread",
       "title": "Read a whole conversation",
-      "description": "Read every message of one conversation at once, oldest first. The thread_id is carried by every email returned by list_emails, get_email_by_id and get_email_full; a search_emails hit does NOT carry one (a hit is an envelope from the mail server, and a message outside the local sync window has no cached row and so no conversation id) — chain its email_id (or, for a hit of the user's own INBOX, its mail_remote_id) through get_email_full first to obtain the thread_id; a hit carrying neither cannot be opened. Each message comes back with its email_id, its folder (INBOX, SENT, ARCHIVE...), its mail_remote_id only when it is a mail of the user's own INBOX, its sender name and address, its date, its subject, its body as plain text and the names of its attachments. Use it before summarising or replying to a thread, instead of fetching its messages one by one. Unsent drafts are never included. Only the 25 most recent messages are returned, and each body is cut at 1500 characters and ends with '… [truncated]' when it was: treat a truncated body as a message you have only partly read, never assume the missing part agrees with the part you can see, and pass its email_id to get_email_by_id to read it whole. To act on a message of the conversation, use its email_id rather than searching for it again: it goes to get_email_by_id, get_email_full, reply_email, reply_all, forward_email and list_attachments whatever its folder, and to mark_read, archive_email and delete_email for a message of the inbox. With mailbox, the conversation as that shared mailbox holds it, each message's folder given by name; without, the user's own rows only.",
+      "description": "Read every message of one conversation at once, oldest first. The thread_id is carried by every email returned by list_emails, get_email_by_id and get_email_full; a search_emails hit does NOT carry one (a hit is an envelope from the mail server, and a message outside the local sync window has no cached row and so no conversation id) — chain its email_id (or, for a hit of the user's own INBOX that is not synced yet, its mail_remote_id) through get_email_full first to obtain the thread_id; a hit carrying neither cannot be opened. Each message comes back with its email_id, its folder (INBOX, SENT, ARCHIVE...), its mail_remote_id only when it is a mail of the user's own INBOX, its sender name and address, its date, its subject, its body as plain text and the names of its attachments. Use it before summarising or replying to a thread, instead of fetching its messages one by one. Unsent drafts are never included. Only the 25 most recent messages are returned, and each body is cut at 1500 characters and ends with '… [truncated]' when it was: treat a truncated body as a message you have only partly read, never assume the missing part agrees with the part you can see, and pass its email_id to get_email_by_id to read it whole. To act on a message of the conversation, use its email_id rather than searching for it again: it goes to get_email_by_id, get_email_full, reply_email, reply_all, forward_email and list_attachments whatever its folder, and to mark_read, archive_email and delete_email for a message of the inbox. With mailbox, the conversation as that shared mailbox holds it, each message's folder given by name; without, the user's own rows only.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -180,7 +180,7 @@
         "properties": {
           "mail_remote_ids": { "type": "array", "items": { "type": "integer" } },
           "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
-          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The local ids of the mails, as the reading tools return them." }
+          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The email_id fields of the mails, as a reading tool or a search hit returned them. Never mail_remote_ids: the two are different numbers." }
         },
         "required": []
       },
@@ -200,7 +200,7 @@
         "properties": {
           "mail_remote_ids": { "type": "array", "items": { "type": "integer" } },
           "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
-          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The local ids of the mails, as the reading tools return them." }
+          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The email_id fields of the mails, as a reading tool or a search hit returned them. Never mail_remote_ids: the two are different numbers." }
         },
         "required": []
       },
@@ -245,7 +245,7 @@
           "mail_remote_id": { "type": "integer" },
           "body_html": { "type": "string" },
           "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
-          "email_id": { "type": "integer", "description": "The local id of the mail, as the reading tools return it." }
+          "email_id": { "type": "integer", "description": "The email_id field of the mail, as a reading tool or a search hit returned it. Never a mail_remote_id: the two are different numbers." }
         },
         "required": ["body_html"]
       },
@@ -267,7 +267,7 @@
           "mail_remote_id": { "type": "integer" },
           "body_html": { "type": "string" },
           "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
-          "email_id": { "type": "integer", "description": "The local id of the mail, as the reading tools return it." }
+          "email_id": { "type": "integer", "description": "The email_id field of the mail, as a reading tool or a search hit returned it. Never a mail_remote_id: the two are different numbers." }
         },
         "required": ["body_html"]
       },
@@ -291,7 +291,7 @@
           "body_html": { "type": "string" },
           "cc": { "type": "array", "items": { "type": "string" } },
           "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
-          "email_id": { "type": "integer", "description": "The local id of the mail, as the reading tools return it." }
+          "email_id": { "type": "integer", "description": "The email_id field of the mail, as a reading tool or a search hit returned it. Never a mail_remote_id: the two are different numbers." }
         },
         "required": ["to"]
       },
@@ -312,7 +312,7 @@
         "properties": {
           "mail_remote_ids": { "type": "array", "items": { "type": "integer" } },
           "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
-          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The local ids of the mails, as the reading tools return them." }
+          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The email_id fields of the mails, as a reading tool or a search hit returned them. Never mail_remote_ids: the two are different numbers." }
         },
         "required": []
       },
@@ -333,7 +333,7 @@
         "properties": {
           "mail_remote_ids": { "type": "array", "items": { "type": "integer" } },
           "mailbox": { "type": "string", "description": "A mailbox shared with the user, by its address or its owner's eXo username, as list_shared_mailboxes gives them. Leave empty for the user's own mailbox." },
-          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The local ids of the mails, as the reading tools return them." }
+          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The email_id fields of the mails, as a reading tool or a search hit returned them. Never mail_remote_ids: the two are different numbers." }
         },
         "required": []
       },
@@ -366,7 +366,7 @@
         "properties": {
           "mail_remote_ids": { "type": "array", "items": { "type": "integer" } },
           "category_id": { "type": "integer" },
-          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The local ids of the mails, as the reading tools return them." }
+          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The email_id fields of the mails, as a reading tool or a search hit returned them. Never mail_remote_ids: the two are different numbers." }
         },
         "required": ["category_id"]
       },
@@ -387,7 +387,7 @@
         "properties": {
           "mail_remote_ids": { "type": "array", "items": { "type": "integer" } },
           "category_id": { "type": "integer" },
-          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The local ids of the mails, as the reading tools return them." }
+          "email_ids": { "type": "array", "items": { "type": "integer" }, "description": "The email_id fields of the mails, as a reading tool or a search hit returned them. Never mail_remote_ids: the two are different numbers." }
         },
         "required": ["category_id"]
       },

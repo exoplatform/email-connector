@@ -197,7 +197,7 @@ public class EmailMcpTool implements McpToolPlugin {
     Email email = share == null ? emailBoxService.getOwnMailboxEmailById(emailId, username)
                                 : emailBoxService.getSharedMailboxEmailById(emailId, username, share.delegationId());
     if (email == null) {
-      throw new ObjectNotFoundException("Email with id %s not found");
+      throw new ObjectNotFoundException(notFoundById(emailId, share));
     }
     return toEmailModel(email, true, share);
   }
@@ -1341,11 +1341,25 @@ public class EmailMcpTool implements McpToolPlugin {
     Email row = share == null ? emailBoxService.getOwnMailboxEmailById(emailId, username)
                               : emailBoxService.getSharedMailboxEmailById(emailId, username, share.delegationId());
     if (row == null || row.getMailRemoteId() == null) {
-      throw new ObjectNotFoundException(String.format("No email with email_id %d in %s.",
-                                                      emailId,
-                                                      share == null ? "your mailbox" : "the mailbox of " + ownerOf(share)));
+      throw new ObjectNotFoundException(notFoundById(emailId, share));
     }
     return row;
+  }
+
+  /**
+   * The refusal of an email_id that names no mail of the mailbox, in words that say
+   * which id and which mailbox -- and what an email_id is, since the likeliest cause is a
+   * mail_remote_id passed in its place (EXO-90555: an agent passed a search hit's UID).
+   *
+   * @param emailId the id given
+   * @param share the shared mailbox named, null for the user's own
+   * @return the message
+   */
+  private static String notFoundById(long emailId, SharedMailboxEntry share) {
+    return String.format("No email with email_id %d in %s. email_id is the local id every reading tool returns as email_id, "
+        + "not the mail_remote_id numbering a mail within its folder.",
+                         emailId,
+                         share == null ? "your mailbox" : "the mailbox of " + ownerOf(share));
   }
 
   /**

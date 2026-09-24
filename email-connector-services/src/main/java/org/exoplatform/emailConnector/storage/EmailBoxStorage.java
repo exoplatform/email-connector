@@ -1123,22 +1123,29 @@ public class EmailBoxStorage {
   }
 
   /**
-   * Of the given IMAP UIDs, the ones already cached in a folder — the bulk
-   * lookup behind the search results' {@code cached} flag: one IN query for the
-   * whole hit list, never a per-hit statement. No-op on an empty list.
+   * Of the given IMAP UIDs, the ones already cached in a folder of the user's, each with
+   * its row's local id (EXO-90555): what a search hit is decorated with -- "openable
+   * locally", and the email_id the agent tools name a mail by. One IN statement for the
+   * whole result list.
    *
    * @param userId the mailbox owner
    * @param folder the folder discriminator scoping the UIDs
    * @param mailRemoteIds the candidate IMAP UIDs
-   * @return the subset of {@code mailRemoteIds} present in the local cache,
-   *         never null
+   * @return the cached ones' local ids by UID, empty when none
    */
-  public List<Long> getCachedMailRemoteIds(String userId, String folder, List<Long> mailRemoteIds) {
+  public Map<Long, Long> getCachedEmailIds(String userId, String folder, List<Long> mailRemoteIds) {
     if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
-      return List.of();
+      return Map.of();
     }
-    return emailBoxDao.findCachedMailRemoteIds(userId, folder, mailRemoteIds);
+    Map<Long, Long> ids = new HashMap<>();
+    for (Object[] row : emailBoxDao.findCachedIdsByMailRemoteIds(userId, folder, mailRemoteIds)) {
+      // One row per UID in a folder; were there two, the first stands -- either names a
+      // copy of that very message, never another one.
+      ids.putIfAbsent((Long) row[0], (Long) row[1]);
+    }
+    return ids;
   }
+
 
   /**
    * Collapses several conversations into one: every row of {@code threadIds} is
