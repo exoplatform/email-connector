@@ -537,9 +537,9 @@ public class EmailBoxRest {
   @Operation(summary = "Searches the mailbox on the server", method = "GET",
              description = "Runs an IMAP SEARCH over the remote folder (INBOX by default), so it finds mail anywhere in the mailbox, not just the locally-cached window. Returns the newest hits (uid, folder, subject, sender, date, read flag, cached flag) plus the total match count. At least one criterion (query, from, to, unread, favorites or sinceDays) is required. A folder of a mailbox shared with the caller (CUSTOM:<id>) is searched in the caller's copy of it instead, never on the server: its recent window only, while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read, and without the to filter.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Bad Request: a folder that cannot be searched (emailConnector.folder.notBrowsable), or no search criterion"),
+      @ApiResponse(responseCode = "400", description = "Bad Request: a folder that cannot be searched (emailConnector.folder.notBrowsable) -- which is also the answer for a folder of a share whose folders were already removed -- or no search criterion"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
-      @ApiResponse(responseCode = "410", description = "The mailbox shared with the caller that holds this folder is no longer shared with them"),
+      @ApiResponse(responseCode = "410", description = "The folder belongs to a share of the caller's that is no longer accepted (emailConnector.delegation.revoked)"),
       @ApiResponse(responseCode = "500", description = "The mailbox could not be reached or searched"), })
   public EmailSearchResultPage searchEmails(HttpServletRequest request,
                                             @Parameter(description = "Free text matched against subject or sender")

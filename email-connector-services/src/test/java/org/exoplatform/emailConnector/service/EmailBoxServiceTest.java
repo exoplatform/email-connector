@@ -12708,7 +12708,7 @@ public class EmailBoxServiceTest {
     Email invoice = mirrored(2L, "Invoice", "budget-office@acme.com", true, 2);
     Email old = mirrored(3L, "Old budget", "dave@acme.com", false, 40);
     Email other = mirrored(4L, "Lunch", "erin@acme.com", false, 1);
-    when(emailBoxStorage.getEmails(TEST_USER, "CUSTOM:8")).thenReturn(List.of(old, other, invoice, budget));
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"))).thenReturn(List.of(old, other, invoice, budget));
 
     EmailSearchResultPage page = emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", "budget", null, false, null, 10);
     assertEquals(3, page.getTotalMatches(), "subject or sender");
@@ -12766,7 +12766,7 @@ public class EmailBoxServiceTest {
     Email invoice = mirrored(2L, "Invoice", "budget-office@acme.com", true, 2);
     invoice.setStarred(true);
     Email other = mirrored(4L, "Lunch", "erin@acme.com", false, 1);
-    when(emailBoxStorage.getEmails(TEST_USER, "CUSTOM:8")).thenReturn(List.of(other, invoice, budget));
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"))).thenReturn(List.of(other, invoice, budget));
 
     EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, "budget", null, null, false, false, null, "CUSTOM:8", 10);
     assertEquals(2, page.getTotalMatches());
@@ -12796,7 +12796,8 @@ public class EmailBoxServiceTest {
     assertThrows(DelegationRevokedException.class,
                  () -> emailBoxService.searchEmails(TEST_USER, "budget", null, null, false, false, null, "CUSTOM:8", 10),
                  "a share withdrawn meanwhile");
-    verify(emailBoxStorage, never()).getEmails(TEST_USER, "CUSTOM:9");
+    verify(emailBoxStorage, never()).getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:9"));
+    verify(emailBoxStorage, never()).getEmails(anyString(), anyString());
   }
 
   /**

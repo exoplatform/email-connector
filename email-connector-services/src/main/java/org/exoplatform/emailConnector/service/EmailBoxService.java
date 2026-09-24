@@ -5827,7 +5827,9 @@ public class EmailBoxService {
       throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
     }
     Date since = sinceDays == null ? null : new Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(sinceDays));
-    List<Email> matches = emailBoxStorage.getEmails(username, folderKey)
+    // The search's own read, not the listing's: no attachment, category or excerpt, which
+    // a search discards -- this runs once per keystroke in the drawer's search box.
+    List<Email> matches = emailBoxStorage.getEmailsForSearchInFolders(username, List.of(folderKey))
                                          .stream()
                                          .filter(email -> !unreadOnly || !email.isRead())
                                          .filter(email -> !favoritesOnly || email.isStarred())

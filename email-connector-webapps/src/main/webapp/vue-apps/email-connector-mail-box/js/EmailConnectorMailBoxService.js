@@ -1092,10 +1092,13 @@ export function completeThreadByThreadId(threadId, folder) {
  * telling whether the message can be opened straight from the local cache.
  *
  * @param {String} query free text matched against subject or sender
- * @param {String} folder the folder to search: INBOX, SENT or ARCHIVE
+ * @param {String} folder the folder to search: INBOX, SENT or ARCHIVE, searched on the
+ *          mail server, or CUSTOM:<id> for a folder of a mailbox shared with the user,
+ *          searched in the copy of it kept in eXo (EXO-90590)
  * @param {Number} limit how many hits to return (newest first)
  * @param {Boolean} favorites when true, only messages carrying the server's \Flagged
- *          flag come back, so the mailbox's Favorites chip narrows the search too
+ *          flag come back -- in a shared mailbox, the owner's star as the copy holds
+ *          it -- so the mailbox's Favorites chip narrows the search too
  * @param {Boolean} unread when true, only unread messages come back, for the same
  *          reason: the chip is lit, so it must still be filtering
  * @returns {Promise} resolves with { results, totalMatches }
