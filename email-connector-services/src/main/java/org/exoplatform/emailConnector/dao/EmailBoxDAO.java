@@ -161,6 +161,21 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<String> excludedFolders);
 
   /**
+   * Some folders of the cached mailbox WITHOUT their attachments, for the search over
+   * cached mail: the folders of the mailboxes shared with the user that the unified
+   * search reads (EXO-90554). Never called with an empty list -- an empty {@code IN}
+   * is not valid SQL everywhere.
+   *
+   * @param userId the user whose mirror it is
+   * @param folders the {@code CUSTOM:<id>} keys to read
+   * @return their cached messages, newest first, attachments not fetched
+   */
+  @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder IN :folders ORDER BY email.receivedDate DESC")
+  List<EmailBoxEntity> findByUserIdAndFoldersForSearch(@Param("userId")
+  String userId, @Param("folders")
+  Collection<String> folders);
+
+  /**
    * The starred subset of a folder, for the list's starred filter. A dedicated query
    * rather than a flag on {@link #findByUserIdAndFolderWithAttachments} so the common
    * unfiltered listing keeps its exact plan, and the filter runs in SQL instead of

@@ -1727,4 +1727,22 @@
       <dropColumn tableName="EMAIL_FOLDER" columnName="NOTIFIED_UID"/>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-85">
+    <comment>
+      EMAIL_DELEGATION.SEARCH_INCLUDED (EXO-90554, phase-2 slice 2.6, PO decision Q-6):
+      whether the platform's unified search returns the grantee's mirror of this shared
+      mailbox, labelled with its owner. On by default -- searching is not a push -- so
+      every existing row reads TRUE; the grantee turns it off per share. NOT NULL with
+      a default, as BADGE_INCLUDED beside it: the entity maps it to a primitive. Rolled
+      back by dropping the column.
+    </comment>
+    <addColumn tableName="EMAIL_DELEGATION">
+      <column name="SEARCH_INCLUDED" type="BOOLEAN" defaultValueBoolean="true">
+        <constraints nullable="false"/>
+      </column>
+    </addColumn>
+    <rollback>
+      <dropColumn tableName="EMAIL_DELEGATION" columnName="SEARCH_INCLUDED"/>
+    </rollback>
+  </changeSet>
 </databaseChangeLog>

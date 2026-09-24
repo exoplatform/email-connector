@@ -821,6 +821,14 @@ export default {
       // that way, so an object is what marks the richer form: passing one where a
       // flag is expected would read as truthy and wrongly show the drawer as
       // synchronizing.
+      if (options.mailRemoteId && options.mailbox) {
+        // A message of a mailbox shared with the user, from the platform's search
+        // (EXO-90554): the drawer opens on that mailbox first, as the switcher would, so
+        // the message reads with its band and its controls -- and not at all when the
+        // share is gone meanwhile, which the opening says.
+        await this.openSharedMailFromOutside(options);
+        return;
+      }
       if (options.mailRemoteId) {
         // One message asked for by name -- from the platform's search, or from the
         // Favorites drawer -- opens the reader on its own. Opening the mailbox behind
@@ -1577,6 +1585,24 @@ export default {
         drawer.filterText = term;
       }
       this.runSearch(term);
+    },
+    /**
+     * Opens one message of a mailbox shared with the user picked outside the mailbox --
+     * a hit of the platform's unified search (EXO-90554). The drawer is opened on that
+     * mailbox first (the mailbox= opening of open), which reads the switcher's entries,
+     * so the reader finds the share's rights for the message's folder; a share left,
+     * declined or revoked since leaves the user in their own mailbox with the reason,
+     * and no message is opened.
+     *
+     * @param {Object} opening what to open: {mailRemoteId, folder, cached, mailbox}
+     * @returns {Promise} resolved once the message is on screen, or the share found gone
+     */
+    async openSharedMailFromOutside(opening) {
+      await this.open(false, null, opening.mailbox);
+      if (String(sharedMailboxState().current?.delegationId) !== String(opening.mailbox)) {
+        return;
+      }
+      await this.openMailFromOutside(opening);
     },
     /**
      * Opens one message picked outside the mailbox — from the platform's unified

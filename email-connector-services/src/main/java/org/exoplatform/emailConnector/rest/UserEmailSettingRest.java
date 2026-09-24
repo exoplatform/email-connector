@@ -651,7 +651,7 @@ public class UserEmailSettingRest {
   @Secured("users")
   @Operation(summary = "Stores the caller's toggles on a mailbox shared with them",
              method = "PUT",
-             description = "badgeIncluded: whether the shared INBOX counts in the caller's unread badge (off by default). notifyNewMail: whether new mail there notifies the caller (off by default; only while the caller uses that mailbox, since a share not in use is not synced). A missing field leaves the toggle as it is.")
+             description = "badgeIncluded: whether the shared INBOX counts in the caller's unread badge (off by default). notifyNewMail: whether new mail there notifies the caller (off by default; only while the caller uses that mailbox, since a share not in use is not synced). searchIncluded: whether the unified search returns this shared mailbox's mail, labelled with its owner (on by default). A missing field leaves the toggle as it is.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "No such delegation of the caller's") })
@@ -665,7 +665,8 @@ public class UserEmailSettingRest {
       return emailDelegationService.updatePreferences(request.getRemoteUser(),
                                                       id,
                                                       preferences.getBadgeIncluded(),
-                                                      preferences.getNotifyNewMail());
+                                                      preferences.getNotifyNewMail(),
+                                                      preferences.getSearchIncluded());
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     }

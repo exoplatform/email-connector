@@ -176,6 +176,8 @@ import org.exoplatform.emailConnector.model.EmailSyncState;
 import org.exoplatform.emailConnector.model.ScheduledSendError;
 import org.exoplatform.emailConnector.model.ScheduledSendStatus;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
+import org.exoplatform.emailConnector.model.SharedMailboxSearchFolders;
+import org.exoplatform.emailConnector.model.SharedMailboxSearchScope;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.model.RestoreOutcome;
@@ -12884,6 +12886,12 @@ public class EmailBoxService {
    * quietest way there is to hand somebody back what they threw away. The remote
    * {@link #searchEmails} agrees, by covering INBOX / SENT / ARCHIVE and no other
    * folder.
+   * <p>
+   * It also reads the user's mirror of the mailboxes shared with them whose search
+   * toggle is on (EXO-90554, {@link EmailDelegationService#getSharedMailboxSearchFolders}):
+   * never the owner's Trash or Spam, and each such hit carries its share and its
+   * owner's name, so it is never offered as the user's own mail. The Favorites filter
+   * leaves them out: a shared mailbox's star is its owner's favorite, not the user's.
    *
    * @param username the mailbox owner
    * @param query free text matched against the subject, the sender and the body
@@ -12922,11 +12930,17 @@ public class EmailBoxService {
       throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
     }
     String term = query.trim().toLowerCase();
-    // Not the mailboxes somebody shared with the user (EXO-90557): a hit says nothing
-    // of whose mail it is, and it would be offered as theirs.
-    List<String> sharedKeys = emailDelegationService.getDelegatedFolderKeys(username);
-    List<Email> cached = sharedKeys.isEmpty() ? emailBoxStorage.getEmailsForSearch(username)
-                                              : emailBoxStorage.getEmailsForSearch(username, sharedKeys);
+    // The user's own mail is read without any folder of a mailbox shared with them
+    // (EXO-90557): those come back only through the scope below, each hit labelled with
+    // its owner (EXO-90554) -- never as the user's own.
+    SharedMailboxSearchFolders shared = emailDelegationService.getSharedMailboxSearchFolders(username);
+    List<String> sharedKeys = shared.sharedKeys();
+    List<Email> cached = new ArrayList<>(sharedKeys.isEmpty() ? emailBoxStorage.getEmailsForSearch(username)
+                                                              : emailBoxStorage.getEmailsForSearch(username, sharedKeys));
+    // Not under the Favorites filter: a shared mailbox's star is its owner's favorite,
+    // never the user's (EXO-90550), so a favorites-only search is the user's own mail.
+    Map<String, SharedMailboxSearchScope> sharedScopes = favoritesOnly ? Map.of() : shared.searchable();
+    cached.addAll(emailBoxStorage.getEmailsForSearchInFolders(username, sharedScopes.keySet()));
     List<Email> matches = cached
                                          .stream()
                                          .filter(email -> !favoritesOnly || email.isStarred())
@@ -12936,17 +12950,34 @@ public class EmailBoxService {
                                          .toList();
     List<EmailSearchResult> results = matches.stream()
                                              .limit(Math.max(limit, 1))
-                                             .map(email -> new EmailSearchResult(email.getMailRemoteId(),
-                                                                                 email.getFolder(),
-                                                                                 email.getSubject(),
-                                                                                 email.getSender(),
-                                                                                 email.getReceivedDate(),
-                                                                                 email.isRead(),
-                                                                                 email.isStarred(),
-                                                                                 true,
-                                                                                 buildExcerpt(email, term)))
+                                             .map(email -> cachedSearchResult(email, term, sharedScopes.get(email.getFolder())))
                                              .toList();
     return new EmailSearchResultPage(results, matches.size(), favoritesOnly);
+  }
+
+  /**
+   * One hit of the search over cached mail: the user's own, or labelled with the shared
+   * mailbox it was read from (EXO-90554), so the card names the owner and the click
+   * opens that mailbox.
+   *
+   * @param email the cached message
+   * @param term the searched text, already lower-cased and trimmed
+   * @param sharedScope whose mailbox it is, null for the user's own
+   * @return the hit
+   */
+  private EmailSearchResult cachedSearchResult(Email email, String term, SharedMailboxSearchScope sharedScope) {
+    return new EmailSearchResult(email.getMailRemoteId(),
+                                 email.getFolder(),
+                                 email.getSubject(),
+                                 email.getSender(),
+                                 email.getReceivedDate(),
+                                 email.isRead(),
+                                 email.isStarred(),
+                                 true,
+                                 buildExcerpt(email, term),
+                                 null,
+                                 sharedScope == null ? null : sharedScope.delegationId(),
+                                 sharedScope == null ? null : sharedScope.ownerFullName());
   }
 
   /**
