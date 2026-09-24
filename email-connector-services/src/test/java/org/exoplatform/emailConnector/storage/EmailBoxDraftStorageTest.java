@@ -141,6 +141,31 @@ public class EmailBoxDraftStorageTest {
   }
 
   /**
+   * EXO-90584 -- the name a draft goes out in is written by its first save and by every
+   * later one -- the edit path writes it column by column, as it writes the text -- and
+   * read back on every read. Over the shipped changelog, so the column itself is the one
+   * 1.0.0-89 adds.
+   */
+  @Test
+  void aDraftsNameIsWrittenByEverySaveAndReadBack() {
+    Email first = draft("draft-named", 1L, "in Anne's name");
+    first.setSendDelegationId(100L);
+    first.setSendMode("ON_BEHALF");
+    assertEquals("ON_BEHALF", emailBoxStorage.saveDraft(first).getSendMode());
+    assertEquals("ON_BEHALF", emailBoxStorage.getDraftByLocalId(USERNAME, "draft-named").getSendMode());
+
+    Email later = draft("draft-named", 2L, "as her now");
+    later.setSendMode("AS");
+    emailBoxStorage.saveDraft(later);
+
+    Email reread = emailBoxStorage.getDraftByLocalId(USERNAME, "draft-named");
+    assertEquals("as her now", reread.getContent().getBody());
+    assertEquals("AS", reread.getSendMode(), "an edit writes the name");
+    assertEquals(100L, reread.getSendDelegationId(), "and leaves the mailbox");
+    assertNull(emailBoxStorage.saveDraft(draft("draft-unnamed", 1L, "mine")).getSendMode(), "a draft that never said");
+  }
+
+  /**
    * The composer autosaving twice, which is what every draft that gets written at
    * all does: the first save creates the row, and every save after it updates the
    * same one.
