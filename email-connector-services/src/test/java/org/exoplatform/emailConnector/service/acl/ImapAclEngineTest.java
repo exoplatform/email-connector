@@ -63,6 +63,7 @@ import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.OwnFolder;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 
 /**
@@ -706,6 +707,37 @@ class ImapAclEngineTest {
     when(root.list("*")).thenReturn(listing);
 
     assertEquals(Map.of(FolderRole.JUNK, "Junk Mail"), engine.findRoleFolders(session()));
+  }
+
+  /**
+   * EXO-90556 -- the owner's own folders for the per-folder list, from the one listing
+   * the roles are read from: each with its separator and the role {@code findRoleFolders}
+   * gives it -- the attribute, else the usual name at the top -- a nested folder named
+   * like a role with none; never a folder under another user's namespace or one that
+   * cannot hold mail.
+   */
+  @Test
+  void theOwnersOwnFoldersAreListedWithTheRolesTheGrantGivesThem() throws MessagingException {
+    Folder otherUsers = mock(Folder.class);
+    when(otherUsers.getFullName()).thenReturn("shared/");
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[] { otherUsers });
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    Folder[] listing = new Folder[] { listed("INBOX", "INBOX"), listed("Corbeille", "Corbeille", "\\Trash"), listed("Spam", "Spam"),
+        listed("Deleted", "Clients/Deleted"), listed("Clients", "Clients"), listed("Trash", "shared/alice@dovecot.local/Trash", "\\Trash"),
+        folder("Junk", "Junk", '/') };
+    when(root.list("*")).thenReturn(listing);
+
+    List<OwnFolder> own = engine.listOwnFolders(session());
+
+    assertEquals(List.of(new OwnFolder("INBOX", "INBOX", "/", null),
+                         new OwnFolder("Corbeille", "Corbeille", "/", FolderRole.TRASH),
+                         new OwnFolder("Spam", "Spam", "/", FolderRole.JUNK),
+                         new OwnFolder("Clients/Deleted", "Deleted", "/", null),
+                         new OwnFolder("Clients", "Clients", "/", null)),
+                 own);
+    verify(root, times(1)).list("*");
   }
 
   /**

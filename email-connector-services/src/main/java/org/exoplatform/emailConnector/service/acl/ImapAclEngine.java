@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service.acl;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -47,6 +48,7 @@ import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.OwnFolder;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 import org.exoplatform.emailConnector.service.EmailFolderService;
 import org.exoplatform.services.log.ExoLogger;
@@ -240,7 +242,8 @@ public class ImapAclEngine implements MailboxAclEngine {
    * @param identifier the grantee as the server names them
    * @param preset READER or EDITOR
    * @param ownerRights the owner's own MYRIGHTS on the folder
-   * @param role the folder's role, null for INBOX
+   * @param role the folder's role, null for INBOX and for a folder of the owner's own
+   *          making, which an Editor holds with {@code e} like INBOX (EXO-90556, P-1)
    * @return the entry as written: the letters, the letters again as native form, and
    *         the preset they read as -- READER when an Editor was capped to {@code lrs}
    * @throws MailboxAclException when nothing is left to grant or the server refuses
@@ -273,7 +276,8 @@ public class ImapAclEngine implements MailboxAclEngine {
    * would be permanent deletion (EXO-90548, PO decision Q-1).
    *
    * @param preset READER or EDITOR
-   * @param role the folder's role, null for INBOX
+   * @param role the folder's role, null for INBOX and for a folder of the owner's own
+   *          making, which an Editor holds with {@code e} like INBOX (EXO-90556, P-1)
    * @return the letters, before the owner's cap
    */
   @Override
@@ -299,10 +303,55 @@ public class ImapAclEngine implements MailboxAclEngine {
    */
   @Override
   public Map<FolderRole, String> findRoleFolders(MailboxAclSession session) {
+    return rolesAmong(ownFolders(session));
+  }
+
+  /**
+   * The owner's own folders, each with its role (EXO-90556): one {@code LIST "*"}, read
+   * as {@link #findRoleFolders} reads it, so the role a folder is shared with is the role
+   * the grant loop gives it. The folder's separator as listed, "/" when none.
+   *
+   * @param session the owner's session
+   * @return the folders in listing order, INBOX included, never null
+   * @throws MailboxAclException when the server refuses
+   */
+  @Override
+  public List<OwnFolder> listOwnFolders(MailboxAclSession session) {
+    List<IMAPFolder> folders = ownFolders(session);
+    Map<String, FolderRole> roleByName = new HashMap<>();
+    rolesAmong(folders).forEach((role, name) -> roleByName.put(name, role));
+    List<OwnFolder> own = new ArrayList<>();
+    try {
+      for (IMAPFolder folder : folders) {
+        // Read off the listing: a folder listed carries its separator, no round trip.
+        char separator = folder.getSeparator();
+        own.add(new OwnFolder(folder.getFullName(),
+                              folder.getName(),
+                              separator == 0 ? "/" : String.valueOf(separator),
+                              roleByName.get(folder.getFullName())));
+      }
+    } catch (MessagingException e) {
+      if (isConnectionFailure(e)) {
+        throw new MailboxAclException(MailboxAclException.UNREACHABLE, e);
+      }
+      throw refused("LIST", "*", e);
+    }
+    return own;
+  }
+
+  /**
+   * The role of each folder among the owner's own: the special-use attribute first, then,
+   * for a role no attribute names, a top-level folder (or one directly under INBOX) whose
+   * name is one of that role's usual names. The first folder found for a role keeps it.
+   *
+   * @param folders the owner's own folders
+   * @return the folder full name of each role found, never null
+   */
+  private Map<FolderRole, String> rolesAmong(List<IMAPFolder> folders) {
     Map<FolderRole, String> byAttribute = new EnumMap<>(FolderRole.class);
     Map<FolderRole, String> byTopName = new EnumMap<>(FolderRole.class);
     Map<FolderRole, String> byInboxChildName = new EnumMap<>(FolderRole.class);
-    for (IMAPFolder folder : ownFolders(session)) {
+    for (IMAPFolder folder : folders) {
       FolderRole attributeRole = roleOfAttributes(folder);
       if (attributeRole != null) {
         byAttribute.putIfAbsent(attributeRole, folder.getFullName());

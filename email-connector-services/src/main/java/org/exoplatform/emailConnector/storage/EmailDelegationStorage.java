@@ -31,6 +31,7 @@ import org.exoplatform.emailConnector.model.DelegationOrigin;
 import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailDelegation;
+import org.exoplatform.emailConnector.model.FolderAccess;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -296,6 +297,35 @@ public class EmailDelegationStorage {
   }
 
   /**
+   * What an owner's per-folder change wrote (EXO-90556), and only that: the role folders
+   * the share now covers, the owner's folder of each role, and the per-folder exceptions
+   * to the preset -- never the INBOX letters or the preset, which a grantee's pass may
+   * have refreshed meanwhile. Only that owner's row, and not a share that ended while the
+   * server was being asked.
+   *
+   * @param ownerId the owner, whose row it must be
+   * @param id the row id
+   * @param grantedRoles the role folders the share covers, as stored
+   * @param ownerRoleFolders the owner's folder per role
+   * @param folderAccess the per-folder exceptions to the preset
+   * @return the row as it now stands, null when it is not that owner's or has ended
+   */
+  public EmailDelegation updateFolderGrants(String ownerId,
+                                            long id,
+                                            String grantedRoles,
+                                            Map<FolderRole, String> ownerRoleFolders,
+                                            Map<FolderRole, FolderAccess> folderAccess) {
+    int updated = emailDelegationDAO.updateFolderGrants(id,
+                                                        ownerId,
+                                                        grantedRoles,
+                                                        roleFoldersToJson(ownerRoleFolders),
+                                                        EmailDelegation.folderAccessOf(folderAccess),
+                                                        new Date(),
+                                                        List.of(DelegationStatus.REVOKED.name(), DelegationStatus.GONE.name()));
+    return updated == 0 ? null : getAsOwner(ownerId, id);
+  }
+
+  /**
    * A grantee's accept, written alone (EXO-90548 review, finding 1): a row-wide write
    * from the read made before the server calls would put back the folder roles an
    * owner's Extend wrote meanwhile. Only a row of that grantee still pending, declined
@@ -379,6 +409,7 @@ public class EmailDelegationStorage {
     entity.setRevokedDate(delegation.getRevokedDate());
     entity.setGrantedRoles(delegation.getGrantedRoles());
     entity.setOwnerRoleFolders(roleFoldersToJson(delegation.getOwnerRoleFolders()));
+    entity.setFolderAccess(EmailDelegation.folderAccessOf(delegation.getFolderAccess()));
     return entity;
   }
 
@@ -412,7 +443,8 @@ public class EmailDelegationStorage {
                                entity.getUpdatedDate(),
                                entity.getGrantedRoles(),
                                roleFoldersFromJson(entity.getOwnerRoleFolders()),
-                               entity.isSearchIncluded());
+                               entity.isSearchIncluded(),
+                               EmailDelegation.folderAccessFrom(entity.getFolderAccess()));
   }
 
   /**

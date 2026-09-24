@@ -19,8 +19,10 @@
 package org.exoplatform.emailConnector.rest;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
@@ -64,25 +66,32 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
+import org.exoplatform.emailConnector.model.DelegationFolder;
+import org.exoplatform.emailConnector.model.DelegationFolders;
+import org.exoplatform.emailConnector.model.DelegationGrantee;
 import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
-import org.exoplatform.emailConnector.model.MailboxAce;
-import org.exoplatform.emailConnector.model.DelegationGrantee;
 import org.exoplatform.emailConnector.model.EmailDelegation;
-import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
+import org.exoplatform.emailConnector.model.FolderAccess;
+import org.exoplatform.emailConnector.model.FolderAccessChange;
+import org.exoplatform.emailConnector.model.FolderAccessResult;
+import org.exoplatform.emailConnector.model.FolderAccessUpdate;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.GrantedDelegations;
+import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
-import org.exoplatform.emailConnector.rest.model.DelegationInviteRequest;
-import org.exoplatform.emailConnector.rest.model.DelegationPreferencesRequest;
-import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.model.ReadReceiptPolicy;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.rest.model.DelegationFoldersRequest;
+import org.exoplatform.emailConnector.rest.model.DelegationInviteRequest;
+import org.exoplatform.emailConnector.rest.model.DelegationPreferencesRequest;
+import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
@@ -357,6 +366,85 @@ public class UserEmailSettingRestTest {
                                                                   .content(asJsonString(new DelegationInviteRequest("dave", DelegationPreset.READER)))
                                                                   .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isUnauthorized());
+  }
+
+  /**
+   * EXO-90556 -- the owner's folder choice at invitation travels to the service, keyed by
+   * role; without one, the invitation is the one it always was.
+   */
+  @Test
+  void inviteCarriesTheOwnersFolderChoice() throws Exception {
+    EmailDelegation delegation = new EmailDelegation();
+    delegation.setId(9L);
+    Map<FolderRole, FolderAccess> choice = Map.of(FolderRole.TRASH, FolderAccess.NONE);
+    when(emailDelegationService.invite(SIMPLE_USER, "bob", DelegationPreset.EDITOR, choice)).thenReturn(delegation);
+
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations").with(testSimpleUser())
+                                                                  .content("{\"granteeUsername\":\"bob\",\"preset\":\"EDITOR\",\"folderAccess\":{\"TRASH\":\"NONE\"}}")
+                                                                  .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.id").value(9));
+    verify(emailDelegationService).invite(SIMPLE_USER, "bob", DelegationPreset.EDITOR, choice);
+    verify(emailDelegationService, never()).invite(anyString(), anyString(), any());
+  }
+
+  /**
+   * EXO-90556 -- the owner's folder lists and the per-folder save go to the service under
+   * the caller's name, the save's per-folder outcomes answered 200; the refusals map as
+   * the other owner verbs: 404 for a row that is not the caller's, 400 with the code, 502
+   * when the server would not.
+   */
+  @Test
+  void theOwnersFolderListsAndSave() throws Exception {
+    DelegationFolder sent = new DelegationFolder("Sent", "Sent", null, 0, FolderRole.SENT, FolderAccess.READER, null, true, true);
+    when(emailDelegationService.getOwnFolders(SIMPLE_USER)).thenReturn(new DelegationFolders(List.of(sent), true));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/folders").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.folders[0].folder").value("Sent"))
+           .andExpect(jsonPath("$.truncated").value(true));
+
+    when(emailDelegationService.getFolderAccess(SIMPLE_USER, 5L)).thenReturn(new DelegationFolders(List.of(sent), false));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/5/folders").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.folders[0].access").value("READER"))
+           .andExpect(jsonPath("$.folders[0].role").value("SENT"));
+    when(emailDelegationService.getFolderAccess(SIMPLE_USER, 6L)).thenThrow(new ObjectNotFoundException(EmailDelegationService.NOT_FOUND_MESSAGE));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/6/folders").with(testSimpleUser())).andExpect(status().isNotFound());
+
+    EmailDelegation delegation = new EmailDelegation();
+    delegation.setId(5L);
+    List<FolderAccessChange> changes = List.of(new FolderAccessChange("Sent", FolderAccess.NONE), new FolderAccessChange("Projects", FolderAccess.EDITOR));
+    when(emailDelegationService.setFolderAccess(SIMPLE_USER, 5L, changes))
+                                                                       .thenReturn(new FolderAccessUpdate(delegation,
+                                                                                                          List.of(new FolderAccessResult("Sent",
+                                                                                                                                         FolderAccess.NONE,
+                                                                                                                                         FolderAccessResult.Outcome.DONE),
+                                                                                                                  new FolderAccessResult("Projects",
+                                                                                                                                         FolderAccess.EDITOR,
+                                                                                                                                         FolderAccessResult.Outcome.REFUSED))));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/5/folders").with(testSimpleUser())
+                                                                           .content(asJsonString(new DelegationFoldersRequest(changes)))
+                                                                           .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.delegation.id").value(5))
+           .andExpect(jsonPath("$.results[1].outcome").value("REFUSED"));
+    verify(emailDelegationService).setFolderAccess(SIMPLE_USER, 5L, changes);
+
+    when(emailDelegationService.setFolderAccess(eq(SIMPLE_USER), eq(7L), any()))
+                                                                              .thenThrow(new IllegalArgumentException(EmailDelegationService.FOLDER_UNKNOWN_MESSAGE));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/7/folders").with(testSimpleUser())
+                                                                           .content(asJsonString(new DelegationFoldersRequest(changes)))
+                                                                           .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(EmailDelegationService.FOLDER_UNKNOWN_MESSAGE));
+    when(emailDelegationService.setFolderAccess(eq(SIMPLE_USER), eq(8L), any()))
+                                                                              .thenThrow(new MailboxAclException(MailboxAclException.UNREACHABLE,
+                                                                                                                 "down"));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/8/folders").with(testSimpleUser())
+                                                                           .content(asJsonString(new DelegationFoldersRequest(changes)))
+                                                                           .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadGateway())
+           .andExpect(status().reason(MailboxAclException.UNREACHABLE));
   }
 
   /**

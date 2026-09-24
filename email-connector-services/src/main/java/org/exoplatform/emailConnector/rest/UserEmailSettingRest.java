@@ -43,14 +43,17 @@ import org.springframework.web.server.ResponseStatusException;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
+import org.exoplatform.emailConnector.model.DelegationFolders;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
+import org.exoplatform.emailConnector.model.FolderAccessUpdate;
 import org.exoplatform.emailConnector.model.GrantedDelegations;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.rest.model.DelegationFoldersRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationInviteRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationPreferencesRequest;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
@@ -419,16 +422,22 @@ public class UserEmailSettingRest {
   @Secured("users")
   @Operation(summary = "Shares the caller's own mailbox with another eXo user",
              method = "POST",
-             description = "Writes an ACL on the caller's INBOX, on the caller's own session, for the identifier the grantee connects to the same connector with (the grantee must be connected there; a mail login is never accepted). The preset is READER (lrs) or EDITOR (lrswit), intersected with the caller's own rights; a, x, e, p and k are never granted. The grant is written now: declining later does not remove it, only the owner does. The grantee is then invited (PENDING).")
+             description = "Writes an ACL on the caller's INBOX, on the caller's own session, for the identifier the grantee connects to the same connector with (the grantee must be connected there; a mail login is never accepted), and on a server that grants per folder on the caller's Sent, Archive, Trash and Spam too. The preset is READER (lrs) or EDITOR (lrswit, plus e where mail leaves and never on Trash), intersected with the caller's own rights; a, x, p and k are never granted. The optional folderAccess ({SENT|ARCHIVE|TRASH|JUNK: READER|EDITOR|NONE}) sets one of those folders apart before anything is shared: NONE is never shared. The grant is written now: declining later does not remove it, only the owner does. The grantee is then invited (PENDING).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Self, unknown or unconnected grantee, invalid preset, or already shared (emailConnector.delegation.*)"),
+      @ApiResponse(responseCode = "400", description = "Self, unknown or unconnected grantee, invalid preset or folder choice, a folder choice on a server that grants a whole mailbox at once, or already shared (emailConnector.delegation.*)"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
       @ApiResponse(responseCode = "502", description = "The mail server does not support ACLs, nothing was left to grant, or SETACL was refused (emailConnector.delegation.*)") })
   public EmailDelegation inviteDelegation(HttpServletRequest request,
                                           @RequestBody
                                           DelegationInviteRequest invite) {
     try {
-      return emailDelegationService.invite(request.getRemoteUser(), invite.getGranteeUsername(), invite.getPreset());
+      if (invite.getFolderAccess() == null || invite.getFolderAccess().isEmpty()) {
+        return emailDelegationService.invite(request.getRemoteUser(), invite.getGranteeUsername(), invite.getPreset());
+      }
+      return emailDelegationService.invite(request.getRemoteUser(),
+                                           invite.getGranteeUsername(),
+                                           invite.getPreset(),
+                                           invite.getFolderAccess());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
@@ -533,6 +542,106 @@ public class UserEmailSettingRest {
                                           long id) {
     try {
       return emailDelegationService.extend(request.getRemoteUser(), id);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (MailboxAclException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getCode());
+    }
+  }
+
+  /**
+   * The caller's own folders that can be shared one by one, for the invitation's folder
+   * choice.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @return the folders, with no access
+   */
+  @GetMapping("/delegations/folders")
+  @Secured("users")
+  @Operation(summary = "Lists the caller's own folders that can be shared one by one",
+             method = "GET",
+             description = "One LIST on the caller's own session: INBOX first (the share itself, not editable), then Sent, Archive, Trash and Spam, then the caller's other folders as a tree, never Drafts, at most exo.email.delegation.maxFolders beside INBOX (truncated says when more exist). No ACL is read. Only on a server that grants per folder.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "A server that grants a whole mailbox at once (emailConnector.delegation.perFolderUnsupported)"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "502", description = "The mail server does not support ACLs or could not be asked (emailConnector.delegation.*)") })
+  public DelegationFolders getOwnFolders(HttpServletRequest request) {
+    try {
+      return emailDelegationService.getOwnFolders(request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (MailboxAclException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getCode());
+    }
+  }
+
+  /**
+   * The caller's folders with the access one grantee holds in each, as the mail server
+   * says it now.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param id the delegation id, resolved with the caller as owner
+   * @return the folders with their access
+   */
+  @GetMapping("/delegations/{id}/folders")
+  @Secured("users")
+  @Operation(summary = "Lists the caller's folders with the access a grantee holds in each",
+             method = "GET",
+             description = "The folders of GET /delegations/folders, each with the grantee's access read with GETACL on that folder, on the caller's own session: READER, EDITOR or NONE; null with the raw letters for an entry that reads as no preset (written in another mail application), null with readable false when the ACL could not be read. Nothing is written. Owner only: a delegation that is not the caller's own is answered 404.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "A share no longer on the server or of another mailbox, or a server that grants a whole mailbox at once (emailConnector.delegation.*)"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "404", description = "No such delegation of the caller's mailbox"),
+      @ApiResponse(responseCode = "502", description = "The mail server does not support ACLs or could not be asked (emailConnector.delegation.*)") })
+  public DelegationFolders getDelegationFolders(HttpServletRequest request,
+                                                @Parameter(description = "The delegation id", required = true)
+                                                @PathVariable("id")
+                                                long id) {
+    try {
+      return emailDelegationService.getFolderAccess(request.getRemoteUser(), id);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (MailboxAclException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getCode());
+    }
+  }
+
+  /**
+   * Sets the access one grantee holds in some of the caller's folders.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param id the delegation id, resolved with the caller as owner
+   * @param body the folders and the access for each
+   * @return the delegation as it now stands, and each folder's outcome
+   */
+  @PutMapping("/delegations/{id}/folders")
+  @Secured("users")
+  @Operation(summary = "Sets the access a grantee holds in some of the caller's folders",
+             method = "PUT",
+             description = "For each folder named (as GET /delegations/{id}/folders names it), READER or EDITOR writes the preset's letters for that folder's role -- read on the caller's session, never taken from the request: Editor holds e where mail leaves, never on Trash -- and NONE removes the grantee's entry. Every name is checked against the caller's own shareable folders before anything is written; INBOX and Drafts are refused. Each folder is its own write, answered in results: DONE, REMOVED (a narrower access refused, the entry removed instead), REFUSED, NOTHING_TO_GRANT, NOT_NARROWED or NOT_REACHED; one refused undoes nothing. A folder no longer shared leaves the grantee's screens at once. The grantee is not notified. Owner only: a delegation that is not the caller's own is answered 404.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled, folder by folder"),
+      @ApiResponse(responseCode = "400", description = "An invalid request, a folder that is not the caller's or cannot be shared one by one, a share no longer on the server or of another mailbox, or a server that grants a whole mailbox at once (emailConnector.delegation.*)"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "404", description = "No such delegation of the caller's mailbox"),
+      @ApiResponse(responseCode = "502", description = "The mail server does not support ACLs, could not be asked, or no longer records the share (emailConnector.delegation.*)") })
+  public FolderAccessUpdate setDelegationFolders(HttpServletRequest request,
+                                                 @Parameter(description = "The delegation id", required = true)
+                                                 @PathVariable("id")
+                                                 long id,
+                                                 @RequestBody
+                                                 DelegationFoldersRequest body) {
+    try {
+      return emailDelegationService.setFolderAccess(request.getRemoteUser(), id, body == null ? null : body.getFolders());
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {

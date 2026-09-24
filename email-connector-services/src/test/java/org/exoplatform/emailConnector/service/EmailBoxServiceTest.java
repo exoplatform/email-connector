@@ -10837,6 +10837,8 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage, never()).getEmails(eq(TEST_USER), eq("CUSTOM:5"));
     verify(emailBoxStorage, never()).deleteEmailsByIds(any());
     assertEquals("Invoices", view.getDisplayName());
+    // EXO-90556: a folder shared one by one follows its new name for its delegates.
+    verify(emailDelegationService).ownerFolderChanged(TEST_USER, "Factures", "Invoices");
   }
 
   /**
@@ -10952,6 +10954,7 @@ public class EmailBoxServiceTest {
                  assertThrows(IllegalArgumentException.class, () -> emailBoxService.renameCustomFolder(TEST_USER, 5L, "Invoices"))
                                                                                                                                    .getMessage());
     verify(emailFolderStorage, never()).renameFolder(anyString(), anyLong(), anyString(), anyString());
+    verify(emailDelegationService, never()).ownerFolderChanged(anyString(), anyString(), any());
   }
 
   /**
@@ -11010,6 +11013,8 @@ public class EmailBoxServiceTest {
     verify(remote).delete(false);
     verify(emailBoxStorage).deleteEmailsByIds(List.of(77L));
     verify(emailFolderStorage).deleteFolder(TEST_USER, 5L);
+    // EXO-90556: the delegates' copies go with it.
+    verify(emailDelegationService).ownerFolderChanged(TEST_USER, "Factures", null);
   }
 
   /**

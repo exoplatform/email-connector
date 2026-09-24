@@ -69,8 +69,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :disabled="disabled"
           :can-extend="canExtend"
           :extend-label="extendLabel"
+          :can-choose-folders="actionable && perFolder"
           @change-preset="$emit('change-preset', $event)"
           @extend="$emit('extend')"
+          @folders="$emit('folders')"
           @revoke="$emit('revoke')" />
       </div>
       <div class="caption text-sub-title text-truncate">
@@ -80,6 +82,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <!-- What the grant covers beside the Inbox (EXO-90548). -->
       <div v-if="inboxOnlyShare" class="caption text-sub-title">{{ $t('UserSettings.emailConnector.sharing.inboxOnly') }}</div>
       <div v-if="notShared" class="caption warning--text text-wrap">{{ notShared }}</div>
+      <!-- The owner's own choices on the role folders (EXO-90556); the owner's other
+           folders are listed, read live, in "Folders and access". -->
+      <div v-if="folderExceptions" class="caption text-sub-title text-wrap">{{ folderExceptions }}</div>
       <!-- Where the access was written: a small marker, not the chip -- a share made
            in the mail server's own interface is the server's, and says so. -->
       <div v-if="discovered" class="caption text-sub-title text-wrap">
@@ -97,6 +102,9 @@ import EmailConnectorUserSettingGranteeRowMenu from './EmailConnectorUserSetting
 // The presets the owner can set from here.
 const PRESETS = ['READER', 'EDITOR'];
 
+// The role folders a grant covers beside the Inbox, in the order they are said.
+const ROLES = ['SENT', 'ARCHIVE', 'TRASH', 'JUNK'];
+
 export default {
   components: {
     'email-connector-user-setting-grantee-row-menu': EmailConnectorUserSettingGranteeRowMenu,
@@ -105,6 +113,8 @@ export default {
     // One entry of the owner's ACL: {identifier, granteeId, delegation, preset, rights, nativeRights, affordances}.
     grantee: { type: Object, required: true },
     disabled: { type: Boolean, default: false },
+    // Whether the owner's mail server shares folder by folder (EXO-90556).
+    perFolder: { type: Boolean, default: false },
   },
   computed: {
     /**
@@ -228,6 +238,23 @@ export default {
      *
      * @returns {String} the sentence, or empty
      */
+    /**
+     * The owner's per-folder exceptions to the preset on the role folders, said on the
+     * row -- "Trash: Reader · Spam: Not shared" -- or nothing (EXO-90556).
+     *
+     * @returns {String} the sentence, or empty
+     */
+    folderExceptions() {
+      const exceptions = this.actionable ? this.grantee.delegation.folderAccess || {} : {};
+      return ROLES.filter(role => exceptions[role])
+        .map(role => this.$t('UserSettings.emailConnector.sharing.folders.exception', {
+          0: this.$t(`UserSettings.emailConnector.sharing.role.${role}`),
+          1: exceptions[role] === 'NONE'
+            ? this.$t('UserSettings.emailConnector.sharing.folders.none')
+            : this.$t(`UserSettings.emailConnector.sharing.preset.${exceptions[role]}`),
+        }))
+        .join(' · ');
+    },
     notShared() {
       const roles = this.actionable ? this.grantee.delegation.rolesNotShared || [] : [];
       return roles.length

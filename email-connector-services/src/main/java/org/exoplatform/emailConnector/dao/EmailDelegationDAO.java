@@ -270,6 +270,33 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   List<String> ended);
 
   /**
+   * An owner's per-folder change (EXO-90556), and nothing else of the row: the role
+   * folders the share covers, the owner's folder of each, the per-folder exceptions, and
+   * the update stamp -- under the same guards as the other owner writes, that owner's
+   * row and not a share that ended meanwhile.
+   *
+   * @param id the row id
+   * @param ownerId the owner, whose row it must be
+   * @param grantedRoles the role folders the share covers, as stored
+   * @param ownerRoleFolders the owner's folder per role, as stored
+   * @param folderAccess the per-folder exceptions, as stored
+   * @param updated the update stamp
+   * @param ended the statuses of a share no longer on the server
+   * @return the rows updated: one, or zero when the row is not that owner's or ended
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.grantedRoles = :grantedRoles, d.ownerRoleFolders = :ownerRoleFolders, d.folderAccess = :folderAccess, d.updatedDate = :updated WHERE d.id = :id AND d.ownerId = :ownerId AND d.status NOT IN :ended")
+  int updateFolderGrants(@Param("id")
+  long id, @Param("ownerId")
+  String ownerId, @Param("grantedRoles")
+  String grantedRoles, @Param("ownerRoleFolders")
+  String ownerRoleFolders, @Param("folderAccess")
+  String folderAccess, @Param("updated")
+  Date updated, @Param("ended")
+  List<String> ended);
+
+  /**
    * A grantee's accept, and nothing else of the row (EXO-90548 review, finding 1): the
    * status, where the shared tree is, the grantee's own letters, the server's words only
    * when none were recorded, the preset only when one is given, and the stamps. The

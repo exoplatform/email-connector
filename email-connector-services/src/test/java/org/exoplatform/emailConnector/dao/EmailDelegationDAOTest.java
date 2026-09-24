@@ -177,6 +177,53 @@ public class EmailDelegationDAOTest {
   }
 
   /**
+   * EXO-90556 -- the owner's per-folder write, executed: the role folders, the owner's
+   * folder of each and the exceptions are written, and nothing else of the row -- the
+   * INBOX letters a grantee's pass refreshed meanwhile stay; only that owner's row, and
+   * never a share that ended while the server was being asked.
+   */
+  @Test
+  void theFolderGrantsWriteTouchesTheOwnersFolderColumnsOnly() {
+    Long id = persist(GRANTEE, OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    entityManager.clear();
+    EmailDelegationEntity refreshed = emailDelegationDAO.findById(id).orElseThrow();
+    refreshed.setRights("lr");
+    refreshed.setGrantedRoles("INBOX,SENT,TRASH");
+    emailDelegationDAO.saveAndFlush(refreshed);
+    entityManager.clear();
+    List<String> ended = List.of("REVOKED", "GONE");
+
+    assertEquals(1,
+                 emailDelegationDAO.updateFolderGrants(id,
+                                                       OWNER,
+                                                       "INBOX,SENT",
+                                                       "{\"TRASH\":\"Trash\"}",
+                                                       "TRASH=NONE,JUNK=READER",
+                                                       new Date(6_000L),
+                                                       ended));
+    assertEquals(0,
+                 emailDelegationDAO.updateFolderGrants(id, GRANTEE, "INBOX", null, null, new Date(7_000L), ended),
+                 "the grantee is not the owner");
+    entityManager.clear();
+
+    EmailDelegationEntity read = emailDelegationDAO.findById(id).orElseThrow();
+    assertEquals("INBOX,SENT", read.getGrantedRoles());
+    assertEquals("{\"TRASH\":\"Trash\"}", read.getOwnerRoleFolders());
+    assertEquals("TRASH=NONE,JUNK=READER", read.getFolderAccess());
+    assertEquals("lr", read.getRights(), "the INBOX letters are not written");
+    assertEquals("ACCEPTED", read.getStatus());
+    assertEquals(6_000L, read.getUpdatedDate().getTime());
+
+    read.setStatus("REVOKED");
+    emailDelegationDAO.saveAndFlush(read);
+    entityManager.clear();
+    assertEquals(0,
+                 emailDelegationDAO.updateFolderGrants(id, OWNER, "INBOX", null, null, new Date(8_000L), ended),
+                 "a share revoked meanwhile is not written");
+    assertEquals("TRASH=NONE,JUNK=READER", emailDelegationDAO.findById(id).orElseThrow().getFolderAccess());
+  }
+
+  /**
    * The sync tier, executed: only ACCEPTED rows of that grantee whose activity stamp is
    * at or after the threshold. A row never opened (null stamp) is never active, which is
    * what makes an accepted-and-forgotten share cost nothing; a PENDING row is never

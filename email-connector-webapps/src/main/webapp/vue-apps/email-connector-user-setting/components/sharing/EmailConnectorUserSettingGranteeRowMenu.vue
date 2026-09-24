@@ -17,7 +17,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- The owner's actions on one person's access: change it to a preset (the current
        one checked; "Set to ..." when the letters read as none), share the rest of the
-       mailbox with an Inbox-only share, or remove it. -->
+       mailbox with an Inbox-only share, choose folder by folder, or remove it. -->
   <v-menu offset-y left>
     <template #activator="{ on, attrs }">
       <v-btn
@@ -47,6 +47,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-list-item-title>{{ extendLabel }}</v-list-item-title>
         </v-list-item>
       </template>
+      <!-- Folder by folder (EXO-90556): only on a mail server that shares that way. -->
+      <template v-if="canChooseFolders">
+        <v-divider class="my-1" />
+        <v-list-item @click="$emit('folders')">
+          <v-list-item-title>{{ $t('UserSettings.emailConnector.sharing.folders.menu') }}</v-list-item-title>
+        </v-list-item>
+      </template>
       <v-divider class="my-1" />
       <v-list-item @click="$emit('revoke')">
         <v-list-item-title class="error--text">{{ $t('UserSettings.emailConnector.sharing.revoke') }}</v-list-item-title>
@@ -68,6 +75,8 @@ export default {
     canExtend: { type: Boolean, default: false },
     // What an Extend would add, said: "Share Spam too".
     extendLabel: { type: String, default: '' },
+    // Whether the owner's mail server shares folder by folder (EXO-90556).
+    canChooseFolders: { type: Boolean, default: false },
   },
   data: () => ({ PRESETS }),
   methods: {
