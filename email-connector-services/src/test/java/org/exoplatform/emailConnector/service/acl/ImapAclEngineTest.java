@@ -743,6 +743,22 @@ class ImapAclEngineTest {
   }
 
   /**
+   * EXO-90556 -- INBOX is never a role folder, whatever attribute a server lists on it:
+   * a role's grant or removal never lands on the share itself.
+   */
+  @Test
+  void inboxIsNeverTakenForARoleFolder() throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    Folder[] listing = new Folder[] { listed("INBOX", "INBOX", "\\Trash"), listed("Deleted Items", "Deleted Items") };
+    when(root.list("*")).thenReturn(listing);
+
+    assertEquals(Map.of(FolderRole.TRASH, "Deleted Items"), engine.findRoleFolders(session()));
+  }
+
+  /**
    * EXO-90556 -- every folder the server calls Drafts is Drafts in the owner's list, not
    * only the one the role goes to, so none is ever offered to share.
    */
