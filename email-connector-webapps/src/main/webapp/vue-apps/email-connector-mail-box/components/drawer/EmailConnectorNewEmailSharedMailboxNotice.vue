@@ -189,7 +189,7 @@ export default {
      * @returns {String} the label
      */
     identityLabel(mode) {
-      return this.$t(`emailConnector.mailBox.sharedMailbox.composer.from.${mode || 'NONE'}`, { 0: this.entry.ownerFullName });
+      return this.$t(`emailConnector.mailBox.sharedMailbox.composer.from.${mode || 'NONE'}`, { 0: this.entry.ownerFullName || this.entry.ownerMailbox });
     },
   },
 };
