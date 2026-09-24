@@ -19,6 +19,9 @@ package org.exoplatform.emailConnector.provider;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -103,18 +106,24 @@ public class EmailPersonalCredentialsSourceTest {
     userEmailSetting.setEmailConnectorId("1");
     userEmailSetting.setEmailAddress("user@example.com");
     userEmailSetting.setEmailPassword("secret");
-    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.getStoredUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    // Answered too, so that a source going back to the decorated read fails on the
+    // verification below rather than on a null.
+    lenient().when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
 
     RawCredentials credentials = emailPersonalCredentialsSource.getCredentials(TEST_USER);
 
     assertEquals("user@example.com", credentials.getUsername());
     assertEquals("secret", credentials.getSecret());
+    // EXO-89997: the decorated read loads the connector from the database, which
+    // credentials never need.
+    verify(userEmailSettingService, never()).getUserEmailSetting(anyString());
   }
 
   @Test
   public void testGetCredentialsWhenNotConfigured() {
     UserEmailSetting userEmailSetting = new UserEmailSetting();
-    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.getStoredUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
 
     assertNull(emailPersonalCredentialsSource.getCredentials(TEST_USER));
   }

@@ -87,9 +87,14 @@ public class EmailPersonalCredentialsSource implements PersonalCredentialsSource
     return CONNECTOR_KIND;
   }
 
+  /**
+   * The mailbox's own address and password, read from the stored setting alone - a
+   * {@code SettingService} cache read, no database read on a hit (see
+   * {@link UserEmailSettingService#getStoredUserEmailSetting(String)}).
+   */
   @Override
   public RawCredentials getCredentials(String username) {
-    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    UserEmailSetting userEmailSetting = userEmailSettingService.getStoredUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null) {
       return null;
     }

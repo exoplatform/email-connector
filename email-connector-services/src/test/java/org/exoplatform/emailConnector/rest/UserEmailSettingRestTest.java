@@ -139,12 +139,45 @@ public class UserEmailSettingRestTest {
 
   @Test
   void getUserEmailSetting() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(SIMPLE_USER)).thenReturn(new UserEmailSetting());
     ResultActions response = mockMvc.perform(get(USER_EMAIL_SETTING_PATH).with(testSimpleUser()));
     response.andExpect(status().isOk());
   }
 
+  /**
+   * EXO-90610. The settings read never carries the password; it says whether one is
+   * stored.
+   */
+  @Test
+  void theSettingsReadNeverSendsThePasswordBack() throws Exception {
+    UserEmailSetting stored = userEmailSetting();
+    stored.setPasswordStored(true);
+    when(userEmailSettingService.getUserEmailSetting(SIMPLE_USER)).thenReturn(stored);
+
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH).with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.emailPassword").doesNotExist())
+           .andExpect(jsonPath("$.passwordStored").value(true))
+           .andExpect(jsonPath("$.emailAddress").value(stored.getEmailAddress()));
+  }
+
+  /** EXO-90610. A connection refused for lack of a password answers 400 with its code. */
+  @Test
+  void aConnectionWithNoApplicablePasswordAnswers400() throws Exception {
+    doThrow(new IllegalArgumentException(UserEmailSettingService.PASSWORD_REQUIRED)).when(userEmailSettingService)
+                                                                                    .connectUserEmailSetting(any(),
+                                                                                                             eq(SIMPLE_USER),
+                                                                                                             eq(false));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "?broadcast=false").with(testSimpleUser())
+                                                                     .content(asJsonString(userEmailSetting()))
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest());
+  }
+
   @Test
   void getUserEmailConnectors() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(SIMPLE_USER)).thenReturn(new UserEmailSetting());
     ResultActions response = mockMvc.perform(get(USER_EMAIL_SETTING_PATH).with(testSimpleUser()));
     response.andExpect(status().isOk());
   }

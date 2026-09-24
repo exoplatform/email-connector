@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.model;
 import org.exoplatform.emailConnector.entity.UserEmailSettingEntity;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 import lombok.Data;
 import lombok.EqualsAndHashCode;
@@ -55,6 +56,30 @@ public class UserEmailSetting extends UserEmailSettingEntity {
    */
   @JsonIgnore
   private transient boolean passwordUnreadable;
+
+  /**
+   * Set at read time when a password is stored and readable, so that a screen can
+   * offer to keep it without ever receiving it: the password itself is not sent back
+   * (EXO-90610). Serialised outbound only - a client cannot claim it - and never
+   * stored.
+   */
+  @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+  private boolean passwordStored;
+
+  /**
+   * The decoded password, accepted in a request body and never written in a response
+   * (EXO-90610): whatever endpoint returns this model, the password stays on the
+   * server. Declared here and not on {@link UserEmailSettingEntity#getEmailPassword()},
+   * because the entity is what the settings storage serialises - the same annotation
+   * there would drop the password from every stored setting.
+   *
+   * @return the decoded password, for the server's own use
+   */
+  @Override
+  @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+  public String getEmailPassword() {
+    return super.getEmailPassword();
+  }
 
   public UserEmailSetting(String emailConnectorId,
                           String emailAddress,

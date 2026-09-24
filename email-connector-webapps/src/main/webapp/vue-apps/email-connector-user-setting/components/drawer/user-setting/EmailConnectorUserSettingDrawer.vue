@@ -61,16 +61,20 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-list-item class="pa-0" dense>
           <v-list-item-content class="py-0">
             <v-label for="password">
-              {{ $t('UserSettings.emailConnector.userSetting.drawer.password') }}
+              {{ passwordKept
+                ? $t('UserSettings.emailConnector.userSetting.drawer.passwordKept')
+                : $t('UserSettings.emailConnector.userSetting.drawer.password') }}
             </v-label>
             <v-text-field
               id="password"
               v-model="emailSetting.emailPassword"
-              :placeholder="$t('UserSettings.emailConnector.userSetting.drawer.placeHolder.password')"
+              :placeholder="passwordKept
+                ? $t('UserSettings.emailConnector.userSetting.drawer.placeHolder.passwordKept')
+                : $t('UserSettings.emailConnector.userSetting.drawer.placeHolder.password')"
               class="pt-3"
               autocomplete="current-password"
               :type="showPassword ? 'text' : 'password'"
-              required="required"
+              :required="!passwordKept"
               outlined
               dense>
               <template #append>
@@ -147,7 +151,20 @@ export default {
   }),
   computed: {
     disabled() {
-      return !this.emailSetting.emailConnectorId || !this.emailSetting.emailAddress || !this.emailSetting.emailPassword;
+      return !this.emailSetting.emailConnectorId || !this.emailSetting.emailAddress
+        || (!this.emailSetting.emailPassword && !this.passwordKept);
+    },
+    /**
+     * Whether a blank password means "keep the stored one": the settings read never
+     * sends the password back (EXO-90610), only whether one is stored, and the server
+     * keeps it for the same connector and the same address only.
+     *
+     * @returns {boolean} true when the field may be left empty
+     */
+    passwordKept() {
+      return !!this.userEmailSetting?.passwordStored
+        && String(this.emailSetting.emailConnectorId) === String(this.userEmailSetting.emailConnectorId)
+        && (this.emailSetting.emailAddress || '').toLowerCase() === (this.userEmailSetting.emailAddress || '').toLowerCase();
     },
     emailAddressModified() {
       return this.userEmailSetting.emailConnectorId !== null && this.userEmailSetting.emailAddress !== this.emailSetting?.emailAddress;
@@ -159,7 +176,7 @@ export default {
   methods: {
     open(emailConnector) {
       this.emailSetting.emailAddress = this.userEmailSetting.emailAddress;
-      this.emailSetting.emailPassword = this.userEmailSetting.emailPassword;
+      this.emailSetting.emailPassword = '';
       this.emailSetting.emailConnectorId = emailConnector?.id || this.userEmailSetting.emailConnectorId;
       this.drawerTitle =  this.$t('UserSettings.emailConnector.userSetting.drawer.title', {
         0: emailConnector?.name || this.userEmailSetting.emailConnectorName,

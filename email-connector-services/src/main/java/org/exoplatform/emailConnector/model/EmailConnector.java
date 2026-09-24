@@ -21,6 +21,7 @@ import java.util.Map;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import lombok.ToString;
 
 @Data
 @NoArgsConstructor
@@ -84,7 +85,12 @@ public class EmailConnector {
    * reads back what it may see through the dedicated provider-config endpoint.
    * <p>
    * Declared LAST for the same reason as the two fields above.
+   * <p>
+   * Left out of {@code toString()}: the map holds the secret in the clear, and the
+   * generated one would print it into any log line or exception message the
+   * object reaches (EXO-89650).
    */
+  @ToString.Exclude
   private Map<String, String> providerConfig;
 
   public EmailConnector(Long id,
