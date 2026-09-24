@@ -27,6 +27,7 @@ import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.OwnFolder;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 
 /**
@@ -208,6 +209,35 @@ public interface MailboxAclEngine {
    */
   default List<OwnFolder> listOwnFolders(MailboxAclSession session) {
     return List.of();
+  }
+
+  /**
+   * Writes on the server the owner's consent to a delegate writing mail in her name
+   * (EXO-90582), where the server has a word for it -- BlueMind's {@code SendOnBehalf} /
+   * {@code SendAs} verbs (see {@code package-info}), overridden by that engine. Called
+   * only when the probe answers {@code sendModeOnServer}. The default does nothing: RFC
+   * 4314 has no right that says "send", so on an IMAP server eXo alone holds and
+   * enforces the consent.
+   *
+   * @param session the owner's session
+   * @param identifier the delegate as the server names them
+   * @param mode {@link SendMode#ON_BEHALF} or {@link SendMode#AS}
+   * @throws MailboxAclException when the server refuses or cannot be asked
+   */
+  default void grantSendMode(MailboxAclSession session, String identifier, SendMode mode) {
+    // No word for it in an ACL: the consent is eXo's alone on this engine.
+  }
+
+  /**
+   * Takes the owner's consent to a delegate writing in her name off the server, where
+   * {@link #grantSendMode} wrote it. The default does nothing, for the same reason.
+   *
+   * @param session the owner's session
+   * @param identifier the delegate as the server names them
+   * @throws MailboxAclException when the server refuses or cannot be asked
+   */
+  default void revokeSendMode(MailboxAclSession session, String identifier) {
+    // No word for it in an ACL: the consent is eXo's alone on this engine.
   }
 
   /**
