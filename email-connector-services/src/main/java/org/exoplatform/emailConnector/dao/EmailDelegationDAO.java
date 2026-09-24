@@ -346,6 +346,33 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   List<String> live);
 
   /**
+   * Records that the owner's mail server refused a mail the grantee sent in the owner's
+   * name (EXO-90583), and nothing else of the row: the refusal's date and the update
+   * stamp. Only that grantee's row, only a share in use or on offer, and only while it
+   * still carries the consent the mail was sent under ({@code sendModeDate}): a consent
+   * withdrawn or set again since is left as the owner made it.
+   *
+   * @param id the row id
+   * @param granteeId the grantee, whose row it must be
+   * @param consentDate when the consent the mail was sent under was set
+   * @param refused when the server refused it
+   * @param live the statuses a consent may live on
+   * @return the rows updated: one, or zero when the row is not that grantee's, not live,
+   *         or no longer carries that consent
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.sendRefusedDate = :refused, d.updatedDate = :refused"
+      + " WHERE d.id = :id AND d.granteeId = :granteeId AND d.status IN :live"
+      + " AND d.sendMode IS NOT NULL AND d.sendModeDate = :consentDate")
+  int markSendRefused(@Param("id")
+  long id, @Param("granteeId")
+  String granteeId, @Param("consentDate")
+  Date consentDate, @Param("refused")
+  Date refused, @Param("live")
+  List<String> live);
+
+  /**
    * A grantee's accept, and nothing else of the row (EXO-90548 review, finding 1): the
    * status, where the shared tree is, the grantee's own letters, the server's words only
    * when none were recorded, the preset only when one is given, and the stamps. The

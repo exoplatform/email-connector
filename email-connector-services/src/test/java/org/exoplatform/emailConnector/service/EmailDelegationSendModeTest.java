@@ -53,6 +53,8 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
+import org.exoplatform.emailConnector.exception.SendModeMissingException;
+import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.model.DelegationGrantee;
 import org.exoplatform.emailConnector.model.DelegationOrigin;
 import org.exoplatform.emailConnector.model.DelegationPreset;
@@ -66,6 +68,7 @@ import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.SendIdentity;
 import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -602,6 +605,105 @@ class EmailDelegationSendModeTest {
     System.setProperty(SendMode.MODES_PROPERTY_PREFIX + CONNECTOR_ID, "none");
     DelegationGrantee undeclared = grantee(service.getGrantedDelegations(OWNER), ID);
     assertNull(undeclared.granteeFullName(), "nothing to consent to, nothing computed");
+  }
+
+  /**
+   * EXO-90583 -- the send guard, on Bob's accepted share: a consent to write as Alice
+   * covers both shapes, on-behalf being the more transparent one; the identity is the
+   * row's -- Alice's address, her name, the consent's date -- never the request's.
+   */
+  @Test
+  void anAsConsentLetsTheDelegateWriteAsOrOnBehalf() throws Exception {
+    EmailDelegation share = consented(DelegationStatus.ACCEPTED);
+    share.setSendRefusedDate(null);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, ID)).thenReturn(share);
+
+    SendIdentity as = service.checkSendMode(GRANTEE, ID, SendMode.AS);
+    assertEquals(SendMode.AS, as.mode());
+    assertEquals(ID, as.delegationId());
+    assertEquals(OWNER_MAILBOX, as.ownerMailbox());
+    assertNull(as.ownerFullName(), "no profile read: no name that repeats the address");
+    assertEquals(new Date(1_000L), as.consentDate());
+    assertFalse(as.namesTheSender());
+    SendIdentity onBehalf = service.checkSendMode(GRANTEE, ID, SendMode.ON_BEHALF);
+    assertEquals(SendMode.ON_BEHALF, onBehalf.mode(), "the shape asked, not the consent's");
+    assertTrue(onBehalf.namesTheSender());
+  }
+
+  /**
+   * EXO-90583 -- a consent covers what it says and no more: on behalf never lets the
+   * delegate write as the owner, and no consent lets them write in her name at all; the
+   * refusal names the shape, for the composer to say why.
+   */
+  @Test
+  void theConsentIsNeverWidened() {
+    EmailDelegation share = share(DelegationStatus.ACCEPTED);
+    share.setSendMode(SendMode.ON_BEHALF);
+    share.setSendModeDate(new Date(1_000L));
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, ID)).thenReturn(share);
+
+    SendModeMissingException asOnAnOnBehalfConsent = assertThrows(SendModeMissingException.class,
+                                                                  () -> service.checkSendMode(GRANTEE, ID, SendMode.AS));
+    assertEquals("emailConnector.sendMode.missing.AS", asOnAnOnBehalfConsent.getMessage());
+    share.setSendMode(null);
+    assertEquals("emailConnector.sendMode.missing.ON_BEHALF",
+                 assertThrows(SendModeMissingException.class, () -> service.checkSendMode(GRANTEE, ID, SendMode.ON_BEHALF)).getMessage());
+    assertEquals(SendModeUnavailableException.class,
+                 assertThrows(IllegalArgumentException.class, () -> service.checkSendMode(GRANTEE, ID, SendMode.NONE)).getClass(),
+                 "NONE is no shape to write in");
+  }
+
+  /**
+   * EXO-90583 -- only the delegate's own, accepted share: anybody else's row, or an
+   * unknown id, is "no such share"; one no longer accepted is a revocation.
+   */
+  @Test
+  void onlyTheDelegatesAcceptedShareIsWrittenFrom() {
+    when(emailDelegationStorage.getAsGrantee("carol", ID)).thenReturn(null);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, ID)).thenReturn(consented(DelegationStatus.REVOKED));
+
+    assertThrows(ObjectNotFoundException.class, () -> service.checkSendMode("carol", ID, SendMode.ON_BEHALF));
+    assertThrows(DelegationRevokedException.class, () -> service.checkSendMode(GRANTEE, ID, SendMode.ON_BEHALF));
+  }
+
+  /**
+   * EXO-90583 -- past the consent, what can be used now, each refusal with its cause:
+   * the administrator's switch, the connector's declaration, and a refusal by the owner's
+   * mail server since the consent -- the terms the delegate's picker is drawn from.
+   */
+  @Test
+  void theSwitchTheDeclarationAndARefusalEachSayWhy() {
+    EmailDelegation share = consented(DelegationStatus.ACCEPTED);
+    share.setSendRefusedDate(null);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, ID)).thenReturn(share);
+
+    System.setProperty(SendMode.ENABLED_PROPERTY, "false");
+    assertEquals("emailConnector.sendMode.disabled",
+                 assertThrows(SendModeUnavailableException.class, () -> service.checkSendMode(GRANTEE, ID, SendMode.AS)).getMessage());
+    System.clearProperty(SendMode.ENABLED_PROPERTY);
+    System.setProperty(SendMode.MODES_PROPERTY_PREFIX + CONNECTOR_ID, "onBehalf");
+    assertEquals("emailConnector.sendMode.unsupported",
+                 assertThrows(SendModeUnavailableException.class, () -> service.checkSendMode(GRANTEE, ID, SendMode.AS)).getMessage());
+    System.setProperty(SendMode.MODES_PROPERTY_PREFIX + CONNECTOR_ID, "as");
+    share.setSendRefusedDate(new Date(2_000L));
+    assertEquals("emailConnector.sendMode.refusedByServer",
+                 assertThrows(SendModeUnavailableException.class, () -> service.checkSendMode(GRANTEE, ID, SendMode.ON_BEHALF)).getMessage());
+  }
+
+  /**
+   * EXO-90583 -- a refusal by the owner's server is recorded on the delegate's row,
+   * against the consent the mail was sent under: the grantee, the row and that consent's
+   * date go to the storage's targeted write.
+   */
+  @Test
+  void aRefusalIsRecordedAgainstTheConsentItWasSentUnder() {
+    SendIdentity identity = new SendIdentity(SendMode.AS, ID, OWNER_MAILBOX, "Alice", new Date(1_000L));
+    when(emailDelegationStorage.markSendRefused(GRANTEE, ID, new Date(1_000L))).thenReturn(true);
+
+    assertTrue(service.markSendRefused(GRANTEE, identity));
+
+    verify(emailDelegationStorage).markSendRefused(GRANTEE, ID, new Date(1_000L));
+    verify(emailDelegationStorage, never()).update(any());
   }
 
   /**
