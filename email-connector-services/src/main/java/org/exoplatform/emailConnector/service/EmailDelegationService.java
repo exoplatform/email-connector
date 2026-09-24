@@ -593,6 +593,7 @@ public class EmailDelegationService {
     Set<FolderRole> following = EnumSet.noneOf(FolderRole.class);
     kept.stream().filter(role -> !exceptions.containsKey(role)).forEach(following::add);
     Set<FolderRole> notNarrowed = EnumSet.noneOf(FolderRole.class);
+    Set<FolderRole> removed = EnumSet.noneOf(FolderRole.class);
     Map<FolderRole, String> roleFolders = new EnumMap<>(FolderRole.class);
     if (delegation.getOwnerRoleFolders() != null) {
       roleFolders.putAll(delegation.getOwnerRoleFolders());
@@ -625,6 +626,7 @@ public class EmailDelegationService {
           }
           if (revokeRoleFolder(engine, session, identifier, role, roleFolders)) {
             kept.remove(role);
+            removed.add(role);
           } else {
             notNarrowed.add(role);
           }
@@ -675,9 +677,14 @@ public class EmailDelegationService {
       delegation = normalised;
     }
     if (preset == DelegationPreset.READER) {
-      // What the grantee's screens read narrows now, not at their next discovery.
+      // What the grantee's screens read narrows now, not at their next discovery; a
+      // folder whose access was removed instead leaves them now.
       for (FolderRole role : following) {
-        narrowDelegatedFolder(delegation, roleFolders.get(role), DelegationPreset.READER.rights());
+        if (removed.contains(role)) {
+          dropDelegatedFolderTree(delegation, roleFolders.get(role), false);
+        } else {
+          narrowDelegatedFolder(delegation, roleFolders.get(role), DelegationPreset.READER.rights());
+        }
       }
     }
     // The grantee's folders follow at their next pass, not a quarter-hour later.
@@ -1358,11 +1365,15 @@ public class EmailDelegationService {
   /**
    * After the owner renamed or deleted one of their folders from eXo (EXO-90556): the
    * delegates' copies under the old name go at once -- the server no longer has it -- and,
-   * after a rename, each delegate whose preset access the renamed folder (or a folder
-   * inside it) still carries is granted it again under the new name. Dovecot moves the
-   * ACL with a renamed folder but hides it from the delegate until the next SETACL
-   * (EXO-90552); another server takes the same grant as the no-op it is. An entry that
-   * reads as no preset -- written in another mail application -- is never rewritten.
+   * after a rename, each entry an eXo-made share holds on the renamed folder (or a folder
+   * inside it) is written again under the new name, with exactly the letters it holds.
+   * Dovecot moves the ACL with a renamed folder but hides it from the delegate until the
+   * next SETACL (EXO-90552, and live on 2026-09-24: an identical SETACL restores the
+   * folder and the folders inside it); another server takes the same grant as the no-op
+   * it is. Never a widening: an entry whose letters the preset's grant would not write
+   * again exactly (lrswit read as an Editor, where the grant writes lrswite) is left as
+   * it is, and so is an entry that reads as no preset or belongs to a share made in the
+   * mail server's own interface.
    * <p>
    * On the owner's own session, on the owner's own action; best effort: the rename or
    * the delete has happened, and nothing here undoes it or fails it. A mailbox shared
@@ -1441,14 +1452,25 @@ public class EmailDelegationService {
           continue;
         }
         for (EmailDelegation share : shares) {
+          if (share.getOrigin() != DelegationOrigin.EXO) {
+            // A share made in the mail server's own interface is never rewritten by eXo.
+            continue;
+          }
           String identifier = share.getGranteeMailbox();
           MailboxAce ace = aceOf(acl, identifier);
-          DelegationPreset preset = ace == null ? null : engine.presetOf(ace.rights());
+          MailboxRights held = ace == null || ace.rights() == null ? MailboxRights.NONE : ace.rights();
+          DelegationPreset preset = ace == null ? null : engine.presetOf(held);
           if (preset == null || !preset.isGrantable()) {
             continue;
           }
           try {
-            engine.grant(session, folder.fullName(), identifier, preset, engine.myRights(session, folder.fullName()), folder.role());
+            MailboxRights ownerRights = engine.myRights(session, folder.fullName());
+            if (!engine.lettersFor(preset, folder.role()).intersect(ownerRights).equals(held)) {
+              // The same letters or nothing: a preset reading of letters the grant would
+              // not write -- lrswit where it writes lrswite -- is never widened here.
+              continue;
+            }
+            engine.grant(session, folder.fullName(), identifier, preset, ownerRights, folder.role());
           } catch (MailboxAclException e) {
             LOG.info("A share of renamed folder {} could not be written again ({})", folder.fullName(), e.getCode());
           }
@@ -1600,6 +1622,7 @@ public class EmailDelegationService {
     int depth = StringUtils.countMatches(folder.fullName(), delimiter);
     return new DelegationFolder(folder.fullName(),
                                 StringUtils.defaultIfBlank(folder.displayName(), folder.fullName()),
+                                delimiter,
                                 parent,
                                 depth,
                                 folder.role(),
