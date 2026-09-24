@@ -63,15 +63,13 @@ public class EmailSearchHitModel {
   /** Whether the user favorited the message (the server's \Flagged flag). */
   private boolean     starred;
 
-  /**
-   * Whether the message is also in the local mirror. A hit that is not cached
-   * still opens, it is simply fetched from the server on demand.
-   */
+  /** Whether the message is also in the local mirror, which is what lets the other tools open it. */
   private boolean     cached;
 
   /**
-   * The local id of the mail, when the hit was read from the synced copy (a shared
-   * mailbox's search, EXO-90555): the key to pass as email_id to the other tools.
+   * The local id of the mail, whenever the hit is in the synced copy -- in every folder,
+   * own mailbox or shared: the key to pass as email_id to the other tools. Absent for a
+   * hit that is not.
    */
   @JsonProperty("email_id")
   private Long        emailId;
