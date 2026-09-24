@@ -199,16 +199,7 @@ export default {
      * @returns {String} the line, or an empty string
      */
     mailboxLabel() {
-      const mailbox = this.scheduled.mailbox;
-      if (!mailbox) {
-        return '';
-      }
-      const owner = mailbox.ownerFullName || mailbox.ownerMailbox;
-      if (!owner) {
-        return this.$t('emailConnector.mailBox.scheduled.mailbox.unknown');
-      }
-      return this.$t(mailbox.shared ? 'emailConnector.mailBox.scheduled.mailbox' : 'emailConnector.mailBox.scheduled.mailbox.unshared',
-        { 0: owner });
+      return this.$emailConnectorMailBoxService.draftMailboxLabel(this.scheduled.mailbox, this);
     },
     /**
      * @returns {Object} what the mail's state says, or null while it simply waits
