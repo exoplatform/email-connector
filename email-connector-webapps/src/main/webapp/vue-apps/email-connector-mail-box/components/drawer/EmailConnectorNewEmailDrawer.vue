@@ -1429,11 +1429,13 @@ export default {
       return this.$t('emailConnector.mailBox.newEmail.drawer.title');
     },
     /**
-     * Notes the shared mailbox the composer is opened from, and copies its owner by
-     * default (delegation plan 7.8): the mail goes out as the user, through their own
-     * mail server, and lands in their own Sent, so without the copy the owner has no
-     * trace that their mail was answered. Notes too whether the composer answers a
-     * message (a reply) or starts one (a new mail or a forward), for the band's wording.
+     * Notes the shared mailbox the composer is opened from, whether the composer answers
+     * a message there (a reply) or starts one (a new mail or a forward), and the name the
+     * mail starts in (EXO-90583, PO decision Q-4): a reply starts in the owner's name, in
+     * the more transparent shape they allow, when they allow one; anything else starts
+     * in the user's own. The mail always goes out through the user's own mail server.
+     * The owner is copied by default only when they would otherwise have no copy in
+     * their Sent (Q-3, Q-6), and in their name with that copy filed the box is hidden.
      * Nothing in the user's own mailbox.
      *
      * @param {object} email - the message being answered, null for a new mail

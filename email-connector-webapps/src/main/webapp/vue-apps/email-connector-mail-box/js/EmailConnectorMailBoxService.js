@@ -1426,7 +1426,8 @@ export function getDraftMailbox(draftLocalId) {
  * @param {String} sendMode ON_BEHALF or AS to send it in the owner's name of the
  *        draft's share (EXO-90583), or nothing
  * @returns {Promise<Object>} resolves once the mail is out and the draft is gone, with
- *          { ownerCopy } when a share is named; rejects with a {@link refusal} error -- its code says a share is gone
+ *          { ownerCopy } when a share is named; rejects with a {@link refusal} error -- its
+ *          code says a share is gone, or why the owner's name could not be used
  */
 export function sendDraft(draftLocalId, draft, delegationId, sendMode) {
   return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}/send${sendQuery(delegationId, sendMode)}`, {
