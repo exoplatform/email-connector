@@ -7220,25 +7220,37 @@ public class EmailBoxService {
     try {
       Transport.send(message);
     } catch (MessagingException e) {
-      if (!EmailCredentialsResolver.isAuthenticationFailure(e) || !retriesAfterRefusal(userEmailSetting)) {
+      EmailConnector retryConnector = EmailCredentialsResolver.isAuthenticationFailure(e) ? retryConnector(userEmailSetting, e)
+                                                                                           : null;
+      if (retryConnector == null) {
         throw e;
       }
-      resendWithFreshCredentials(message, username, userEmailSetting, e);
+      resendWithFreshCredentials(message, username, retryConnector, e);
     }
     afterTransmission(message, email, reply, username, userEmailSetting);
   }
 
   /**
-   * Whether an SMTP refusal of the sender's material is worth one retry on fresh
-   * material: only for a provider that produces its own (EXO-89649).
+   * The sender's connector when an SMTP refusal of its material is worth one retry on
+   * fresh material: only for a provider that produces its own (EXO-89649). A failure
+   * to decide is no reason to retry and never replaces the refusal: it is attached to
+   * it, and the refusal stands.
    *
    * @param userEmailSetting the sender's connector binding
-   * @return true when a retry makes sense
+   * @param refusal the SMTP server's refusal
+   * @return the connector to retry through, or null when the refusal stands
    */
-  private boolean retriesAfterRefusal(UserEmailSetting userEmailSetting) {
-    EmailConnector emailConnector =
-                                  emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
-    return emailConnector != null && credentialsResolver().retriesAfterRefusal(emailConnector.getAuthProviderName());
+  private EmailConnector retryConnector(UserEmailSetting userEmailSetting, MessagingException refusal) {
+    try {
+      EmailConnector emailConnector =
+                                    emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+      return emailConnector != null && credentialsResolver().retriesAfterRefusal(emailConnector.getAuthProviderName())
+                                                                                                                       ? emailConnector
+                                                                                                                       : null;
+    } catch (RuntimeException e) {
+      refusal.addSuppressed(e);
+      return null;
+    }
   }
 
   /**
@@ -7267,16 +7279,14 @@ public class EmailBoxService {
    *
    * @param message the message the first attempt could not send
    * @param username the sender
-   * @param userEmailSetting the sender's connector binding
+   * @param emailConnector the sender's connector
    * @param refusal the first attempt's failure, kept when the retry cannot be built
    * @throws MessagingException when the retry fails too
    */
   private void resendWithFreshCredentials(MimeMessage message,
                                           String username,
-                                          UserEmailSetting userEmailSetting,
+                                          EmailConnector emailConnector,
                                           MessagingException refusal) throws MessagingException {
-    EmailConnector emailConnector =
-                                  emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
     LOG.debug("The SMTP server refused the credentials of user {}; retrying once with fresh ones", username, refusal);
     credentialsResolver().invalidate(emailConnector.getId(),
                                      emailConnector.getAuthProviderName(),
