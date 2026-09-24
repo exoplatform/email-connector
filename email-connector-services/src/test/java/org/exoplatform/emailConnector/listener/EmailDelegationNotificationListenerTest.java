@@ -45,7 +45,9 @@ import org.exoplatform.commons.api.notification.model.PluginKey;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
 import org.exoplatform.emailConnector.model.DelegationPreset;
+import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailDelegation;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.notification.plugin.BaseEmailDelegationNotificationPlugin;
 import org.exoplatform.emailConnector.notification.plugin.EmailDelegationInvitationPlugin;
 import org.exoplatform.emailConnector.notification.plugin.EmailDelegationResponseNotificationPlugin;
@@ -185,6 +187,45 @@ public class EmailDelegationNotificationListenerTest {
     listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.ACCEPTED, GRANTEE, orphan));
 
     assertTrue(dispatched.isEmpty(), "there is nobody to name and nobody to tell");
+  }
+
+  /**
+   * EXO-90582 -- the owner's consent to the grantee writing in her name is told to a
+   * grantee using the share, as the consent now stands: on behalf, as, or withdrawn.
+   */
+  @Test
+  void theGranteeIsToldTheConsentAsItNowStands() {
+    EmailDelegation accepted = delegation();
+    accepted.setStatus(DelegationStatus.ACCEPTED);
+    accepted.setSendMode(SendMode.ON_BEHALF);
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.SEND_MODE_CHANGED, OWNER, accepted));
+    accepted.setSendMode(SendMode.AS);
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.SEND_MODE_CHANGED, OWNER, accepted));
+    accepted.setSendMode(null);
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.SEND_MODE_CHANGED, OWNER, accepted));
+
+    assertEquals(3, dispatched.size(), "each change is told");
+    verify(dispatched.get(0)).append(BaseEmailDelegationNotificationPlugin.RECEIVER, GRANTEE);
+    verify(dispatched.get(0)).append(BaseEmailDelegationNotificationPlugin.ACTOR, OWNER);
+    verify(dispatched.get(0)).append(EmailDelegationResponseNotificationPlugin.RESPONSE, "SEND_MODE_ON_BEHALF");
+    verify(dispatched.get(1)).append(EmailDelegationResponseNotificationPlugin.RESPONSE, "SEND_MODE_AS");
+    verify(dispatched.get(2)).append(EmailDelegationResponseNotificationPlugin.RESPONSE, "SEND_MODE_NONE");
+    assertEquals(NotificationConstants.EMAIL_DELEGATION_RESPONSE_NOTIFICATION_PLUGIN, dispatchedPluginId(0));
+  }
+
+  /**
+   * EXO-90582, PO decision Q-B -- a grantee still invited is not told: they have the
+   * invitation, and read the consent on the share when they accept it.
+   */
+  @Test
+  void aPendingGranteeIsNotToldTheConsent() {
+    EmailDelegation pending = delegation();
+    pending.setStatus(DelegationStatus.PENDING);
+    pending.setSendMode(SendMode.ON_BEHALF);
+
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.SEND_MODE_CHANGED, OWNER, pending));
+
+    assertTrue(dispatched.isEmpty(), "the invitation is theirs to answer first");
   }
 
   /**

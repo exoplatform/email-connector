@@ -50,6 +50,10 @@ import java.util.Map;
  *          its owner's Sent (EXO-90551): a Sent is shared, the delegate holds i there,
  *          and an administrator has not switched the copy off -- what the composer's
  *          notice says and what its "Copy {owner}" box defaults from (PO decision Q-3)
+ * @param sendModes the shapes the delegate can write mail in the owner's name in now
+ *          (EXO-90582): the owner's consent narrowed to what the connector declares, and
+ *          none once the server refused one since the owner last set it -- the list the
+ *          From picker offers. Most transparent first; empty for none, never null
  */
 public record SharedMailboxEntry(Long delegationId,
                                  String ownerId,
@@ -62,5 +66,71 @@ public record SharedMailboxEntry(Long delegationId,
                                  int unreadCount,
                                  List<SharedMailboxFolder> folders,
                                  boolean inboxOnly,
-                                 boolean sentCopy) {
+                                 boolean sentCopy,
+                                 List<SendMode> sendModes) {
+
+  /**
+   * Normalises the usable shapes to an unmodifiable list, never null.
+   *
+   * @param delegationId the delegation id
+   * @param ownerId the owner's eXo username
+   * @param ownerFullName the owner's display name
+   * @param ownerMailbox the owner's mailbox address
+   * @param preset the preset the rights read as
+   * @param rights the letters the server last granted the delegate
+   * @param affordances the controls those letters unlock
+   * @param folderKey the key the shared INBOX is listed under
+   * @param unreadCount the unread count of that INBOX
+   * @param folders the shared mailbox's other folders
+   * @param inboxOnly whether only the INBOX is shared
+   * @param sentCopy whether a mail sent from here is filed in the owner's Sent
+   * @param sendModes the shapes the delegate can write in the owner's name in now
+   */
+  public SharedMailboxEntry {
+    sendModes = sendModes == null ? List.of() : List.copyOf(sendModes);
+  }
+
+  /**
+   * An entry the delegate cannot write in the owner's name from -- every caller written
+   * before EXO-90582.
+   *
+   * @param delegationId the delegation id
+   * @param ownerId the owner's eXo username
+   * @param ownerFullName the owner's display name
+   * @param ownerMailbox the owner's mailbox address
+   * @param preset the preset the rights read as
+   * @param rights the letters the server last granted the delegate
+   * @param affordances the controls those letters unlock
+   * @param folderKey the key the shared INBOX is listed under
+   * @param unreadCount the unread count of that INBOX
+   * @param folders the shared mailbox's other folders
+   * @param inboxOnly whether only the INBOX is shared
+   * @param sentCopy whether a mail sent from here is filed in the owner's Sent
+   */
+  public SharedMailboxEntry(Long delegationId,
+                            String ownerId,
+                            String ownerFullName,
+                            String ownerMailbox,
+                            DelegationPreset preset,
+                            String rights,
+                            Map<String, Boolean> affordances,
+                            String folderKey,
+                            int unreadCount,
+                            List<SharedMailboxFolder> folders,
+                            boolean inboxOnly,
+                            boolean sentCopy) {
+    this(delegationId,
+         ownerId,
+         ownerFullName,
+         ownerMailbox,
+         preset,
+         rights,
+         affordances,
+         folderKey,
+         unreadCount,
+         folders,
+         inboxOnly,
+         sentCopy,
+         List.of());
+  }
 }

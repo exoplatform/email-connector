@@ -108,7 +108,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           outlined
           type="info"
           class="caption text-wrap mt-2">
-          {{ $t('UserSettings.emailConnector.sharing.invite.consent') }}
+          {{ consentText }}
         </v-alert>
       </div>
     </template>
@@ -146,6 +146,8 @@ export default {
     // Whether the owner's mail server shares folder by folder (EXO-90556), as the
     // sharing list read it.
     perFolder: false,
+    // Whether the mail server accepts any shape of writing in the owner's name (EXO-90582).
+    sendModeOffered: false,
     foldersOpen: false,
     foldersLoading: false,
     folders: [],
@@ -155,6 +157,18 @@ export default {
     choices: {},
   }),
   computed: {
+    /**
+     * The consent said before the Share button: with, where the mail server accepts it,
+     * the sentence that writing in the owner's name is a separate choice made afterwards
+     * (EXO-90582) -- a sentence that would be false on a server that accepts none.
+     *
+     * @returns {String} the consent
+     */
+    consentText() {
+      return this.$t(this.sendModeOffered
+        ? 'UserSettings.emailConnector.sharing.invite.consent.sendMode'
+        : 'UserSettings.emailConnector.sharing.invite.consent');
+    },
     /**
      * The picked person's eXo username, which is all the server is given: it resolves
      * their mail identifier from their own connected mailbox.
@@ -212,13 +226,15 @@ export default {
      * Opens the drawer on an empty choice — never on the last one, which would let a
      * second share go to the first person by a misplaced press.
      *
-     * @param {Object} options {perFolder}: whether the mail server shares folder by folder
+     * @param {Object} options {perFolder, sendModes}: whether the mail server shares folder
+     *   by folder, and the shapes of writing in the owner's name it accepts
      * @returns {void}
      */
     open(options) {
       this.grantee = null;
       this.preset = 'READER';
       this.perFolder = !!options?.perFolder;
+      this.sendModeOffered = !!options?.sendModes?.length;
       this.foldersOpen = false;
       this.folders = [];
       this.truncated = false;

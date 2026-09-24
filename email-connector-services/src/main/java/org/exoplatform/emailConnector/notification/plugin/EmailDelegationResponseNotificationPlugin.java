@@ -30,13 +30,14 @@ import org.exoplatform.emailConnector.utils.NotificationConstants;
 /**
  * Tells one party of a share what the other party did with it (EXO-90503): the owner
  * that the grantee accepted, declined or left, and the grantee that the owner took the
- * access away.
+ * access away -- or set, changed or withdrew her consent to them writing mail in her
+ * name (EXO-90582, {@code SEND_MODE_ON_BEHALF|AS|NONE}).
  * <p>
- * One plugin and one notification preference for four transitions, because to the
- * person reading it they are one kind of news -- "where that share now stands" -- and
- * splitting them would make a user switch off "declined" and lose "revoked" with it.
- * {@link #RESPONSE} carries which transition it was, and the sentence is chosen from
- * it in the receiver's language.
+ * One plugin and one notification preference for every change in where a share stands
+ * -- four transitions and the owner's consent to writing in her name -- because to the
+ * person reading it they are one kind of news, and splitting them would make a user
+ * switch off "declined" and lose "revoked" with it. {@link #RESPONSE} carries which news
+ * it is, and the sentence is chosen from it in the receiver's language.
  * <p>
  * <b>The owner-facing ones are gated, and the gate is not here.</b> A server that
  * e-mails the owner on every rights change of its own accord -- BlueMind does, four
@@ -48,7 +49,10 @@ import org.exoplatform.emailConnector.utils.NotificationConstants;
  */
 public class EmailDelegationResponseNotificationPlugin extends BaseEmailDelegationNotificationPlugin {
 
-  /** Which transition: an {@code EmailDelegationEvent.Type} name. */
+  /**
+   * Which news: an {@code EmailDelegationEvent.Type} name, or {@code SEND_MODE_} and the
+   * consent to writing in the owner's name as it now stands.
+   */
   public static final ArgumentLiteral<String> RESPONSE            = new ArgumentLiteral<>(String.class, "response");
 
   private static final String                 TITLE_KEY_PREFIX    = "emailDelegationResponse.notification.title.";

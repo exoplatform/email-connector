@@ -70,7 +70,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :can-extend="canExtend"
           :extend-label="extendLabel"
           :can-choose-folders="actionable && perFolder"
+          :current-send-mode="currentSendMode"
+          :send-modes="sendModes"
+          :can-set-send-mode="canSetSendMode"
           @change-preset="$emit('change-preset', $event)"
+          @change-send-mode="$emit('change-send-mode', $event)"
           @extend="$emit('extend')"
           @folders="$emit('folders')"
           @revoke="$emit('revoke')" />
@@ -85,6 +89,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <!-- The owner's own choices on the role folders (EXO-90556); the owner's other
            folders are listed, read live, in "Folders and access". -->
       <div v-if="folderExceptions" class="caption text-sub-title text-wrap">{{ folderExceptions }}</div>
+      <!-- Whether they may write mail in the owner's name (EXO-90582), and what stands in
+           the way when the mail server does not follow. -->
+      <div v-if="sendModeCaption" class="caption text-sub-title text-wrap">{{ sendModeCaption }}</div>
+      <div v-if="sendModeWarning" class="caption warning--text text-wrap">{{ sendModeWarning }}</div>
       <!-- Where the access was written: a small marker, not the chip -- a share made
            in the mail server's own interface is the server's, and says so. -->
       <div v-if="discovered" class="caption text-sub-title text-wrap">
@@ -115,6 +123,8 @@ export default {
     disabled: { type: Boolean, default: false },
     // Whether the owner's mail server shares folder by folder (EXO-90556).
     perFolder: { type: Boolean, default: false },
+    // The shapes of writing in the owner's name her mail server is declared to accept (EXO-90582).
+    sendModes: { type: Array, default: () => [] },
   },
   computed: {
     /**
@@ -248,6 +258,59 @@ export default {
             : this.$t(`UserSettings.emailConnector.sharing.preset.${exceptions[role]}`),
         }))
         .join(' · ');
+    },
+    /**
+     * Whether the share is on offer or in use: the only states a consent to writing in
+     * the owner's name lives in (EXO-90582).
+     *
+     * @returns {Boolean} true for a pending or accepted share
+     */
+    live() {
+      const status = this.grantee.delegation?.status;
+      return this.actionable && (status === 'PENDING' || status === 'ACCEPTED');
+    },
+    /**
+     * The owner's consent to this person writing mail in her name, as recorded.
+     *
+     * @returns {String} NONE, ON_BEHALF or AS
+     */
+    currentSendMode() {
+      const mode = this.live ? this.grantee.delegation.sendMode : null;
+      return mode === 'ON_BEHALF' || mode === 'AS' ? mode : 'NONE';
+    },
+    /**
+     * Whether the menu offers the consent: a live share eXo made, on a server declared to
+     * accept a shape -- or one that carries a consent, which can always be withdrawn.
+     *
+     * @returns {Boolean} true when the section is offered
+     */
+    canSetSendMode() {
+      return this.live && !this.discovered && (this.sendModes.length > 0 || this.currentSendMode !== 'NONE');
+    },
+    /**
+     * "May send mail on your behalf" / "as you", or nothing.
+     *
+     * @returns {String} the sentence, or empty
+     */
+    sendModeCaption() {
+      return this.currentSendMode === 'NONE' ? '' : this.$t(`UserSettings.emailConnector.sharing.sendMode.caption.${this.currentSendMode}`);
+    },
+    /**
+     * What stands in the way of a consent: the mail server refused a mail in the owner's
+     * name since she set it, or no longer is declared to accept that shape.
+     *
+     * @returns {String} the sentence, or empty
+     */
+    sendModeWarning() {
+      if (this.currentSendMode === 'NONE') {
+        return '';
+      }
+      const refused = this.grantee.delegation.sendRefusedDate;
+      if (refused) {
+        const language = window.eXo?.env?.portal?.language || 'en';
+        return this.$t('UserSettings.emailConnector.sharing.sendMode.refused', { 0: new Date(refused).toLocaleDateString(language) });
+      }
+      return this.sendModes.includes(this.currentSendMode) ? '' : this.$t('UserSettings.emailConnector.sharing.sendMode.unavailable');
     },
     /**
      * The owner's folders the grant found but the server refused to share, said on the

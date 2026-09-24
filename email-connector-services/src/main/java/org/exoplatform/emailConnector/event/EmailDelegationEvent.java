@@ -50,6 +50,12 @@ public record EmailDelegationEvent(Type type, String actor, EmailDelegation dele
      * accepted share gone from the server. Nobody is notified; the grantee's badge is
      * re-counted.
      */
-    RIGHTS_CHANGED
+    RIGHTS_CHANGED,
+    /**
+     * The owner set, changed or withdrew her consent to the grantee writing mail in her
+     * name (EXO-90582). The row carries the consent as it now stands; a grantee using
+     * the share is told.
+     */
+    SEND_MODE_CHANGED
   }
 }

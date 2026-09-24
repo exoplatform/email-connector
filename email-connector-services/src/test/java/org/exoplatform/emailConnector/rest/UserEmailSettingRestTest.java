@@ -36,6 +36,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -83,12 +84,14 @@ import org.exoplatform.emailConnector.model.GrantedDelegations;
 import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.ReadReceiptPolicy;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.rest.model.DelegationFoldersRequest;
+import org.exoplatform.emailConnector.rest.model.DelegationSendModeRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationInviteRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationPreferencesRequest;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
@@ -304,7 +307,8 @@ public class UserEmailSettingRestTest {
                                                                                                                                                         .affordances(),
                                                                                                                                            true)),
                                                                                                            true,
-                                                                                                           true)));
+                                                                                                           true,
+                                                                                                           List.of(SendMode.ON_BEHALF))));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/mailboxes").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$[0].delegationId").value(5))
@@ -322,7 +326,9 @@ public class UserEmailSettingRestTest {
            // What the band says: from the share, not from the folders found.
            .andExpect(jsonPath("$[0].inboxOnly").value(true))
            // EXO-90551: whether the composer's copy into the owner's Sent will be filed.
-           .andExpect(jsonPath("$[0].sentCopy").value(true));
+           .andExpect(jsonPath("$[0].sentCopy").value(true))
+           // EXO-90582: the shapes the delegate can write in the owner's name in now.
+           .andExpect(jsonPath("$[0].sendModes[0]").value("ON_BEHALF"));
     verify(emailDelegationService).getSharedMailboxes(SIMPLE_USER);
   }
 
@@ -445,6 +451,83 @@ public class UserEmailSettingRestTest {
                                                                            .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isBadGateway())
            .andExpect(status().reason(MailboxAclException.UNREACHABLE));
+  }
+
+  /**
+   * EXO-90582 -- the owner's consent to a grantee writing in her name: the mode goes to
+   * the service as sent, under the caller's name, and the row comes back with it; each
+   * refusal answers the status the contract promises, with its code. The owner's and the
+   * delegate's lists carry what the drawer and the switcher read.
+   */
+  @Test
+  void theOwnersSendModeConsent() throws Exception {
+    EmailDelegation consented = new EmailDelegation();
+    consented.setId(5L);
+    consented.setStatus(DelegationStatus.ACCEPTED);
+    consented.setSendMode(SendMode.ON_BEHALF);
+    when(emailDelegationService.setSendMode(SIMPLE_USER, 5L, "ON_BEHALF")).thenReturn(consented);
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/5/send-mode").with(testSimpleUser())
+                                                                              .content(asJsonString(new DelegationSendModeRequest("ON_BEHALF")))
+                                                                              .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.sendMode").value("ON_BEHALF"));
+    verify(emailDelegationService).setSendMode(SIMPLE_USER, 5L, "ON_BEHALF");
+
+    Map<Long, Object> refusals = Map.of(6L,
+                                        new IllegalArgumentException(EmailDelegationService.SEND_MODE_INVALID_MESSAGE),
+                                        7L,
+                                        new IllegalArgumentException(EmailDelegationService.SEND_MODE_UNSUPPORTED_MESSAGE),
+                                        8L,
+                                        new IllegalArgumentException(EmailDelegationService.NOT_CHANGEABLE_MESSAGE),
+                                        9L,
+                                        new MailboxAclException(MailboxAclException.UNREACHABLE, "down"),
+                                        10L,
+                                        new ObjectNotFoundException(EmailDelegationService.NOT_FOUND_MESSAGE),
+                                        11L,
+                                        new IllegalAccessException("emailConnector.notConnected"));
+    for (Map.Entry<Long, Object> refusal : refusals.entrySet()) {
+      when(emailDelegationService.setSendMode(eq(SIMPLE_USER), eq(refusal.getKey()), any())).thenThrow((Throwable) refusal.getValue());
+    }
+    assertSendModeAnswer(6L, 400, EmailDelegationService.SEND_MODE_INVALID_MESSAGE);
+    assertSendModeAnswer(7L, 400, EmailDelegationService.SEND_MODE_UNSUPPORTED_MESSAGE);
+    assertSendModeAnswer(8L, 400, EmailDelegationService.NOT_CHANGEABLE_MESSAGE);
+    assertSendModeAnswer(9L, 502, MailboxAclException.UNREACHABLE);
+    assertSendModeAnswer(10L, 404, null);
+    assertSendModeAnswer(11L, 401, null);
+
+    DelegationGrantee bob = DelegationGrantee.of(MailboxAce.ofLetters("bob@acme.com", MailboxRights.of("lrswite")), "bob", consented)
+                                             .withConsentContext("Bob Martin", true);
+    when(emailDelegationService.getGrantedDelegations(SIMPLE_USER)).thenReturn(new GrantedDelegations(MailboxAclCapabilities.imap(true,
+                                                                                                                                  true,
+                                                                                                                                  Set.of(SendMode.ON_BEHALF,
+                                                                                                                                         SendMode.AS)),
+                                                                                                    "simple@acme.com",
+                                                                                                    List.of(bob)));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/granted").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.capabilities.sendModes.length()").value(2))
+           .andExpect(jsonPath("$.capabilities.sendModeOnServer").value(false))
+           .andExpect(jsonPath("$.grantees[0].granteeFullName").value("Bob Martin"))
+           .andExpect(jsonPath("$.grantees[0].ownerSentCopy").value(true))
+           .andExpect(jsonPath("$.grantees[0].delegation.sendMode").value("ON_BEHALF"));
+  }
+
+  /**
+   * One refused PUT of a send mode, and the status and code it answers.
+   *
+   * @param id the delegation id the service refuses
+   * @param status the status expected
+   * @param reason the code expected, null when the status says it all
+   * @throws Exception when the request cannot be performed
+   */
+  private void assertSendModeAnswer(long id, int status, String reason) throws Exception {
+    ResultActions response = mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/" + id + "/send-mode").with(testSimpleUser())
+                                                                                                             .content(asJsonString(new DelegationSendModeRequest("AS")))
+                                                                                                             .contentType(MediaType.APPLICATION_JSON))
+                                     .andExpect(status().is(status));
+    if (reason != null) {
+      response.andExpect(status().reason(reason));
+    }
   }
 
   /**

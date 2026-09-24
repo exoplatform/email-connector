@@ -154,4 +154,20 @@ public class EmailDelegationEntity {
   // changeset 1.0.0-86.
   @Column(name = "FOLDER_ACCESS")
   private String  folderAccess;
+
+  // The owner's consent to the grantee writing mail in the owner's name (EXO-90582):
+  // ON_BEHALF or AS, null for none. Written only by the owner's targeted update and
+  // cleared when the share ends. Added by changeset 1.0.0-88.
+  @Column(name = "SEND_MODE")
+  private String  sendMode;
+
+  // When the owner last set the consent. Added by changeset 1.0.0-88.
+  @Column(name = "SEND_MODE_DATE")
+  private Date    sendModeDate;
+
+  // When the owner's mail server last refused a mail in the owner's name for this
+  // grantee, null for never; cleared when the owner sets the consent again. Added by
+  // changeset 1.0.0-88.
+  @Column(name = "SEND_REFUSED_DATE")
+  private Date    sendRefusedDate;
 }

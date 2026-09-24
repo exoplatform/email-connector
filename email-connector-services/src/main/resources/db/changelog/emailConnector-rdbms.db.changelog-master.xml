@@ -1783,4 +1783,28 @@
       <dropColumn tableName="EMAIL_DELEGATION" columnName="FOLDER_ACCESS"/>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-88">
+    <comment>
+      EMAIL_DELEGATION.SEND_MODE, SEND_MODE_DATE, SEND_REFUSED_DATE (EXO-90582, phase-3
+      slice 3.1): the owner's consent to the grantee writing mail in the owner's name --
+      ON_BEHALF (From: the owner, Sender: the grantee) or AS (From: the owner, nothing
+      else); null for no consent, which is what every row written before this reads.
+      When the owner last set it; and when the owner's mail server last refused a mail in
+      the owner's name for this grantee (null: never), cleared when the owner sets the
+      mode again. Never a right of the mail server's ACL: on an IMAP server eXo alone
+      holds and enforces it. It lives only on a share on offer or in use, and goes with
+      the share (revoke, leave, decline, gone). Nullable, no default, no index. Rolled
+      back by dropping the three columns.
+    </comment>
+    <addColumn tableName="EMAIL_DELEGATION">
+      <column name="SEND_MODE" type="VARCHAR(16)"/>
+      <column name="SEND_MODE_DATE" type="TIMESTAMP"/>
+      <column name="SEND_REFUSED_DATE" type="TIMESTAMP"/>
+    </addColumn>
+    <rollback>
+      <dropColumn tableName="EMAIL_DELEGATION" columnName="SEND_REFUSED_DATE"/>
+      <dropColumn tableName="EMAIL_DELEGATION" columnName="SEND_MODE_DATE"/>
+      <dropColumn tableName="EMAIL_DELEGATION" columnName="SEND_MODE"/>
+    </rollback>
+  </changeSet>
 </databaseChangeLog>
