@@ -59,4 +59,9 @@ public class ScheduledEmail {
   // The mailbox shared with the owner that the mail was written in, and is sent from
   // (EXO-90595); null for the owner's own mailbox.
   private DraftMailbox         mailbox;
+
+  // The name the mail goes out in from that mailbox (EXO-90584): NONE, ON_BEHALF or AS as
+  // the draft records it, null when it never said; checked against the owner's consent
+  // again when it is sent.
+  private String               sendMode;
 }
