@@ -102,7 +102,7 @@ export default {
         return this.$t(this.sharedMailbox ? 'emailConnector.mailBox.search.shared.error' : 'emailConnector.mailBox.search.error');
       }
       if (this.totalMatches > this.results.length) {
-        return this.$t('emailConnector.mailBox.search.showingOf', {
+        return this.$t(this.sharedMailbox ? 'emailConnector.mailBox.search.shared.showingOf' : 'emailConnector.mailBox.search.showingOf', {
           0: this.results.length,
           1: this.totalMatches,
         });
