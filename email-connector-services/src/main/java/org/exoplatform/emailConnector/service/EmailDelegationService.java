@@ -50,6 +50,7 @@ import org.exoplatform.emailConnector.model.DelegationOrigin;
 import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.DiscoveredFolder;
+import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailFolder;
@@ -2208,6 +2209,77 @@ public class EmailDelegationService {
     } catch (MailboxRightMissingException e) {
       return null;
     }
+  }
+
+  /**
+   * The share a draft is being written in, as the draft's first save records it
+   * (EXO-90595): one of the writer's own received shares, whatever its status. Resolved
+   * with the caller as grantee, as {@link #ownerSentFolderKey} resolves it, so a
+   * client-supplied id never names another user's mailbox: somebody else's share and an
+   * unknown id are both "no such delegation". Its status is not checked here: a share
+   * that ended while the words were being typed still owns the draft, which keeps them,
+   * and every send of it checks the share again and refuses.
+   *
+   * @param granteeUsername the writer, who must be the share's grantee
+   * @param delegationId the share the client names
+   * @return the share
+   * @throws ObjectNotFoundException when no such share belongs to the writer
+   */
+  public EmailDelegation requireOwnShare(String granteeUsername, long delegationId) throws ObjectNotFoundException {
+    return asGrantee(granteeUsername, delegationId);
+  }
+
+  /**
+   * The mailbox a draft or a scheduled mail of the writer's was written in, as the
+   * "Scheduled" view names it (EXO-90595): its owner, and whether it is still shared
+   * with the writer. Only among the writer's own received shares, whatever their
+   * status -- an ended share is named, so the view can say why the mail cannot go.
+   *
+   * @param granteeUsername the writer
+   * @param delegationId the share the draft records
+   * @return the mailbox, or null when no such share belongs to the writer
+   */
+  public DraftMailbox draftMailbox(String granteeUsername, long delegationId) {
+    EmailDelegation delegation = emailDelegationStorage.getAsGrantee(granteeUsername, delegationId);
+    if (delegation == null) {
+      return null;
+    }
+    return new DraftMailbox(delegationId,
+                            ownerFullName(delegation),
+                            delegation.getOwnerMailbox(),
+                            delegation.getStatus() == DelegationStatus.ACCEPTED);
+  }
+
+  /**
+   * The mailboxes a page of the writer's drafts or scheduled mails were written in
+   * (EXO-90595), each share looked up once however many of the page's mails it holds.
+   * A share that does not resolve -- not the writer's, or unreadable -- reads as not
+   * shared, never as the writer's own mailbox: that is the answer that stops a send.
+   * Never fails the page.
+   *
+   * @param granteeUsername the writer
+   * @param delegationIds the shares the page's drafts record; nulls are skipped
+   * @return the mailbox of each share, by id
+   */
+  public Map<Long, DraftMailbox> draftMailboxes(String granteeUsername, Collection<Long> delegationIds) {
+    Map<Long, DraftMailbox> mailboxes = new HashMap<>();
+    if (delegationIds == null) {
+      return mailboxes;
+    }
+    for (Long delegationId : delegationIds) {
+      if (delegationId == null || mailboxes.containsKey(delegationId)) {
+        continue;
+      }
+      DraftMailbox mailbox;
+      try {
+        mailbox = draftMailbox(granteeUsername, delegationId);
+      } catch (RuntimeException e) {
+        LOG.debug("The mailbox of a draft of user {} could not be named", granteeUsername, e);
+        mailbox = null;
+      }
+      mailboxes.put(delegationId, mailbox != null ? mailbox : new DraftMailbox(delegationId, null, null, false));
+    }
+    return mailboxes;
   }
 
   /**

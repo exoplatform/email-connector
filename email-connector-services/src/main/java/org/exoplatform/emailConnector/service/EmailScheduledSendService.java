@@ -44,6 +44,7 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
+import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
@@ -137,6 +138,13 @@ public class EmailScheduledSendService {
   /** The code of a mail without recipient. */
   public static final String         RECIPIENTS_MANDATORY         = "emailConnector.scheduled.recipientsMandatory";
 
+  /**
+   * The notification reason of a scheduled mail that was sent from a shared mailbox but
+   * whose copy could not be filed in its owner's Sent (EXO-90595): not a send failure,
+   * never a {@link ScheduledSendError}, never written to the schedule row.
+   */
+  public static final String         OWNER_COPY_FAILED_REASON     = "OWNER_COPY_FAILED";
+
   /** The code of an action on a mail whose sending could not be confirmed. */
   public static final String         UNCERTAIN_CONFLICT           = "emailConnector.scheduled.uncertain";
 
@@ -182,6 +190,9 @@ public class EmailScheduledSendService {
 
   @Autowired
   private IdentityManager            identityManager;
+
+  @Autowired
+  private EmailDelegationService     emailDelegationService;
 
   // The rows this JVM is sending (or checking) right now: excluded from every recovery,
   // so a restart's recovery, or a stale-claim sweep, never takes a live run for a dead one.
@@ -429,9 +440,20 @@ public class EmailScheduledSendService {
     }
     Map<Long, Email> drafts = emailBoxStorage.getListedEmailsByIds(username,
                                                                    rows.stream().map(EmailScheduledSend::getEmailId).toList());
+    // One lookup per share for the page, not per row.
+    Map<Long, DraftMailbox> mailboxes = emailDelegationService.draftMailboxes(username,
+                                                                              drafts.values()
+                                                                                    .stream()
+                                                                                    .map(Email::getSendDelegationId)
+                                                                                    .toList());
     List<ScheduledEmail> scheduled = new ArrayList<>(rows.size());
     for (EmailScheduledSend row : rows) {
-      scheduled.add(toScheduledEmail(row, drafts.get(row.getEmailId())));
+      Email draft = drafts.get(row.getEmailId());
+      ScheduledEmail view = toScheduledEmail(row, draft, false);
+      if (draft != null && draft.getSendDelegationId() != null) {
+        view.setMailbox(mailboxes.get(draft.getSendDelegationId()));
+      }
+      scheduled.add(view);
     }
     return scheduled;
   }
@@ -526,12 +548,17 @@ public class EmailScheduledSendService {
       return;
     }
     try {
-      emailBoxService.sendStoredDraft(username, claimed.getDraftLocalId(), () -> {
+      EmailBoxService.StoredDraftSent sent = emailBoxService.sendStoredDraft(username, claimed.getDraftLocalId(), () -> {
         if (!emailScheduledSendStorage.markSent(claimed.getId(), claimed.getClaimedBy(), claimed.getClaimedDate(), now())) {
           LOG.warn("Scheduled mail {} of user {} was sent, but its row was no longer this run's", claimed.getId(), username);
         }
       });
       LOG.info("A scheduled mail of user {} was sent", username);
+      if (sent != null && sent.ownerCopy() == EmailBoxService.OwnerCopy.FAILED) {
+        // Sent all the same (EXO-90595): the sender is told the shared mailbox's owner has
+        // no copy in their Sent, and nothing about the send is recorded as failed.
+        notifyOwner(username, sent.subject(), OWNER_COPY_FAILED_REASON);
+      }
     } catch (ObjectNotFoundException e) {
       // The draft is gone (discarded), and its schedule with it through the cascade:
       // nothing was sent, and there is nothing left to record.
@@ -753,17 +780,29 @@ public class EmailScheduledSendService {
    * @param reason why
    */
   private void notifyOwner(String username, String subject, ScheduledSendError reason) {
+    notifyOwner(username, subject, reason.name());
+  }
+
+  /**
+   * {@link #notifyOwner(String, String, ScheduledSendError)} with a reason code that is
+   * not a send failure, such as {@link #OWNER_COPY_FAILED_REASON}.
+   *
+   * @param username the owner
+   * @param subject the mail's subject
+   * @param reason the reason code the notification translates
+   */
+  private void notifyOwner(String username, String subject, String reason) {
     try {
       NotificationContext ctx = NotificationContextImpl.cloneInstance()
                                                        .append(ScheduledEmailFailedNotificationPlugin.RECEIVER, username)
                                                        .append(ScheduledEmailFailedNotificationPlugin.SUBJECT,
                                                                StringUtils.defaultString(subject))
-                                                       .append(ScheduledEmailFailedNotificationPlugin.REASON, reason.name());
+                                                       .append(ScheduledEmailFailedNotificationPlugin.REASON, reason);
       ctx.getNotificationExecutor()
          .with(ctx.makeCommand(PluginKey.key(NotificationConstants.SCHEDULED_EMAIL_FAILED_NOTIFICATION_PLUGIN)))
          .execute(ctx);
     } catch (RuntimeException | LinkageError e) {
-      LOG.warn("User {} could not be notified that a scheduled mail was not sent ({})", username, reason, e);
+      LOG.warn("User {} could not be notified about a scheduled mail ({})", username, reason, e);
     }
   }
 
@@ -896,6 +935,19 @@ public class EmailScheduledSendService {
    * @return the view
    */
   private ScheduledEmail toScheduledEmail(EmailScheduledSend row, Email draft) {
+    return toScheduledEmail(row, draft, true);
+  }
+
+  /**
+   * {@link #toScheduledEmail(EmailScheduledSend, Email)}, naming the draft's mailbox or
+   * leaving that to the caller, which names it once per share for a whole page.
+   *
+   * @param row the schedule row
+   * @param draft its draft, may be null
+   * @param withMailbox whether to name the draft's mailbox here
+   * @return the view
+   */
+  private ScheduledEmail toScheduledEmail(EmailScheduledSend row, Email draft, boolean withMailbox) {
     ScheduledEmail scheduled = new ScheduledEmail();
     scheduled.setDraftLocalId(row.getDraftLocalId());
     scheduled.setScheduledDate(row.getScheduledDate() == null ? 0 : row.getScheduledDate().getTime());
@@ -907,8 +959,27 @@ public class EmailScheduledSendService {
       scheduled.setTo(draft.getTo());
       scheduled.setSubject(draft.getSubject());
       scheduled.setSnippet(snippet(draft.getContent()));
+      if (withMailbox) {
+        scheduled.setMailbox(draftMailbox(row.getUserId(), draft.getSendDelegationId()));
+      }
     }
     return scheduled;
+  }
+
+  /**
+   * The shared mailbox a scheduled mail was written in, as the view names it
+   * (EXO-90595), or null for the owner's own. A share that ended is still named, marked
+   * as no longer shared, since that is why the mail will not go. Never fails the list.
+   *
+   * @param username the mail's owner
+   * @param delegationId the share its draft records, may be null
+   * @return the mailbox, or null
+   */
+  private DraftMailbox draftMailbox(String username, Long delegationId) {
+    if (delegationId == null) {
+      return null;
+    }
+    return emailDelegationService.draftMailboxes(username, List.of(delegationId)).get(delegationId);
   }
 
   /**

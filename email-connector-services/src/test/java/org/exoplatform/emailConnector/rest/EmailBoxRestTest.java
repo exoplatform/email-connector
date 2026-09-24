@@ -91,6 +91,7 @@ import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.MailFolder;
@@ -1370,6 +1371,46 @@ public class EmailBoxRestTest {
     mockMvc.perform(get(EMAIL_BOX_PATH + "/scheduled/count").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$").value(3));
+  }
+
+  /**
+   * EXO-90595 -- the mailbox a draft belongs to reaches the composer as statuses: a first
+   * save naming a share that is not the caller's answers 400 with its code (never the
+   * "draft gone" 404), a schedule of a draft whose mailbox is no longer shared 410, a
+   * send naming another mailbox than the draft's 400 with its code; and the draft's
+   * mailbox reads 200 with its owner, or 204 for the caller's own.
+   *
+   * @throws Exception if a request fails
+   */
+  @Test
+  void aDraftsMailboxRefusalsAnswerTheirStatuses() throws Exception {
+    doThrow(new IllegalArgumentException(EmailBoxService.MAILBOX_NOT_FOUND_CODE)).when(emailBoxService)
+                                                                                 .saveDraft(any(Email.class), anyString(), anyBoolean());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts").with(testSimpleUser())
+                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                    .content(asJsonString(new Email())))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(EmailBoxService.MAILBOX_NOT_FOUND_CODE));
+    when(emailBoxService.getDraftMailbox("draft-1", SIMPLE_USER)).thenReturn(new DraftMailbox(100L, "Anne", "anne@example.org", false));
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/drafts/draft-1/mailbox").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.delegationId").value(100))
+           .andExpect(jsonPath("$.shared").value(false));
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/drafts/draft-2/mailbox").with(testSimpleUser())).andExpect(status().isNoContent());
+    doThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED)).when(emailScheduledSendService)
+                                                                               .schedule(any(Email.class), anyLong(), anyString(), anyString());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/schedule").with(testSimpleUser())
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .content(asJsonString(new ScheduleRequest(new Email(), 1L, "UTC"))))
+           .andExpect(status().isGone());
+    Email draft = new Email();
+    draft.setTo(List.of(new EmailRecipient("Bob", "bob@example.org", null, false)));
+    doThrow(new IllegalArgumentException(EmailBoxService.MAILBOX_MISMATCH_CODE)).when(emailBoxService)
+                                                                                .sendDraft(any(Email.class), anyString(), eq(101L));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send?delegationId=101").with(testSimpleUser())
+                                                                                   .contentType(MediaType.APPLICATION_JSON)
+                                                                                   .content(asJsonString(draft)))
+           .andExpect(status().isBadRequest());
   }
 
   /**

@@ -52,7 +52,7 @@ export const SCHEDULED_PAGE_SIZE = 20;
  * have gone, and are said as "Couldn't confirm it was sent".
  */
 export const NOT_SENT_REASONS = ['NETWORK', 'RECIPIENT_REFUSED', 'AUTHENTICATION', 'ATTACHMENT_GONE', 'TOO_LARGE',
-  'DISCONNECTED', 'REFUSED', 'INTERNAL'];
+  'DISCONNECTED', 'REFUSED', 'INTERNAL', 'MAILBOX_UNSHARED'];
 
 /**
  * Turns a refused response into an Error carrying the server's message code, when it
@@ -295,6 +295,28 @@ export function scheduledActions(scheduled) {
   default:
     return ['edit', 'reschedule', 'sendNow', 'cancel', 'discard'];
   }
+}
+
+/**
+ * The line naming the shared mailbox a draft or a scheduled mail was written in
+ * (EXO-90595), from the mailbox the server named: "From Anne's mailbox", with "no longer
+ * shared with you" once the share has ended; nothing for the user's own mailbox. One
+ * rule for the Drafts folder and the Scheduled view.
+ *
+ * @param {Object} mailbox the mailbox ({ownerFullName, ownerMailbox, shared}), may be null
+ * @param {Object} vm the component, for $t
+ * @returns {String} the line, or an empty string
+ */
+export function draftMailboxLabel(mailbox, vm) {
+  if (!mailbox) {
+    return '';
+  }
+  const owner = mailbox.ownerFullName || mailbox.ownerMailbox;
+  if (!owner) {
+    return vm.$t('emailConnector.mailBox.scheduled.mailbox.unknown');
+  }
+  return vm.$t(mailbox.shared ? 'emailConnector.mailBox.scheduled.mailbox' : 'emailConnector.mailBox.scheduled.mailbox.unshared',
+    { 0: owner });
 }
 
 /**

@@ -55,4 +55,8 @@ public class ScheduledEmail {
 
   // A ScheduledSendError name when the mail was not sent, else null.
   private String               lastError;
+
+  // The mailbox shared with the owner that the mail was written in, and is sent from
+  // (EXO-90595); null for the owner's own mailbox.
+  private DraftMailbox         mailbox;
 }

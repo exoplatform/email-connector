@@ -53,6 +53,20 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="11" class="me-1 icon-default-color">far fa-clock</v-icon>
         {{ dateLabel }}
       </v-list-item-subtitle>
+      <!-- The shared mailbox the mail was written in and goes from (EXO-90595); nothing
+           for the user's own. Warned once it is no longer shared: the mail cannot go. -->
+      <v-list-item-subtitle
+        v-if="mailboxLabel"
+        :class="scheduled.mailbox.shared ? 'text-light-color' : 'warning--text'"
+        class="caption text-truncate scheduled-email-mailbox">
+        <v-icon
+          :class="scheduled.mailbox.shared ? 'icon-default-color' : 'warning--text'"
+          size="11"
+          class="me-1">
+          fas fa-user-friends
+        </v-icon>
+        {{ mailboxLabel }}
+      </v-list-item-subtitle>
       <v-list-item-subtitle
         v-if="stateText"
         :class="stateLine.color"
@@ -176,6 +190,16 @@ export default {
       return this.$t('emailConnector.mailBox.scheduled.at', {
         0: this.$emailConnectorMailBoxService.formatScheduledDate(this.scheduled.scheduledDate, this.scheduled.timeZone),
       });
+    },
+    /**
+     * The shared mailbox the mail was written in, by its owner's name (EXO-90595):
+     * "From Anne's mailbox", with "no longer shared with you" once the share has ended;
+     * nothing for the user's own mailbox.
+     *
+     * @returns {String} the line, or an empty string
+     */
+    mailboxLabel() {
+      return this.$emailConnectorMailBoxService.draftMailboxLabel(this.scheduled.mailbox, this);
     },
     /**
      * @returns {Object} what the mail's state says, or null while it simply waits

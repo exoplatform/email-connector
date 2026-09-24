@@ -75,6 +75,7 @@ import org.exoplatform.emailConnector.model.DelegationOrigin;
 import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.DiscoveredFolder;
+import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailFolder;
@@ -1706,6 +1707,63 @@ class EmailDelegationServiceTest {
     assertNull(service.ownerSentFolderKey(GRANTEE, 100L), "no i on it: nothing to file into");
     when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(sharedInbox(accepted)));
     assertNull(service.ownerSentFolderKey(GRANTEE, 100L), "no Sent shared");
+  }
+
+  /**
+   * EXO-90595 -- the share a draft's first save records is one of the writer's own
+   * received shares, looked up with the writer as grantee: another's, or an unknown id,
+   * is "not found". Its status is not checked there -- the sends check it.
+   */
+  @Test
+  void aDraftsShareIsOneOfTheWritersOwnShares() throws Exception {
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 7L)).thenReturn(null);
+    assertThrows(ObjectNotFoundException.class, () -> service.requireOwnShare(GRANTEE, 7L));
+    EmailDelegation revoked = row(DelegationStatus.REVOKED, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(revoked);
+    assertSame(revoked, service.requireOwnShare(GRANTEE, 100L));
+    verify(emailDelegationStorage, never()).getAsOwner(anyString(), anyLong());
+  }
+
+  /**
+   * EXO-90595 -- the mailbox a scheduled mail was written in is named by its owner's
+   * profile name, and still named once the share has ended, marked no longer shared;
+   * a share that is not the writer's names nothing.
+   */
+  @Test
+  void aDraftsMailboxIsNamedWhileSharedAndAfter() {
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 7L)).thenReturn(null);
+    assertNull(service.draftMailbox(GRANTEE, 7L));
+    Identity alice = new Identity("organization", OWNER);
+    Profile profile = new Profile(alice);
+    profile.setProperty(Profile.FULL_NAME, "Alice Martin");
+    alice.setProfile(profile);
+    when(identityManager.getOrCreateUserIdentity(OWNER)).thenReturn(alice);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO));
+    assertEquals(new DraftMailbox(100L, "Alice Martin", OWNER_MAILBOX, true), service.draftMailbox(GRANTEE, 100L));
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(row(DelegationStatus.REVOKED, DelegationOrigin.EXO));
+    assertEquals(new DraftMailbox(100L, "Alice Martin", OWNER_MAILBOX, false), service.draftMailbox(GRANTEE, 100L));
+  }
+
+  /**
+   * EXO-90595 -- a page's mailboxes are named with one lookup per share however many of
+   * its drafts a share holds; a share that is not the writer's, or cannot be read,
+   * reads as not shared rather than failing the page or passing for the writer's own.
+   */
+  @Test
+  void aPagesDraftMailboxesAreLookedUpOncePerShare() {
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO));
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 7L)).thenReturn(null);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 8L)).thenThrow(new IllegalStateException("database away"));
+    java.util.List<Long> ids = new java.util.ArrayList<>(List.of(100L, 7L, 100L, 8L));
+    ids.add(null);
+
+    Map<Long, DraftMailbox> mailboxes = service.draftMailboxes(GRANTEE, ids);
+
+    assertTrue(mailboxes.get(100L).shared());
+    assertEquals(new DraftMailbox(7L, null, null, false), mailboxes.get(7L));
+    assertEquals(new DraftMailbox(8L, null, null, false), mailboxes.get(8L));
+    assertEquals(3, mailboxes.size());
+    verify(emailDelegationStorage, times(1)).getAsGrantee(GRANTEE, 100L);
   }
 
   /**
