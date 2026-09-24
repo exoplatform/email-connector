@@ -31,4 +31,17 @@ public class DelegationPreferencesRequest {
   private Boolean badgeIncluded;
 
   private Boolean notifyNewMail;
+
+  /** Whether the unified search returns this shared mailbox (EXO-90554). */
+  private Boolean searchIncluded;
+
+  /**
+   * The badge and notification toggles; the search toggle left as it is.
+   *
+   * @param badgeIncluded the badge toggle, or null
+   * @param notifyNewMail the notification toggle, or null
+   */
+  public DelegationPreferencesRequest(Boolean badgeIncluded, Boolean notifyNewMail) {
+    this(badgeIncluded, notifyNewMail, null);
+  }
 }
