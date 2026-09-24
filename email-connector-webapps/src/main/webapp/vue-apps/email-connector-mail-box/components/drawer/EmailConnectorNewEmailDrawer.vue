@@ -415,6 +415,11 @@ export default {
       // mail is then back in the user's own name on screen, since the owner's can no
       // longer be used.
       sendModeRefused: false,
+      // The name the stored draft records (EXO-90584), as it was opened: what a scheduled
+      // mail being edited goes out in unless its Update says otherwise.
+      recordedSendMode: null,
+      // Whether the stored draft opened is a scheduled mail being edited (EXO-90584).
+      resumingScheduled: false,
       // The mailbox the mail belongs to (EXO-90595): the share's delegation id, or null
       // for the user's own. Set when the composer opens -- from the switcher for a new
       // mail, from the draft itself for a resumed one -- and never from the switcher
@@ -692,6 +697,9 @@ export default {
         return false;
       }
       return (this.savedSignature !== null && this.composeSignature() !== this.savedSignature)
+        // A name other than the one the mail records, the band's own fallback included
+        // (EXO-90584): it goes out in the recorded one until the Update.
+        || this.draftSendMode() !== this.recordedSendMode
         || this.scheduledEdit.removedIds.length > 0
         || this.attachments.some(attachment => attachment.uploadId || attachment.uploading);
     },
@@ -1378,10 +1386,12 @@ export default {
      * a draft and editing a scheduled mail share.
      *
      * @param {object} draft - the stored draft
+     * @param {boolean} scheduled - whether it is a scheduled mail about to be edited
      * @returns {void}
      */
-    openOnDraft(draft) {
+    openOnDraft(draft, scheduled) {
       this.scheduledEdit = null;
+      this.resumingScheduled = !!scheduled;
       // The files the draft was stored with, as chips the user can see and remove.
       this.attachments = this.storedAttachmentChips(draft);
       this.resetDraftTracking();
@@ -1520,6 +1530,7 @@ export default {
       // Cc the draft was saved with is left as it is. A draft that never said, or one of
       // the user's own mailbox, is in the user's own name.
       this.sendMode = delegationId && (draft?.sendMode === 'ON_BEHALF' || draft?.sendMode === 'AS') ? draft.sendMode : 'NONE';
+      this.recordedSendMode = delegationId ? this.sendMode : null;
       this.sendModeRefused = false;
       this.reconcileDraftIdentity();
       if (!delegationId || !draft.draftLocalId) {
@@ -1552,8 +1563,10 @@ export default {
      * A resumed draft in the owner's name that the band no longer offers (EXO-90584):
      * consent withdrawn or narrowed, switched off, refused by her mail server. It comes
      * back in the user's own name, and says so -- it is never sent in hers on the old
-     * word. Nothing is decided while the band's entry is not known yet: the server checks
-     * the consent at the send anyway.
+     * word. A scheduled mail being edited still records her name until its Update: the
+     * change is a pending edit (see scheduledChanged), and the sentence says the mail is
+     * not sent otherwise. Nothing is decided while the band's entry is not known yet: the
+     * server checks the consent at the send anyway.
      *
      * @returns {void}
      */
@@ -1562,9 +1575,10 @@ export default {
         return;
       }
       this.sendMode = 'NONE';
-      this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.draft.sendModeUnavailable', {
-        0: this.sharedMailboxOwnerName,
-      }), 'warning');
+      const key = this.scheduledEdit || this.resumingScheduled
+        ? 'emailConnector.mailBox.newEmail.drawer.scheduled.sendModeUnavailable'
+        : 'emailConnector.mailBox.newEmail.drawer.draft.sendModeUnavailable';
+      this.$root.$emit('alert-message', this.$t(key, { 0: this.sharedMailboxOwnerName }), 'warning');
     },
     /**
      * The name the mail goes out in, as a draft save or a send of a draft carries it
@@ -1787,6 +1801,8 @@ export default {
       this.sharedMailboxReply = false;
       this.sendMode = 'NONE';
       this.sendModeRefused = false;
+      this.recordedSendMode = null;
+      this.resumingScheduled = false;
       this.mailboxDelegationId = null;
       this.draftMailbox = null;
       // Reset with its siblings: the content template is v-if'd, so the field is
@@ -2653,7 +2669,7 @@ export default {
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.scheduled.edit.notFound'), 'info');
         return;
       }
-      this.openOnDraft(draft);
+      this.openOnDraft(draft, true);
       this.title = this.$t('emailConnector.mailBox.newEmail.drawer.scheduled.title');
       this.scheduledEdit = {
         draftLocalId,

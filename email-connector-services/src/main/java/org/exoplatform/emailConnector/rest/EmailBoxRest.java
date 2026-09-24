@@ -1530,7 +1530,7 @@ public class EmailBoxRest {
                                        @Parameter(description = "The share the composer believes the draft belongs to; must be the draft's own (EXO-90595)")
                                        @RequestParam(value = "delegationId", required = false)
                                        Long delegationId,
-                                       @Parameter(description = "Read only for a draft that records no name (EXO-90584): ON_BEHALF or AS to send it in the owner's name of the draft's share, NONE for the caller's own; refused when it is not the name the draft records")
+                                       @Parameter(description = "Deprecated: the draft's sendMode, in the body or as stored, is the name it goes out in (EXO-90584). Read only for a draft that records no name (saved before the name was stored): ON_BEHALF or AS to send it in the owner's name of the draft's share, NONE for the caller's own; refused (emailConnector.sendMode.mismatch) when it is not the name the draft records", deprecated = true)
                                        @RequestParam(value = "sendMode", required = false)
                                        String sendMode) {
     try {
