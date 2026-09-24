@@ -311,6 +311,8 @@ describe('scheduling runs Send\'s checks, then stores the draft and freezes it (
       attachments: [],
       // Always carried, off included: the server reads a missing value as "no" (EXO-90435).
       readReceiptRequested: false,
+      // The user's own mailbox: no owner to write in the name of (EXO-90584).
+      sendMode: null,
     });
     expect(draft.content.body).toContain('border-left');
     expect(alerts(emitted)).toEqual([[`emailConnector.mailBox.newEmail.drawer.schedule.success|date:${date}`, 'success']]);
