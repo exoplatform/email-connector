@@ -79,9 +79,7 @@ public class EmailSearchResult {
   private String      ownerFullName;
 
   /**
-   * A hit named by its folder and UID only, with no local id, no share and no owner: a
-   * hit not held in the local copy, or a hit of the user's own mailbox in the unified
-   * search.
+   * A hit named by its folder and UID only, with no local id, no share and no owner.
    *
    * @param mailRemoteId the UID in the searched folder
    * @param folder the folder searched
