@@ -65,13 +65,13 @@ public class EmailSearchResult {
   // each body to quote it would cost one round-trip per result.
   private String      excerpt;
 
-  // The cached row's local id, when the hit was read from the local copy rather than
-  // off the mail server (EXO-90555): the key an agent names one mail by, which a UID,
-  // numbered per folder, is not. Null for a server hit.
+  // The local id of the cached row holding the message, whenever there is one -- for a
+  // hit found on the server as for one read from the local copy: the key an agent names
+  // one mail by, which a UID, numbered per folder, is not. Null when it is not cached.
   private Long        emailId;
 
   /**
-   * A hit without a local id -- every hit but one read from a shared mailbox's mirror.
+   * A hit named by its folder and UID only, with no local id.
    *
    * @param mailRemoteId the UID in the searched folder
    * @param folder the folder searched
