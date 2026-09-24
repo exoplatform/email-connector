@@ -516,6 +516,35 @@ export function changeDelegationPreset(id, preset) {
 }
 
 /**
+ * Sets, changes or withdraws the caller's consent to one grantee writing mail in the
+ * caller's name (EXO-90582). Recorded on the share; nothing is sent. A refusal carries
+ * the server's message code as the error message.
+ *
+ * @param {Number} id the delegation id
+ * @param {String} sendMode NONE, ON_BEHALF or AS
+ * @returns {Promise<Object>} the delegation as it now stands
+ */
+export function setDelegationSendMode(id, sendMode) {
+  return fetch(`/email-connector/rest/user-email-setting/delegations/${id}/send-mode`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({sendMode}),
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json()
+      .catch(() => ({}))
+      .then(body => {
+        throw new Error(body?.message || 'Error when changing who may write mail in your name');
+      });
+  });
+}
+
+/**
  * Answers a share: accept it, decline it, or leave one already accepted. Three verbs
  * on one path because the server decides what each means for the row — and none of
  * them touches the access itself, which stays the owner's to remove.
