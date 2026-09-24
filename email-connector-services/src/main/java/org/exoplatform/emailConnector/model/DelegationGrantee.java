@@ -37,6 +37,11 @@ import java.util.Map;
  * @param extendableRoles the owner's role folders (Sent, Archive, Trash, Spam) her
  *          mailbox has and eXo's share does not cover yet -- what "Extend access" would
  *          add (EXO-90548); empty when there is nothing to extend or eXo cannot extend it
+ * @param granteeFullName the grantee's display name, what the owner's consent to their
+ *          writing in her name names (EXO-90582); null when no eXo user is known
+ * @param ownerSentCopy whether a mail the grantee writes in the owner's name will be filed
+ *          in the owner's own Sent (EXO-90551, EXO-90582): what the consent says about
+ *          the owner keeping a copy
  */
 public record DelegationGrantee(String identifier,
                                 String granteeId,
@@ -45,7 +50,9 @@ public record DelegationGrantee(String identifier,
                                 String rights,
                                 String nativeRights,
                                 Map<String, Boolean> affordances,
-                                List<FolderRole> extendableRoles) {
+                                List<FolderRole> extendableRoles,
+                                String granteeFullName,
+                                boolean ownerSentCopy) {
 
   /**
    * Builds an entry from an ACL entry and what eXo knows about it.
@@ -63,7 +70,9 @@ public record DelegationGrantee(String identifier,
                                  ace.rights().letters(),
                                  ace.nativeRights(),
                                  ace.rights().affordances(),
-                                 List.of());
+                                 List.of(),
+                                 null,
+                                 false);
   }
 
   /**
@@ -73,6 +82,36 @@ public record DelegationGrantee(String identifier,
    * @return the entry with those roles
    */
   public DelegationGrantee withExtendableRoles(List<FolderRole> roles) {
-    return new DelegationGrantee(identifier, granteeId, delegation, preset, rights, nativeRights, affordances, List.copyOf(roles));
+    return new DelegationGrantee(identifier,
+                                 granteeId,
+                                 delegation,
+                                 preset,
+                                 rights,
+                                 nativeRights,
+                                 affordances,
+                                 List.copyOf(roles),
+                                 granteeFullName,
+                                 ownerSentCopy);
+  }
+
+  /**
+   * The same entry, with what the owner's consent to the grantee writing in her name
+   * says (EXO-90582): who, and whether she keeps a copy.
+   *
+   * @param fullName the grantee's display name
+   * @param sentCopy whether their mail in her name is filed in her Sent
+   * @return the entry with both
+   */
+  public DelegationGrantee withConsentContext(String fullName, boolean sentCopy) {
+    return new DelegationGrantee(identifier,
+                                 granteeId,
+                                 delegation,
+                                 preset,
+                                 rights,
+                                 nativeRights,
+                                 affordances,
+                                 extendableRoles,
+                                 fullName,
+                                 sentCopy);
   }
 }
