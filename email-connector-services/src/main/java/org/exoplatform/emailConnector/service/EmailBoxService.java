@@ -2026,7 +2026,10 @@ public class EmailBoxService {
    * UIDVALIDITY): the boundary is set to the highest cached UID, and the mail already
    * there is not news;</li>
    * <li>the delegate is opening the folder ({@code passDelegation} null): they see the
-   * new mail, so the boundary follows what they see.</li>
+   * new mail, so the boundary follows what they see;</li>
+   * <li>the folder had not been checked for a while ({@link #wasDormant}): the share was
+   * out of use, and what arrived meanwhile arrived while the delegate was not using the
+   * mailbox (Q-5) -- whether or not the on-open refresh got to it first.</li>
    * </ul>
    * A share that is not in use is not synced at all ({@link #syncDelegatedFolders}, the
    * activity window), so it notifies nothing: the switch never buys a sync of its own
@@ -2067,7 +2070,7 @@ public class EmailBoxService {
       return;
     }
     long maxUid = emailBoxStorage.getMaxUid(username, folder.getKey());
-    if (boundary == null || isRenumbered(previousSnapshot, capturedSnapshot)) {
+    if (boundary == null || isRenumbered(previousSnapshot, capturedSnapshot) || wasDormant(folder)) {
       if (boundary == null || boundary != maxUid) {
         emailFolderService.replaceNotifiedUid(username, folder.getId(), boundary, maxUid);
       }
@@ -2107,6 +2110,24 @@ public class EmailBoxService {
          .with(ctx.makeCommand(PluginKey.key(NotificationConstants.DELEGATED_NEW_EMAILS_NOTIFICATION_PLUGIN)))
          .execute(ctx);
     }
+  }
+
+  /**
+   * Whether a shared INBOX was out of use before this pass: its previous check is older
+   * than twice the slowest period at which a mailbox in use is checked (the inactive
+   * sync period), or it was never checked. A share in use is checked every pass of its
+   * delegate's own sync; a gap beyond that means the passes had stopped, which only the
+   * activity window does.
+   *
+   * @param folder the shared INBOX's row, as read before this pass recorded its check
+   * @return true when the mail above the boundary arrived while the share was not in use
+   */
+  private boolean wasDormant(EmailFolder folder) {
+    if (folder.getLastSyncDate() == null) {
+      return true;
+    }
+    long periodMs = TimeUnit.MINUTES.toMillis(Math.max(1, emailConnectorService.getEmailBoxInactiveSyncPeriod()));
+    return System.currentTimeMillis() - folder.getLastSyncDate().getTime() > 2 * periodMs;
   }
 
   /**

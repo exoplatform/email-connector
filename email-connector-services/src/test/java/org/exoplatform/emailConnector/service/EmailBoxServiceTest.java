@@ -11746,6 +11746,7 @@ public class EmailBoxServiceTest {
     when(store.getFolder("Other Users/alice/INBOX")).thenReturn(shared);
     EmailFolder inbox = delegatedInbox(8L);
     inbox.setNotifiedUid(10L);
+    inbox.setLastSyncDate(new Date());
     givenAnActiveShare(inbox);
     EmailDelegation share = aSharedMailboxRow();
     share.setNotifyNewMail(true);
@@ -11769,6 +11770,7 @@ public class EmailBoxServiceTest {
   void aSharedInboxRangeIsTakenThenItsUnreadMailNotified() {
     EmailFolder inbox = delegatedInbox(8L);
     inbox.setNotifiedUid(10L);
+    inbox.setLastSyncDate(new Date());
     EmailDelegation share = aNotifyingShare();
     when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(share);
     when(emailBoxStorage.getMaxUid(TEST_USER, "CUSTOM:8")).thenReturn(13L);
@@ -11808,6 +11810,7 @@ public class EmailBoxServiceTest {
   void aSharedInboxRangeAnotherCallerTookIsNotNotifiedAgain() {
     EmailFolder inbox = delegatedInbox(8L);
     inbox.setNotifiedUid(10L);
+    inbox.setLastSyncDate(new Date());
     EmailDelegation share = aNotifyingShare();
     when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(share);
     when(emailBoxStorage.getMaxUid(TEST_USER, "CUSTOM:8")).thenReturn(12L);
@@ -11865,6 +11868,7 @@ public class EmailBoxServiceTest {
   void aShareEndedSinceThePassReadItIsNotNotified() {
     EmailFolder inbox = delegatedInbox(8L);
     inbox.setNotifiedUid(10L);
+    inbox.setLastSyncDate(new Date());
     EmailDelegation revoked = aNotifyingShare();
     revoked.setStatus(DelegationStatus.REVOKED);
     when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(revoked);
@@ -11930,6 +11934,71 @@ public class EmailBoxServiceTest {
 
     verifyNoInteractions(emailFolderStorage);
     verify(emailBoxStorage, never()).getMaxUid(anyString(), anyString());
+  }
+
+  /**
+   * A shared INBOX whose previous check is older than twice the inactive sync period
+   * was out of use: what arrived meanwhile is not news (Q-5), and the boundary is
+   * moved to the highest cached UID without notifying -- even when the delegate's
+   * return did not refresh it on open first.
+   */
+  @Test
+  void aSharedInboxBackFromDisuseIsBaselinedWithoutNotifying() {
+    EmailFolder inbox = delegatedInbox(8L);
+    inbox.setNotifiedUid(10L);
+    inbox.setLastSyncDate(new Date(System.currentTimeMillis() - 3 * 60 * 60_000L));
+    when(emailConnectorService.getEmailBoxInactiveSyncPeriod()).thenReturn(60);
+    when(emailBoxStorage.getMaxUid(TEST_USER, "CUSTOM:8")).thenReturn(40L);
+    try (MockedStatic<NotificationContextImpl> contexts = mockStatic(NotificationContextImpl.class)) {
+      emailBoxService.notifyDelegatedNewMail(TEST_USER, inbox, aNotifyingShare(), null, null);
+      contexts.verifyNoInteractions();
+    }
+    verify(emailFolderStorage).replaceNotifiedUid(TEST_USER, 8L, 10L, 40L);
+    verify(emailFolderStorage, never()).advanceNotifiedUid(anyString(), anyLong(), anyLong(), anyLong());
+
+    // Checked within the period, the same mail is news.
+    inbox.setLastSyncDate(new Date(System.currentTimeMillis() - 90 * 60_000L));
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(aNotifyingShare());
+    emailBoxService.notifyDelegatedNewMail(TEST_USER, inbox, aNotifyingShare(), null, null);
+    verify(emailFolderStorage).advanceNotifiedUid(TEST_USER, 8L, 10L, 40L);
+  }
+
+  /**
+   * Opening a stale shared INBOX refreshes it on the listing's thread, and that path
+   * never notifies: the boundary follows what the delegate now sees, silently, even for
+   * a share whose notification is on.
+   */
+  @Test
+  @SneakyThrows
+  void openingAStaleSharedInboxMovesItsBoundaryWithoutNotifying() {
+    // The connection alone: the on-open path lists no folder of the delegate's own.
+    givenAConnectedMailbox();
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    IMAPFolder shared = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Other Users/alice/INBOX");
+    when(shared.getMessageCount()).thenReturn(1);
+    when(store.getFolder("Other Users/alice/INBOX")).thenReturn(shared);
+    EmailFolder inbox = delegatedInbox(8L);
+    inbox.setNotifiedUid(10L);
+    // Stale for the on-open refresh (older than the sync period), recent for the
+    // dormancy rule (within twice the inactive period): only the path decides.
+    inbox.setLastSyncDate(new Date(System.currentTimeMillis() - 30 * 60_000L));
+    lenient().when(emailConnectorService.getEmailBoxInactiveSyncPeriod()).thenReturn(60);
+    when(emailFolderStorage.getFolder(TEST_USER, 8L)).thenReturn(inbox);
+    when(emailBoxStorage.getEmails(TEST_USER, "CUSTOM:8")).thenReturn(new ArrayList<>());
+    givenASharedInboxKeyed("CUSTOM:8");
+    EmailDelegation share = aNotifyingShare();
+    lenient().when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(share);
+    when(emailBoxStorage.getMaxUid(TEST_USER, "CUSTOM:8")).thenReturn(12L);
+
+    try (MockedStatic<NotificationContextImpl> contexts = mockStatic(NotificationContextImpl.class)) {
+      emailBoxService.getEmailBox(TEST_USER, "CUSTOM:8");
+      contexts.verifyNoInteractions();
+    }
+
+    verify(shared).open(Folder.READ_ONLY);
+    verify(emailFolderStorage).replaceNotifiedUid(TEST_USER, 8L, 10L, 12L);
+    verify(emailFolderStorage, never()).advanceNotifiedUid(anyString(), anyLong(), anyLong(), anyLong());
   }
 
   /**
