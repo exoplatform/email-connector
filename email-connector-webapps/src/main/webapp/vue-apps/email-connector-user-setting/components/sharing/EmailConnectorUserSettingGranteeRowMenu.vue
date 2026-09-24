@@ -17,7 +17,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- The owner's actions on one person's access: change it to a preset (the current
        one checked; "Set to ..." when the letters read as none), share the rest of the
-       mailbox with an Inbox-only share, choose folder by folder, or remove it. -->
+       mailbox with an Inbox-only share, choose folder by folder, let them write mail in
+       the owner's name, or remove it. -->
   <v-menu offset-y left>
     <template #activator="{ on, attrs }">
       <v-btn
@@ -54,6 +55,21 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-list-item-title>{{ $t('UserSettings.emailConnector.sharing.folders.menu') }}</v-list-item-title>
         </v-list-item>
       </template>
+      <!-- Writing mail in the owner's name (EXO-90582): only the shapes the mail server
+           is declared to accept; the current one checked. -->
+      <template v-if="canSetSendMode">
+        <v-divider class="my-1" />
+        <v-subheader class="caption">{{ $t('UserSettings.emailConnector.sharing.sendMode.menu') }}</v-subheader>
+        <v-list-item
+          v-for="mode in sendModeChoices"
+          :key="mode"
+          @click="mode !== currentSendMode && $emit('change-send-mode', mode)">
+          <v-list-item-title>{{ $t(`UserSettings.emailConnector.sharing.sendMode.${mode}`) }}</v-list-item-title>
+          <v-list-item-action v-if="mode === currentSendMode" class="my-0">
+            <v-icon size="12" color="primary">fa-check</v-icon>
+          </v-list-item-action>
+        </v-list-item>
+      </template>
       <v-divider class="my-1" />
       <v-list-item @click="$emit('revoke')">
         <v-list-item-title class="error--text">{{ $t('UserSettings.emailConnector.sharing.revoke') }}</v-list-item-title>
@@ -77,8 +93,26 @@ export default {
     extendLabel: { type: String, default: '' },
     // Whether the owner's mail server shares folder by folder (EXO-90556).
     canChooseFolders: { type: Boolean, default: false },
+    // The owner's consent to this person writing mail in her name: NONE, ON_BEHALF or AS (EXO-90582).
+    currentSendMode: { type: String, default: 'NONE' },
+    // The shapes the owner's mail server is declared to accept: ON_BEHALF, AS.
+    sendModes: { type: Array, default: () => [] },
+    // Whether the consent may be set on this share at all.
+    canSetSendMode: { type: Boolean, default: false },
   },
   data: () => ({ PRESETS }),
+  computed: {
+    /**
+     * The choices offered: Not allowed, then each shape the server is declared to accept
+     * -- As me only where it is. The current one stays listed, checked, so a consent the
+     * server no longer accepts can still be seen and withdrawn.
+     *
+     * @returns {Array} NONE, ON_BEHALF, AS, as offered
+     */
+    sendModeChoices() {
+      return ['NONE', 'ON_BEHALF', 'AS'].filter(mode => mode === 'NONE' || mode === this.currentSendMode || this.sendModes.includes(mode));
+    },
+  },
   methods: {
     /**
      * A preset's name in the menu: itself when the access reads as a preset, "Set to
