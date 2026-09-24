@@ -357,6 +357,70 @@ public interface EmailFolderDAO extends JpaRepository<EmailFolderEntity, Long> {
   String inboxType);
 
   /**
+   * Sets the new-mail notification boundary of a shared INBOX that has none (EXO-90553):
+   * the baseline, taken only if nobody took it first. Scoped to a delegated row of the
+   * user, so the user's own folders never carry one.
+   *
+   * @param id the row id
+   * @param userId the grantee
+   * @param toUid the boundary
+   * @return one when this caller set it, zero when a boundary was already there
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailFolderEntity folder SET folder.notifiedUid = :toUid WHERE folder.id = :id AND folder.userId = :userId"
+      + " AND folder.delegationId IS NOT NULL AND folder.notifiedUid IS NULL")
+  int initialiseNotifiedUid(@Param("id")
+  long id, @Param("userId")
+  String userId, @Param("toUid")
+  long toUid);
+
+  /**
+   * Replaces the new-mail notification boundary of a shared INBOX by another value,
+   * higher, lower or null, if it still holds the one the caller read (EXO-90553): the
+   * silent moves -- a re-baseline after the server renumbered the folder, the advance of
+   * a delegate looking at the mailbox, the reset of a share whose notification is off.
+   *
+   * @param id the row id
+   * @param userId the grantee
+   * @param fromUid the boundary the caller read
+   * @param toUid the new boundary, null for none
+   * @return one when this caller moved it, zero when it had moved meanwhile
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailFolderEntity folder SET folder.notifiedUid = :toUid WHERE folder.id = :id AND folder.userId = :userId"
+      + " AND folder.delegationId IS NOT NULL AND folder.notifiedUid = :fromUid")
+  int replaceNotifiedUid(@Param("id")
+  long id, @Param("userId")
+  String userId, @Param("fromUid")
+  long fromUid, @Param("toUid")
+  Long toUid);
+
+  /**
+   * Takes the range (fromUid, toUid] of a shared INBOX's new mail for notification
+   * (EXO-90553): the boundary moves up only if it still holds what the caller read, so
+   * of several nodes or paths trying to notify the same new mail exactly one gets the
+   * row -- the conditional UPDATE the delegate's own INBOX uses on its sync-state row,
+   * on a different row and column.
+   *
+   * @param id the row id
+   * @param userId the grantee
+   * @param fromUid the boundary the caller read
+   * @param toUid the highest cached UID, above it
+   * @return one when this caller took the range, zero when another did
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailFolderEntity folder SET folder.notifiedUid = :toUid WHERE folder.id = :id AND folder.userId = :userId"
+      + " AND folder.delegationId IS NOT NULL AND folder.notifiedUid = :fromUid AND folder.notifiedUid < :toUid")
+  int advanceNotifiedUid(@Param("id")
+  long id, @Param("userId")
+  String userId, @Param("fromUid")
+  long fromUid, @Param("toUid")
+  long toUid);
+
+  /**
    * Drops every registered folder of one shared mailbox -- the leave / revoke purge of
    * the registry rows. As with {@link #deleteByUserId}, the mirrored rows are deleted
    * by the caller.

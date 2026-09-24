@@ -50,6 +50,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
 
@@ -155,7 +156,9 @@ import com.sun.mail.imap.ResyncData;
 import org.exoplatform.commons.api.notification.NotificationContext;
 import org.exoplatform.commons.api.notification.command.NotificationCommand;
 import org.exoplatform.commons.api.notification.command.NotificationExecutor;
+import org.exoplatform.commons.api.notification.model.PluginKey;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
+import org.exoplatform.emailConnector.notification.plugin.DelegatedNewEmailsNotificationPlugin;
 import org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationPlugin;
 import org.exoplatform.commons.ObjectAlreadyExistsException;
 import org.exoplatform.commons.file.model.FileItem;
@@ -206,6 +209,7 @@ import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.emailConnector.utils.NotificationConstants;
 import org.exoplatform.services.listener.ListenerService;
 
 import io.meeds.social.category.model.Category;
@@ -11721,6 +11725,223 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage).getSyncEmails(TEST_USER, "CUSTOM:8");
     verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNCED), any(), any());
     verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED), any(), any());
+  }
+
+  // ---------------------------------------------------------------------------------
+  // EXO-90553: new-mail notifications for a shared INBOX, on the delegate's own row.
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * The hook runs after a delegated sync of the periodic pass, with the share the pass
+   * read: a shared INBOX with a boundary and new unread mail above it takes the range
+   * on its own folder row, and never on the delegate's own sync-state row.
+   */
+  @Test
+  @SneakyThrows
+  void thePeriodicPassTakesTheSharedInboxRangeOnItsOwnRow() {
+    givenAMailboxListing();
+    IMAPFolder shared = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Other Users/alice/INBOX");
+    when(shared.getMessageCount()).thenReturn(1);
+    Store store = userEmailSettingService.connect(userEmailSetting().getEmailConnectorId(), TEST_USER);
+    when(store.getFolder("Other Users/alice/INBOX")).thenReturn(shared);
+    EmailFolder inbox = delegatedInbox(8L);
+    inbox.setNotifiedUid(10L);
+    givenAnActiveShare(inbox);
+    EmailDelegation share = aSharedMailboxRow();
+    share.setNotifyNewMail(true);
+    when(emailDelegationService.getActiveDelegations(eq(TEST_USER), any())).thenReturn(List.of(share));
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(share);
+    when(emailBoxStorage.getMaxUid(TEST_USER, "CUSTOM:8")).thenReturn(12L);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(emailFolderStorage).advanceNotifiedUid(TEST_USER, 8L, 10L, 12L);
+    verify(emailSyncStateStorage, never()).advanceNotifiedUid(anyString(), any(), anyLong());
+  }
+
+  /**
+   * The range (boundary, highest cached UID] is taken first, then only its unread
+   * messages count: the owner is named first, the share and its mailbox are carried
+   * for the link, and it goes to the delegate through the delegated plugin -- never the
+   * own mailbox's.
+   */
+  @Test
+  void aSharedInboxRangeIsTakenThenItsUnreadMailNotified() {
+    EmailFolder inbox = delegatedInbox(8L);
+    inbox.setNotifiedUid(10L);
+    EmailDelegation share = aNotifyingShare();
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(share);
+    when(emailBoxStorage.getMaxUid(TEST_USER, "CUSTOM:8")).thenReturn(13L);
+    Email seen = unreadInboxEmail(TEST_USER, 12L);
+    seen.setRead(true);
+    when(emailBoxStorage.getSyncEmails(TEST_USER, "CUSTOM:8")).thenReturn(List.of(unreadInboxEmail(TEST_USER, 9L),
+                                                                                    unreadInboxEmail(TEST_USER, 10L),
+                                                                                    unreadInboxEmail(TEST_USER, 11L),
+                                                                                    seen,
+                                                                                    unreadInboxEmail(TEST_USER, 13L)));
+    when(emailFolderStorage.advanceNotifiedUid(TEST_USER, 8L, 10L, 13L)).thenReturn(true);
+    NotificationContext context = mock(NotificationContext.class);
+    try (MockedStatic<NotificationContextImpl> contexts = mockStatic(NotificationContextImpl.class)) {
+      contexts.when(NotificationContextImpl::cloneInstance).thenReturn(context);
+      when(context.append(any(), any())).thenReturn(context);
+      NotificationExecutor executor = mock(NotificationExecutor.class);
+      when(context.getNotificationExecutor()).thenReturn(executor);
+      when(executor.with(nullable(NotificationCommand.class))).thenReturn(executor);
+
+      emailBoxService.notifyDelegatedNewMail(TEST_USER, inbox, share, null, null);
+
+      verify(context).append(DelegatedNewEmailsNotificationPlugin.NEW_EMAILS, "2");
+      verify(context).append(DelegatedNewEmailsNotificationPlugin.RECEIVER, TEST_USER);
+      verify(context).append(DelegatedNewEmailsNotificationPlugin.ACTOR, "alice");
+      verify(context).append(DelegatedNewEmailsNotificationPlugin.OWNER_MAILBOX, "alice@acme.com");
+      verify(context).append(DelegatedNewEmailsNotificationPlugin.DELEGATION_ID, "100");
+      verify(context).makeCommand(PluginKey.key(NotificationConstants.DELEGATED_NEW_EMAILS_NOTIFICATION_PLUGIN));
+      verify(context, never()).makeCommand(PluginKey.key(NotificationConstants.NEW_EMAILS_NOTIFICATION_PLUGIN));
+      verify(executor).execute(context);
+    }
+  }
+
+  /**
+   * A range another node or path took is not notified a second time.
+   */
+  @Test
+  void aSharedInboxRangeAnotherCallerTookIsNotNotifiedAgain() {
+    EmailFolder inbox = delegatedInbox(8L);
+    inbox.setNotifiedUid(10L);
+    EmailDelegation share = aNotifyingShare();
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(share);
+    when(emailBoxStorage.getMaxUid(TEST_USER, "CUSTOM:8")).thenReturn(12L);
+    when(emailFolderStorage.advanceNotifiedUid(TEST_USER, 8L, 10L, 12L)).thenReturn(false);
+    try (MockedStatic<NotificationContextImpl> contexts = mockStatic(NotificationContextImpl.class)) {
+      emailBoxService.notifyDelegatedNewMail(TEST_USER, inbox, share, null, null);
+      contexts.verifyNoInteractions();
+    }
+    verify(emailBoxStorage, never()).getSyncEmails(TEST_USER, "CUSTOM:8");
+  }
+
+  /**
+   * No burst on the first pass after the notification was turned on or the share
+   * accepted: with no boundary yet, the pass sets it to the highest cached UID and
+   * notifies nothing.
+   */
+  @Test
+  void theFirstPassBaselinesTheBoundaryAndNotifiesNothing() {
+    EmailFolder inbox = delegatedInbox(8L);
+    when(emailBoxStorage.getMaxUid(TEST_USER, "CUSTOM:8")).thenReturn(300L);
+    try (MockedStatic<NotificationContextImpl> contexts = mockStatic(NotificationContextImpl.class)) {
+      emailBoxService.notifyDelegatedNewMail(TEST_USER, inbox, aNotifyingShare(), null, null);
+      contexts.verifyNoInteractions();
+    }
+    verify(emailFolderStorage).replaceNotifiedUid(TEST_USER, 8L, null, 300L);
+    verify(emailFolderStorage, never()).advanceNotifiedUid(anyString(), anyLong(), anyLong(), anyLong());
+  }
+
+  /**
+   * A share whose notification is off, or that is not accepted, notifies nothing and
+   * loses its boundary -- so turning it on again starts from the mail then present,
+   * not from what arrived meanwhile.
+   */
+  @Test
+  void aShareNotNotifyingLosesItsBoundaryAndNotifiesNothing() {
+    EmailFolder inbox = delegatedInbox(8L);
+    inbox.setNotifiedUid(10L);
+    EmailDelegation off = aSharedMailboxRow();
+    EmailDelegation declined = aNotifyingShare();
+    declined.setStatus(DelegationStatus.DECLINED);
+    try (MockedStatic<NotificationContextImpl> contexts = mockStatic(NotificationContextImpl.class)) {
+      emailBoxService.notifyDelegatedNewMail(TEST_USER, inbox, off, null, null);
+      emailBoxService.notifyDelegatedNewMail(TEST_USER, inbox, declined, null, null);
+      contexts.verifyNoInteractions();
+    }
+    verify(emailFolderStorage, times(2)).replaceNotifiedUid(TEST_USER, 8L, 10L, null);
+    verify(emailBoxStorage, never()).getMaxUid(anyString(), anyString());
+  }
+
+  /**
+   * A share revoked, left or switched off since the pass read it: the fresh read right
+   * before the claim finds it, and the range is not taken.
+   */
+  @Test
+  void aShareEndedSinceThePassReadItIsNotNotified() {
+    EmailFolder inbox = delegatedInbox(8L);
+    inbox.setNotifiedUid(10L);
+    EmailDelegation revoked = aNotifyingShare();
+    revoked.setStatus(DelegationStatus.REVOKED);
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(revoked);
+    when(emailBoxStorage.getMaxUid(TEST_USER, "CUSTOM:8")).thenReturn(12L);
+
+    emailBoxService.notifyDelegatedNewMail(TEST_USER, inbox, aNotifyingShare(), null, null);
+
+    verify(emailFolderStorage, never()).advanceNotifiedUid(anyString(), anyLong(), anyLong(), anyLong());
+  }
+
+  /**
+   * The delegate opening the shared INBOX sees its new mail: the boundary follows what
+   * they see, silently, whatever the share's switch.
+   */
+  @Test
+  void openingTheSharedInboxMovesTheBoundarySilently() {
+    EmailFolder inbox = delegatedInbox(8L);
+    inbox.setNotifiedUid(10L);
+    when(emailBoxStorage.getMaxUid(TEST_USER, "CUSTOM:8")).thenReturn(12L);
+    try (MockedStatic<NotificationContextImpl> contexts = mockStatic(NotificationContextImpl.class)) {
+      emailBoxService.notifyDelegatedNewMail(TEST_USER, inbox, null, null, null);
+      contexts.verifyNoInteractions();
+    }
+    verify(emailFolderStorage).replaceNotifiedUid(TEST_USER, 8L, 10L, 12L);
+    verify(emailFolderStorage, never()).advanceNotifiedUid(anyString(), anyLong(), anyLong(), anyLong());
+    verify(emailDelegationService, never()).delegationOf(anyString(), anyString());
+  }
+
+  /**
+   * The server renumbered the shared INBOX (a new UIDVALIDITY): the remembered boundary
+   * names nothing any more, so it is set again to the highest cached UID and the mail
+   * that merely changed numbers is not announced as new.
+   */
+  @Test
+  void aRenumberedSharedInboxIsBaselinedAgainWithoutNotifying() {
+    EmailFolder inbox = delegatedInbox(8L);
+    inbox.setNotifiedUid(500L);
+    when(emailBoxStorage.getMaxUid(TEST_USER, "CUSTOM:8")).thenReturn(900L);
+    try (MockedStatic<NotificationContextImpl> contexts = mockStatic(NotificationContextImpl.class)) {
+      emailBoxService.notifyDelegatedNewMail(TEST_USER,
+                                             inbox,
+                                             aNotifyingShare(),
+                                             new FolderSyncSnapshot(1L, 501L, 300L, 7L, 300),
+                                             new FolderSyncSnapshot(2L, 901L, 300L, 9L, 300));
+      contexts.verifyNoInteractions();
+    }
+    verify(emailFolderStorage).replaceNotifiedUid(TEST_USER, 8L, 500L, 900L);
+    verify(emailFolderStorage, never()).advanceNotifiedUid(anyString(), anyLong(), anyLong(), anyLong());
+  }
+
+  /**
+   * Only the shared INBOX notifies: a shared Sent or Archive refreshed on open or synced
+   * never touches a boundary.
+   */
+  @Test
+  void aSharedFolderOtherThanTheInboxNeverNotifies() {
+    EmailFolder sent = delegatedInbox(9L);
+    sent.setType(MailFolderView.TYPE_DELEGATED);
+    sent.setNotifiedUid(10L);
+
+    emailBoxService.notifyDelegatedNewMail(TEST_USER, sent, aNotifyingShare(), null, null);
+    emailBoxService.notifyDelegatedNewMail(TEST_USER, sent, null, null, null);
+
+    verifyNoInteractions(emailFolderStorage);
+    verify(emailBoxStorage, never()).getMaxUid(anyString(), anyString());
+  }
+
+  /**
+   * An accepted share of alice's mailbox whose new mail notifies the delegate.
+   *
+   * @return the share
+   */
+  private EmailDelegation aNotifyingShare() {
+    EmailDelegation share = aSharedMailboxRow();
+    share.setOwnerId("alice");
+    share.setNotifyNewMail(true);
+    return share;
   }
 
   /**

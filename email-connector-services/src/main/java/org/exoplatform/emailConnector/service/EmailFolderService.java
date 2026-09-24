@@ -886,6 +886,34 @@ public class EmailFolderService {
   }
 
   /**
+   * Sets, moves or clears a shared INBOX's new-mail notification boundary without
+   * notifying anything (EXO-90553), if it still holds what the caller read.
+   *
+   * @param username the delegate
+   * @param id the registry id of the shared INBOX
+   * @param fromUid the boundary the caller read, null for none
+   * @param toUid the new boundary, null to clear it
+   * @return whether this caller moved it
+   */
+  public boolean replaceNotifiedUid(String username, long id, Long fromUid, Long toUid) {
+    return emailFolderStorage.replaceNotifiedUid(username, id, fromUid, toUid);
+  }
+
+  /**
+   * Takes the range (fromUid, toUid] of a shared INBOX's new mail for its notification
+   * (EXO-90553) -- see {@link EmailFolderStorage#advanceNotifiedUid}.
+   *
+   * @param username the delegate
+   * @param id the registry id of the shared INBOX
+   * @param fromUid the boundary the caller read
+   * @param toUid the highest cached UID
+   * @return whether this caller took the range and is the one to notify it
+   */
+  public boolean advanceNotifiedUid(String username, long id, long fromUid, long toUid) {
+    return emailFolderStorage.advanceNotifiedUid(username, id, fromUid, toUid);
+  }
+
+  /**
    * Records that the sync could not find a folder the registry still lists -- the
    * same mark a discovery walk would put on it, so the next walk's grace rule applies.
    *

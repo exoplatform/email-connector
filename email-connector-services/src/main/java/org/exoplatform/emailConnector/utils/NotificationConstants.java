@@ -46,6 +46,12 @@ public class NotificationConstants {
    */
   public static final String EMAIL_DELEGATION_RESPONSE_NOTIFICATION_PLUGIN = "EmailDelegationResponseNotificationPlugin";
 
+  /**
+   * New mail arrived in a mailbox shared with the receiver, who asked to be told
+   * (EXO-90553). Its own id, so it has its own line in the notification settings.
+   */
+  public static final String DELEGATED_NEW_EMAILS_NOTIFICATION_PLUGIN = "DelegatedNewEmailsNotificationPlugin";
+
   /** The other party's eXo username: the owner on an invitation, the actor on an answer. */
   public static final String DELEGATION_ACTOR               = "DELEGATION_ACTOR";
 

@@ -651,7 +651,7 @@ public class UserEmailSettingRest {
   @Secured("users")
   @Operation(summary = "Stores the caller's toggles on a mailbox shared with them",
              method = "PUT",
-             description = "badgeIncluded: whether the shared INBOX counts in the caller's unread badge (off by default). notifyNewMail: whether new mail there notifies the caller (off by default; the notification itself is a later phase). A missing field leaves the toggle as it is.")
+             description = "badgeIncluded: whether the shared INBOX counts in the caller's unread badge (off by default). notifyNewMail: whether new mail there notifies the caller (off by default; only while the caller uses that mailbox, since a share not in use is not synced). A missing field leaves the toggle as it is.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "No such delegation of the caller's") })
