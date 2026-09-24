@@ -741,6 +741,27 @@ class ImapAclEngineTest {
   }
 
   /**
+   * EXO-90556 -- every folder the server calls Drafts is Drafts in the owner's list, not
+   * only the one the role goes to, so none is ever offered to share.
+   */
+  @Test
+  void everyDraftsFolderIsDraftsNotOnlyTheFirst() throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.list("%")).thenReturn(new Folder[0]);
+    Folder[] listing = new Folder[] { listed("Drafts", "Drafts", "\\Drafts"), listed("Brouillons", "Old/Brouillons", "\\Drafts"),
+        listed("Drafts", "Clients/Drafts") };
+    when(root.list("*")).thenReturn(listing);
+
+    List<OwnFolder> own = engine.listOwnFolders(session());
+
+    assertEquals(List.of(FolderRole.DRAFTS, FolderRole.DRAFTS), own.stream().limit(2).map(OwnFolder::role).toList());
+    assertNull(own.get(2).role(), "a folder named so, nested, is the owner's own");
+  }
+
+  /**
    * "Remove access" finds every folder of the owner whose ACL names the grantee, however
    * the identifier is cased, and skips a folder whose ACL cannot be read.
    */

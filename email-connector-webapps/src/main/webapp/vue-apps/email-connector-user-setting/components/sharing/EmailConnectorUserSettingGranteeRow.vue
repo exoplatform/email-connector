@@ -233,12 +233,6 @@ export default {
       return this.actionable && !this.discovered && !!this.grantee.delegation?.inboxOnly;
     },
     /**
-     * The owner's folders the grant found but the server refused to share, said on the
-     * row -- "Trash could not be shared" -- or nothing.
-     *
-     * @returns {String} the sentence, or empty
-     */
-    /**
      * The owner's per-folder exceptions to the preset on the role folders, said on the
      * row -- "Trash: Reader · Spam: Not shared" -- or nothing (EXO-90556).
      *
@@ -255,6 +249,12 @@ export default {
         }))
         .join(' · ');
     },
+    /**
+     * The owner's folders the grant found but the server refused to share, said on the
+     * row -- "Trash could not be shared" -- or nothing.
+     *
+     * @returns {String} the sentence, or empty
+     */
     notShared() {
       const roles = this.actionable ? this.grantee.delegation.rolesNotShared || [] : [];
       return roles.length
