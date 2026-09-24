@@ -356,6 +356,11 @@ public class ImapAclEngine implements MailboxAclEngine {
     Map<FolderRole, String> byTopName = new EnumMap<>(FolderRole.class);
     Map<FolderRole, String> byInboxChildName = new EnumMap<>(FolderRole.class);
     for (IMAPFolder folder : folders) {
+      if (MailFolder.INBOX.equalsIgnoreCase(folder.getFullName())) {
+        // INBOX is the share itself, never a role folder: a grant or a removal written
+        // for a role must never land on it, whatever attribute a server lists on it.
+        continue;
+      }
       FolderRole attributeRole = roleOfAttributes(folder);
       if (attributeRole != null) {
         byAttribute.putIfAbsent(attributeRole, folder.getFullName());
