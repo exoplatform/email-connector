@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
 import org.jsoup.Jsoup;
@@ -1413,7 +1414,7 @@ public class EmailMcpTool implements McpToolPlugin {
       }
       uids.add(row.getMailRemoteId());
     }
-    if (mailRemoteIds != null && !mailRemoteIds.isEmpty() && !new java.util.HashSet<>(mailRemoteIds).equals(new java.util.HashSet<>(uids))) {
+    if (mailRemoteIds != null && !mailRemoteIds.isEmpty() && !Set.copyOf(mailRemoteIds).equals(Set.copyOf(uids))) {
       throw new IllegalArgumentException("email_ids and mail_remote_ids do not name the same mails: nothing was done. Pass the email_ids alone.");
     }
     return uids;
