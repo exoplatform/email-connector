@@ -26,6 +26,7 @@ import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.OwnFolder;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 
 /**
@@ -111,8 +112,9 @@ public interface MailboxAclEngine {
    * and answers what was written. The engine expands the preset into its server's
    * vocabulary (letters {@code lrs}/{@code lrswit} on IMAP, a verb on BlueMind), caps
    * it by its allowlist and by the owner's own rights -- eXo never grants a right the
-   * owner does not hold, nor {@code a}, {@code x}, {@code e}, {@code k}, {@code p} on an
-   * IMAP engine -- and refuses with {@code NOTHING_TO_GRANT} when what remains does
+   * owner does not hold, nor {@code a}, {@code x}, {@code k}, {@code p} on an IMAP
+   * engine, and {@code e} only where mail leaves, never on Trash (PO decision Q-1, see
+   * {@link #lettersFor}) -- and refuses with {@code NOTHING_TO_GRANT} when what remains does
    * not even read (plan, sections 3.4, 5.1, 8). On a per-mailbox server the mailbox
    * argument names the mailbox as a whole. An existing entry for the identifier is
    * replaced, not widened.
@@ -147,7 +149,8 @@ public interface MailboxAclEngine {
    * folder: a per-mailbox engine never sees a role.
    *
    * @param preset READER or EDITOR
-   * @param role the folder's role, null for INBOX
+   * @param role the folder's role, null for INBOX and for a folder of the owner's own
+   *          making, which an Editor holds with {@code e} like INBOX (EXO-90556, P-1)
    * @return the letters, before any cap
    */
   default MailboxRights lettersFor(DelegationPreset preset, FolderRole role) {
@@ -165,7 +168,8 @@ public interface MailboxAclEngine {
    * @param identifier the grantee as the server names them
    * @param preset READER or EDITOR
    * @param ownerRights the owner's own rights on that folder
-   * @param role the folder's role, null for INBOX
+   * @param role the folder's role, null for INBOX and for a folder of the owner's own
+   *          making, which an Editor holds with {@code e} like INBOX (EXO-90556, P-1)
    * @return the entry as written
    * @throws MailboxAclException when nothing is left to grant or the server refuses
    */
@@ -189,6 +193,21 @@ public interface MailboxAclEngine {
    */
   default Map<FolderRole, String> findRoleFolders(MailboxAclSession session) {
     return Map.of();
+  }
+
+  /**
+   * The session user's own folders -- never one under another user's or a shared
+   * namespace, never one that cannot hold mail -- each with its role in that mailbox as
+   * {@link #findRoleFolders} reads it (EXO-90556): what the owner can share folder by
+   * folder, and the only names a per-folder grant is ever written on. Only on a
+   * per-folder engine; the default knows none.
+   *
+   * @param session the owner's session
+   * @return the folders, INBOX included, in the server's listing order; never null
+   * @throws MailboxAclException when the server cannot be asked
+   */
+  default List<OwnFolder> listOwnFolders(MailboxAclSession session) {
+    return List.of();
   }
 
   /**
