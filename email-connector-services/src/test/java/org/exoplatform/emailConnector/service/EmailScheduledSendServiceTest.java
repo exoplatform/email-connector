@@ -579,7 +579,8 @@ public class EmailScheduledSendServiceTest {
    * EXO-90595 -- the "Scheduled" view names the shared mailbox each mail was written in,
    * as the writer's own share resolves it, an ended one included (marked no longer
    * shared); a mail of the owner's own mailbox names none, and a share that no longer
-   * resolves at all still reads as not shared rather than as the owner's own.
+   * resolves at all still reads as not shared rather than as the owner's own. A share is
+   * looked up once for the page, however many of its mails are listed.
    *
    * @throws Exception never
    */
@@ -590,13 +591,24 @@ public class EmailScheduledSendServiceTest {
     shared.setEmailId(10L);
     EmailScheduledSend unresolved = claimedRow(0);
     unresolved.setEmailId(11L);
-    when(storage.getListed(USER, 0, 20)).thenReturn(List.of(own, shared, unresolved));
+    EmailScheduledSend sameShare = claimedRow(0);
+    sameShare.setEmailId(12L);
+    when(storage.getListed(USER, 0, 20)).thenReturn(List.of(own, shared, unresolved, sameShare));
     Email ownDraft = draft();
     Email sharedDraft = draft();
     sharedDraft.setSendDelegationId(100L);
     Email unresolvedDraft = draft();
     unresolvedDraft.setSendDelegationId(7L);
-    when(emailBoxStorage.getListedEmailsByIds(eq(USER), anyList())).thenReturn(Map.of(9L, ownDraft, 10L, sharedDraft, 11L, unresolvedDraft));
+    Email sameShareDraft = draft();
+    sameShareDraft.setSendDelegationId(100L);
+    when(emailBoxStorage.getListedEmailsByIds(eq(USER), anyList())).thenReturn(Map.of(9L,
+                                                                                      ownDraft,
+                                                                                      10L,
+                                                                                      sharedDraft,
+                                                                                      11L,
+                                                                                      unresolvedDraft,
+                                                                                      12L,
+                                                                                      sameShareDraft));
     DraftMailbox anne = new DraftMailbox(100L, "Anne Dupont", "anne@example.org", false);
     when(emailDelegationService.draftMailbox(USER, 100L)).thenReturn(anne);
 
@@ -605,6 +617,8 @@ public class EmailScheduledSendServiceTest {
     assertNull(listed.get(0).getMailbox(), "the owner's own mailbox");
     assertEquals(anne, listed.get(1).getMailbox());
     assertEquals(new DraftMailbox(7L, null, null, false), listed.get(2).getMailbox());
+    assertEquals(anne, listed.get(3).getMailbox());
+    verify(emailDelegationService, times(1)).draftMailbox(USER, 100L);
   }
 
   /**

@@ -48,6 +48,7 @@ import org.springframework.util.CollectionUtils;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
+import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
@@ -1444,13 +1445,12 @@ public class EmailBoxRest {
   @PostMapping("/drafts")
   @Secured("users")
   @Operation(summary = "Saves a draft", method = "POST",
-             description = "Saves the composed draft locally, and — when 'push' is set and the account has a Drafts folder — appends it to the mail server's Drafts folder as well. A blank draftLocalId starts a new draft; the id in the answer is the handle to keep saving, resuming and discarding it by. The answer also carries the draft's state, which tells the composer whether the words made it to the server or live only here. readReceiptRequested is saved with the draft, so a resumed or scheduled draft keeps asking for a read receipt. sendDelegationId, on a draft's FIRST save only, names the mailbox shared with the caller the draft is written in: it must be one of the caller's own accepted shares, and is then recorded on the draft for good -- later saves never move it, and the draft is sent through that share whatever mailbox the composer shows later. Every answer carries the draft's sendDelegationId, null for the caller's own mailbox.")
+             description = "Saves the composed draft locally, and — when 'push' is set and the account has a Drafts folder — appends it to the mail server's Drafts folder as well. A blank draftLocalId starts a new draft; the id in the answer is the handle to keep saving, resuming and discarding it by. The answer also carries the draft's state, which tells the composer whether the words made it to the server or live only here. readReceiptRequested is saved with the draft, so a resumed or scheduled draft keeps asking for a read receipt. sendDelegationId, on a draft's FIRST save only, names the mailbox shared with the caller the draft is written in: it must be one of the caller's own shares (400 emailConnector.drafts.save.mailboxNotFound otherwise, nothing saved), and is then recorded on the draft for good -- later saves never move it, and the draft is sent through that share whatever mailbox the composer shows later; a share that has ended is recorded all the same, so the words are kept, and every send of the draft refuses it. Every answer carries the draft's sendDelegationId, null for the caller's own mailbox.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "400", description = "Bad Request, or a first save naming a share that is not the caller's (emailConnector.drafts.save.mailboxNotFound)"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
-      @ApiResponse(responseCode = "404", description = "No draft under that local id (it has been sent or discarded), or a first save naming a share that is not the caller's"),
-      @ApiResponse(responseCode = "409", description = "The draft is scheduled to be sent, and locked (emailConnector.scheduled.locked)"),
-      @ApiResponse(responseCode = "410", description = "A first save naming a mailbox no longer shared with the caller; nothing was saved"), })
+      @ApiResponse(responseCode = "404", description = "No draft under that local id (it has been sent or discarded)"),
+      @ApiResponse(responseCode = "409", description = "The draft is scheduled to be sent, and locked (emailConnector.scheduled.locked)"), })
   public Email saveDraft(HttpServletRequest request,
                          @Parameter(description = "The composed draft", required = true)
                          @RequestBody
@@ -1472,10 +1472,6 @@ public class EmailBoxRest {
       return saved;
     } catch (ScheduledSendConflictException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
-    } catch (DelegationRevokedException e) {
-      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
-    } catch (ObjectNotFoundException e) {
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
@@ -1541,6 +1537,35 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  /**
+   * The mailbox shared with the caller that a draft of theirs belongs to (EXO-90595).
+   *
+   * @param request the caller
+   * @param draftLocalId the draft's local id
+   * @return the mailbox, or 204 for a draft of the caller's own mailbox
+   */
+  @GetMapping("/drafts/{draftLocalId}/mailbox")
+  @Secured("users")
+  @Operation(summary = "The mailbox a draft belongs to", method = "GET",
+             description = "The mailbox shared with the caller that the draft was written in, as the server knows it: delegationId, ownerFullName, ownerMailbox, and shared -- false once that mailbox is no longer shared with the caller, in which case the draft cannot be sent (it is never sent from the caller's own mailbox instead). 204 for a draft of the caller's own mailbox, 404 for a draft the caller does not have.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "204", description = "A draft of the caller's own mailbox"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "No draft under that local id"), })
+  public ResponseEntity<DraftMailbox> getDraftMailbox(HttpServletRequest request,
+                                                      @Parameter(description = "The draft's local id", required = true)
+                                                      @PathVariable("draftLocalId")
+                                                      String draftLocalId) {
+    try {
+      DraftMailbox mailbox = emailBoxService.getDraftMailbox(draftLocalId, request.getRemoteUser());
+      return mailbox == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(mailbox);
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     }
   }
 

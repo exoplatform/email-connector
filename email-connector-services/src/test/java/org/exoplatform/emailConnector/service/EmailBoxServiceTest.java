@@ -176,6 +176,7 @@ import org.exoplatform.emailConnector.model.FolderMessageCounts;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.MailFolder;
@@ -7690,7 +7691,7 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * EXO-90595 (F4) -- a draft written in a shared mailbox is sent through ITS share when
+   * EXO-90595 -- a draft written in a shared mailbox is sent through ITS share when
    * the request names none: the composer's switcher, whatever it shows now, is not
    * where the mailbox comes from. The owner's copy is filed and the answer says so.
    */
@@ -7715,7 +7716,7 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * EXO-90595 (F4) -- a send naming another mailbox than the draft's is refused before
+   * EXO-90595 -- a send naming another mailbox than the draft's is refused before
    * anything is saved, claimed or sent, both ways: a draft of a share sent as from
    * another share, and a draft of the sender's own mailbox sent as from a share. The
    * server never sends from a mailbox other than the one the draft belongs to.
@@ -7761,47 +7762,66 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * EXO-90595 -- a draft's first save records the mailbox it is written in only once the
-   * server resolved it as one of the writer's own accepted shares; the id stored is the
-   * resolved share's, not the client's word.
+   * EXO-90595 -- a draft's first save records the mailbox it is written in once the
+   * server resolved it as one of the writer's own shares -- the id stored is the resolved
+   * share's, not the client's word -- and a share that ended while the words were typed
+   * is recorded all the same: the words are kept, and the send then refuses it.
    */
   @Test
   @SneakyThrows
-  void aFirstSaveRecordsTheShareTheServerResolvedAsTheWritersOwn() {
+  void aFirstSaveRecordsTheShareTheServerResolvedAsTheWritersOwnEvenEnded() {
     givenAUsableMailbox();
     when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
     EmailDelegation share = new EmailDelegation();
     share.setId(100L);
-    share.setStatus(DelegationStatus.ACCEPTED);
-    when(emailDelegationService.requireAcceptedShare(TEST_USER, 100L)).thenReturn(share);
+    share.setStatus(DelegationStatus.REVOKED);
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenReturn(share);
     Email draft = draft(null);
     draft.setSendDelegationId(100L);
 
     Email saved = emailBoxService.saveDraft(draft, TEST_USER, false);
 
     assertEquals(100L, saved.getSendDelegationId());
-    verify(emailDelegationService).requireAcceptedShare(TEST_USER, 100L);
+    verify(emailDelegationService).requireOwnShare(TEST_USER, 100L);
   }
 
   /**
-   * EXO-90595 -- a first save naming a share that is not the writer's, or one no longer
-   * accepted, is refused and nothing is written: a client-chosen id never becomes a
-   * draft's mailbox on its word.
+   * EXO-90595 -- a first save naming a share that is not the writer's is refused with a
+   * code of its own -- never the "no such draft" 404 the composer reads as a draft sent
+   * elsewhere -- and nothing is written: a client-chosen id never becomes a draft's
+   * mailbox on its word.
    */
   @Test
   @SneakyThrows
-  void aFirstSaveNamingAShareThatIsNotTheWritersAcceptedOneWritesNothing() {
+  void aFirstSaveNamingAShareThatIsNotTheWritersWritesNothing() {
     givenAUsableMailbox();
-    when(emailDelegationService.requireAcceptedShare(TEST_USER, 7L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
-    when(emailDelegationService.requireAcceptedShare(TEST_USER, 8L)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    when(emailDelegationService.requireOwnShare(TEST_USER, 7L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
     Email foreign = draft(null);
     foreign.setSendDelegationId(7L);
-    Email revoked = draft(null);
-    revoked.setSendDelegationId(8L);
 
-    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.saveDraft(foreign, TEST_USER, false));
-    assertThrows(DelegationRevokedException.class, () -> emailBoxService.saveDraft(revoked, TEST_USER, false));
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailBoxService.saveDraft(foreign, TEST_USER, false));
+    assertEquals(EmailBoxService.MAILBOX_NOT_FOUND_CODE, refused.getMessage());
     verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+  }
+
+  /**
+   * EXO-90595 -- the composer asks the server which mailbox a resumed draft belongs to:
+   * none for the user's own, the share's owner and whether it is still shared otherwise,
+   * and a share that no longer resolves reads as not shared -- never as the user's own.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftsMailboxIsTheServersWord() {
+    Email stored = givenAStoredDraftOfMailbox(null);
+    assertNull(emailBoxService.getDraftMailbox("draft-1", TEST_USER));
+    stored.setSendDelegationId(100L);
+    DraftMailbox anne = new DraftMailbox(100L, "Anne", "anne@example.org", true);
+    when(emailDelegationService.draftMailbox(TEST_USER, 100L)).thenReturn(anne);
+    assertEquals(anne, emailBoxService.getDraftMailbox("draft-1", TEST_USER));
+    stored.setSendDelegationId(7L);
+    assertEquals(new DraftMailbox(7L, null, null, false), emailBoxService.getDraftMailbox("draft-1", TEST_USER));
+    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.getDraftMailbox("draft-2", TEST_USER));
   }
 
   /**
@@ -7825,7 +7845,7 @@ public class EmailBoxServiceTest {
     ArgumentCaptor<Email> written = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxStorage).saveDraft(written.capture());
     assertNull(written.getValue().getSendDelegationId(), "an edit carries no mailbox");
-    verify(emailDelegationService, never()).requireAcceptedShare(anyString(), anyLong());
+    verify(emailDelegationService, never()).requireOwnShare(anyString(), anyLong());
   }
 
   @Test

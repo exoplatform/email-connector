@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -433,9 +434,16 @@ public class EmailScheduledSendService {
     }
     Map<Long, Email> drafts = emailBoxStorage.getListedEmailsByIds(username,
                                                                    rows.stream().map(EmailScheduledSend::getEmailId).toList());
+    // One lookup per share for the page, not per row: a user's mails come from one or two.
+    Map<Long, DraftMailbox> mailboxes = new HashMap<>();
     List<ScheduledEmail> scheduled = new ArrayList<>(rows.size());
     for (EmailScheduledSend row : rows) {
-      scheduled.add(toScheduledEmail(row, drafts.get(row.getEmailId())));
+      Email draft = drafts.get(row.getEmailId());
+      ScheduledEmail view = toScheduledEmail(row, draft, false);
+      if (draft != null && draft.getSendDelegationId() != null) {
+        view.setMailbox(mailboxes.computeIfAbsent(draft.getSendDelegationId(), id -> draftMailbox(username, id)));
+      }
+      scheduled.add(view);
     }
     return scheduled;
   }
@@ -900,6 +908,19 @@ public class EmailScheduledSendService {
    * @return the view
    */
   private ScheduledEmail toScheduledEmail(EmailScheduledSend row, Email draft) {
+    return toScheduledEmail(row, draft, true);
+  }
+
+  /**
+   * {@link #toScheduledEmail(EmailScheduledSend, Email)}, naming the draft's mailbox or
+   * leaving that to the caller, which names it once per share for a whole page.
+   *
+   * @param row the schedule row
+   * @param draft its draft, may be null
+   * @param withMailbox whether to name the draft's mailbox here
+   * @return the view
+   */
+  private ScheduledEmail toScheduledEmail(EmailScheduledSend row, Email draft, boolean withMailbox) {
     ScheduledEmail scheduled = new ScheduledEmail();
     scheduled.setDraftLocalId(row.getDraftLocalId());
     scheduled.setScheduledDate(row.getScheduledDate() == null ? 0 : row.getScheduledDate().getTime());
@@ -911,7 +932,9 @@ public class EmailScheduledSendService {
       scheduled.setTo(draft.getTo());
       scheduled.setSubject(draft.getSubject());
       scheduled.setSnippet(snippet(draft.getContent()));
-      scheduled.setMailbox(draftMailbox(row.getUserId(), draft.getSendDelegationId()));
+      if (withMailbox) {
+        scheduled.setMailbox(draftMailbox(row.getUserId(), draft.getSendDelegationId()));
+      }
     }
     return scheduled;
   }
