@@ -52,7 +52,7 @@ export const SCHEDULED_PAGE_SIZE = 20;
  * have gone, and are said as "Couldn't confirm it was sent".
  */
 export const NOT_SENT_REASONS = ['NETWORK', 'RECIPIENT_REFUSED', 'AUTHENTICATION', 'ATTACHMENT_GONE', 'TOO_LARGE',
-  'DISCONNECTED', 'REFUSED', 'INTERNAL', 'MAILBOX_UNSHARED'];
+  'DISCONNECTED', 'REFUSED', 'INTERNAL', 'MAILBOX_UNSHARED', 'SEND_MODE_WITHDRAWN', 'SEND_MODE_UNAVAILABLE', 'SEND_MODE_REFUSED'];
 
 /**
  * Turns a refused response into an Error carrying the server's message code, when it
@@ -300,14 +300,17 @@ export function scheduledActions(scheduled) {
 /**
  * The line naming the shared mailbox a draft or a scheduled mail was written in
  * (EXO-90595), from the mailbox the server named: "From Anne's mailbox", with "no longer
- * shared with you" once the share has ended; nothing for the user's own mailbox. One
- * rule for the Drafts folder and the Scheduled view.
+ * shared with you" once the share has ended; nothing for the user's own mailbox. In the
+ * owner's name, the line says which (EXO-90584): "From Anne's mailbox, on their behalf",
+ * "..., as them". One rule for the Drafts folder and the Scheduled view.
  *
  * @param {Object} mailbox the mailbox ({ownerFullName, ownerMailbox, shared}), may be null
  * @param {Object} vm the component, for $t
+ * @param {String} sendMode the name the mail goes out in: ON_BEHALF, AS, or anything else
+ *          for the user's own
  * @returns {String} the line, or an empty string
  */
-export function draftMailboxLabel(mailbox, vm) {
+export function draftMailboxLabel(mailbox, vm, sendMode) {
   if (!mailbox) {
     return '';
   }
@@ -315,7 +318,11 @@ export function draftMailboxLabel(mailbox, vm) {
   if (!owner) {
     return vm.$t('emailConnector.mailBox.scheduled.mailbox.unknown');
   }
-  return vm.$t(mailbox.shared ? 'emailConnector.mailBox.scheduled.mailbox' : 'emailConnector.mailBox.scheduled.mailbox.unshared',
+  if (!mailbox.shared) {
+    return vm.$t('emailConnector.mailBox.scheduled.mailbox.unshared', { 0: owner });
+  }
+  const inOwnersName = sendMode === 'ON_BEHALF' || sendMode === 'AS';
+  return vm.$t(inOwnersName ? `emailConnector.mailBox.scheduled.mailbox.${sendMode}` : 'emailConnector.mailBox.scheduled.mailbox',
     { 0: owner });
 }
 
