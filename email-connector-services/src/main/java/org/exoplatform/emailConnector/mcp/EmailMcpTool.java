@@ -18,11 +18,15 @@ package org.exoplatform.emailConnector.mcp;
 
 import static io.meeds.mcp.server.tool.util.McpToolPluginUtils.getInteger;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
 import org.jsoup.Jsoup;
@@ -37,6 +41,7 @@ import org.exoplatform.emailConnector.mcp.model.EmailModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchHitModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchResultsModel;
 import org.exoplatform.emailConnector.mcp.model.EmailThreadMessageModel;
+import org.exoplatform.emailConnector.mcp.model.SharedMailboxModel;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
@@ -45,10 +50,16 @@ import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.SharedMailboxEntry;
+import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.exception.DelegationRevokedException;
+import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.service.EmailBoxService;
+import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
 
 import org.exoplatform.services.log.ExoLogger;
@@ -59,7 +70,8 @@ import io.meeds.mcp.server.plugin.McpToolPlugin;
 /**
  * MCP tools exposing the Email Connector add-on to the AI agent (EVA). Every
  * method acts as the current user, so the caller only ever touches their own
- * email box. Read/triage tools run without approval; compose (send/reply) and
+ * email box -- or, when a tool is given a {@code mailbox}, a mailbox somebody shared
+ * with them (EXO-90555), resolved among their own accepted shares and nowhere else. Read/triage tools run without approval; compose (send/reply) and
  * organize (archive/delete) tools are approval-gated: the assistant only DRAFTS
  * outward-facing actions and must never auto-send nor invent recipients.
  */
@@ -106,10 +118,50 @@ public class EmailMcpTool implements McpToolPlugin {
 
   private final UserEmailSettingService userEmailSettingService;
 
+  private final EmailDelegationService  emailDelegationService;
+
+  /**
+   * The tools' services.
+   *
+   * @param emailBoxService the mailbox service
+   * @param userEmailSettingService the account binding service
+   * @param emailDelegationService the shared mailboxes' service, which resolves a
+   *          {@code mailbox} argument (EXO-90555)
+   */
   @Autowired
-  public EmailMcpTool(EmailBoxService emailBoxService, UserEmailSettingService userEmailSettingService) {
+  public EmailMcpTool(EmailBoxService emailBoxService,
+                      UserEmailSettingService userEmailSettingService,
+                      EmailDelegationService emailDelegationService) {
     this.emailBoxService = emailBoxService;
     this.userEmailSettingService = userEmailSettingService;
+    this.emailDelegationService = emailDelegationService;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Shared mailboxes (EXO-90555)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * List the mailboxes other people shared with the user: whose, the name to pass as
+   * {@code mailbox} to the email tools, the access granted, the unread count of the
+   * shared inbox and which folders are available to read. Read from the user's mirror
+   * alone, with no connection to any mail server; none while the user's own mail access
+   * is switched off, as every other tool is then.
+   *
+   * @return the shared mailboxes, most recently changed first; empty when none
+   */
+  public List<SharedMailboxModel> listSharedMailboxes() {
+    String username = getCurrentUserName();
+    return emailDelegationService.getUsableSharedMailboxes(username)
+                                 .stream()
+                                 .map(share -> new SharedMailboxModel(share.ownerFullName(),
+                                                                      share.ownerMailbox(),
+                                                                      share.ownerId(),
+                                                                      share.preset() == null ? "CUSTOM" : share.preset().name(),
+                                                                      share.unreadCount(),
+                                                                      emailDelegationService.getMirroredFolders(username, share),
+                                                                      share.sentCopy()))
+                                 .toList();
   }
 
   // ---------------------------------------------------------------------------
@@ -119,45 +171,71 @@ public class EmailMcpTool implements McpToolPlugin {
   /**
    * Retrieve one stored email by its local database id (plain-text body).
    * <p>
-   * Reads through {@link EmailBoxService#getOwnedEmailById}, not the plain lookup:
-   * that one finds a row by its technical id alone and lets the username merely
-   * decorate what comes back, which is right for a caller that has already established
-   * who owns the row and wrong for anything reached from outside. This is reached from
-   * outside — an agent hands it an id — and an id is guessable, so it is the same read
-   * {@code EmailBoxRest} does. It refuses another user's mail rather than returning it.
+   * Reads through the owning lookups ({@link EmailBoxService#getOwnMailboxEmailById},
+   * {@link EmailBoxService#getSharedMailboxEmailById}), never the plain one, which finds
+   * a row by its technical id alone. This is reached from outside -- an agent hands it an
+   * id -- and an id is guessable: another user's mail is answered as not found, stricter
+   * than the REST read, which answers "not allowed" and so says the row exists.
+   *
+   * With a {@code mailbox}, the row must sit in that shared mailbox (EXO-90555); without
+   * one, in the user's own. An id of the other kind is not found, never another message.
    *
    * @param emailId the cached email's local database id, as carried by every email this
    *          toolset returns
+   * @param mailbox the shared mailbox the email is in, blank for the user's own
    * @return the email, with its body flattened to plain text
-   * @throws ObjectNotFoundException if no such email is cached
-   * @throws IllegalAccessException if the email belongs to somebody else
+   * @throws ObjectNotFoundException if no such email is cached in that mailbox, or no
+   *           such mailbox is shared with the user
+   * @throws IllegalAccessException if the user has no usable mailbox
    */
-  public EmailModel getEmailById(long emailId) throws ObjectNotFoundException, IllegalAccessException {
-    // The user's own mailbox only (EXO-90557): a row of a mailbox somebody shared with
-    // them is its owner's mail, and chaining its UID into the INBOX-pinned write tools
-    // would act on another message of the user's own INBOX.
-    Email email = emailBoxService.getOwnMailboxEmailById(emailId, getCurrentUserName());
+  public EmailModel getEmailById(long emailId, String mailbox) throws ObjectNotFoundException, IllegalAccessException {
+    // Own mailbox (EXO-90557) unless one is named: a row of a mailbox somebody shared
+    // with the user is its owner's mail, handed out only to a caller who named it.
+    SharedMailboxEntry share = sharedMailbox(mailbox);
+    String username = getCurrentUserName();
+    Email email = share == null ? emailBoxService.getOwnMailboxEmailById(emailId, username)
+                                : emailBoxService.getSharedMailboxEmailById(emailId, username, share.delegationId());
     if (email == null) {
-      throw new ObjectNotFoundException("Email with id %s not found");
+      throw new ObjectNotFoundException(notFoundById(emailId, share));
     }
-    return toEmailModel(email, true);
+    return toEmailModel(email, true, share);
   }
 
   /**
-   * Retrieve a page of the current user's synced INBOX mirror. Supports paging
-   * (offset/limit, defaulting to the first 10) and an unread-only filter so the
-   * agent triages incrementally instead of pulling the whole mirror at once.
+   * Retrieve a page of the current user's synced mirror of a folder -- INBOX by
+   * default, SENT or ARCHIVE -- of their own mailbox, or of a mailbox shared with them
+   * when {@code mailbox} names one (EXO-90555). Supports paging (offset/limit,
+   * defaulting to the first 10) and an unread-only filter so the agent triages
+   * incrementally instead of pulling the whole mirror at once.
+   * <p>
+   * A shared mailbox's folder is listed only when it is in the user's mirror; one that
+   * is not is said, never answered with an empty page that would read as "no mail".
+   *
+   * @param offset how many messages to skip
+   * @param limit how many messages to return
+   * @param unreadOnly only unread messages
+   * @param folder INBOX (default), SENT or ARCHIVE
+   * @param mailbox the shared mailbox to list, blank for the user's own
+   * @return the page, newest first
+   * @throws ObjectNotFoundException when no such mailbox is shared with the user
+   * @throws IllegalAccessException if the user has no usable mailbox
    */
-  public List<EmailModel> listEmails(Integer offset, Integer limit, Boolean unreadOnly) throws ObjectNotFoundException,
-                                                                                        IllegalAccessException {
-    EmailBox emailBox = emailBoxService.getEmailBox(getCurrentUserName());
+  public List<EmailModel> listEmails(Integer offset,
+                                     Integer limit,
+                                     Boolean unreadOnly,
+                                     String folder,
+                                     String mailbox) throws ObjectNotFoundException, IllegalAccessException {
+    SharedMailboxEntry share = sharedMailbox(mailbox);
+    String folderName = browsableFolder(folder);
+    String folderKey = share == null ? folderName : mirroredFolderOrFail(share, folderName);
+    EmailBox emailBox = emailBoxService.getEmailBox(getCurrentUserName(), folderKey);
     return emailBox.getEmails()
                    .stream()
                    .filter(email -> !Boolean.TRUE.equals(unreadOnly) || !email.isRead())
                    .skip(getInteger(offset, DEFAULT_OFFSET))
                    .limit(getInteger(limit, DEFAULT_LIMIT))
-                   .map(this::withBody)
-                   .map(email -> toEmailModel(email, false))
+                   .map(email -> withBody(email, share))
+                   .map(email -> toEmailModel(email, false, share))
                    .toList();
   }
 
@@ -177,14 +255,17 @@ public class EmailMcpTool implements McpToolPlugin {
    * arrives.
    *
    * @param email the listed row
+   * @param share the shared mailbox listed, null for the user's own
    * @return the same message read whole, or the listed row if it cannot be re-read
    */
-  private Email withBody(Email email) {
+  private Email withBody(Email email, SharedMailboxEntry share) {
     if (email.getId() == null || email.getContent() != null && email.getContent().getBody() != null) {
       return email;
     }
     try {
-      Email whole = emailBoxService.getOwnMailboxEmailById(email.getId(), getCurrentUserName());
+      String username = getCurrentUserName();
+      Email whole = share == null ? emailBoxService.getOwnMailboxEmailById(email.getId(), username)
+                                  : emailBoxService.getSharedMailboxEmailById(email.getId(), username, share.delegationId());
       return whole == null ? email : whole;
     } catch (IllegalAccessException e) {
       LOG.debug("Could not re-read email {} whole for the agent listing; answering it as listed", email.getId(), e);
@@ -194,9 +275,23 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /**
    * Report how many emails in the synced INBOX mirror are unread, out of the total
-   * mirrored. Fast triage summary that never returns bodies.
+   * mirrored. Fast triage summary that never returns bodies. For a mailbox shared with
+   * the user (EXO-90555), the unread count of its inbox as the user's mirror holds it --
+   * the count the mailbox switcher shows, read without reaching any mail server.
+   *
+   * @param mailbox the shared mailbox to count, blank for the user's own
+   * @return the summary
+   * @throws ObjectNotFoundException when no such mailbox is shared with the user
+   * @throws IllegalAccessException if the user has no usable mailbox
    */
-  public String getUnreadCount() throws IllegalAccessException {
+  public String getUnreadCount(String mailbox) throws ObjectNotFoundException, IllegalAccessException {
+    SharedMailboxEntry share = sharedMailbox(mailbox);
+    if (share != null) {
+      // An inbox not in the mirror yet has no count to give: "0 unread" would be the
+      // same "no mail" pretence the listing refuses.
+      mirroredFolderOrFail(share, MailFolder.INBOX);
+      return String.format("%d unread email(s) in the inbox of %s, shared with you.", share.unreadCount(), ownerOf(share));
+    }
     EmailBox emailBox = emailBoxService.getEmailBox(getCurrentUserName());
     List<Email> emails = emailBox.getEmails();
     long total = emails == null ? 0 : emails.size();
@@ -227,9 +322,19 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /**
    * Pull fresh messages from the IMAP INBOX before triage, then report the
-   * resulting sync status and the number of emails now in the local mirror.
+   * resulting sync status and the number of emails now in the local mirror. The user's
+   * own mailbox only: a mailbox shared with them is kept in sync by the platform, and a
+   * {@code mailbox} argument is refused rather than ignored (EXO-90555).
+   *
+   * @param mailbox must be blank
+   * @return the sync outcome
+   * @throws IllegalAccessException if the user has no usable mailbox
    */
-  public String syncNow() throws IllegalAccessException {
+  public String syncNow(String mailbox) throws IllegalAccessException {
+    if (StringUtils.isNotBlank(mailbox)) {
+      throw new IllegalArgumentException("sync_now works on your own mailbox only: a mailbox shared with you is kept in sync by the platform. "
+          + "Call it without mailbox, or read the shared mailbox directly with list_emails.");
+    }
     String username = getCurrentUserName();
     emailBoxService.synchronize(username);
     EmailBox emailBox = emailBoxService.getEmailBox(username);
@@ -248,23 +353,27 @@ public class EmailMcpTool implements McpToolPlugin {
    * sender, unread state and age. The newest matches come back with the total the
    * server found, so the caller can tell how much of the answer it is holding.
    * <p>
-   * A hit is only chainable into the id-based tools ({@link #getEmailFull},
-   * {@code mark_read}, {@code reply_email}) when it is an INBOX hit that is already
-   * cached. Those tools take the folder-less overloads, which resolve against the
-   * INBOX mirror, and an IMAP UID is unique only within its own folder — so a SENT
-   * or ARCHIVE hit would silently address the unrelated inbox message holding the
-   * same UID, and an uncached hit is not in the mirror at all. The tool description
-   * states this so the model does not build the broken chain; widening it means
-   * backporting the folder-aware fetch path (EXO-88990 and later).
+   * A hit chains into the other tools by its email_id, which it carries whenever the
+   * message is in the local copy, whatever its folder. An IMAP UID is unique only within
+   * its own folder, so a hit hands out its mail_remote_id only for the user's own INBOX
+   * ({@link #chainableUid}); a hit that is not in the local copy has no email_id and
+   * cannot be opened by the other tools, which read that copy.
    *
    * @param query free text matched against the subject or the sender, may be blank
    * @param from text matched against the sender only, may be blank
    * @param unread when {@code true}, only unread messages match
    * @param sinceDays only messages received in the last N days match, null for the
    *          whole history
+   * <p>
+   * With a {@code mailbox} (EXO-90555), the search reads the user's mirror of that
+   * shared mailbox's folder -- the messages its sync brought in, subject or sender --
+   * and a folder that is not in the mirror is said rather than answered as empty.
+   *
    * @param folder INBOX (default), SENT or ARCHIVE
    * @param limit how many hits to return, newest first
+   * @param mailbox the shared mailbox to search, blank for the user's own
    * @return the newest matching messages and the total number that matched
+   * @throws ObjectNotFoundException when no such mailbox is shared with the user
    * @throws IllegalAccessException if the user has no usable mailbox
    */
   public EmailSearchResultsModel searchEmails(String query,
@@ -272,32 +381,52 @@ public class EmailMcpTool implements McpToolPlugin {
                                               Boolean unread,
                                               Integer sinceDays,
                                               String folder,
-                                              Integer limit) throws IllegalAccessException {
+                                              Integer limit,
+                                              String mailbox) throws ObjectNotFoundException, IllegalAccessException {
+    // Resolved before the translation block below: its refusals are already in words.
+    SharedMailboxEntry share = sharedMailbox(mailbox);
+    String sharedFolderKey = null;
+    if (share != null && !MailFolder.isCustom(folder)) {
+      sharedFolderKey = mirroredFolderOrFail(share, browsableFolder(folder));
+    }
     try {
-      // Own built-in folders only: a CUSTOM:<id> key would reach the user's registered
+      // Built-in folder names only: a CUSTOM:<id> key would reach the user's registered
       // folders, which from EXO-90457 include the INBOX of a mailbox somebody else
-      // shared with them -- and this tool's description never says it may read those.
+      // shared with them -- a shared mailbox is named by mailbox, never by a key.
       if (MailFolder.isCustom(folder)) {
         throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
       }
-      EmailSearchResultPage page = emailBoxService.searchEmails(getCurrentUserName(),
-                                                                query,
-                                                                from,
-                                                                Boolean.TRUE.equals(unread),
-                                                                sinceDays,
-                                                                StringUtils.isBlank(folder) ? MailFolder.INBOX
-                                                                                            : folder.trim().toUpperCase(Locale.ROOT),
-                                                                limit == null ? DEFAULT_SEARCH_LIMIT : limit);
+      String folderName = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder.trim().toUpperCase(Locale.ROOT);
+      int hitLimit = limit == null ? DEFAULT_SEARCH_LIMIT : limit;
+      EmailSearchResultPage page = share == null ? emailBoxService.searchEmails(getCurrentUserName(),
+                                                                                query,
+                                                                                from,
+                                                                                Boolean.TRUE.equals(unread),
+                                                                                sinceDays,
+                                                                                folderName,
+                                                                                hitLimit)
+                                                 : emailBoxService.searchSharedMailboxMirror(getCurrentUserName(),
+                                                                                             sharedFolderKey,
+                                                                                             query,
+                                                                                             from,
+                                                                                             Boolean.TRUE.equals(unread),
+                                                                                             sinceDays,
+                                                                                             hitLimit);
       List<EmailSearchHitModel> hits = page.getResults()
                                            .stream()
-                                           .map(result -> new EmailSearchHitModel(result.getMailRemoteId(),
-                                                                                  result.getFolder(),
+                                           .map(result -> new EmailSearchHitModel(share == null && MailFolder.INBOX.equals(result.getFolder())
+                                                                                      ? result.getMailRemoteId()
+                                                                                      : null,
+                                                                                  // The folder's name, never
+                                                                                  // a shared folder's key.
+                                                                                  share == null ? result.getFolder() : folderName,
                                                                                   result.getSubject(),
                                                                                   result.getSender(),
                                                                                   result.getReceivedDate(),
                                                                                   result.isRead(),
                                                                                   result.isStarred(),
-                                                                                  result.isCached()))
+                                                                                  result.isCached(),
+                                                                                  result.getEmailId()))
                                            .toList();
       return new EmailSearchResultsModel(page.getTotalMatches(), hits);
     } catch (IllegalArgumentException e) {
@@ -329,15 +458,24 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
-   * Fetch a single email in full by its IMAP mailRemoteId, including recipients,
-   * content and attachment metadata (plain-text body).
+   * Fetch a single email in full, including recipients, content and attachment
+   * metadata (plain-text body), named by its {@code email_id} -- in whatever folder of
+   * the mailbox named it is (EXO-90555) -- or by the {@code mail_remote_id} of a mail of
+   * the user's own INBOX (see {@link #mailOf}).
+   *
+   * @param mailRemoteId the UID of a mail of the user's own INBOX, or null
+   * @param emailId the mail's local id, or null
+   * @param mailbox the shared mailbox, blank for the user's own
+   * @return the email
+   * @throws ObjectNotFoundException if no such email is there, or no such mailbox is
+   *           shared with the user
+   * @throws IllegalAccessException if the user has no usable mailbox
    */
-  public EmailModel getEmailFull(long mailRemoteId) throws ObjectNotFoundException, IllegalAccessException {
-    Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, getCurrentUserName(), MailFolder.INBOX, true, true, true, false);
-    if (email == null) {
-      throw new ObjectNotFoundException("Email with mail_remote_id %s not found");
-    }
-    return toEmailModel(email, true);
+  public EmailModel getEmailFull(Long mailRemoteId, Long emailId, String mailbox) throws ObjectNotFoundException,
+                                                                                  IllegalAccessException {
+    SharedMailboxEntry share = sharedMailbox(mailbox);
+    MailRef mail = mailOf(emailId, mailRemoteId, share);
+    return toEmailModel(fetch(mail, true, true, true), true, share);
   }
 
   /**
@@ -376,44 +514,67 @@ public class EmailMcpTool implements McpToolPlugin {
    * and therefore no computed conversation id at all. From a hit, chain its
    * {@code mail_remote_id} through {@code get_email_full} first.
    *
+   * <p>
+   * With a {@code mailbox} (EXO-90555), the conversation as that shared mailbox holds
+   * it, and none of the user's own rows; without one, the user's own rows only.
+   *
    * @param threadId the conversation id, as carried by every cached email read
+   * @param mailbox the shared mailbox, blank for the user's own
    * @return the conversation's real messages, oldest first
+   * @throws ObjectNotFoundException when no such mailbox is shared with the user
    * @throws IllegalAccessException if the user has no usable mailbox
    */
-  public List<EmailThreadMessageModel> getEmailThread(String threadId) throws IllegalAccessException {
+  public List<EmailThreadMessageModel> getEmailThread(String threadId, String mailbox) throws ObjectNotFoundException,
+                                                                                       IllegalAccessException {
     if (StringUtils.isBlank(threadId)) {
       throw new IllegalArgumentException("thread_id is required: it is carried by every email returned by list_emails, "
           + "get_email_by_id and get_email_full. A search hit does not carry one — fetch it with get_email_full first.");
     }
-    List<Email> thread = emailBoxService.getThread(threadId, getCurrentUserName());
+    SharedMailboxEntry share = sharedMailbox(mailbox);
+    List<Email> thread = share == null ? emailBoxService.getThread(threadId, getCurrentUserName())
+                                       : emailBoxService.getThread(threadId, getCurrentUserName(), share.folderKey());
     List<Email> messages = thread.stream().filter(email -> StringUtils.isBlank(email.getDraftLocalId())).toList();
     // The most recent ones, and still oldest-first once kept: a conversation read
     // backwards is a conversation nobody can follow.
     if (messages.size() > THREAD_MAX_MESSAGES) {
       messages = messages.subList(messages.size() - THREAD_MAX_MESSAGES, messages.size());
     }
-    return messages.stream().map(this::toThreadMessageModel).toList();
+    return messages.stream().map(email -> toThreadMessageModel(email, share)).toList();
   }
 
   /**
-   * List the metadata of a given email's attachments (by IMAP mailRemoteId):
-   * name, mime type, MIME part path and a ready authenticated download URL served
-   * by EmailBoxRest. No attachment bytes ever pass through the tool - the user
-   * opens the URL in their own authenticated browser. Empty list if none.
+   * List the metadata of a given email's attachments: name, mime type, MIME part path
+   * and a ready authenticated download URL served by EmailBoxRest. No attachment bytes
+   * ever pass through the tool - the user opens the URL in their own authenticated
+   * browser. Empty list if none. The mail is named as {@link #getEmailFull} names it,
+   * and the URL names its folder when it is not the user's own INBOX.
+   *
+   * @param mailRemoteId the UID of a mail of the user's own INBOX, or null
+   * @param emailId the mail's local id, or null
+   * @param mailbox the shared mailbox, blank for the user's own
+   * @return the attachments, empty when none
+   * @throws ObjectNotFoundException when the mail is not there, or no such mailbox is
+   *           shared with the user
+   * @throws IllegalAccessException if the user has no usable mailbox
    */
-  public List<EmailAttachmentModel> listAttachments(long mailRemoteId) throws IllegalAccessException {
-    Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, getCurrentUserName(), MailFolder.INBOX, true, false, false, false);
-    if (email == null || email.getContent() == null || email.getContent().getAttachments() == null) {
+  public List<EmailAttachmentModel> listAttachments(Long mailRemoteId, Long emailId, String mailbox) throws ObjectNotFoundException,
+                                                                                                     IllegalAccessException {
+    SharedMailboxEntry share = sharedMailbox(mailbox);
+    MailRef mail = mailOf(emailId, mailRemoteId, share);
+    Email email = fetch(mail, true, false, false);
+    if (email.getContent() == null || email.getContent().getAttachments() == null) {
       return List.of();
     }
+    String urlFolder = MailFolder.INBOX.equals(mail.folderKey()) ? null : mail.folderKey();
     return email.getContent()
                 .getAttachments()
                 .stream()
                 .map(attachment -> new EmailAttachmentModel(attachment.getName(),
                                                             attachment.getMimeType(),
                                                             attachment.getAttachmentRemoteId(),
-                                                            buildAttachmentDownloadUrl(mailRemoteId,
-                                                                                       attachment.getAttachmentRemoteId())))
+                                                            buildAttachmentDownloadUrl(mail.uid(),
+                                                                                       attachment.getAttachmentRemoteId(),
+                                                                                       urlFolder)))
                 .toList();
   }
 
@@ -423,11 +584,17 @@ public class EmailMcpTool implements McpToolPlugin {
    * outcome: emails whose server flag could not be
    * written (message not found on server or IMAP write denied) are counted as
    * failed rather than reported as success.
+   *
+   * @param mailRemoteIds UIDs of mails of the user's own INBOX, or null
+   * @param emailIds the mails' local ids, all in the inbox of the mailbox named, or null
+   * @param mailbox the shared mailbox, blank for the user's own (EXO-90555)
+   * @return the outcome, in words
+   * @throws ObjectNotFoundException when a mail or the mailbox is not found
+   * @throws IllegalAccessException if the user may not
    */
-  public String markRead(List<Long> mailRemoteIds) throws IllegalAccessException {
-    int total = mailRemoteIds == null ? 0 : mailRemoteIds.size();
-    int failed = emailBoxService.updateEmailReadStatus(mailRemoteIds, getCurrentUserName(), MailFolder.INBOX, true, true);
-    return buildReadStatusMessage(total, failed, "read");
+  public String markRead(List<Long> mailRemoteIds, List<Long> emailIds, String mailbox) throws ObjectNotFoundException,
+                                                                                         IllegalAccessException {
+    return markReadStatus(mailRemoteIds, emailIds, mailbox, true);
   }
 
   /**
@@ -436,11 +603,46 @@ public class EmailMcpTool implements McpToolPlugin {
    * outcome: emails whose server flag could not be
    * written (message not found on server or IMAP write denied) are counted as
    * failed rather than reported as success.
+   *
+   * @param mailRemoteIds UIDs of mails of the user's own INBOX, or null
+   * @param emailIds the mails' local ids, all in the inbox of the mailbox named, or null
+   * @param mailbox the shared mailbox, blank for the user's own (EXO-90555)
+   * @return the outcome, in words
+   * @throws ObjectNotFoundException when a mail or the mailbox is not found
+   * @throws IllegalAccessException if the user may not
    */
-  public String markUnread(List<Long> mailRemoteIds) throws IllegalAccessException {
-    int total = mailRemoteIds == null ? 0 : mailRemoteIds.size();
-    int failed = emailBoxService.updateEmailReadStatus(mailRemoteIds, getCurrentUserName(), MailFolder.INBOX, false, true);
-    return buildReadStatusMessage(total, failed, "unread");
+  public String markUnread(List<Long> mailRemoteIds, List<Long> emailIds, String mailbox) throws ObjectNotFoundException,
+                                                                                           IllegalAccessException {
+    return markReadStatus(mailRemoteIds, emailIds, mailbox, false);
+  }
+
+  /**
+   * Marks messages of the inbox of the mailbox named read or unread -- the user's own,
+   * or a shared one (EXO-90555), where the service checks the user may keep read state
+   * there before touching anything.
+   *
+   * @param mailRemoteIds UIDs of mails of the user's own INBOX, or null
+   * @param emailIds the mails' local ids, or null
+   * @param mailbox the shared mailbox, blank for the user's own
+   * @param read the state to set
+   * @return the outcome, in words
+   * @throws ObjectNotFoundException when a mail or the mailbox is not found
+   * @throws IllegalAccessException if the user may not
+   */
+  private String markReadStatus(List<Long> mailRemoteIds,
+                                List<Long> emailIds,
+                                String mailbox,
+                                boolean read) throws ObjectNotFoundException, IllegalAccessException {
+    SharedMailboxEntry share = sharedMailbox(mailbox);
+    List<Long> uids = inboxUidsOf(emailIds, mailRemoteIds, share);
+    int total = uids.size();
+    int failed;
+    try {
+      failed = emailBoxService.updateEmailReadStatus(uids, getCurrentUserName(), inboxOf(share), read, true);
+    } catch (MailboxRightMissingException | DelegationRevokedException e) {
+      throw refusedIn(share, "change the read state of its mail", e);
+    }
+    return buildReadStatusMessage(total, failed, read ? "read" : "unread") + inMailbox(share);
   }
 
   // ---------------------------------------------------------------------------
@@ -450,13 +652,26 @@ public class EmailMcpTool implements McpToolPlugin {
   /**
    * Send a brand new email over real SMTP (also copied to the Sent folder).
    * Body is HTML. Optional cc/bcc recipients. Attachments are NOT supported by the
-   * backing service.
+   * backing service. From a mailbox shared with the user (EXO-90555), the mail still
+   * goes out from the user's own address, and a copy is filed in the owner's Sent
+   * where the share allows it -- the answer names the owner and says which.
+   *
+   * @param to the recipients
+   * @param subject the subject
+   * @param bodyHtml the HTML body
+   * @param cc the copied recipients
+   * @param bcc the blind-copied recipients
+   * @param mailbox the shared mailbox the mail is sent from, blank for the user's own
+   * @return the outcome, in words
+   * @throws ObjectNotFoundException when no such mailbox is shared with the user
+   * @throws IllegalAccessException if the user may not send
    */
   public String sendEmail(List<String> to,
                           String subject,
                           String bodyHtml,
                           List<String> cc,
-                          List<String> bcc) throws IllegalAccessException {
+                          List<String> bcc,
+                          String mailbox) throws ObjectNotFoundException, IllegalAccessException {
     if (to == null || to.stream().filter(StringUtils::isNotBlank).findAny().isEmpty()) {
       throw new IllegalArgumentException("At least one recipient is required in 'to'");
     }
@@ -466,67 +681,120 @@ public class EmailMcpTool implements McpToolPlugin {
     email.setTo(toRecipients(to));
     email.setCc(toRecipients(cc));
     email.setBcc(toRecipients(bcc));
-    emailBoxService.sendEmail(email, getCurrentUserName());
-    return String.format("Email sent to %s with subject \"%s\".", String.join(", ", to), subject);
+    SharedMailboxEntry share = sharedMailbox(mailbox);
+    String copy = send(email, getCurrentUserName(), share);
+    return String.format("Email sent to %s with subject \"%s\"%s.%s", String.join(", ", to), subject, fromMailbox(share), copy);
   }
 
   /**
    * Reply to the sender of an existing email (by IMAP mailRemoteId). Threads the
-   * reply by copying the original Message-ID into In-Reply-To/References.
+   * reply by copying the original Message-ID into In-Reply-To/References. With a
+   * {@code mailbox} (EXO-90555), the original is read in that shared mailbox's inbox
+   * and the reply is sent from it, as {@link #sendEmail} does.
+   *
+   * The original is named by its {@code email_id} -- in any folder of the mailbox
+   * named, Sent and Archive included -- or by the UID of a mail of the user's own INBOX
+   * ({@link #mailOf}).
+   *
+   * @param mailRemoteId the UID of a mail of the user's own INBOX, or null
+   * @param bodyHtml the HTML body
+   * @param mailbox the shared mailbox, blank for the user's own
+   * @param emailId the original's local id, or null
+   * @return the outcome, in words
+   * @throws ObjectNotFoundException when the original or the mailbox is not found
+   * @throws IllegalAccessException if the user may not send
    */
-  public String replyEmail(long mailRemoteId, String bodyHtml) throws IllegalAccessException {
+  public String replyEmail(Long mailRemoteId, String bodyHtml, String mailbox, Long emailId) throws ObjectNotFoundException,
+                                                                                             IllegalAccessException {
     String username = getCurrentUserName();
-    Email original = fetchOriginalOrFail(mailRemoteId, username);
+    SharedMailboxEntry share = sharedMailbox(mailbox);
+    Email original = fetch(mailOf(emailId, mailRemoteId, share), false, true, false);
     Email reply = buildReplyShell(original, bodyHtml);
     reply.setTo(senderAsRecipients(original));
-    emailBoxService.sendEmail(reply, username);
-    return String.format("Reply sent to %s.", senderAddress(original));
+    String copy = send(reply, username, share);
+    return String.format("Reply sent to %s%s.%s", senderAddress(original), fromMailbox(share), copy);
   }
 
   /**
    * Reply to everyone on an existing email (by IMAP mailRemoteId): To = original
-   * sender, Cc = original To + Cc minus the current user's own address.
+   * sender, Cc = original To + Cc minus the current user's own address. With a
+   * {@code mailbox} (EXO-90555), the original is read in that shared mailbox's inbox,
+   * the reply is sent from it, and the owner's address is left out of the Cc too: the
+   * owner is the mailbox the reply is sent from, and gets their copy in their Sent.
+   *
+   * The original is named as {@link #replyEmail} names it.
+   *
+   * @param mailRemoteId the UID of a mail of the user's own INBOX, or null
+   * @param bodyHtml the HTML body
+   * @param mailbox the shared mailbox, blank for the user's own
+   * @param emailId the original's local id, or null
+   * @return the outcome, in words
+   * @throws ObjectNotFoundException when the original or the mailbox is not found
+   * @throws IllegalAccessException if the user may not send
    */
-  public String replyAll(long mailRemoteId, String bodyHtml) throws IllegalAccessException {
+  public String replyAll(Long mailRemoteId, String bodyHtml, String mailbox, Long emailId) throws ObjectNotFoundException,
+                                                                                           IllegalAccessException {
     String username = getCurrentUserName();
-    Email original = fetchOriginalOrFail(mailRemoteId, username);
+    SharedMailboxEntry share = sharedMailbox(mailbox);
+    Email original = fetch(mailOf(emailId, mailRemoteId, share), false, true, false);
     Email reply = buildReplyShell(original, bodyHtml);
     reply.setTo(senderAsRecipients(original));
     String selfAddress = userEmailSettingService.getUserEmailSetting(username).getEmailAddress();
     List<EmailRecipient> ccRecipients = new ArrayList<>();
     addRecipientsExcluding(ccRecipients, original.getTo(), selfAddress);
     addRecipientsExcluding(ccRecipients, original.getCc(), selfAddress);
+    if (share != null) {
+      ccRecipients.removeIf(recipient -> recipient.getAddress().equalsIgnoreCase(share.ownerMailbox()));
+    }
     reply.setCc(ccRecipients);
-    emailBoxService.sendEmail(reply, username);
-    return String.format("Reply-all sent to %s.", senderAddress(original));
+    String copy = send(reply, username, share);
+    return String.format("Reply-all sent to %s%s.%s", senderAddress(original), fromMailbox(share), copy);
   }
 
   /**
    * Forward an existing email (by IMAP mailRemoteId) to brand new recipients. The
    * subject is prefixed with "Fwd:" and the original message is quoted below the
    * optional new note. Attachments are NOT carried over (the backing service cannot
-   * attach files).
+   * attach files). With a {@code mailbox} (EXO-90555), the original is read in that
+   * shared mailbox's inbox and the forward is sent from it, as {@link #sendEmail} does.
+   *
+   * The original is named as {@link #replyEmail} names it.
+   *
+   * @param mailRemoteId the UID of a mail of the user's own INBOX, or null
+   * @param to the recipients
+   * @param bodyHtml the note above the forwarded message
+   * @param cc the copied recipients
+   * @param mailbox the shared mailbox, blank for the user's own
+   * @param emailId the original's local id, or null
+   * @return the outcome, in words
+   * @throws ObjectNotFoundException when the original is not there, or no such mailbox
+   *           is shared with the user
+   * @throws IllegalAccessException if the user may not send
    */
-  public String forwardEmail(long mailRemoteId,
+  public String forwardEmail(Long mailRemoteId,
                              List<String> to,
                              String bodyHtml,
-                             List<String> cc) throws ObjectNotFoundException, IllegalAccessException {
+                             List<String> cc,
+                             String mailbox,
+                             Long emailId) throws ObjectNotFoundException, IllegalAccessException {
     if (to == null || to.stream().filter(StringUtils::isNotBlank).findAny().isEmpty()) {
       throw new IllegalArgumentException("At least one recipient is required in 'to'");
     }
     String username = getCurrentUserName();
-    Email original = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, username, MailFolder.INBOX, false, true, false, false);
-    if (original == null) {
-      throw new ObjectNotFoundException("Email with mail_remote_id %s not found");
-    }
+    SharedMailboxEntry share = sharedMailbox(mailbox);
+    Email original = fetch(mailOf(emailId, mailRemoteId, share), false, true, false);
     Email forward = new Email();
     String subject = original.getSubject() == null ? "" : original.getSubject();
     forward.setSubject(StringUtils.startsWithIgnoreCase(subject, "Fwd:") ? subject : "Fwd: " + subject);
     forward.setContent(buildHtmlContent(buildForwardBody(original, bodyHtml)));
     forward.setTo(toRecipients(to));
     forward.setCc(toRecipients(cc));
-    emailBoxService.sendEmail(forward, username);
-    return String.format("Email forwarded to %s with subject \"%s\".", String.join(", ", to), forward.getSubject());
+    String copy = send(forward, username, share);
+    return String.format("Email forwarded to %s with subject \"%s\"%s.%s",
+                         String.join(", ", to),
+                         forward.getSubject(),
+                         fromMailbox(share),
+                         copy);
   }
 
   // ---------------------------------------------------------------------------
@@ -538,22 +806,64 @@ public class EmailMcpTool implements McpToolPlugin {
    * <p>
    * Inbox messages only: the ids this toolset hands out are INBOX UIDs, and a UID
    * numbers a message within one folder. Passing the folder explicitly is what keeps
-   * that a stated limit rather than a silent assumption (EXO-89367).
+   * that a stated limit rather than a silent assumption (EXO-89367). With a
+   * {@code mailbox} (EXO-90555), that shared mailbox's inbox, filed into its own
+   * Archive, where the user's rights there allow it.
+   *
+   * @param mailRemoteIds UIDs of mails of the user's own INBOX, or null
+   * @param mailbox the shared mailbox, blank for the user's own
+   * @param emailIds the mails' local ids, all in the inbox of the mailbox named, or null
+   * @return the outcome, in words
+   * @throws ObjectNotFoundException when a mail or the mailbox is not found
+   * @throws IllegalAccessException if the user may not
    */
-  public String archiveEmail(List<Long> mailRemoteIds) throws IllegalAccessException {
-    int failed = emailBoxService.archiveEmail(mailRemoteIds, getCurrentUserName(), MailFolder.INBOX);
-    int total = mailRemoteIds == null ? 0 : mailRemoteIds.size();
-    return String.format("Archived %d of %d email(s)%s.", total - failed, total, failed > 0 ? " (" + failed + " failed)" : "");
+  public String archiveEmail(List<Long> mailRemoteIds, String mailbox, List<Long> emailIds) throws ObjectNotFoundException,
+                                                                                           IllegalAccessException {
+    SharedMailboxEntry share = sharedMailbox(mailbox);
+    List<Long> uids = inboxUidsOf(emailIds, mailRemoteIds, share);
+    int failed;
+    try {
+      failed = emailBoxService.archiveEmail(uids, getCurrentUserName(), inboxOf(share));
+    } catch (MailboxRightMissingException | DelegationRevokedException e) {
+      throw refusedIn(share, "archive its mail", e);
+    }
+    int total = uids.size();
+    return String.format("Archived %d of %d email(s)%s%s.",
+                         total - failed,
+                         total,
+                         failed > 0 ? " (" + failed + " failed)" : "",
+                         inMailboxPhrase(share));
   }
 
   /**
    * Delete one or more emails (by IMAP mailRemoteId): copies them to Trash then
-   * expunges them from the INBOX. Destructive and irreversible.
+   * expunges them from the INBOX. Destructive and irreversible. With a {@code mailbox}
+   * (EXO-90555), that shared mailbox's inbox, into its own Trash, where the user's
+   * rights there allow it.
+   *
+   * @param mailRemoteIds UIDs of mails of the user's own INBOX, or null
+   * @param mailbox the shared mailbox, blank for the user's own
+   * @param emailIds the mails' local ids, all in the inbox of the mailbox named, or null
+   * @return the outcome, in words
+   * @throws ObjectNotFoundException when a mail or the mailbox is not found
+   * @throws IllegalAccessException if the user may not
    */
-  public String deleteEmail(List<Long> mailRemoteIds) throws IllegalAccessException {
-    int failed = emailBoxService.deleteEmail(mailRemoteIds, getCurrentUserName(), MailFolder.INBOX);
-    int total = mailRemoteIds == null ? 0 : mailRemoteIds.size();
-    return String.format("Deleted %d of %d email(s)%s.", total - failed, total, failed > 0 ? " (" + failed + " failed)" : "");
+  public String deleteEmail(List<Long> mailRemoteIds, String mailbox, List<Long> emailIds) throws ObjectNotFoundException,
+                                                                                           IllegalAccessException {
+    SharedMailboxEntry share = sharedMailbox(mailbox);
+    List<Long> uids = inboxUidsOf(emailIds, mailRemoteIds, share);
+    int failed;
+    try {
+      failed = emailBoxService.deleteEmail(uids, getCurrentUserName(), inboxOf(share));
+    } catch (MailboxRightMissingException | DelegationRevokedException e) {
+      throw refusedIn(share, "delete its mail", e);
+    }
+    int total = uids.size();
+    return String.format("Deleted %d of %d email(s)%s%s.",
+                         total - failed,
+                         total,
+                         failed > 0 ? " (" + failed + " failed)" : "",
+                         inMailboxPhrase(share));
   }
 
   // ---------------------------------------------------------------------------
@@ -571,20 +881,38 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
-   * Tag one or more emails (by IMAP mailRemoteId) with an existing category id
-   * (from list_email_categories). Emails already in the category are skipped.
+   * Tag one or more emails of the user's own INBOX with an existing category id (from
+   * list_email_categories). Emails already in the category are skipped. The mails are
+   * named by email_ids or by UIDs of the own INBOX ({@link #inboxUidsOf}).
+   *
+   * @param mailRemoteIds UIDs of mails of the user's own INBOX, or null
+   * @param categoryId the category
+   * @param emailIds the mails' local ids, all in the user's own INBOX, or null
+   * @return the outcome, in words
+   * @throws ObjectNotFoundException when a mail is not found
+   * @throws IllegalAccessException if the user has no usable mailbox
    */
-  public String addEmailCategory(List<Long> mailRemoteIds, long categoryId) throws IllegalAccessException {
-    int linked = emailBoxService.linkEmailsToCategory(mailRemoteIds, categoryId, getCurrentUserName());
+  public String addEmailCategory(List<Long> mailRemoteIds, long categoryId, List<Long> emailIds) throws ObjectNotFoundException,
+                                                                                                 IllegalAccessException {
+    int linked = emailBoxService.linkEmailsToCategory(inboxUidsOf(emailIds, mailRemoteIds, null), categoryId, getCurrentUserName());
     return String.format("Added category %d to %d email(s).", categoryId, linked);
   }
 
   /**
-   * Remove a category id from one or more emails (by IMAP mailRemoteId). Emails not
-   * currently in the category are skipped.
+   * Remove a category id from one or more emails of the user's own INBOX, named as
+   * {@link #addEmailCategory} names them. Emails not currently in the category are
+   * skipped.
+   *
+   * @param mailRemoteIds UIDs of mails of the user's own INBOX, or null
+   * @param categoryId the category
+   * @param emailIds the mails' local ids, all in the user's own INBOX, or null
+   * @return the outcome, in words
+   * @throws ObjectNotFoundException when a mail is not found
+   * @throws IllegalAccessException if the user has no usable mailbox
    */
-  public String removeEmailCategory(List<Long> mailRemoteIds, long categoryId) throws IllegalAccessException {
-    int unlinked = emailBoxService.unlinkEmailsFromCategory(mailRemoteIds, categoryId, getCurrentUserName());
+  public String removeEmailCategory(List<Long> mailRemoteIds, long categoryId, List<Long> emailIds) throws ObjectNotFoundException,
+                                                                                                    IllegalAccessException {
+    int unlinked = emailBoxService.unlinkEmailsFromCategory(inboxUidsOf(emailIds, mailRemoteIds, null), categoryId, getCurrentUserName());
     return String.format("Removed category %d from %d email(s).", categoryId, unlinked);
   }
 
@@ -599,15 +927,24 @@ public class EmailMcpTool implements McpToolPlugin {
    * takes. The thread id is on the domain object for every cached read, and was simply
    * being dropped here — while the conversation tool's description told callers to
    * expect it (EXO-89372).
+   * <p>
+   * The folder is given by name, and the UID only for a mail of the user's own INBOX
+   * (EXO-90555, {@link #chainableUid}).
+   *
+   * @param email the cached message
+   * @param includeUserEmail whether to carry the user's own address
+   * @param share the shared mailbox it was read from, null for the user's own
+   * @return the model
    */
-  private EmailModel toEmailModel(Email email, boolean includeUserEmail) {
+  private EmailModel toEmailModel(Email email, boolean includeUserEmail, SharedMailboxEntry share) {
     EmailContent content = email.getContent();
     if (content != null && content.getBody() != null) {
       content.setBody(Jsoup.parse(content.getBody()).text().trim());
     }
     EmailModel model = new EmailModel();
     model.setId(email.getId());
-    model.setMailRemoteId(email.getMailRemoteId());
+    model.setMailRemoteId(chainableUid(email, share));
+    model.setFolder(folderNameOf(email, share));
     model.setThreadId(email.getThreadId());
     model.setUserId(email.getUserId());
     model.setUserEmail(includeUserEmail ? email.getUserEmail() : null);
@@ -641,14 +978,21 @@ public class EmailMcpTool implements McpToolPlugin {
    * about; a message that cannot say where it lives should say nothing, and the tool's
    * description tells the caller not to act on the UID of one that does not.
    *
+   * <p>
+   * In a shared mailbox (EXO-90555) the folder is given by name -- INBOX, SENT or
+   * ARCHIVE, through the share's own folder roles -- never as a {@code CUSTOM:<id>} key,
+   * so the same rule applies there: a UID is chainable only from a message whose folder
+   * is INBOX. A folder of the share with no such role says nothing.
+   *
    * @param email the cached message
+   * @param share the shared mailbox read, null for the user's own
    * @return its conversation-reading shape
    */
-  private EmailThreadMessageModel toThreadMessageModel(Email email) {
+  private EmailThreadMessageModel toThreadMessageModel(Email email, SharedMailboxEntry share) {
     EmailSender sender = email.getSender();
     return new EmailThreadMessageModel(email.getId(),
-                                       email.getMailRemoteId(),
-                                       email.getFolder(),
+                                       chainableUid(email, share),
+                                       folderNameOf(email, share),
                                        sender == null ? null : sender.getName(),
                                        sender == null ? null : sender.getAddress(),
                                        email.getReceivedDate(),
@@ -723,10 +1067,18 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /**
    * Build the authenticated download URL for an attachment served by the existing
-   * EmailBoxRest endpoint (GET /email-box/attachments/{mailRemoteId}/{attachmentId}).
+   * EmailBoxRest endpoint (GET /email-box/attachments/{mailRemoteId}/{attachmentId}),
+   * under the add-on's own REST context -- the address the mailbox itself downloads
+   * from -- with the folder the UID belongs to when it is not the user's INBOX.
+   *
+   * @param mailRemoteId the message's UID
+   * @param attachmentId the attachment's part id
+   * @param folderKey the folder the UID belongs to, null for the user's INBOX
+   * @return the URL
    */
-  private String buildAttachmentDownloadUrl(long mailRemoteId, String attachmentId) {
-    return String.format("/portal/rest/email-box/attachments/%d/%s", mailRemoteId, attachmentId);
+  private String buildAttachmentDownloadUrl(long mailRemoteId, String attachmentId, String folderKey) {
+    String url = String.format("/email-connector/rest/email-box/attachments/%d/%s", mailRemoteId, attachmentId);
+    return folderKey == null ? url : url + "?folder=" + URLEncoder.encode(folderKey, StandardCharsets.UTF_8);
   }
 
   /**
@@ -750,17 +1102,6 @@ public class EmailMcpTool implements McpToolPlugin {
                     .filter(StringUtils::isNotBlank)
                     .map(address -> new EmailRecipient(null, address.trim(), null, false))
                     .toList();
-  }
-
-  /**
-   * Fetch the original email (with recipients) or fail if it cannot be found.
-   */
-  private Email fetchOriginalOrFail(long mailRemoteId, String username) throws IllegalAccessException {
-    Email original = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, username, MailFolder.INBOX, false, true, false, false);
-    if (original == null) {
-      throw new IllegalArgumentException("Original email with mail_remote_id " + mailRemoteId + " not found");
-    }
-    return original;
   }
 
   /**
@@ -832,5 +1173,389 @@ public class EmailMcpTool implements McpToolPlugin {
           .filter(recipient -> StringUtils.isNotBlank(recipient.getAddress()))
           .filter(recipient -> !recipient.getAddress().equalsIgnoreCase(excludedAddress))
           .forEach(target::add);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Shared-mailbox helpers (EXO-90555)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The shared mailbox a {@code mailbox} argument names, or null for a blank one --
+   * which alone means the user's own. A name that resolves to nothing is not found, and
+   * never falls back to the user's own mailbox.
+   *
+   * @param mailbox the argument
+   * @return the shared mailbox, null for the user's own
+   * @throws ObjectNotFoundException when no accepted share of the user's has that name
+   */
+  private SharedMailboxEntry sharedMailbox(String mailbox) throws ObjectNotFoundException {
+    if (StringUtils.isBlank(mailbox)) {
+      return null;
+    }
+    try {
+      return emailDelegationService.getSharedMailbox(getCurrentUserName(), mailbox);
+    } catch (ObjectNotFoundException e) {
+      throw new ObjectNotFoundException(String.format("No mailbox \"%s\" is shared with you. list_shared_mailboxes lists the ones that are; "
+          + "leave mailbox empty for your own.", mailbox.trim()));
+    }
+  }
+
+  /**
+   * The inbox a UID-keyed tool reads and writes in: the user's own INBOX, or the shared
+   * mailbox's registered inbox.
+   *
+   * @param share the shared mailbox, null for the user's own
+   * @return the folder key
+   */
+  private static String inboxOf(SharedMailboxEntry share) {
+    return share == null ? MailFolder.INBOX : share.folderKey();
+  }
+
+  /**
+   * A folder argument as one of the listable folder names.
+   *
+   * @param folder the argument
+   * @return INBOX (the default), SENT or ARCHIVE
+   * @throws IllegalArgumentException for any other folder
+   */
+  private static String browsableFolder(String folder) {
+    String name = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder.trim().toUpperCase(Locale.ROOT);
+    if (!MailFolder.INBOX.equals(name) && !MailFolder.SENT.equals(name) && !MailFolder.ARCHIVE.equals(name)) {
+      throw new IllegalArgumentException("folder must be one of INBOX, SENT or ARCHIVE.");
+    }
+    return name;
+  }
+
+  /**
+   * The key of a shared mailbox's folder that is in the user's mirror, or a refusal that
+   * says so: a folder not shared, or not synced yet, is never answered as an empty one.
+   *
+   * @param share the shared mailbox
+   * @param folderName INBOX, SENT or ARCHIVE
+   * @return the folder key
+   * @throws IllegalArgumentException when that folder is not available
+   */
+  private String mirroredFolderOrFail(SharedMailboxEntry share, String folderName) {
+    String key = emailDelegationService.getMirroredFolderKey(getCurrentUserName(), share, folderName);
+    if (key == null) {
+      throw new IllegalArgumentException(String.format("The %s folder of %s is not available: it is not shared with you, or has not been synced yet. "
+          + "This is not an empty folder; list_shared_mailboxes says which folders are available.", folderName, ownerOf(share)));
+    }
+    return key;
+  }
+
+  /**
+   * The name of a shared mailbox's folder -- INBOX, or its role: SENT, ARCHIVE, TRASH,
+   * JUNK, DRAFTS -- from its key.
+   *
+   * @param share the shared mailbox
+   * @param folderKey the folder's key
+   * @return the name, null for a folder with none of those roles
+   */
+  private static String folderNameIn(SharedMailboxEntry share, String folderKey) {
+    if (folderKey == null) {
+      return null;
+    }
+    if (folderKey.equals(share.folderKey())) {
+      return MailFolder.INBOX;
+    }
+    return share.folders()
+                .stream()
+                .filter(folder -> folderKey.equals(folder.key()))
+                .map(SharedMailboxFolder::role)
+                .filter(Objects::nonNull)
+                .map(FolderRole::name)
+                .findFirst()
+                .orElse(null);
+  }
+
+  /**
+   * One mail as a tool acts on it: the folder its UID numbers it in, the UID, and the
+   * local id it was named by, when it was.
+   *
+   * @param folderKey the folder key
+   * @param uid the UID in that folder
+   * @param emailId the local id, null when the mail was named by UID
+   */
+  private record MailRef(String folderKey, long uid, Long emailId) {
+  }
+
+  /**
+   * The mail a single-mail tool acts on (EXO-90555). A UID numbers a message within one
+   * folder only, so the same number names unrelated mails in INBOX, Sent and Archive,
+   * and in every mailbox. Two ways to name one:
+   * <ul>
+   * <li>{@code email_id} -- the row's local id, unique across folders and mailboxes, read
+   * through the owning lookups (the user's own mailbox, or the share named): the mail is
+   * acted on in the folder it is in. A {@code mail_remote_id} given with it must be that
+   * row's, or nothing is done.</li>
+   * <li>{@code mail_remote_id} alone -- a mail of the user's own INBOX, the only UIDs this
+   * toolset hands out ({@link #chainableUid}); refused with a {@code mailbox}, whose
+   * mails are named by email_id.</li>
+   * </ul>
+   * Chosen over the Message-ID: a Message-ID can be missing, and is the same for the
+   * copies of one mail -- in the INBOX and in Sent, in the owner's Sent and the
+   * delegate's -- where the local id names one row.
+   *
+   * @param emailId the local id, or null
+   * @param mailRemoteId the UID, or null
+   * @param share the shared mailbox named, null for the user's own
+   * @return the mail
+   * @throws ObjectNotFoundException when no such mail is in that mailbox
+   * @throws IllegalAccessException if the user has no usable mailbox
+   */
+  private MailRef mailOf(Long emailId, Long mailRemoteId, SharedMailboxEntry share) throws ObjectNotFoundException,
+                                                                                    IllegalAccessException {
+    if (emailId != null) {
+      Email row = rowOf(emailId, share);
+      if (mailRemoteId != null && !mailRemoteId.equals(row.getMailRemoteId())) {
+        throw new IllegalArgumentException(String.format("email_id %d and mail_remote_id %d are not the same mail: nothing was done. "
+            + "Pass the email_id of the mail you read.", emailId, mailRemoteId));
+      }
+      return new MailRef(row.getFolder(), row.getMailRemoteId(), emailId);
+    }
+    if (mailRemoteId == null) {
+      throw new IllegalArgumentException("email_id is required: name the mail by the email_id of the mail you read.");
+    }
+    if (share != null) {
+      throw new IllegalArgumentException("In a shared mailbox, name the mail by its email_id: a mail_remote_id alone names a mail of your own inbox.");
+    }
+    return new MailRef(MailFolder.INBOX, mailRemoteId, null);
+  }
+
+  /**
+   * One cached mail of the mailbox named, by its local id.
+   *
+   * @param emailId the local id
+   * @param share the shared mailbox named, null for the user's own
+   * @return the row
+   * @throws ObjectNotFoundException when it is not in that mailbox
+   * @throws IllegalAccessException if the user has no usable mailbox
+   */
+  private Email rowOf(long emailId, SharedMailboxEntry share) throws ObjectNotFoundException, IllegalAccessException {
+    String username = getCurrentUserName();
+    Email row = share == null ? emailBoxService.getOwnMailboxEmailById(emailId, username)
+                              : emailBoxService.getSharedMailboxEmailById(emailId, username, share.delegationId());
+    if (row == null) {
+      throw new ObjectNotFoundException(notFoundById(emailId, share));
+    }
+    if (row.getMailRemoteId() == null) {
+      throw new IllegalArgumentException(String.format("Email %d is a draft that is not on the mail server yet: this tool cannot act on it.",
+                                                       emailId));
+    }
+    return row;
+  }
+
+  /**
+   * The refusal of an email_id that names no mail of the mailbox, in words that say
+   * which id and which mailbox -- and what an email_id is, since the likeliest wrong input
+   * is a mail_remote_id passed in its place.
+   *
+   * @param emailId the id given
+   * @param share the shared mailbox named, null for the user's own
+   * @return the message
+   */
+  private static String notFoundById(long emailId, SharedMailboxEntry share) {
+    return String.format("No email with email_id %d in %s. email_id is the local id every reading tool returns as email_id, "
+        + "not the mail_remote_id numbering a mail within its folder.",
+                         emailId,
+                         share == null ? "your mailbox" : "the mailbox of " + ownerOf(share));
+  }
+
+  /**
+   * Reads a mail where it is, and makes sure it is the one named: a row read by folder
+   * and UID must be the row the local id named, or nothing is done with it.
+   *
+   * @param mail the mail
+   * @param withAttachments whether to load its attachments
+   * @param withRecipients whether to load its recipients
+   * @param withProfile whether to load the profiles
+   * @return the mail
+   * @throws ObjectNotFoundException when it is not there
+   * @throws IllegalAccessException if the user has no usable mailbox
+   */
+  private Email fetch(MailRef mail, boolean withAttachments, boolean withRecipients, boolean withProfile) throws ObjectNotFoundException,
+                                                                                                          IllegalAccessException {
+    Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mail.uid(),
+                                                                  getCurrentUserName(),
+                                                                  mail.folderKey(),
+                                                                  withAttachments,
+                                                                  withRecipients,
+                                                                  withProfile,
+                                                                  false);
+    if (email == null) {
+      throw new ObjectNotFoundException(mail.emailId() == null ? String.format("No email with mail_remote_id %d in your inbox.", mail.uid())
+                                                               : String.format("Email %d is no longer where it was read.", mail.emailId()));
+    }
+    if (mail.emailId() != null && !mail.emailId().equals(email.getId())) {
+      throw new IllegalStateException(String.format("Email %d is no longer where it was read: nothing was done.", mail.emailId()));
+    }
+    return email;
+  }
+
+  /**
+   * The UIDs a batch tool acts on, in the inbox of the mailbox named (EXO-90555): named
+   * by {@code email_ids} -- each read through the owning lookups, and each required to
+   * be in that inbox, a mail of Sent or Archive being refused rather than a same-numbered
+   * inbox mail acted on -- or by {@code mail_remote_ids} alone, UIDs of the user's own
+   * INBOX (refused with a {@code mailbox}). Given both, they must name the same mails.
+   *
+   * @param emailIds the local ids, or null
+   * @param mailRemoteIds the UIDs, or null
+   * @param share the shared mailbox named, null for the user's own
+   * @return the UIDs, never null
+   * @throws ObjectNotFoundException when a mail is not in that mailbox
+   * @throws IllegalAccessException if the user has no usable mailbox
+   */
+  private List<Long> inboxUidsOf(List<Long> emailIds, List<Long> mailRemoteIds, SharedMailboxEntry share) throws ObjectNotFoundException,
+                                                                                                        IllegalAccessException {
+    if (emailIds == null || emailIds.isEmpty()) {
+      if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
+        return List.of();
+      }
+      if (share != null) {
+        throw new IllegalArgumentException("In a shared mailbox, name the mails by their email_ids: a mail_remote_id alone names a mail of your own inbox.");
+      }
+      return mailRemoteIds;
+    }
+    String inbox = inboxOf(share);
+    List<Long> uids = new ArrayList<>();
+    for (Long emailId : emailIds) {
+      Email row = rowOf(emailId, share);
+      if (!inbox.equals(row.getFolder())) {
+        throw new IllegalArgumentException(String.format("Email %d is in the %s folder, not in the inbox this tool acts on: nothing was done.",
+                                                         emailId,
+                                                         StringUtils.defaultIfBlank(folderNameOf(row, share), "another")));
+      }
+      uids.add(row.getMailRemoteId());
+    }
+    if (mailRemoteIds != null && !mailRemoteIds.isEmpty() && !mailRemoteIds.stream().filter(Objects::nonNull).collect(Collectors.toSet()).equals(Set.copyOf(uids))) {
+      throw new IllegalArgumentException("email_ids and mail_remote_ids do not name the same mails: nothing was done. Pass the email_ids alone.");
+    }
+    return uids;
+  }
+
+  /**
+   * The UID an answer hands out for a mail: only for a mail of the user's own INBOX, the
+   * only folder a bare {@code mail_remote_id} is resolved in (EXO-90555). Any other
+   * mail's UID would name an unrelated inbox mail in the write tools; it is named by its
+   * email_id instead.
+   *
+   * @param email the mail
+   * @param share the shared mailbox it was read from, null for the user's own
+   * @return the UID, or null
+   */
+  private static Long chainableUid(Email email, SharedMailboxEntry share) {
+    return share == null && MailFolder.INBOX.equals(email.getFolder()) ? email.getMailRemoteId() : null;
+  }
+
+  /**
+   * The name of the folder a mail is in, as the answers give it: a role name, never an
+   * internal folder key -- null for a folder of the user's own with no role.
+   *
+   * @param email the mail
+   * @param share the shared mailbox it was read from, null for the user's own
+   * @return INBOX, SENT, ARCHIVE, DRAFTS, TRASH, JUNK..., or null
+   */
+  private static String folderNameOf(Email email, SharedMailboxEntry share) {
+    if (share != null) {
+      return folderNameIn(share, email.getFolder());
+    }
+    return email.getFolder() == null || MailFolder.isCustom(email.getFolder()) ? null : email.getFolder();
+  }
+
+  /**
+   * Sends through the service, from the shared mailbox when one is named, and says what
+   * became of the owner's copy.
+   *
+   * @param email the mail
+   * @param username the sender
+   * @param share the shared mailbox, null for the user's own
+   * @return a sentence about the owner's copy, empty for the user's own mailbox
+   * @throws ObjectNotFoundException when the share is not the sender's
+   * @throws IllegalAccessException if the user may not send
+   */
+  private String send(Email email, String username, SharedMailboxEntry share) throws ObjectNotFoundException,
+                                                                             IllegalAccessException {
+    if (share == null) {
+      emailBoxService.sendEmail(email, username);
+      return "";
+    }
+    EmailBoxService.OwnerCopy copy;
+    try {
+      copy = emailBoxService.sendEmail(email, username, share.delegationId());
+    } catch (DelegationRevokedException e) {
+      throw refusedIn(share, "send from it", e);
+    }
+    if (copy == EmailBoxService.OwnerCopy.FILED) {
+      return String.format(" A copy was filed in the Sent folder of %s.", ownerOf(share));
+    } else if (copy == EmailBoxService.OwnerCopy.FAILED) {
+      return String.format(" The copy in the Sent folder of %s could not be filed; the mail itself was sent.", ownerOf(share));
+    }
+    return String.format(" No copy was filed in the Sent folder of %s: filing there is not shared with you, or is switched off.",
+                         ownerOf(share));
+  }
+
+  /**
+   * A refusal in a shared mailbox, in words that name it.
+   *
+   * @param share the shared mailbox, null for the user's own
+   * @param action what was refused, as "archive its mail"
+   * @param cause the service's refusal
+   * @return the exception to throw
+   */
+  private static IllegalAccessException refusedIn(SharedMailboxEntry share, String action, Exception cause) {
+    String message;
+    if (share == null) {
+      message = cause.getMessage();
+    } else if (cause instanceof DelegationRevokedException) {
+      message = String.format("The mailbox of %s is no longer shared with you: nothing was done.", ownerOf(share));
+    } else {
+      message = String.format("Your access to the mailbox of %s does not allow you to %s: nothing was done.", ownerOf(share), action);
+    }
+    IllegalAccessException refusal = new IllegalAccessException(message);
+    refusal.initCause(cause);
+    return refusal;
+  }
+
+  /**
+   * The owner of a shared mailbox, as the answers name them: their name and address.
+   *
+   * @param share the shared mailbox
+   * @return the name
+   */
+  private static String ownerOf(SharedMailboxEntry share) {
+    String name = StringUtils.defaultIfBlank(share.ownerFullName(), share.ownerMailbox());
+    return name == null || name.equalsIgnoreCase(share.ownerMailbox()) ? name : name + " (" + share.ownerMailbox() + ")";
+  }
+
+  /**
+   * " from the mailbox of X" for a shared mailbox, nothing for the user's own.
+   *
+   * @param share the shared mailbox, null for the user's own
+   * @return the phrase
+   */
+  private static String fromMailbox(SharedMailboxEntry share) {
+    return share == null ? "" : " from the mailbox of " + ownerOf(share) + ", sent from your own address";
+  }
+
+  /**
+   * " in the mailbox of X" for a shared mailbox, nothing for the user's own.
+   *
+   * @param share the shared mailbox, null for the user's own
+   * @return the phrase
+   */
+  private static String inMailboxPhrase(SharedMailboxEntry share) {
+    return share == null ? "" : " in the mailbox of " + ownerOf(share);
+  }
+
+  /**
+   * " (in the mailbox of X)" appended to an outcome sentence, nothing for the user's own.
+   *
+   * @param share the shared mailbox, null for the user's own
+   * @return the suffix
+   */
+  private static String inMailbox(SharedMailboxEntry share) {
+    return share == null ? "" : " (in the mailbox of " + ownerOf(share) + ")";
   }
 }

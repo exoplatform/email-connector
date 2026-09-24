@@ -5513,12 +5513,16 @@ public class EmailBoxService {
    * (EXO-90557). {@link #getOwnedEmailById} checks the row is this user's; a row of a
    * mailbox somebody shared with them is theirs too, as a mirror, but it is its owner's
    * mail, and the agent's write tools act on the user's own INBOX by UID, where that
-   * UID names another message. Answered as not found, like an id that is not theirs.
+   * UID names another message. Answered as not found, like an id that is not theirs --
+   * and so is the row of another user: row ids are global, and a guessed or mistaken id
+   * (a mail_remote_id passed in its place) must neither be told "not allowed" nor learn
+   * that such a row exists.
    *
    * @param id the local id
    * @param username the reader
    * @return the message, null when it is not in the user's own mailbox
-   * @throws IllegalAccessException if the row belongs to somebody else
+   * @throws IllegalAccessException never for a row of another user; declared for the
+   *           callers' existing contract
    */
   // Transactional on its own account, as getOwnedEmailById is: the call below is on
   // this instance, so it bypasses the proxy and runs without that method's transaction,
@@ -5526,11 +5530,144 @@ public class EmailBoxService {
   // attachments then fail to load (live regression, MCP get_email_by_id).
   @Transactional(noRollbackFor = IllegalAccessException.class)
   public Email getOwnMailboxEmailById(long id, String username) throws IllegalAccessException {
-    Email email = getOwnedEmailById(id, username);
+    Email email = ownedOrNull(id, username);
     if (email != null && emailDelegationService.delegationOf(username, email.getFolder()) != null) {
       return null;
     }
     return email;
+  }
+
+  /**
+   * One message of a mailbox shared with the user by its local id -- what an agent that
+   * named that mailbox is handed (EXO-90555), the counterpart of
+   * {@link #getOwnMailboxEmailById}. The row must be the user's (its mirror) AND sit in
+   * a folder registered for THAT share, which is read by DELEGATION_ID
+   * ({@link EmailDelegationService#getMailboxFolderKeys}) rather than inferred from the
+   * folder key: a row of the user's own mailbox, or of another share, is answered as not
+   * found, like an id that is not theirs -- and another user's row too, as
+   * {@link #getOwnMailboxEmailById} does.
+   *
+   * @param id the local id
+   * @param username the reader
+   * @param delegationId the share the agent named, as the delegation service resolved it
+   * @return the message, null when it is not in that shared mailbox
+   * @throws IllegalAccessException never for a row of another user; declared for the
+   *           callers' existing contract
+   */
+  // Transactional on its own account, for the reason getOwnMailboxEmailById is.
+  @Transactional(noRollbackFor = IllegalAccessException.class)
+  public Email getSharedMailboxEmailById(long id, String username, long delegationId) throws IllegalAccessException {
+    Email email = ownedOrNull(id, username);
+    if (email == null || !emailDelegationService.getMailboxFolderKeys(username, delegationId).contains(email.getFolder())) {
+      return null;
+    }
+    return email;
+  }
+
+  /**
+   * {@link #getOwnedEmailById} for the agent's lookups: a row of another user reads as no
+   * row at all.
+   *
+   * @param id the local id
+   * @param username the reader
+   * @return the user's row, or null
+   */
+  private Email ownedOrNull(long id, String username) {
+    try {
+      return getOwnedEmailById(id, username);
+    } catch (IllegalAccessException e) {
+      LOG.debug("An agent of user {} named email {}, which is not theirs; answered as not found", username, id);
+      return null;
+    }
+  }
+
+  /**
+   * Searches one folder of a mailbox shared with the user in the user's mirror of it
+   * (EXO-90555) -- what an agent's search of a shared mailbox reads. The mirror, not the
+   * mail server: the rows are the ones the shared mailbox's sync brought in, so an
+   * answer covers what that folder's mirror holds and says so through its caller.
+   * <p>
+   * The same criteria as {@link #searchEmails}: free text over the subject or the
+   * sender, a sender filter, unread only, an age window -- at least one of them. The
+   * folder's mirrored rows are read and filtered here, which the mirror's own size
+   * bounds (the sync keeps a recent window, not a mailbox's history).
+   *
+   * @param username the reader
+   * @param folderKey the shared folder's key, as
+   *          {@link EmailDelegationService#getMirroredFolderKey} resolved it
+   * @param query free text matched against the subject or the sender, may be blank
+   * @param from text matched against the sender only, may be blank
+   * @param unreadOnly only unread messages
+   * @param sinceDays only messages received in the last N days, null for all
+   * @param limit how many hits to return, newest first
+   * @return the newest matching mirrored messages and how many matched
+   * @throws IllegalAccessException if the user may not read their mailbox
+   * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for a key
+   *           that is not a folder of a mailbox shared with the user, and the codes
+   *           {@link #searchEmails} raises for its criteria
+   */
+  public EmailSearchResultPage searchSharedMailboxMirror(String username,
+                                                         String folderKey,
+                                                         String query,
+                                                         String from,
+                                                         boolean unreadOnly,
+                                                         Integer sinceDays,
+                                                         int limit) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEARCH_EMAIL_MESSAGE, username));
+    }
+    if (emailDelegationService.delegationOf(username, folderKey) == null) {
+      throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
+    }
+    if (sinceDays != null && sinceDays < 0) {
+      throw new IllegalArgumentException("emailConnector.search.invalidSinceDays");
+    }
+    String term = StringUtils.trimToNull(query);
+    String sender = StringUtils.trimToNull(from);
+    if (term == null && sender == null && !unreadOnly && sinceDays == null) {
+      throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
+    }
+    Date since = sinceDays == null ? null : new Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(sinceDays));
+    List<Email> matches = emailBoxStorage.getEmails(username, folderKey)
+                                         .stream()
+                                         .filter(email -> !unreadOnly || !email.isRead())
+                                         .filter(email -> since == null
+                                             || email.getReceivedDate() != null && !email.getReceivedDate().before(since))
+                                         .filter(email -> sender == null || senderMatches(email, sender))
+                                         .filter(email -> term == null || StringUtils.containsIgnoreCase(email.getSubject(), term)
+                                             || senderMatches(email, term))
+                                         .sorted(Comparator.comparing(Email::getReceivedDate,
+                                                                      Comparator.nullsLast(Comparator.reverseOrder())))
+                                         .toList();
+    List<EmailSearchResult> results = matches.stream()
+                                             .limit(Math.min(Math.max(limit, 1), SEARCH_MAX_RESULTS))
+                                             .map(email -> new EmailSearchResult(email.getMailRemoteId(),
+                                                                                 folderKey,
+                                                                                 email.getSubject(),
+                                                                                 email.getSender(),
+                                                                                 email.getReceivedDate(),
+                                                                                 email.isRead(),
+                                                                                 email.isStarred(),
+                                                                                 true,
+                                                                                 null,
+                                                                                 email.getId()))
+                                             .toList();
+    return new EmailSearchResultPage(results, matches.size());
+  }
+
+  /**
+   * Whether a message's sender -- name or address -- contains a text, ignoring case.
+   *
+   * @param email the message
+   * @param text the text
+   * @return true when it does
+   */
+  private static boolean senderMatches(Email email, String text) {
+    EmailSender sender = email.getSender();
+    return sender != null
+        && (StringUtils.containsIgnoreCase(sender.getName(), text) || StringUtils.containsIgnoreCase(sender.getAddress(), text));
   }
 
   /**
@@ -7989,9 +8126,11 @@ public class EmailBoxService {
       props.put("mail.smtp.writetimeout", String.valueOf(SCHEDULED_SMTP_IO_TIMEOUT_MS));
     }
     props.put("mail.smtp.auth", "true");
-    props.put("mail.smtp." + emailConnector.getSmtpSecurityType() + ".enable", "true");
-    props.put("mail.smtp.host", emailConnector.getSmtpUrl());
-    props.put("mail.smtp.port", emailConnector.getSmtpPort());
+    // Trimmed where used too: a stored value may carry surrounding whitespace, and
+    // JavaMail resolves the host and reads the port verbatim.
+    props.put("mail.smtp." + StringUtils.trim(emailConnector.getSmtpSecurityType()) + ".enable", "true");
+    props.put("mail.smtp.host", StringUtils.trim(emailConnector.getSmtpUrl()));
+    props.put("mail.smtp.port", StringUtils.trim(emailConnector.getSmtpPort()));
     // The props are connector configuration and stay where they were; only the
     // authenticator moves, from one built here out of the stored setting to one
     // the configured provider produces.
@@ -12830,7 +12969,9 @@ public class EmailBoxService {
         pageUids.add(uidFolder.getUID(message));
       }
       // One IN query for the whole page — never a per-hit lookup.
-      Set<Long> cachedUids = new HashSet<>(emailBoxStorage.getCachedMailRemoteIds(username, folder, pageUids));
+      // The same single statement also names each cached hit's row (EXO-90555): the
+      // email_id an agent tool takes, which a UID -- numbered per folder -- is not.
+      Map<Long, Long> cachedIds = emailBoxStorage.getCachedEmailIds(username, folder, pageUids);
       List<EmailSearchResult> results = new ArrayList<>(page.length);
       for (int i = page.length - 1; i >= 0; i--) {
         try {
@@ -12844,10 +12985,11 @@ public class EmailBoxService {
                                             page[i].getReceivedDate(),
                                             page[i].isSet(Flags.Flag.SEEN),
                                             page[i].isSet(Flags.Flag.FLAGGED),
-                                            cachedUids.contains(messageUid),
+                                            cachedIds.containsKey(messageUid),
                                             // Envelope-only: quoting the body would cost
                                             // one round-trip per hit.
-                                            null));
+                                            null,
+                                            cachedIds.get(messageUid)));
         } catch (Exception e) {
           // One unreadable hit must not lose the rest of the page.
           LOG.debug("Skipping an unreadable search hit in folder {} for user {}", folder, username, e);

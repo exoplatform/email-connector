@@ -850,18 +850,19 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<String> threadIds);
 
   /**
-   * Of the given IMAP UIDs, the ones already cached in a folder — one IN query
-   * for the whole search result list, so decorating hits with their "already
-   * openable locally" flag costs a single statement rather than one lookup per
-   * hit (the same per-row discipline the sync reconcile follows).
+   * Of the given IMAP UIDs, the cached ones in a folder of one user, each with its
+   * row's local id -- the (UID, id) pairs a search result list is decorated with, so a
+   * hit found on the mail server names its mail by the key the agent tools take
+   * (EXO-90555), in one IN statement for the whole page.
+   * Scoped by owner and folder: a UID numbers a message within one folder only.
    *
    * @param userId the mailbox owner
    * @param folder the folder discriminator scoping the UIDs
    * @param mailRemoteIds the candidate IMAP UIDs
-   * @return the subset of {@code mailRemoteIds} present in the local cache
+   * @return {UID, id} pairs of the cached ones
    */
-  @Query("SELECT email.mailRemoteId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId IN :mailRemoteIds")
-  List<Long> findCachedMailRemoteIds(@Param("userId")
+  @Query("SELECT email.mailRemoteId, email.id FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId IN :mailRemoteIds")
+  List<Object[]> findCachedIdsByMailRemoteIds(@Param("userId")
   String userId, @Param("folder")
   String folder, @Param("mailRemoteIds")
   List<Long> mailRemoteIds);

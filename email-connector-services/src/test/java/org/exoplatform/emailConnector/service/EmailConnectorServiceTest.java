@@ -29,6 +29,7 @@ import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -42,6 +43,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InOrder;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -150,6 +152,50 @@ public class EmailConnectorServiceTest {
     when(userAcl.isAdministrator(identity)).thenReturn(true);
     emailConnectorService.updateEmailConnector(emailConnector, TEST_USER);
     verify(emailConnectorStorage).updateEmailConnector(emailConnector);
+  }
+
+  /**
+   * EXO-90555 -- a preset is saved with its server fields trimmed, on create and on
+   * update: a host typed " 127.0.0.1" was stored so, and every send through it failed.
+   */
+  @Test
+  @SneakyThrows
+  void aPresetIsSavedWithItsServerFieldsTrimmed() {
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    lenient().when(applicationCenterService.getApplications(0, 0, null)).thenReturn(mock(ApplicationList.class));
+    ArgumentCaptor<EmailConnector> created = ArgumentCaptor.forClass(EmailConnector.class);
+    ArgumentCaptor<EmailConnector> updated = ArgumentCaptor.forClass(EmailConnector.class);
+
+    emailConnectorService.createEmailConnector(spacedPreset(), TEST_USER);
+    emailConnectorService.updateEmailConnector(spacedPreset(), TEST_USER);
+
+    verify(emailConnectorStorage).createEmailConnector(created.capture());
+    verify(emailConnectorStorage).updateEmailConnector(updated.capture());
+    for (EmailConnector saved : List.of(created.getValue(), updated.getValue())) {
+      assertEquals("127.0.0.1", saved.getSmtpUrl());
+      assertEquals("1465", saved.getSmtpPort());
+      assertEquals("ssl", saved.getSmtpSecurityType());
+      assertEquals("imap.example.org", saved.getImapUrl());
+      assertEquals("993", saved.getImapPort());
+    }
+  }
+
+  /**
+   * A preset whose server fields were typed with stray spaces.
+   *
+   * @return the preset
+   */
+  private EmailConnector spacedPreset() {
+    EmailConnector spaced = emailConnector();
+    spaced.setId(null);
+    spaced.setSmtpUrl(" 127.0.0.1");
+    spaced.setSmtpPort("1465 ");
+    spaced.setSmtpSecurityType(" ssl ");
+    spaced.setImapUrl(" imap.example.org ");
+    spaced.setImapPort(" 993");
+    return spaced;
   }
 
   @Test

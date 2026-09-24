@@ -143,6 +143,28 @@ public class EmailBoxDAOTest {
   }
 
   /**
+   * EXO-90555 -- the (UID, id) pairs a search result page is decorated with, run on
+   * HSQLDB: the cached UIDs of the page in THAT folder of THAT user, each with its own
+   * row's id -- never the row of another folder numbered alike, never another user's.
+   */
+  @Test
+  void theCachedIdsOfAPageAreScopedToTheirFolderAndOwner() {
+    Long inInbox = persistEmail(8L, MailFolder.INBOX, "b", Boolean.FALSE);
+    persistEmail(8L, MailFolder.SENT, "b", Boolean.FALSE);
+    EmailBoxEntity someoneElses = entityManager.find(EmailBoxEntity.class, persistEmail(9L, MailFolder.INBOX, "b", Boolean.FALSE));
+    someoneElses.setUserId("bob");
+    entityManager.persist(someoneElses);
+    entityManager.flush();
+    entityManager.clear();
+
+    List<Object[]> rows = emailBoxDAO.findCachedIdsByMailRemoteIds(USERNAME, MailFolder.INBOX, List.of(8L, 9L, 10L));
+
+    assertEquals(1, rows.size());
+    assertEquals(8L, rows.get(0)[0]);
+    assertEquals(inInbox, rows.get(0)[1]);
+  }
+
+  /**
    * Persists one cached message in a given folder, pinned to a Message-ID.
    *
    * @param remoteId the IMAP UID, within that folder

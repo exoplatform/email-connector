@@ -860,4 +860,17 @@ public class EmailBoxStorageTest {
   private EmailAttachment emailAttachment() {
     return new EmailAttachment(null, 1212l, "2", "attachment.pdf", "application/pdf", null, MailFolder.INBOX, null, null, null);
   }
+
+  /**
+   * EXO-90555 -- the (UID, id) pairs of a search page become the local ids by UID, each
+   * UID mapped to its own row -- never the reverse -- and nothing is asked for no UID.
+   */
+  @Test
+  void theCachedIdsOfAPageAreMappedByUid() {
+    when(emailBoxDAO.findCachedIdsByMailRemoteIds("user", MailFolder.INBOX, List.of(8L, 9L))).thenReturn(List.<Object[]>of(new Object[] { 8L, 42L }));
+
+    assertEquals(Map.of(8L, 42L), emailBoxStorage.getCachedEmailIds("user", MailFolder.INBOX, List.of(8L, 9L)));
+    assertEquals(Map.of(), emailBoxStorage.getCachedEmailIds("user", MailFolder.INBOX, List.of()));
+    verify(emailBoxDAO, times(1)).findCachedIdsByMailRemoteIds(anyString(), anyString(), anyList());
+  }
 }

@@ -691,6 +691,7 @@ public class EmailConnectorService {
                                                      username,
                                                      emailConnector.getName()));
     }
+    trimServerFields(emailConnector);
     // Before the insert, not after: a setting key carries the connector id, so the
     // configuration can only be written once the connector exists - and a refusal then
     // would leave a connector created with nothing configured, which an administrator
@@ -724,6 +725,7 @@ public class EmailConnectorService {
     // connector and its configuration are two writes, and a refusal on the second
     // would otherwise leave the connector on a provider whose configuration was never
     // stored - an authentication nothing can perform, that no screen shows as broken.
+    trimServerFields(emailConnector);
     validateProviderConfig(emailConnector);
     // The id is nullable on this path - the storage resolves the connector by name when
     // it is - so the previous state is only read when there is an id to read it by.
@@ -904,6 +906,22 @@ public class EmailConnectorService {
       logProviderConfigRefusal(emailConnector, values, e);
       throw new IllegalArgumentException(e.getMessage(), e);
     }
+  }
+
+  /**
+   * Trims the server fields of a connector preset as it is saved: the IMAP and SMTP hosts
+   * and ports and the SMTP security type. JavaMail resolves a host verbatim, so a value
+   * typed with surrounding whitespace is an unknown host, a failure no screen shows. The
+   * provider configuration, which may carry secrets, is left as it came.
+   *
+   * @param emailConnector the preset being saved
+   */
+  private static void trimServerFields(EmailConnector emailConnector) {
+    emailConnector.setImapUrl(StringUtils.trim(emailConnector.getImapUrl()));
+    emailConnector.setImapPort(StringUtils.trim(emailConnector.getImapPort()));
+    emailConnector.setSmtpUrl(StringUtils.trim(emailConnector.getSmtpUrl()));
+    emailConnector.setSmtpPort(StringUtils.trim(emailConnector.getSmtpPort()));
+    emailConnector.setSmtpSecurityType(StringUtils.trim(emailConnector.getSmtpSecurityType()));
   }
 
   /**
