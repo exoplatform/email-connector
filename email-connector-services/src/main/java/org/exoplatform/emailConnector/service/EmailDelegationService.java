@@ -681,9 +681,9 @@ public class EmailDelegationService {
       // folder whose access was removed instead leaves them now.
       for (FolderRole role : following) {
         if (removed.contains(role)) {
-          dropDelegatedFolderTree(delegation, roleFolders.get(role), false);
+          dropDelegatedFolderTree(delegation, roleFolders.get(role), false, null);
         } else {
-          narrowDelegatedFolder(delegation, roleFolders.get(role), DelegationPreset.READER.rights());
+          narrowDelegatedFolder(delegation, roleFolders.get(role), DelegationPreset.READER.rights(), null);
         }
       }
     }
@@ -1263,10 +1263,12 @@ public class EmailDelegationService {
     List<FolderAccessResult> results = new ArrayList<>();
     Map<String, MailboxRights> narrowed = new HashMap<>();
     List<String> unshared = new ArrayList<>();
+    Set<String> ownerNames = new HashSet<>();
     MailboxAce inbox = null;
     try (MailboxAclSession session = session(connector, ownerUsername, ownerMailbox)) {
       requirePerFolder(engine.probe(session));
       List<OwnFolder> listed = engine.listOwnFolders(session);
+      listed.forEach(folder -> ownerNames.add(folder.fullName()));
       Map<String, OwnFolder> byName = new HashMap<>();
       shareableFolders(listed).forEach(folder -> byName.put(folder.fullName(), folder));
       for (String name : asked.keySet()) {
@@ -1321,9 +1323,9 @@ public class EmailDelegationService {
     }
     // The owner's mail leaves the delegate's screens now, whatever becomes of the row.
     for (String folder : unshared) {
-      dropDelegatedFolderTree(delegation, folder, false);
+      dropDelegatedFolderTree(delegation, folder, false, ownerNames);
     }
-    narrowed.forEach((folder, written) -> narrowDelegatedFolder(delegation, folder, written));
+    narrowed.forEach((folder, written) -> narrowDelegatedFolder(delegation, folder, written, ownerNames));
     boolean recordsRoles = delegation.getGrantedRoles() != null || delegation.getOrigin() == DelegationOrigin.EXO;
     String grantedRoles = recordsRoles ? EmailDelegation.grantedRolesOf(granted) : null;
     EmailDelegation updated;
@@ -1411,7 +1413,7 @@ public class EmailDelegationService {
         return;
       }
       for (EmailDelegation share : shares) {
-        dropDelegatedFolderTree(share, oldName, true);
+        dropDelegatedFolderTree(share, oldName, true, null);
       }
       if (newName != null) {
         regrantRenamed(connector, ownerUsername, ownerMailbox, shares, newName);
@@ -1856,11 +1858,13 @@ public class EmailDelegationService {
    * @param delegation the share
    * @param ownerName the folder's full name on the owner's session
    * @param withDescendants whether the folders inside it go too
+   * @param ownerNames every folder name of the owner's mailbox, when known -- see
+   *          {@link #registeredNameOf}; null when not listed
    */
-  void dropDelegatedFolderTree(EmailDelegation delegation, String ownerName, boolean withDescendants) {
+  void dropDelegatedFolderTree(EmailDelegation delegation, String ownerName, boolean withDescendants, Set<String> ownerNames) {
     List<EmailFolder> rows = granteeFolders(delegation);
     String delimiter = delimiterOf(rows);
-    String shared = registeredNameOf(rows, delegation, ownerName, delimiter);
+    String shared = registeredNameOf(rows, delegation, ownerName, delimiter, ownerNames);
     if (shared == null) {
       return;
     }
@@ -1888,13 +1892,15 @@ public class EmailDelegationService {
    * @param delegation the share
    * @param ownerName the folder's full name on the owner's session
    * @param written the letters just written, or the preset's
+   * @param ownerNames every folder name of the owner's mailbox, when known -- see
+   *          {@link #registeredNameOf}; null when not listed
    */
-  void narrowDelegatedFolder(EmailDelegation delegation, String ownerName, MailboxRights written) {
+  void narrowDelegatedFolder(EmailDelegation delegation, String ownerName, MailboxRights written, Set<String> ownerNames) {
     if (StringUtils.isBlank(ownerName) || written == null) {
       return;
     }
     List<EmailFolder> rows = granteeFolders(delegation);
-    String shared = registeredNameOf(rows, delegation, ownerName, delimiterOf(rows));
+    String shared = registeredNameOf(rows, delegation, ownerName, delimiterOf(rows), ownerNames);
     if (shared == null) {
       return;
     }
@@ -1950,19 +1956,26 @@ public class EmailDelegationService {
    * The name the delegate's registered copy of one of the owner's folders goes by, read
    * from what discovery actually registered: the owner's name as it is under the share's
    * root when a copy (or a folder inside it) is registered at that name -- a Dovecot-style
-   * shared namespace lists {@code INBOX/Sub} as {@code <root>/INBOX/Sub} -- else the name
-   * without its INBOX prefix, for a server that names the owner's folders under INBOX and
-   * lists them under the root without it. Never a guess that could reach a different
-   * folder: the verbatim name wins whenever it is registered, so a top-level {@code Sub}
-   * beside {@code INBOX/Sub} is never taken for it.
+   * shared namespace lists {@code INBOX/Sub} as {@code <root>/INBOX/Sub}. Only then the
+   * name without its INBOX prefix, for a server that names the owner's folders under
+   * INBOX and lists them under the root without it -- and only when the owner's listing
+   * is known and holds no folder of that shorter name, which would be another folder of
+   * hers: a top-level {@code Sub} beside {@code INBOX/Sub} is never taken for it. When
+   * nothing can be named for sure, nothing is: the delegate's discovery drops the copy
+   * at its next pass.
    *
    * @param rows the delegate's registered folders of the share
    * @param delegation the share
    * @param ownerName the folder's full name on the owner's session
    * @param delimiter the hierarchy delimiter
-   * @return the name, or null when the share has no root yet
+   * @param ownerNames every folder name of the owner's mailbox, null when not listed
+   * @return the name, or null when none can be named for sure
    */
-  private static String registeredNameOf(List<EmailFolder> rows, EmailDelegation delegation, String ownerName, String delimiter) {
+  private static String registeredNameOf(List<EmailFolder> rows,
+                                         EmailDelegation delegation,
+                                         String ownerName,
+                                         String delimiter,
+                                         Set<String> ownerNames) {
     if (delegation == null || StringUtils.isBlank(delegation.getRemoteRoot()) || StringUtils.isBlank(ownerName)) {
       return null;
     }
@@ -1970,7 +1983,14 @@ public class EmailDelegationService {
     boolean registered = rows.stream()
                              .map(EmailFolder::getRemoteName)
                              .anyMatch(name -> name != null && (name.equals(verbatim) || name.startsWith(verbatim + delimiter)));
-    return registered ? verbatim : sharedNameOf(delegation, ownerName, delimiter);
+    String withoutInbox = withoutInboxPrefix(ownerName, delimiter);
+    if (registered || withoutInbox.equals(ownerName)) {
+      return verbatim;
+    }
+    if (ownerNames == null || ownerNames.contains(withoutInbox)) {
+      return null;
+    }
+    return sharedNameOf(delegation, ownerName, delimiter);
   }
 
   /**
