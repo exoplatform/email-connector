@@ -58,5 +58,26 @@ public enum ScheduledSendError {
    * shared with them (EXO-90595): nothing was sent, and it is never sent from the owner's
    * own mailbox instead.
    */
-  MAILBOX_UNSHARED
+  MAILBOX_UNSHARED,
+  /**
+   * The mail was to go out in the shared mailbox owner's name, and the owner's consent no
+   * longer covers that name -- withdrawn, or narrowed from "as me" to "on my behalf"
+   * (EXO-90584, PO decision Q-5): nothing was sent, and it is never sent in its writer's
+   * own name instead.
+   */
+  SEND_MODE_WITHDRAWN,
+  /**
+   * The mail was to go out in the shared mailbox owner's name, and that name cannot be
+   * used any more although the owner still allows it: the administrator switched writing
+   * in another's name off or no longer declares that shape for the connector, or the
+   * owner's mail server refused it before (EXO-90584). Nothing was sent, never in the
+   * writer's own name instead.
+   */
+  SEND_MODE_UNAVAILABLE,
+  /**
+   * The owner's mail server refused this mail because it was sent in the owner's name
+   * (EXO-90584): nothing was sent, the refusal is recorded on the share, and it is never
+   * sent again in the writer's own name instead.
+   */
+  SEND_MODE_REFUSED
 }
