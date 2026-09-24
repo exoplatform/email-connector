@@ -190,7 +190,7 @@ describe('what a scheduled mail says and offers in its state (EXO-90434)', () =>
 
   it('translates every reason code the backend lists', () => {
     const reasons = ['NETWORK', 'RECIPIENT_REFUSED', 'AUTHENTICATION', 'ATTACHMENT_GONE', 'TOO_LARGE', 'DISCONNECTED', 'REFUSED', 'INTERNAL',
-      'MAILBOX_UNSHARED'];
+      'MAILBOX_UNSHARED', 'SEND_MODE_WITHDRAWN', 'SEND_MODE_UNAVAILABLE', 'SEND_MODE_REFUSED'];
     expect(emailConnectorMailBoxService.NOT_SENT_REASONS).toEqual(reasons);
     // The two others mean "may have gone", never "not sent".
     ['INTERRUPTED', 'UNCONFIRMED'].forEach(reason => expect(reasons).not.toContain(reason));

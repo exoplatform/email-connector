@@ -209,4 +209,11 @@ public class Email {
   // its owner, and whether it is still shared. Set on that listing, never stored.
   @JsonProperty(access = JsonProperty.Access.READ_ONLY)
   private DraftMailbox         sendMailbox;
+
+  // On a draft of a mailbox shared with its writer, the name it is to go out in
+  // (EXO-90584): NONE, ON_BEHALF or AS, as the composer's picker shows it. In on every save,
+  // where the server normalises it and stores it with the revision -- blank leaves the
+  // stored one as it is; out on every read of a draft, null when the draft never said.
+  // Every send of the draft reads it from the row and checks the owner's consent again.
+  private String               sendMode;
 }

@@ -452,6 +452,7 @@ public class EmailScheduledSendService {
       ScheduledEmail view = toScheduledEmail(row, draft, false);
       if (draft != null && draft.getSendDelegationId() != null) {
         view.setMailbox(mailboxes.get(draft.getSendDelegationId()));
+        view.setSendMode(draft.getSendMode());
       }
       scheduled.add(view);
     }
@@ -961,6 +962,7 @@ public class EmailScheduledSendService {
       scheduled.setSnippet(snippet(draft.getContent()));
       if (withMailbox) {
         scheduled.setMailbox(draftMailbox(row.getUserId(), draft.getSendDelegationId()));
+        scheduled.setSendMode(draft.getSendDelegationId() == null ? null : draft.getSendMode());
       }
     }
     return scheduled;

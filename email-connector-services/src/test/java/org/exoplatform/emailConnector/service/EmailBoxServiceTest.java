@@ -2814,6 +2814,386 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
   }
 
+  // ---------------------------------------------------------------------------------
+  // Drafts and scheduled mail keep the name they were written in (EXO-90584).
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * Share 100, Alice's, as the writer's own shares resolve it, with her consent.
+   *
+   * @param consent what Alice lets the writer do, null for nothing
+   * @return the share
+   */
+  private static EmailDelegation alicesShare(SendMode consent) {
+    EmailDelegation share = new EmailDelegation();
+    share.setId(100L);
+    share.setStatus(DelegationStatus.ACCEPTED);
+    share.setOwnerMailbox(OWNER_ADDRESS);
+    share.setSendMode(consent);
+    return share;
+  }
+
+  /**
+   * EXO-90584 -- a draft of Alice's mailbox records the name it goes out in with every
+   * revision: the first save's, normalised; a later save's when it says one; the stored
+   * one when a later save says nothing, so a caller that does not know the name cannot
+   * erase it. A draft written in her name, which her consent covers, gets its Message-ID
+   * from her domain at its first save, as a mail sent in her name does.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftRecordsTheNameItGoesOutInWithEveryRevision() {
+    givenAUsableMailbox();
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenReturn(alicesShare(SendMode.ON_BEHALF));
+    Email first = draft(null);
+    first.setSendDelegationId(100L);
+    first.setSendMode(" on_behalf ");
+
+    Email saved = emailBoxService.saveDraft(first, TEST_USER, false);
+
+    assertEquals("ON_BEHALF", saved.getSendMode());
+    assertTrue(saved.getMailHeaderId().endsWith("@acme.com>"), saved.getMailHeaderId());
+
+    Email stored = storedDraft();
+    stored.setSendDelegationId(100L);
+    stored.setSendMode("ON_BEHALF");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    ArgumentCaptor<Email> written = ArgumentCaptor.forClass(Email.class);
+
+    emailBoxService.saveDraft(draft("draft-1"), TEST_USER, false);
+    Email asHer = draft("draft-1");
+    asHer.setSendMode("AS");
+    emailBoxService.saveDraft(asHer, TEST_USER, false);
+    Email asMe = draft("draft-1");
+    asMe.setSendMode("NONE");
+    emailBoxService.saveDraft(asMe, TEST_USER, false);
+
+    verify(emailBoxStorage, times(4)).saveDraft(written.capture());
+    assertEquals("ON_BEHALF", written.getAllValues().get(1).getSendMode(), "a save that says nothing keeps the stored name");
+    assertEquals("AS", written.getAllValues().get(2).getSendMode());
+    assertEquals("NONE", written.getAllValues().get(3).getSendMode(), "the writer's own name is recorded too");
+
+    clearInvocations(emailBoxStorage);
+    Email unknown = draft("draft-1");
+    unknown.setSendMode("SIGNED");
+    assertEquals(EmailDelegationService.SEND_MODE_INVALID_MESSAGE,
+                 assertThrows(SendModeUnavailableException.class, () -> emailBoxService.saveDraft(unknown, TEST_USER, false)).getMessage());
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+  }
+
+  /**
+   * EXO-90584 -- a draft of the writer's own mailbox has no owner to write in the name
+   * of: its own name records nothing, another's is refused and nothing is saved; and a
+   * first save in Alice's name that her consent does not cover keeps the writer's
+   * domain in its Message-ID -- her domain is no one's to use on her word alone.
+   */
+  @Test
+  @SneakyThrows
+  void anOwnMailboxDraftRecordsNoNameAndAnUncoveredOneKeepsTheWritersId() {
+    givenAUsableMailbox();
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    Email own = draft(null);
+    own.setSendMode("NONE");
+    assertNull(emailBoxService.saveDraft(own, TEST_USER, false).getSendMode());
+
+    Email ownAsHer = draft(null);
+    ownAsHer.setSendMode("AS");
+    clearInvocations(emailBoxStorage);
+    assertEquals(SendModeUnavailableException.NO_MAILBOX,
+                 assertThrows(SendModeUnavailableException.class, () -> emailBoxService.saveDraft(ownAsHer, TEST_USER, false)).getMessage());
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenReturn(alicesShare(SendMode.ON_BEHALF));
+    Email uncovered = draft(null);
+    uncovered.setSendDelegationId(100L);
+    uncovered.setSendMode("AS");
+    Email saved = emailBoxService.saveDraft(uncovered, TEST_USER, false);
+    assertEquals("AS", saved.getSendMode(), "recorded all the same: the send decides");
+    assertTrue(saved.getMailHeaderId().endsWith("@email-connector>"), saved.getMailHeaderId());
+  }
+
+  /**
+   * EXO-90584 -- a draft goes out in the name its row records, as the save before the
+   * send leaves it: the composer's name carried with the text, else the stored one. The
+   * request's parameter is read only for a draft that never said, and one that says
+   * otherwise is refused before anything is saved or claimed -- the row decides.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftGoesOutInTheNameItsRowRecords() {
+    Email stored = mockDraftSendFixture();
+    stored.setSendDelegationId(100L);
+    stored.setSendMode("AS");
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(ownersIdentity(SendMode.AS, null));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      Email mismatched = draft("draft-1");
+      assertEquals(SendModeUnavailableException.MISMATCH,
+                   assertThrows(SendModeUnavailableException.class,
+                                () -> emailBoxService.sendDraft(mismatched, TEST_USER, 100L, "ON_BEHALF")).getMessage());
+      transportMock.verifyNoInteractions();
+      verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+      verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
+      verify(emailDelegationService, never()).checkSendMode(anyString(), anyLong(), any());
+
+      emailBoxService.sendDraft(draft("draft-1"), TEST_USER, 100L, null);
+
+      MimeMessage sent = sentMessage(transportMock);
+      assertEquals(OWNER_ADDRESS, ((InternetAddress) sent.getFrom()[0]).getAddress(), "the row's name, asked by no one");
+      assertEquals(OWNER_ADDRESS, sent.getSession().getProperty("mail.smtp.from"));
+    }
+    verify(emailDelegationService).checkSendMode(TEST_USER, 100L, SendMode.AS);
+  }
+
+  /**
+   * EXO-90584 -- the name on screen travels with the text and is saved onto the draft
+   * before the send: a draft recorded in Alice's name that the writer switched to their
+   * own goes out in theirs, and the request's parameter agreeing with it is no mismatch.
+   */
+  @Test
+  @SneakyThrows
+  void theNameOnScreenIsSavedWithTheTextAndSent() {
+    Email stored = mockDraftSendFixture();
+    stored.setSendDelegationId(100L);
+    stored.setSendMode("AS");
+    Email asMe = draft("draft-1");
+    asMe.setSendMode("NONE");
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendDraft(asMe, TEST_USER, 100L, "NONE");
+
+      MimeMessage sent = sentMessage(transportMock);
+      assertNull(sent.getHeader("Sender"));
+      assertNull(sent.getSession().getProperty("mail.smtp.from"), "the sender's own envelope");
+    }
+    verify(emailDelegationService, never()).checkSendMode(anyString(), anyLong(), any());
+    ArgumentCaptor<Email> written = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).saveDraft(written.capture());
+    assertEquals("NONE", written.getValue().getSendMode());
+  }
+
+  /**
+   * EXO-90584 -- a draft is scheduled in the name it records only when the owner's
+   * consent covers it now, while the writer is there to be told: otherwise nothing is
+   * saved and nothing is scheduled. The name the composer carries is the one checked and
+   * saved.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftIsScheduledInTheOwnersNameOnlyWhenHerConsentCoversItNow() {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setSendDelegationId(100L);
+    stored.setSendMode("AS");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenThrow(new SendModeMissingException(SendMode.AS));
+    @SuppressWarnings("unchecked")
+    Function<Email, EmailScheduledSend> scheduler = mock(Function.class);
+
+    assertThrows(SendModeMissingException.class, () -> emailBoxService.scheduleDraft(draft("draft-1"), TEST_USER, scheduler));
+    verify(scheduler, never()).apply(any(Email.class));
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.ON_BEHALF)).thenReturn(ownersIdentity(SendMode.ON_BEHALF, null));
+    when(scheduler.apply(any(Email.class))).thenReturn(new EmailScheduledSend());
+    Email onBehalf = draft("draft-1");
+    onBehalf.setSendMode("ON_BEHALF");
+
+    emailBoxService.scheduleDraft(onBehalf, TEST_USER, scheduler);
+
+    ArgumentCaptor<Email> written = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).saveDraft(written.capture());
+    assertEquals("ON_BEHALF", written.getValue().getSendMode());
+    verify(scheduler).apply(any(Email.class));
+  }
+
+  /**
+   * A scheduled draft of share 100 recorded in a name, whose owner's Sent takes a copy.
+   *
+   * @param sendMode the name the draft records
+   * @return the owner's Sent folder mock
+   */
+  @SneakyThrows
+  private IMAPFolder givenAScheduledDraftOfAlicesMailbox(String sendMode) {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    lenient().when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(DELEGATE_ADDRESS);
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setSendDelegationId(100L);
+    stored.setSendMode(sendMode);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    lenient().when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    lenient().when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    lenient().when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPStore store = mock(IMAPStore.class);
+    lenient().when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    lenient().when(ownerSent.exists()).thenReturn(true);
+    lenient().when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+    return ownerSent;
+  }
+
+  /**
+   * EXO-90584 -- a mail scheduled in Alice's name goes out in it, from the row, once her
+   * consent is checked again at dispatch: From her, Sender the writer under the writer's
+   * envelope, the draft's own Message-ID, the trail written, and her copy saying who
+   * sent it.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aMailScheduledInTheOwnersNameGoesOutInIt() throws Exception {
+    IMAPFolder ownerSent = givenAScheduledDraftOfAlicesMailbox("ON_BEHALF");
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.ON_BEHALF)).thenReturn(ownersIdentity(SendMode.ON_BEHALF,
+                                                                                                             "Alice Martin"));
+    List<MimeMessage> transmitted = new ArrayList<>();
+    doAnswer(invocation -> transmitted.add(invocation.getArgument(0))).when(smtpTransmitter).transmit(any(MimeMessage.class));
+
+    emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+    });
+
+    MimeMessage sent = transmitted.get(0);
+    assertEquals(OWNER_ADDRESS, ((InternetAddress) sent.getFrom()[0]).getAddress());
+    assertEquals("Alice Martin", ((InternetAddress) sent.getFrom()[0]).getPersonal());
+    assertEquals(DELEGATE_ADDRESS, ((InternetAddress) sent.getSender()).getAddress());
+    assertEquals(DELEGATE_ADDRESS, sent.getSession().getProperty("mail.smtp.from"));
+    sent.saveChanges();
+    assertEquals("<draft@example.org>", sent.getMessageID(), "the draft's own id");
+    ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
+    verify(ownerSent).appendMessages(filed.capture());
+    assertArrayEquals(new String[] { DELEGATE_ADDRESS }, filed.getValue()[0].getHeader("X-Exo-Sent-By"));
+    verify(listenerService).broadcast(EmailConnectorUtils.SEND_EMAIL_IN_OWNERS_NAME, TEST_USER, "ON_BEHALF");
+  }
+
+  /**
+   * EXO-90584, PO decision Q-5 -- a mail scheduled in Alice's name whose name can no
+   * longer be used when it is due fails for good and is never sent in the writer's own
+   * name: her consent withdrawn or narrowed (SEND_MODE_WITHDRAWN), the name switched off,
+   * undeclared or refused before, or a name with no shared mailbox
+   * (SEND_MODE_UNAVAILABLE), her share ended (MAILBOX_UNSHARED). Nothing transmitted,
+   * nothing taken apart.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aMailScheduledInANameNoLongerAllowedFailsForGoodAndIsNeverSent() throws Exception {
+    givenAScheduledDraftOfAlicesMailbox("AS");
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenThrow(new SendModeMissingException(SendMode.AS))
+                                                                           .thenThrow(new SendModeUnavailableException(EmailDelegationService.SEND_MODE_DISABLED_MESSAGE))
+                                                                           .thenThrow(new SendModeUnavailableException(SendModeUnavailableException.REFUSED_BY_SERVER))
+                                                                           .thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+
+    for (ScheduledSendError expected : List.of(ScheduledSendError.SEND_MODE_WITHDRAWN,
+                                               ScheduledSendError.SEND_MODE_UNAVAILABLE,
+                                               ScheduledSendError.SEND_MODE_UNAVAILABLE,
+                                               ScheduledSendError.MAILBOX_UNSHARED)) {
+      Runnable onTransmitted = mock(Runnable.class);
+      ScheduledSendFailure failure = assertThrows(ScheduledSendFailure.class,
+                                                  () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted));
+      assertEquals(ScheduledSendFailure.Kind.PERMANENT, failure.getKind(), expected.name());
+      assertEquals(expected, failure.getError());
+      verify(onTransmitted, never()).run();
+    }
+    Email noMailbox = emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1");
+    noMailbox.setSendDelegationId(null);
+    assertEquals(ScheduledSendError.SEND_MODE_UNAVAILABLE,
+                 assertThrows(ScheduledSendFailure.class, () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+                 })).getError(),
+                 "a name with no owner to write in is no reason to send in the writer's");
+    verify(smtpTransmitter, never()).transmit(any(MimeMessage.class));
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * EXO-90584, EXO-90586 -- Postfix's refusal of a scheduled mail in Alice's name
+   * arrives as refused RECIPIENTS; read from the server's words it is her name refused:
+   * recorded on the share, failed for good as SEND_MODE_REFUSED, never as a recipient's
+   * fault and never retried. The same refusal of a mail in the writer's own name is the
+   * recipients' refusal it always was, and nothing is recorded.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduledMailRefusedInTheOwnersNameIsHerNameRefusedNotItsRecipients() throws Exception {
+    givenAScheduledDraftOfAlicesMailbox("AS");
+    SendIdentity identity = ownersIdentity(SendMode.AS, null);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(identity);
+    doThrow(new SmtpTransmitter.TransmissionException(SmtpTransmitter.Phase.SEND, postfixSenderRefusal())).when(smtpTransmitter)
+                                                                                                             .transmit(any(MimeMessage.class));
+
+    ScheduledSendFailure failure = assertThrows(ScheduledSendFailure.class,
+                                                () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+                                                }));
+
+    assertEquals(ScheduledSendFailure.Kind.PERMANENT, failure.getKind());
+    assertEquals(ScheduledSendError.SEND_MODE_REFUSED, failure.getError());
+    verify(emailDelegationService).markSendRefused(TEST_USER, identity);
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.SEND_EMAIL_IN_OWNERS_NAME), any(), any());
+
+    emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1").setSendMode("NONE");
+    ScheduledSendFailure own = assertThrows(ScheduledSendFailure.class,
+                                            () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+                                            }));
+    assertEquals(ScheduledSendError.RECIPIENT_REFUSED, own.getError());
+    verify(emailDelegationService, times(1)).markSendRefused(anyString(), any());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * EXO-90584 -- an edit of a scheduled mail may change the name it goes out in: the
+   * name it is left in is checked against the owner's consent before the schedule is
+   * taken or anything written, and saved with the text.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void anEditOfAScheduledMailKeepsItsNameCheckedAndSaved() throws Exception {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    stored.setSendDelegationId(100L);
+    stored.setSendMode("NONE");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenThrow(new SendModeMissingException(SendMode.AS));
+    EmailBoxService.ScheduleTaker taker = mock(EmailBoxService.ScheduleTaker.class);
+    Email asHer = draft("draft-1");
+    asHer.setSendMode("AS");
+
+    assertThrows(SendModeMissingException.class, () -> emailBoxService.updateScheduledDraft(asHer, null, TEST_USER, taker));
+    verify(taker, never()).take();
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.ON_BEHALF)).thenReturn(ownersIdentity(SendMode.ON_BEHALF, null));
+    Email onBehalf = draft("draft-1");
+    onBehalf.setSendMode("ON_BEHALF");
+    emailBoxService.updateScheduledDraft(onBehalf, null, TEST_USER, taker);
+
+    ArgumentCaptor<Email> written = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).saveDraft(written.capture());
+    assertEquals("ON_BEHALF", written.getValue().getSendMode());
+    verify(taker).take();
+  }
+
+  /**
+   * EXO-90584 -- the rule that says which name an interactive send of a draft uses:
+   * the row's; the request's only for a draft that never said; a request naming another
+   * is refused, an unknown one is invalid.
+   */
+  @Test
+  void theDraftsRowDecidesItsNameAndTheRequestOnlyFallsBack() {
+    assertEquals("AS", EmailBoxService.draftSendModeFor("AS", null));
+    assertEquals("AS", EmailBoxService.draftSendModeFor("AS", " as "));
+    assertEquals("NONE", EmailBoxService.draftSendModeFor("NONE", ""));
+    assertEquals("ON_BEHALF", EmailBoxService.draftSendModeFor(null, "on_behalf"));
+    assertNull(EmailBoxService.draftSendModeFor(null, null));
+    assertEquals(SendModeUnavailableException.MISMATCH,
+                 assertThrows(SendModeUnavailableException.class, () -> EmailBoxService.draftSendModeFor("NONE", "AS")).getMessage());
+    assertEquals(EmailDelegationService.SEND_MODE_INVALID_MESSAGE,
+                 assertThrows(SendModeUnavailableException.class, () -> EmailBoxService.draftSendModeFor("AS", "SIGNED")).getMessage());
+  }
+
   /**
    * Alice's identity on share 100, as the guard answers it.
    *
@@ -9906,7 +10286,7 @@ public class EmailBoxServiceTest {
                      null,
                      null,
                      null, null, false, null, null, null,
-                     false, null, null, false, null, null, null, null);
+                     false, null, null, false, null, null, null, null, null);
   }
 
   private EmailConnector emailConnector() {
@@ -14002,11 +14382,10 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * EXO-90583 -- a scheduled mail of a shared mailbox whose owner lets the sender write
-   * in her name still goes in the sender's own name: a draft remembers no name yet
-   * (EXO-90584), the composer refuses to schedule in the owner's, and the owner's
-   * consent is never consulted here -- From the sender, no Sender, JavaMail's own
-   * envelope, and no X-Exo-Sent-By on the owner's copy.
+   * EXO-90583, EXO-90584 -- a scheduled mail of a shared mailbox that records no name --
+   * saved before the name was stored -- goes in the sender's own name, whatever the
+   * owner lets them do, and the owner's consent is never consulted for it -- From the
+   * sender, no Sender, JavaMail's own envelope, and no X-Exo-Sent-By on the owner's copy.
    *
    * @throws Exception when the mocked mail plumbing misbehaves
    */
@@ -14670,7 +15049,8 @@ public class EmailBoxServiceTest {
                                                    composed,
                                                    "draft-1",
                                                    TEST_USER,
-                                                   userEmailSetting());
+                                                   userEmailSetting(),
+                                                   "bob@example.org");
     assertTrue(first.isReadReceiptRequested());
     Email next = ReflectionTestUtils.invokeMethod(emailBoxService, "buildNextDraftRevision", composed, storedDraft());
     assertTrue(next.isReadReceiptRequested());

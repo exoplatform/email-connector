@@ -1333,6 +1333,49 @@ public class EmailBoxRestTest {
   }
 
   /**
+   * EXO-90584 -- a scheduling, or an edit of a scheduled mail, in the shared mailbox
+   * owner's name that her consent does not cover answers 401 WITH the code naming the
+   * shape, so the composer can say why and fall back to the caller's own name; a name
+   * that cannot be used answers 400 with its code; an edit whose mailbox is no longer
+   * shared answers 410.
+   *
+   * @throws Exception if a request fails
+   */
+  @Test
+  void aSchedulingInANameTheConsentDoesNotCoverAnswersItsCode() throws Exception {
+    String body = asJsonString(new ScheduleRequest(new Email(), 1_900_000_000_000L, "UTC"));
+    doThrow(new SendModeMissingException(SendMode.AS)).when(emailScheduledSendService)
+                                                      .schedule(any(Email.class), anyLong(), anyString(), anyString());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/schedule").with(testSimpleUser())
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .content(body))
+           .andExpect(status().isUnauthorized())
+           .andExpect(status().reason("emailConnector.sendMode.missing.AS"));
+    doThrow(new SendModeUnavailableException(SendModeUnavailableException.REFUSED_BY_SERVER)).when(emailScheduledSendService)
+                                                                                             .schedule(any(Email.class), anyLong(), anyString(), anyString());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/schedule").with(testSimpleUser())
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .content(body))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(SendModeUnavailableException.REFUSED_BY_SERVER));
+
+    String edit = asJsonString(new ScheduleRequest(new Email(), null, null, List.of()));
+    doThrow(new SendModeMissingException(SendMode.ON_BEHALF)).when(emailScheduledSendService)
+                                                             .updateContent(anyString(), any(Email.class), any(), any(), any(), anyString());
+    mockMvc.perform(put(EMAIL_BOX_PATH + "/scheduled/draft-1/content").with(testSimpleUser())
+                                                                      .contentType(MediaType.APPLICATION_JSON)
+                                                                      .content(edit))
+           .andExpect(status().isUnauthorized())
+           .andExpect(status().reason("emailConnector.sendMode.missing.ON_BEHALF"));
+    doThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED)).when(emailScheduledSendService)
+                                                                               .updateContent(anyString(), any(Email.class), any(), any(), any(), anyString());
+    mockMvc.perform(put(EMAIL_BOX_PATH + "/scheduled/draft-1/content").with(testSimpleUser())
+                                                                      .contentType(MediaType.APPLICATION_JSON)
+                                                                      .content(edit))
+           .andExpect(status().isGone());
+  }
+
+  /**
    * An update of a scheduled mail's content in place reaches the service as the caller,
    * with the draft, the files to take off and the optional date; each refusal answers
    * its status, and a request without a draft is a 400 (EXO-90434).

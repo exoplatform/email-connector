@@ -35,6 +35,13 @@ public class SendModeUnavailableException extends IllegalArgumentException {
   public static final String NO_MAILBOX        = "emailConnector.sendMode.noMailbox";
 
   /**
+   * A request naming a shape other than the one the draft records (EXO-90584): the
+   * draft's row decides in which name it goes out, and a request that says otherwise
+   * is refused rather than obeyed or ignored.
+   */
+  public static final String MISMATCH          = "emailConnector.sendMode.mismatch";
+
+  /**
    * @param code the message code
    */
   public SendModeUnavailableException(String code) {

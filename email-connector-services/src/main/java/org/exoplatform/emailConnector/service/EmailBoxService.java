@@ -8724,7 +8724,7 @@ public class EmailBoxService {
    * @param refusal what the server answered
    * @return the refusal to throw
    */
-  private SendModeUnavailableException refusedInOwnersName(String username, SendIdentity identity, MessagingException refusal) {
+  private SendModeUnavailableException refusedInOwnersName(String username, SendIdentity identity, Throwable refusal) {
     LOG.debug("The mail server's refusal of a mail sent in another's name by {}", username, refusal);
     try {
       emailDelegationService.markSendRefused(username, identity);
@@ -9391,6 +9391,14 @@ public class EmailBoxService {
    * one of the writer's own shares, and no later save can move it -- a draft
    * opened while the switcher shows another mailbox stays the draft of the mailbox it
    * was written in.
+   * <p>
+   * The name the draft is to go out in is the writer's to change until it is sent
+   * (EXO-90584): a save carrying {@code sendMode} writes it with the revision, a save
+   * carrying none leaves the stored one as it is. It is not checked against the owner's
+   * consent here -- an autosave must never lose words because the owner changed her
+   * mind -- but every send of the draft, interactive or scheduled, checks it again. A
+   * draft written in the owner's name at its first save gets its Message-ID from the
+   * owner's domain, as a mail sent in her name does.
    *
    * @param draft the composed draft; a blank {@code draftLocalId} means a first save
    * @param username the mailbox owner
@@ -9400,7 +9408,9 @@ public class EmailBoxService {
    *         draft has since been sent or discarded — see below)
    * @throws IllegalAccessException if the user may not use their mailbox
    * @throws IllegalArgumentException {@value #MAILBOX_NOT_FOUND_CODE} when a first save
-   *           names a share that is not the writer's
+   *           names a share that is not the writer's; {@link SendModeUnavailableException}
+   *           when {@code sendMode} is unknown, or names the owner's name on a draft of
+   *           the writer's own mailbox -- nothing is saved then
    */
   public Email saveDraft(Email draft, String username, boolean pushToServer) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
@@ -9431,9 +9441,16 @@ public class EmailBoxService {
       }
       Email toStore;
       if (stored == null) {
-        Long share = firstSaveShare(draft, username);
-        toStore = buildFirstDraftRevision(draft, draftLocalId, username, userEmailSetting);
-        toStore.setSendDelegationId(share);
+        EmailDelegation share = firstSaveShare(draft, username);
+        Long shareId = share == null ? null : share.getId();
+        String sendMode = incomingDraftSendMode(draft.getSendMode(), shareId);
+        toStore = buildFirstDraftRevision(draft,
+                                          draftLocalId,
+                                          username,
+                                          userEmailSetting,
+                                          messageIdAddress(share, sendMode, userEmailSetting));
+        toStore.setSendDelegationId(shareId);
+        toStore.setSendMode(sendMode);
       } else {
         toStore = buildNextDraftRevision(draft, stored);
       }
@@ -9562,18 +9579,23 @@ public class EmailBoxService {
   }
 
   /**
-   * {@link #sendDraft(Email, String, Long)}, in the owner's name when {@code sendMode}
-   * asks for it (EXO-90583), as {@link #sendEmail(Email, String, Long, String)} sends
-   * one: the shape is checked against the consent on the DRAFT's share -- the mailbox it
-   * was written in, never another -- before the draft is claimed, so a refusal leaves it
-   * exactly where it was, and so does a refusal by the owner's mail server. The draft
-   * keeps the Message-ID it was given at its first save.
+   * {@link #sendDraft(Email, String, Long)}, in the owner's name when the draft says so
+   * (EXO-90583, EXO-90584), as {@link #sendEmail(Email, String, Long, String)} sends one:
+   * the shape is the draft's own -- the one the composer shows, saved onto the row with
+   * the text before the send, else the one the row holds -- and is checked against the
+   * consent on the DRAFT's share -- the mailbox it was written in, never another --
+   * before the draft is claimed, so a refusal leaves it exactly where it was, and so does
+   * a refusal by the owner's mail server. {@code sendMode} is read only for a draft that
+   * never recorded a shape; one that names another shape than the draft's is refused. The
+   * draft keeps the Message-ID it was given at its first save.
    *
    * @param draft the composed draft as the composer is showing it
    * @param username the sender
    * @param delegationId the share the composer believes the draft belongs to, or null
-   * @param sendMode {@code ON_BEHALF} or {@code AS} to write in the owner's name; null,
-   *          blank or {@code NONE} for the sender's own
+   * @param sendMode the shape the caller believes the draft goes out in, read only for a
+   *          draft that never recorded one: {@code ON_BEHALF} or {@code AS} for the
+   *          owner's name, {@code NONE} for the sender's own; null or blank to go by the
+   *          draft
    * @return what became of the owner's copy, null for a draft of the sender's own mailbox
    * @throws IllegalAccessException if the user may not send from their mailbox;
    *           {@link SendModeMissingException} when the consent does not cover the shape
@@ -9582,7 +9604,9 @@ public class EmailBoxService {
    * @throws DelegationRevokedException when the draft's share is no longer accepted
    * @throws IllegalArgumentException {@value #MAILBOX_MISMATCH_CODE} when
    *           {@code delegationId} is not the draft's; {@link SendModeUnavailableException}
-   *           as {@link #sendEmail(Email, String, Long, String)} says
+   *           as {@link #sendEmail(Email, String, Long, String)} says, and
+   *           {@link SendModeUnavailableException#MISMATCH} when {@code sendMode} is not
+   *           the draft's
    */
   public OwnerCopy sendDraft(Email draft, String username, Long delegationId, String sendMode) throws IllegalAccessException,
                                                                                                 ObjectNotFoundException {
@@ -9625,10 +9649,12 @@ public class EmailBoxService {
         throw new IllegalArgumentException(MAILBOX_MISMATCH_CODE);
       }
       String ownerSentKey = draftShareSentKey(username, stored);
-      // The name it goes out under, checked against the consent on the draft's own share.
-      // The shape is the request's: a draft does not remember one yet. EXO-90584 records it
-      // on the row, and this is the line that then reads it (the request's as a fallback).
-      SendIdentity identity = resolveSendIdentity(username, share, sendMode);
+      // The name it goes out under (EXO-90584): the draft's, as the save below leaves it --
+      // the request's parameter only for a draft that never said, and refused when it
+      // says otherwise -- checked against the consent on the draft's own share.
+      SendIdentity identity = resolveSendIdentity(username,
+                                                  share,
+                                                  draftSendModeFor(draftSendModeAfterSave(draft, stored), sendMode));
       // The files the draft has been carrying since some earlier session, read once and
       // checked BEFORE anything is written or claimed. A send that cannot carry every
       // file it shows must leave the draft exactly where it was: nothing saved, nothing
@@ -10042,6 +10068,9 @@ public class EmailBoxService {
    * @throws DelegationRevokedException when the draft was written in a mailbox no longer
    *           shared with the user (EXO-90595); {@code ObjectNotFoundException} when that
    *           share is not theirs at all
+   * @throws SendModeMissingException when the draft is in the owner's name and her
+   *           consent does not cover it (EXO-90584); {@link SendModeUnavailableException}
+   *           when that name cannot be used now -- nothing is saved or scheduled then
    * @throws IllegalStateException {@code emailConnector.scheduled.serverCopyRemains} when
    *           the server copy could not be removed
    */
@@ -10079,6 +10108,10 @@ public class EmailBoxService {
       // A draft of a mailbox no longer shared with its writer would only fail at its date
       // (EXO-90595): refused now, while the writer is there to be told.
       draftShareSentKey(username, stored);
+      // So would one in the owner's name that her consent does not cover (EXO-90584): the
+      // name it is scheduled in -- the composer's, saved with the text just below, else
+      // the row's -- is checked now, and again when it goes out.
+      resolveSendIdentity(username, stored.getSendDelegationId(), draftSendModeAfterSave(draft, stored));
       try {
         readSendableDraftFiles(stored, username, userEmailSetting);
       } catch (IllegalStateException e) {
@@ -10151,6 +10184,9 @@ public class EmailBoxService {
    *           {@code emailConnector.drafts.attach.unknown} or
    *           {@code emailConnector.drafts.send.attachmentGone}
    * @throws ScheduledSendConflictException from {@code takeSchedule}
+   * @throws SendModeMissingException when the mail is to go out in the owner's name and
+   *           her consent does not cover it (EXO-90584); {@link SendModeUnavailableException}
+   *           when that name cannot be used now or is unknown -- nothing is changed then
    */
   @Transactional(rollbackFor = Exception.class)
   public Email updateScheduledDraft(Email draft,
@@ -10173,6 +10209,10 @@ public class EmailBoxService {
       if (stored == null) {
         throw new ObjectNotFoundException("emailConnector.drafts.send.gone");
       }
+      // The name it is to go out in (EXO-90584), as the edit leaves it, checked against the
+      // owner's consent while the writer is here to be told; checked again when it goes.
+      String sendMode = draftSendModeAfterSave(draft, stored);
+      resolveSendIdentity(username, stored.getSendDelegationId(), sendMode);
       // The schedule row first: past this line no dispatcher can claim the mail until
       // the edit is committed, and a refusal here has written nothing.
       takeSchedule.take();
@@ -10222,6 +10262,7 @@ public class EmailBoxService {
       content.setTo(draft.getTo());
       content.setCc(draft.getCc());
       content.setBcc(draft.getBcc());
+      content.setSendMode(sendMode);
       Email current = withFiles != null ? withFiles : stored;
       saveDraftBeforeSend(content, current);
       return emailBoxStorage.getDraftByLocalId(username, draftLocalId);
@@ -10252,6 +10293,14 @@ public class EmailBoxService {
    * nothing sent -- and, once transmitted, a copy is filed in the mailbox owner's Sent
    * as an interactive send files it. What became of that copy is answered, for the
    * caller to tell the sender when it could not be filed; the send stays a success.
+   * <p>
+   * A draft scheduled in the owner's name (EXO-90584) goes out in that name, from the row,
+   * after the owner's consent is checked again: withdrawn or narrowed since, the send
+   * fails PERMANENT with {@link ScheduledSendError#SEND_MODE_WITHDRAWN}; a name that can
+   * no longer be used (switched off, not declared, a refusal recorded) with
+   * {@link ScheduledSendError#SEND_MODE_UNAVAILABLE}; refused by the owner's mail server
+   * now, with {@link ScheduledSendError#SEND_MODE_REFUSED}, the refusal recorded on the
+   * share. Never in the sender's own name instead (PO decision Q-5).
    *
    * @param username the mailbox owner, as whom the mail is sent
    * @param draftLocalId the draft's handle
@@ -10259,7 +10308,8 @@ public class EmailBoxService {
    * @return the sent mail's subject and what became of the owner's copy
    * @throws ScheduledSendFailure classified: TRANSIENT (nothing reached the server),
    *           PERMANENT (refused before anything was accepted, a mailbox no longer
-   *           shared included), AMBIGUOUS (may have been accepted)
+   *           shared or a name no longer allowed included), AMBIGUOUS (may have been
+   *           accepted)
    * @throws ObjectNotFoundException if the draft is gone
    */
   public StoredDraftSent sendStoredDraft(String username,
@@ -10300,6 +10350,11 @@ public class EmailBoxService {
       } catch (ObjectNotFoundException | DelegationRevokedException e) {
         throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.MAILBOX_UNSHARED, e);
       }
+      // The name it was scheduled in, from the row, checked again against the owner's
+      // consent now (EXO-90584, PO decision Q-5): a consent withdrawn or narrowed since, or
+      // a name that can no longer be used, fails the send -- it never goes out in the
+      // sender's own name instead.
+      SendIdentity identity = scheduledSendIdentity(username, stored);
       List<EmailAttachment> storedAttachments;
       try {
         storedAttachments = readSendableDraftFiles(stored, username, userEmailSetting);
@@ -10311,11 +10366,15 @@ public class EmailBoxService {
       // the lock landed): taken away before the send, so no other client can send it
       // too. Not a reason to refuse: the cleanup after the send retries its removal.
       removeLeftoverServerCopy(stored, username, userEmailSetting);
-      MimeMessage message = buildScheduledMessage(stored, storedAttachments, username, userEmailSetting, emailConnector);
+      MimeMessage message = buildScheduledMessage(stored, storedAttachments, username, userEmailSetting, emailConnector, identity);
       try {
         smtpTransmitter.transmit(message);
       } catch (SmtpTransmitter.TransmissionException e) {
-        ScheduledSendFailure failure = classifyTransmissionFailure(e);
+        ScheduledSendFailure failure = classifyScheduledFailure(e, username, identity);
+        if (failure.getError() == ScheduledSendError.SEND_MODE_REFUSED) {
+          // Logged where it is recorded, without the server's words (DEBUG only).
+          throw failure;
+        }
         LOG.warn("The scheduled send of a draft of user {} through {}:{} failed ({}, {})",
                  username,
                  emailConnector.getSmtpUrl(),
@@ -10337,6 +10396,10 @@ public class EmailBoxService {
                  username,
                  e);
       }
+      if (identity != null) {
+        // The trail of a mail in another's name, as the interactive send writes it.
+        recordSentInOwnersName(message, username, identity);
+      }
       try {
         afterTransmission(message, stored, StringUtils.isNotBlank(stored.getInReplyTo()), username, userEmailSetting);
       } catch (RuntimeException e) {
@@ -10346,7 +10409,11 @@ public class EmailBoxService {
         // The owner's copy of a mail sent from their mailbox (EXO-90551), before the
         // cleanup frees the stored files its parts stream from. Fenced: the mail is out.
         // Its outcome is answered to the caller, never recorded as a send failure.
-        ownerCopy = copyToOwnerSent(message, username, userEmailSetting, ownerSentKey, null);
+        ownerCopy = copyToOwnerSent(message,
+                                    username,
+                                    userEmailSetting,
+                                    ownerSentKey,
+                                    sentByOf(identity, emailConnector, userEmailSetting, username));
       } else if (stored.getSendDelegationId() != null) {
         ownerCopy = OwnerCopy.SKIPPED;
       }
@@ -10467,6 +10534,8 @@ public class EmailBoxService {
    * @param username the mailbox owner
    * @param userEmailSetting the user's connector binding
    * @param emailConnector the connector the user is bound to
+   * @param identity the owner's name the draft was scheduled in, checked at dispatch
+   *          (EXO-90584); null for the sender's own
    * @return the message
    * @throws ScheduledSendFailure PERMANENT: TOO_LARGE, AUTHENTICATION (no credentials
    *           produced), RECIPIENT_REFUSED (an address that does not parse) or INTERNAL
@@ -10475,15 +10544,14 @@ public class EmailBoxService {
                                             List<EmailAttachment> storedAttachments,
                                             String username,
                                             UserEmailSetting userEmailSetting,
-                                            EmailConnector emailConnector) throws ScheduledSendFailure {
+                                            EmailConnector emailConnector,
+                                            SendIdentity identity) throws ScheduledSendFailure {
     // No upload ever rides along: a stored draft has only its stored files, which the
     // send must not free (they belong to the draft until cleanupSentDraft).
     List<String> uploadIds = new ArrayList<>();
     try {
-      // In the sender's own name: a scheduled draft remembers no identity yet, and the
-      // schedule is refused in the owner's name (EXO-90583). EXO-90584 passes the one
-      // checkSendMode resolves from the row at dispatch, and fails the send rather than
-      // send it in the sender's name when the consent is gone.
+      // In the name the row records, as checkSendMode resolved it at dispatch (EXO-90584);
+      // the draft's own pinned Message-ID either way.
       return buildOutgoingDraftMessage(stored,
                                        stored,
                                        storedAttachments,
@@ -10492,7 +10560,7 @@ public class EmailBoxService {
                                        emailConnector,
                                        uploadIds,
                                        true,
-                                       null);
+                                       identity);
     } catch (ConnectorCredentialsException e) {
       throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.AUTHENTICATION, e);
     } catch (AddressException e) {
@@ -10507,6 +10575,62 @@ public class EmailBoxService {
     } finally {
       removeUploadResources(uploadIds);
     }
+  }
+
+  /**
+   * The name a scheduled draft goes out in (EXO-90584), from its row, checked against the
+   * owner's consent at dispatch -- the dispatcher acts as the sender, on the consent the
+   * owner recorded, and never widens it. A draft that never named a shape, or named the
+   * sender's own, goes out in the sender's name.
+   *
+   * @param username the sender
+   * @param stored the draft's row
+   * @return the identity, or null for the sender's own name
+   * @throws ScheduledSendFailure PERMANENT: {@link ScheduledSendError#SEND_MODE_WITHDRAWN}
+   *           when the consent no longer covers the shape,
+   *           {@link ScheduledSendError#SEND_MODE_UNAVAILABLE} when the shape cannot be
+   *           used now (or is unknown, or has no shared mailbox),
+   *           {@link ScheduledSendError#MAILBOX_UNSHARED} when the share is no longer the
+   *           sender's or no longer accepted
+   */
+  private SendIdentity scheduledSendIdentity(String username, Email stored) throws ScheduledSendFailure {
+    try {
+      return resolveSendIdentity(username, stored.getSendDelegationId(), stored.getSendMode());
+    } catch (SendModeMissingException e) {
+      throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.SEND_MODE_WITHDRAWN, e);
+    } catch (SendModeUnavailableException e) {
+      throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.SEND_MODE_UNAVAILABLE, e);
+    } catch (ObjectNotFoundException | DelegationRevokedException e) {
+      throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.MAILBOX_UNSHARED, e);
+    }
+  }
+
+  /**
+   * What a failed scheduled transmission means (EXO-90584): a mail in the owner's name
+   * that her mail server refused for being in her name is that, and nothing else -- a
+   * Postfix refusal of the sender arrives as refused RECIPIENTS, which the generic
+   * classification would report as the recipients' fault. It is recorded on the share, as
+   * the interactive send records it, and fails the send for good: nothing was accepted,
+   * and it is never retried in the sender's own name. A refusal the server reports after
+   * accepting the mail for some recipients stays the generic "maybe sent". Anything else
+   * is {@link #classifyTransmissionFailure}'s.
+   *
+   * @param e the failure and its step
+   * @param username the sender
+   * @param identity the name the mail was sent in, null for the sender's own
+   * @return the classified failure
+   */
+  private ScheduledSendFailure classifyScheduledFailure(SmtpTransmitter.TransmissionException e,
+                                                        String username,
+                                                        SendIdentity identity) {
+    boolean acceptedForSome = e.getCause() instanceof SendFailedException sendFailed
+        && !ArrayUtils.isEmpty(sendFailed.getValidSentAddresses());
+    if (identity != null && !acceptedForSome && isSenderPolicyRefusal(e)) {
+      return new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT,
+                                      ScheduledSendError.SEND_MODE_REFUSED,
+                                      refusedInOwnersName(username, identity, e));
+    }
+    return classifyTransmissionFailure(e);
   }
 
   /**
@@ -11399,9 +11523,15 @@ public class EmailBoxService {
    * @param draftLocalId the local id, minted by the caller
    * @param username the mailbox owner
    * @param userEmailSetting the user's connector binding, for their own address
+   * @param messageIdAddress the address whose domain the draft's Message-ID names: the
+   *          user's own, or the shared mailbox owner's for a draft in her name (EXO-90584)
    * @return the row to store
    */
-  private Email buildFirstDraftRevision(Email draft, String draftLocalId, String username, UserEmailSetting userEmailSetting) {
+  private Email buildFirstDraftRevision(Email draft,
+                                        String draftLocalId,
+                                        String username,
+                                        UserEmailSetting userEmailSetting,
+                                        String messageIdAddress) {
     Date now = new Date();
     Email toStore = new Email();
     toStore.setUserId(username);
@@ -11428,8 +11558,9 @@ public class EmailBoxService {
     // already require it. NOT EmailThreadingUtils#synthesizeMessageId: that mints an
     // @email-connector.local id for messages whose sender omitted one, and such an id
     // is a local placeholder that must never leave this box. This one goes out on the
-    // wire, so it carries the user's own domain, as RFC 5322 §3.6.4 intends.
-    toStore.setMailHeaderId(mintMessageId(userEmailSetting.getEmailAddress()));
+    // wire, so it carries the domain of the address the mail goes out from, as RFC 5322
+    // §3.6.4 intends: the user's own, or the shared mailbox owner's in her name.
+    toStore.setMailHeaderId(mintMessageId(messageIdAddress));
     String parentMessageId = draft.getMailHeaderId();
     if (StringUtils.isNotBlank(parentMessageId)) {
       toStore.setInReplyTo(parentMessageId);
@@ -11490,6 +11621,10 @@ public class EmailBoxService {
     // row's UID is, because a row can be left LOCAL_ONLY while carrying one (see
     // serverDraftCopyUid); reading the state for that left orphaned copies behind.
     toStore.setDraftState(DraftState.LOCAL_ONLY.equals(stored.getDraftState()) ? DraftState.LOCAL_ONLY : DraftState.DIRTY);
+    // The name it goes out in (EXO-90584), as the composer shows it now; a save that
+    // says nothing keeps the stored one. Written with the revision, so a late autosave
+    // that is dropped cannot bring back a name the user has moved on from either.
+    toStore.setSendMode(draftSendModeAfterSave(draft, stored));
     return toStore;
   }
 
@@ -12952,8 +13087,9 @@ public class EmailBoxService {
                                                 null, false, null, null, null,
                                                 // The read-receipt fields, set by name just below.
                                                 false, null, null, false, null, null,
-                                                // A synced message is no draft of a shared mailbox (EXO-90595).
-                                                null, null);
+                                                // A synced message is no draft of a shared mailbox (EXO-90595),
+                                                // and names no identity to send it in (EXO-90584).
+                                                null, null, null);
           captureReadReceiptRequest(message, cached, folderKey);
           alignReadReceiptAnswer(cached, username);
           emailBoxStorage.createEmail(cached);
@@ -15831,21 +15967,122 @@ public class EmailBoxService {
    *
    * @param draft the draft as the composer sent it
    * @param username the writer
-   * @return the share's id, or null
+   * @return the share, or null
    * @throws IllegalArgumentException {@value #MAILBOX_NOT_FOUND_CODE} when the named share
    *           is not the writer's
    */
-  private Long firstSaveShare(Email draft, String username) {
+  private EmailDelegation firstSaveShare(Email draft, String username) {
     Long named = draft.getSendDelegationId();
     if (named == null) {
       return null;
     }
     try {
-      return emailDelegationService.requireOwnShare(username, named).getId();
+      return emailDelegationService.requireOwnShare(username, named);
     } catch (ObjectNotFoundException e) {
       // Not a 404: on this endpoint that answer means "the draft is gone".
       throw new IllegalArgumentException(MAILBOX_NOT_FOUND_CODE, e);
     }
+  }
+
+  /**
+   * The name a save writes on a draft (EXO-90584), from what the composer sent: the
+   * shape's stored form -- {@code NONE}, {@code ON_BEHALF} or {@code AS} -- or null when
+   * the save says nothing, which keeps what the row holds. A draft of the writer's own
+   * mailbox has no owner to write in the name of: saying the writer's own name there
+   * records nothing, saying another's is refused.
+   *
+   * @param sendMode the shape as the request spells it, may be blank
+   * @param share the draft's share, null for the writer's own mailbox
+   * @return the stored form, or null
+   * @throws SendModeUnavailableException {@code emailConnector.sendMode.invalid} for an
+   *           unknown shape, {@code emailConnector.sendMode.noMailbox} for the owner's name
+   *           on a draft of the writer's own mailbox
+   */
+  static String incomingDraftSendMode(String sendMode, Long share) {
+    if (StringUtils.isBlank(sendMode)) {
+      return null;
+    }
+    SendMode mode = SendMode.of(sendMode);
+    if (mode == null) {
+      throw new SendModeUnavailableException(EmailDelegationService.SEND_MODE_INVALID_MESSAGE);
+    }
+    if (share != null) {
+      return mode.name();
+    }
+    if (mode == SendMode.NONE) {
+      return null;
+    }
+    throw new SendModeUnavailableException(SendModeUnavailableException.NO_MAILBOX);
+  }
+
+  /**
+   * The name a stored draft is to go out in (EXO-90584): the one the composer is showing,
+   * when the request carries the draft's text with it -- written onto the row by the
+   * save that precedes every send, like the text itself -- else the one the row holds.
+   *
+   * @param draft the draft as the request carries it
+   * @param stored the draft's row
+   * @return the stored form, or null when neither says
+   * @throws SendModeUnavailableException as {@link #incomingDraftSendMode} refuses
+   */
+  private String draftSendModeAfterSave(Email draft, Email stored) {
+    String incoming = incomingDraftSendMode(draft == null ? null : draft.getSendMode(), stored.getSendDelegationId());
+    return incoming != null ? incoming : stored.getSendMode();
+  }
+
+  /**
+   * The shape an interactive send of a draft goes out in (EXO-90584): the draft's row
+   * decides, as it stands once the text on screen is saved onto it. The request's
+   * {@code sendMode} parameter is read only for a draft that never recorded one -- saved
+   * before the draft's name was stored, or by a composer that did not send it -- and a
+   * parameter naming another shape than the row's is refused, never obeyed and never
+   * ignored: the row decides, and a request that disagrees with it is refused (the
+   * mailbox's rule, EXO-90595).
+   *
+   * @param recorded the draft's shape after the save, null when it never said
+   * @param requested the request's parameter, may be blank
+   * @return the shape to resolve, or null for the sender's own name
+   * @throws SendModeUnavailableException {@link SendModeUnavailableException#MISMATCH}
+   *           when the parameter names another shape than the row's;
+   *           {@code emailConnector.sendMode.invalid} for an unknown parameter
+   */
+  static String draftSendModeFor(String recorded, String requested) {
+    if (StringUtils.isBlank(requested)) {
+      return recorded;
+    }
+    SendMode asked = SendMode.of(requested);
+    if (asked == null) {
+      throw new SendModeUnavailableException(EmailDelegationService.SEND_MODE_INVALID_MESSAGE);
+    }
+    if (recorded == null) {
+      return asked.name();
+    }
+    if (asked != SendMode.of(recorded)) {
+      throw new SendModeUnavailableException(SendModeUnavailableException.MISMATCH);
+    }
+    return recorded;
+  }
+
+  /**
+   * The address whose domain a new draft's Message-ID names (EXO-90584): the owner's,
+   * when the draft is written in her name from her mailbox and her consent covers that
+   * name, as a mail sent in her name gets its id from her domain; the writer's own
+   * otherwise. Settled at the first save and kept after, whatever name the draft is
+   * finally sent in: the id is what its copy on the server and its Sent copy are matched
+   * by, so it is never minted again.
+   *
+   * @param share the draft's share, null for the writer's own mailbox
+   * @param sendMode the draft's shape, as stored
+   * @param userEmailSetting the writer's connector binding
+   * @return the address to mint from
+   */
+  private String messageIdAddress(EmailDelegation share, String sendMode, UserEmailSetting userEmailSetting) {
+    SendMode mode = SendMode.of(sendMode);
+    if (share != null && mode != null && mode != SendMode.NONE && share.allowsSend(mode)
+        && StringUtils.isNotBlank(share.getOwnerMailbox())) {
+      return share.getOwnerMailbox();
+    }
+    return userEmailSetting.getEmailAddress();
   }
 
   /**
