@@ -162,7 +162,7 @@ class EmailMcpToolTest {
     draft.setMailRemoteId(null);
     when(emailBoxService.getOwnMailboxEmailById(EMAIL_ID, USERNAME)).thenReturn(draft);
 
-    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> emailMcpTool.replyEmail(null, "<p>x</p>", null, EMAIL_ID));
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> emailMcpTool.replyEmail(null, "<p>x</p>", null, EMAIL_ID, List.of("alice@example.com")));
     assertTrue(refused.getMessage().contains("is a draft that is not on the mail server yet"), refused.getMessage());
     verify(emailBoxService, never()).sendEmail(any(Email.class), any());
   }
@@ -496,7 +496,7 @@ class EmailMcpToolTest {
     original.setSender(new EmailSender("Alice", "alice@example.com", null, null));
     when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), eq(MailFolder.INBOX), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(original);
 
-    emailMcpTool.replyEmail(REMOTE_ID, "<p>My answer</p>", null, null);
+    emailMcpTool.replyEmail(REMOTE_ID, "<p>My answer</p>", null, null, List.of("alice@example.com"));
 
     ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxService).sendEmail(captor.capture(), eq(USERNAME));
@@ -524,7 +524,7 @@ class EmailMcpToolTest {
     setting.setEmailAddress("testuser1@example.com");
     when(userEmailSettingService.getUserEmailSetting(eq(USERNAME))).thenReturn(setting);
 
-    emailMcpTool.replyAll(REMOTE_ID, "<p>Reply all body</p>", null, null);
+    emailMcpTool.replyAll(REMOTE_ID, "<p>Reply all body</p>", null, null, List.of("alice@example.com"), List.of("dave@example.com", "erin@example.com"));
 
     ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxService).sendEmail(captor.capture(), eq(USERNAME));
@@ -844,8 +844,8 @@ class EmailMcpToolTest {
                                                                   () -> emailMcpTool.markRead(List.of(REMOTE_ID), null, nobody),
                                                                   () -> emailMcpTool.markUnread(List.of(REMOTE_ID), null, nobody),
                                                                   () -> emailMcpTool.sendEmail(List.of("bob@acme.com"), "Hi", "<p>x</p>", null, null, nobody),
-                                                                  () -> emailMcpTool.replyEmail(REMOTE_ID, "<p>x</p>", nobody, null),
-                                                                  () -> emailMcpTool.replyAll(REMOTE_ID, "<p>x</p>", nobody, null),
+                                                                  () -> emailMcpTool.replyEmail(REMOTE_ID, "<p>x</p>", nobody, null, List.of("bob@acme.com")),
+                                                                  () -> emailMcpTool.replyAll(REMOTE_ID, "<p>x</p>", nobody, null, List.of("bob@acme.com"), List.of()),
                                                                   () -> emailMcpTool.forwardEmail(REMOTE_ID, List.of("bob@acme.com"), "<p>x</p>", null, nobody, null),
                                                                   () -> emailMcpTool.archiveEmail(List.of(REMOTE_ID), nobody, null),
                                                                   () -> emailMcpTool.deleteEmail(List.of(REMOTE_ID), nobody, null));
@@ -1010,7 +1010,7 @@ class EmailMcpToolTest {
     when(userEmailSettingService.getUserEmailSetting(USERNAME)).thenReturn(setting);
     when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(EmailBoxService.OwnerCopy.FILED);
 
-    String result = emailMcpTool.replyAll(null, "<p>Noted</p>", OWNER_MAILBOX, EMAIL_ID);
+    String result = emailMcpTool.replyAll(null, "<p>Noted</p>", OWNER_MAILBOX, EMAIL_ID, List.of("carol@acme.com"), List.of("dave@acme.com"));
 
     ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxService).sendEmail(sent.capture(), eq(USERNAME), eq(100L));
@@ -1126,7 +1126,7 @@ class EmailMcpToolTest {
     when(emailBoxService.getOwnMailboxEmailById(SENT_EMAIL_ID, USERNAME)).thenReturn(sent);
     when(emailBoxService.getEmailByMailRemoteIdAndUserId(REMOTE_ID, USERNAME, MailFolder.SENT, false, true, false, false)).thenReturn(sent);
 
-    String replied = emailMcpTool.replyEmail(null, "<p>Any news?</p>", null, SENT_EMAIL_ID);
+    String replied = emailMcpTool.replyEmail(null, "<p>Any news?</p>", null, SENT_EMAIL_ID, List.of("testuser1@example.com"));
     String forwarded = emailMcpTool.forwardEmail(null, List.of("boss@acme.com"), null, null, null, SENT_EMAIL_ID);
 
     ArgumentCaptor<Email> out = ArgumentCaptor.forClass(Email.class);
@@ -1148,7 +1148,7 @@ class EmailMcpToolTest {
     when(emailBoxService.getEmailByMailRemoteIdAndUserId(REMOTE_ID, USERNAME, "CUSTOM:6", false, true, false, false)).thenReturn(sent);
     when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(EmailBoxService.OwnerCopy.FILED);
 
-    emailMcpTool.replyEmail(null, "<p>Any news?</p>", OWNER_MAILBOX, SENT_EMAIL_ID);
+    emailMcpTool.replyEmail(null, "<p>Any news?</p>", OWNER_MAILBOX, SENT_EMAIL_ID, List.of("testuser1@example.com"));
 
     verify(emailBoxService).sendEmail(any(Email.class), eq(USERNAME), eq(100L));
     verify(emailBoxService, never()).getEmailByMailRemoteIdAndUserId(anyLong(), any(), eq(SHARED_INBOX), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean());
@@ -1189,16 +1189,16 @@ class EmailMcpToolTest {
     when(emailBoxService.getOwnMailboxEmailById(EMAIL_ID, USERNAME)).thenReturn(inbox);
 
     IllegalArgumentException mismatch = assertThrows(IllegalArgumentException.class,
-                                                     () -> emailMcpTool.replyEmail(888L, "<p>x</p>", null, SENT_EMAIL_ID));
+                                                     () -> emailMcpTool.replyEmail(888L, "<p>x</p>", null, SENT_EMAIL_ID, List.of("testuser1@example.com")));
     assertTrue(mismatch.getMessage().contains("not the same mail"), mismatch.getMessage());
     assertThrows(IllegalArgumentException.class, () -> emailMcpTool.archiveEmail(List.of(888L), null, List.of(EMAIL_ID)));
     IllegalArgumentException withANull = assertThrows(IllegalArgumentException.class,
                                                        () -> emailMcpTool.archiveEmail(java.util.Arrays.asList((Long) null), null, List.of(EMAIL_ID)));
     assertTrue(withANull.getMessage().contains("do not name the same mails"), withANull.getMessage());
     givenAliceShares();
-    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.replyAll(REMOTE_ID, "<p>x</p>", OWNER_MAILBOX, null));
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.replyAll(REMOTE_ID, "<p>x</p>", OWNER_MAILBOX, null, List.of("x@acme.com"), List.of()));
     assertThrows(IllegalArgumentException.class, () -> emailMcpTool.deleteEmail(List.of(REMOTE_ID), OWNER_MAILBOX, null));
-    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.replyEmail(null, "<p>x</p>", null, null), "a mail must be named");
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.replyEmail(null, "<p>x</p>", null, null, List.of("x@acme.com")), "a mail must be named");
     // The row found at that folder and number is another mail than the one named.
     Email another = sentMail(MailFolder.SENT);
     another.setId(99L);
@@ -1292,15 +1292,309 @@ class EmailMcpToolTest {
     ObjectNotFoundException byId = assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.getEmailById(8L, null));
     assertEquals("No email with email_id 8 in your mailbox. email_id is the local id every reading tool returns as email_id, "
         + "not the mail_remote_id numbering a mail within its folder.", byId.getMessage());
-    ObjectNotFoundException toReply = assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.replyEmail(null, "<p>x</p>", null, 8L));
+    ObjectNotFoundException toReply = assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.replyEmail(null, "<p>x</p>", null, 8L, List.of("alice@example.com")));
     assertTrue(toReply.getMessage().startsWith("No email with email_id 8 in your mailbox."), toReply.getMessage());
     // Row 8 exists, and is another mail than the one numbered 8 in the inbox.
     Email rowEight = buildEmail(8L);
     rowEight.setMailRemoteId(3L);
     when(emailBoxService.getOwnMailboxEmailById(8L, USERNAME)).thenReturn(rowEight);
-    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.replyEmail(8L, "<p>x</p>", null, 8L), "the same number as both ids");
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.replyEmail(8L, "<p>x</p>", null, 8L, List.of("alice@example.com")), "the same number as both ids");
 
     verify(emailBoxService, never()).getEmailByMailRemoteIdAndUserId(eq(8L), any(), any(), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean());
     verify(emailBoxService, never()).sendEmail(any(Email.class), any());
+  }
+
+  // --- the reply approval names its recipients, and the server holds the agent to them (EXO-90592)
+
+  /**
+   * An original of the user's own inbox: from Alice, to the user and Dave, copying Erin.
+   *
+   * @return the original, as both the id and the UID read it
+   */
+  private Email givenAnOwnOriginal() throws Exception {
+    Email original = buildEmail(EMAIL_ID);
+    original.setMailHeaderId("<mid@server>");
+    original.setSender(new EmailSender("Alice", "alice@example.com", null, null));
+    original.setTo(List.of(new EmailRecipient(null, "testuser1@example.com", null, true),
+                           new EmailRecipient("Dave", "dave@example.com", null, false)));
+    original.setCc(List.of(new EmailRecipient("Erin", "erin@example.com", null, false)));
+    when(emailBoxService.getOwnMailboxEmailById(EMAIL_ID, USERNAME)).thenReturn(original);
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(REMOTE_ID, USERNAME, MailFolder.INBOX, false, true, false, false)).thenReturn(original);
+    UserEmailSetting setting = new UserEmailSetting();
+    setting.setEmailAddress("testuser1@example.com");
+    when(userEmailSettingService.getUserEmailSetting(USERNAME)).thenReturn(setting);
+    return original;
+  }
+
+  /**
+   * An original of Alice's shared inbox: from Carol, to Alice and Dave, copying the user.
+   *
+   * @return the original, as both the id and the UID read it
+   */
+  private Email givenASharedOriginal() throws Exception {
+    givenAliceShares();
+    Email original = buildEmail(EMAIL_ID);
+    original.setFolder(SHARED_INBOX);
+    original.setSender(new EmailSender("Carol", "carol@acme.com", null, null));
+    original.setTo(List.of(new EmailRecipient(null, OWNER_MAILBOX, null, false), new EmailRecipient(null, "dave@acme.com", null, false)));
+    original.setCc(List.of(new EmailRecipient(null, "testuser1@example.com", null, false)));
+    when(emailBoxService.getSharedMailboxEmailById(EMAIL_ID, USERNAME, 100L)).thenReturn(original);
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(REMOTE_ID, USERNAME, SHARED_INBOX, false, true, false, false)).thenReturn(original);
+    UserEmailSetting setting = new UserEmailSetting();
+    setting.setEmailAddress("testuser1@example.com");
+    when(userEmailSettingService.getUserEmailSetting(USERNAME)).thenReturn(setting);
+    when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(EmailBoxService.OwnerCopy.FILED);
+    return original;
+  }
+
+  /**
+   * Asserts a call is refused as a recipient mismatch.
+   *
+   * @param call the reply
+   * @param why what the recipients got wrong, for the failure message
+   */
+  private static void assertRefusedAsAMismatch(org.junit.jupiter.api.function.Executable call, String why) {
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, call, why);
+    assertTrue(refused.getMessage().startsWith("Nothing was sent"), why + ": " + refused.getMessage());
+  }
+
+  /** Asserts nothing at all was sent, from the user's own mailbox or a shared one. */
+  private void assertNothingSent() throws Exception {
+    verify(emailBoxService, never()).sendEmail(any(Email.class), any());
+    verify(emailBoxService, never()).sendEmail(any(Email.class), any(), any());
+  }
+
+  /**
+   * A reply whose to is not the original's sender -- another address, an extra one,
+   * none at all -- is refused and nothing is sent, from the user's own mailbox and
+   * from a shared one.
+   */
+  @Test
+  void aReplyToAnyoneButTheSenderIsRefusedAndNothingIsSent() throws Exception {
+    givenAnOwnOriginal();
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyEmail(null, "<p>x</p>", null, EMAIL_ID, List.of("mallory@evil.com")), "different");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyEmail(null, "<p>x</p>", null, EMAIL_ID, List.of("alice@example.com", "mallory@evil.com")),
+                             "extra");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyEmail(REMOTE_ID, "<p>x</p>", null, null, List.of()), "missing");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyEmail(REMOTE_ID, "<p>x</p>", null, null, null), "none given");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyEmail(null, "<p>x</p>", null, EMAIL_ID, List.of("testuser1@example.com")),
+                             "the user, who is not the sender");
+    givenASharedOriginal();
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyEmail(null, "<p>x</p>", OWNER_MAILBOX, EMAIL_ID, List.of("mallory@evil.com")),
+                             "shared, different");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyEmail(null, "<p>x</p>", OWNER_MAILBOX, EMAIL_ID, List.of("carol@acme.com", "dave@acme.com")),
+                             "shared, extra");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyEmail(null, "<p>x</p>", OWNER_MAILBOX, EMAIL_ID, List.of()), "shared, missing");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyEmail(null, "<p>x</p>", OWNER_MAILBOX, EMAIL_ID, List.of(OWNER_MAILBOX)),
+                             "shared, the owner, who is not the sender");
+    assertNothingSent();
+  }
+
+  /**
+   * A reply-all whose to or cc is not what the original gives -- another address, an
+   * extra one, a missing one, one moved between to and cc -- is refused and nothing is
+   * sent, from the user's own mailbox and from a shared one.
+   */
+  @Test
+  void aReplyAllToAnyoneButTheOriginalsRecipientsIsRefusedAndNothingIsSent() throws Exception {
+    givenAnOwnOriginal();
+    List<String> sender = List.of("alice@example.com");
+    List<String> copied = List.of("dave@example.com", "erin@example.com");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyAll(null, "<p>x</p>", null, EMAIL_ID, List.of("mallory@evil.com"), copied), "to different");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyAll(null, "<p>x</p>", null, EMAIL_ID, List.of("alice@example.com", "mallory@evil.com"), copied),
+                             "to extra");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyAll(null, "<p>x</p>", null, EMAIL_ID, null, copied), "to missing");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyAll(null, "<p>x</p>", null, EMAIL_ID, sender, List.of("dave@example.com", "mallory@evil.com")),
+                             "cc different");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyAll(null,
+                                                         "<p>x</p>",
+                                                         null,
+                                                         EMAIL_ID,
+                                                         sender,
+                                                         List.of("dave@example.com", "erin@example.com", "mallory@evil.com")),
+                             "cc extra");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyAll(null, "<p>x</p>", null, EMAIL_ID, sender, List.of("dave@example.com")), "cc missing");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyAll(null, "<p>x</p>", null, EMAIL_ID, sender, null), "cc none given");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyAll(null,
+                                                         "<p>x</p>",
+                                                         null,
+                                                         EMAIL_ID,
+                                                         List.of("alice@example.com", "dave@example.com"),
+                                                         List.of("erin@example.com")),
+                             "moved from cc to to");
+    givenASharedOriginal();
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyAll(null, "<p>x</p>", OWNER_MAILBOX, EMAIL_ID, List.of("mallory@evil.com"), List.of("dave@acme.com")),
+                             "shared, to different");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyAll(null,
+                                                         "<p>x</p>",
+                                                         OWNER_MAILBOX,
+                                                         EMAIL_ID,
+                                                         List.of("carol@acme.com"),
+                                                         List.of("dave@acme.com", "mallory@evil.com")),
+                             "shared, cc extra");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyAll(null, "<p>x</p>", OWNER_MAILBOX, EMAIL_ID, List.of("carol@acme.com"), List.of()),
+                             "shared, cc missing");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyAll(null, "<p>x</p>", OWNER_MAILBOX, EMAIL_ID, List.of("carol@acme.com"), List.of("erin@acme.com")),
+                             "shared, cc different");
+    assertNothingSent();
+  }
+
+  /**
+   * The same recipients spelt otherwise -- another case, surrounding blanks, another
+   * order, twice -- are accepted, and what is sent is the list worked out from
+   * the original, never the spelling given.
+   */
+  @Test
+  void theSameRecipientsSpeltOtherwiseAreAcceptedAndTheServersListIsSent() throws Exception {
+    givenAnOwnOriginal();
+
+    emailMcpTool.replyEmail(null, "<p>x</p>", null, EMAIL_ID, List.of("  ALICE@Example.COM "));
+    emailMcpTool.replyAll(null,
+                          "<p>x</p>",
+                          null,
+                          EMAIL_ID,
+                          List.of("Alice@example.com", "alice@EXAMPLE.com"),
+                          List.of(" Erin@Example.com", "Dave@EXAMPLE.com\t", "erin@example.com"));
+
+    ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService, times(2)).sendEmail(sent.capture(), eq(USERNAME));
+    Email reply = sent.getAllValues().get(0);
+    assertEquals(1, reply.getTo().size());
+    assertEquals("alice@example.com", reply.getTo().get(0).getAddress());
+    assertEquals("Alice", reply.getTo().get(0).getName(), "the original's recipient is sent, not the spelling given");
+    Email replyAll = sent.getAllValues().get(1);
+    assertEquals(List.of("alice@example.com"), replyAll.getTo().stream().map(EmailRecipient::getAddress).toList());
+    assertEquals(List.of("dave@example.com", "erin@example.com"), replyAll.getCc().stream().map(EmailRecipient::getAddress).toList());
+    assertEquals(List.of("Dave", "Erin"), replyAll.getCc().stream().map(EmailRecipient::getName).toList());
+  }
+
+  /**
+   * An entry that is not a bare address is refused, even when the address it wraps is
+   * the right one: the approval card shows the entry as given, as sanitised HTML, and
+   * would show the name while the bracketed address vanishes as a tag. A blank entry,
+   * or an empty pair of brackets, is refused rather than dropped: the card would list
+   * someone who gets nothing.
+   */
+  @Test
+  void aRecipientThatIsNotABareAddressIsRefusedAndNothingIsSent() throws Exception {
+    givenAnOwnOriginal();
+    for (List<String> to : List.of(List.of("Someone Else <alice@example.com>"),
+                                   List.of("boss@corp.com <alice@example.com>"),
+                                   List.of("<alice@example.com>"),
+                                   List.of("\"Alice\" alice@example.com"),
+                                   List.of("alice@example.com", "boss@corp.com <>"),
+                                   List.of("alice@example.com", " "),
+                                   List.of("alice@example.com, boss@corp.com"),
+                                   List.of("alice@example.com;boss@corp.com"),
+                                   List.of("boss@corp.com alice@example.com"),
+                                   List.of("alice&commat@example.com"))) {
+      IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                      () -> emailMcpTool.replyEmail(null, "<p>x</p>", null, EMAIL_ID, to),
+                                                      to.toString());
+      assertTrue(refused.getMessage().contains("must list bare addresses"), to + ": " + refused.getMessage());
+    }
+    IllegalArgumentException inCc = assertThrows(IllegalArgumentException.class,
+                                                 () -> emailMcpTool.replyAll(null,
+                                                                             "<p>x</p>",
+                                                                             null,
+                                                                             EMAIL_ID,
+                                                                             List.of("alice@example.com"),
+                                                                             List.of("dave@example.com", "Erin <erin@example.com>")));
+    assertTrue(inCc.getMessage().contains("cc must list bare addresses"), inCc.getMessage());
+    assertNothingSent();
+  }
+
+  /**
+   * An original whose recipients include one that is not a bare address -- a group --
+   * cannot be replied to all: no given cc could match it, and the refusal says why
+   * instead of asking for an address the agent cannot give. Nothing is sent.
+   */
+  @Test
+  void anOriginalWithARecipientNoCardCanShowIsRefusedInWords() throws Exception {
+    Email original = givenAnOwnOriginal();
+    original.setCc(List.of(new EmailRecipient(null, "undisclosed-recipients:;", null, false)));
+
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailMcpTool.replyAll(null,
+                                                                                "<p>x</p>",
+                                                                                null,
+                                                                                EMAIL_ID,
+                                                                                List.of("alice@example.com"),
+                                                                                List.of("dave@example.com")));
+    assertTrue(refused.getMessage().contains("\"undisclosed-recipients:;\", which is not an address"), refused.getMessage());
+    original.setSender(new EmailSender(null, "\"odd name\"@example.com", null, null));
+    IllegalArgumentException toSender = assertThrows(IllegalArgumentException.class,
+                                                     () -> emailMcpTool.replyEmail(null, "<p>x</p>", null, EMAIL_ID, List.of("odd@example.com")));
+    assertTrue(toSender.getMessage().contains("which is not an address") && !toSender.getMessage().contains("use reply_email"),
+               "never sent back to the tool that refused: " + toSender.getMessage());
+    assertTrue(refused.getMessage().contains("use reply_email"), "a reply to the sender alone is still open: " + refused.getMessage());
+    assertNothingSent();
+  }
+
+  /**
+   * A reply-all's cc may list the user's own address and, from a shared mailbox, its
+   * owner's -- the agent copying the original's To does -- and they are still left out
+   * of what is sent. Everywhere else they are recipients like any other: the owner in
+   * to, when not the sender, is refused.
+   */
+  @Test
+  void aReplyAllToleratesTheSendingSideInCcAndStillLeavesItOut() throws Exception {
+    givenAnOwnOriginal();
+    emailMcpTool.replyAll(null,
+                          "<p>x</p>",
+                          null,
+                          EMAIL_ID,
+                          List.of("alice@example.com"),
+                          List.of("TestUser1@example.com", "dave@example.com", "erin@example.com"));
+    ArgumentCaptor<Email> own = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService).sendEmail(own.capture(), eq(USERNAME));
+    assertEquals(List.of("dave@example.com", "erin@example.com"), own.getValue().getCc().stream().map(EmailRecipient::getAddress).toList());
+
+    givenASharedOriginal();
+    emailMcpTool.replyAll(null,
+                          "<p>x</p>",
+                          OWNER_MAILBOX,
+                          EMAIL_ID,
+                          List.of("carol@acme.com"),
+                          List.of(OWNER_MAILBOX, "dave@acme.com", "testuser1@example.com"));
+    ArgumentCaptor<Email> shared = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService).sendEmail(shared.capture(), eq(USERNAME), eq(100L));
+    assertEquals(List.of("dave@acme.com"), shared.getValue().getCc().stream().map(EmailRecipient::getAddress).toList());
+
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyAll(null,
+                                                         "<p>x</p>",
+                                                         OWNER_MAILBOX,
+                                                         EMAIL_ID,
+                                                         List.of("carol@acme.com", OWNER_MAILBOX),
+                                                         List.of("dave@acme.com")),
+                             "the owner in to");
+    assertRefusedAsAMismatch(() -> emailMcpTool.replyAll(null,
+                                                         "<p>x</p>",
+                                                         null,
+                                                         EMAIL_ID,
+                                                         List.of("alice@example.com"),
+                                                         List.of(OWNER_MAILBOX, "dave@example.com", "erin@example.com")),
+                             "in the user's own mailbox, the owner of another is nobody to leave out");
+    verify(emailBoxService, times(1)).sendEmail(any(Email.class), eq(USERNAME));
+    verify(emailBoxService, times(1)).sendEmail(any(Email.class), eq(USERNAME), eq(100L));
+  }
+
+  /**
+   * Each message of a conversation carries the addresses it was sent and copied to:
+   * a reply-all onto it names them on the approval.
+   */
+  @Test
+  void aConversationMessageCarriesItsToAndCc() throws Exception {
+    Email message = threadMessage("<one@server>", "Alice", "alice@example.com", "<p>Hi</p>");
+    message.setTo(List.of(new EmailRecipient("Dave", "dave@example.com", null, false)));
+    message.setCc(List.of(new EmailRecipient(null, "erin@example.com", null, false), new EmailRecipient(null, " ", null, false)));
+    when(emailBoxService.getThread("thread-1", USERNAME)).thenReturn(List.of(message));
+
+    EmailThreadMessageModel read = emailMcpTool.getEmailThread("thread-1", null).get(0);
+
+    assertEquals(List.of("dave@example.com"), read.getTo());
+    assertEquals(List.of("erin@example.com"), read.getCc());
+    String json = new ObjectMapper().writeValueAsString(read);
+    assertTrue(json.contains("\"to\":[\"dave@example.com\"]") && json.contains("\"cc\":[\"erin@example.com\"]"), json);
   }
 }
