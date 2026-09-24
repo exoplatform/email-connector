@@ -68,4 +68,11 @@ public class EmailSearchHitModel {
    * still opens, it is simply fetched from the server on demand.
    */
   private boolean     cached;
+
+  /**
+   * The local id of the mail, when the hit was read from the synced copy (a shared
+   * mailbox's search, EXO-90555): the key to pass as email_id to the other tools.
+   */
+  @JsonProperty("email_id")
+  private Long        emailId;
 }
