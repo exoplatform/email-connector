@@ -156,6 +156,20 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             <v-list-item-content class="py-0">
               <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': threadUnread }]" v-text="subject" />
               <v-list-item-subtitle v-text="excerpt" />
+              <!-- The shared mailbox a draft was written in (EXO-90595), as the Scheduled
+                   view names it; nothing for the user's own. -->
+              <v-list-item-subtitle
+                v-if="draftMailboxLabel"
+                :class="email.sendMailbox.shared ? 'text-light-color' : 'warning--text'"
+                class="caption text-truncate draft-mailbox">
+                <v-icon
+                  :class="email.sendMailbox.shared ? 'icon-default-color' : 'warning--text'"
+                  size="11"
+                  class="me-1">
+                  fas fa-user-friends
+                </v-icon>
+                {{ draftMailboxLabel }}
+              </v-list-item-subtitle>
             </v-list-item-content>
             <email-connector-mail-box-drawer-list-item-action-menu
               v-if="!selectMode && !isMobile"
@@ -312,6 +326,15 @@ export default {
     // context menu already key on, rather than which folder happens to be listed.
     isDraft() {
       return !!this.email.draftLocalId;
+    },
+    /**
+     * The line naming the shared mailbox this draft was written in (EXO-90595), when the
+     * Drafts listing named one.
+     *
+     * @returns {String} the line, or an empty string
+     */
+    draftMailboxLabel() {
+      return this.isDraft ? this.$emailConnectorMailBoxService.draftMailboxLabel(this.email.sendMailbox, this) : '';
     },
     // Who the row names, which is not the same question for a draft as for a message.
     //
