@@ -163,4 +163,11 @@ public class EmailFolderEntity {
   // When RIGHTS were last read from the server.
   @Column(name = "RIGHTS_CHECK_DATE")
   private Date    rightsCheckDate;
+
+  // EXO-90553: the new-mail notification boundary of a shared INBOX -- the highest UID
+  // the delegate was told about or has seen. Null on every other row, and on a shared
+  // INBOX whose notification is off or not yet baselined. Written only by the
+  // conditional UPDATEs of EmailFolderDAO, never by a whole-row save.
+  @Column(name = "NOTIFIED_UID")
+  private Long    notifiedUid;
 }
