@@ -644,7 +644,8 @@ public class ImapAclEngine implements MailboxAclEngine {
   private static boolean impliedByCoupling(char letter, String granted) {
     return switch (letter) {
     case 'e', 'd' -> granted.indexOf('t') >= 0;
-    // Stalwart stores a Reader's s with w (EXO-90556): lrs reads back wsrl.
+    // Stalwart stores a Reader's s with w (EXO-90556): lrs reads back wsrl. A w really
+    // given beside s elsewhere reads as a Reader too; the letters cannot tell them apart.
     case 'w' -> granted.indexOf('s') >= 0;
     case 'c' -> granted.indexOf('k') >= 0;
     default -> false;
