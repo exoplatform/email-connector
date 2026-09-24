@@ -703,6 +703,31 @@ class EmailDelegationFolderAccessTest {
     verify(engine, never()).grant(any(), anyString(), anyString(), any(), any(), any());
   }
 
+  /**
+   * INBOX is the share itself: a role recorded at INBOX -- by a server listing an
+   * attribute on it, or a stale record -- never has the grantee's entry there removed or
+   * rewritten by "Change access", whatever it narrows; only "Remove access" does that.
+   */
+  @Test
+  void changeAccessNeverRemovesOrRewritesInboxForARole() throws Exception {
+    EmailDelegation share = accepted();
+    share.setGrantedRoles("INBOX,TRASH");
+    Map<FolderRole, String> roles = new EnumMap<>(FolderRole.class);
+    roles.put(FolderRole.TRASH, INBOX);
+    share.setOwnerRoleFolders(roles);
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(share);
+    when(engine.findRoleFolders(any())).thenReturn(roles);
+    when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), any(), any())).thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
+                                                                                                           MailboxRights.of("lrs")));
+    when(emailDelegationStorage.updateGrantedRights(eq(OWNER), eq(100L), any(), any(), any(), any(), any(), anyString(), any()))
+                                                                                                                               .thenReturn(share);
+
+    service.changePreset(OWNER, 100L, DelegationPreset.READER);
+
+    verify(engine, never()).revoke(any(), eq(INBOX), anyString());
+    verify(engine, never()).grant(any(), eq(INBOX), anyString(), any(), any(), any());
+  }
+
   // ---------------------------------------------------------------------------------
   // The owner renames or deletes a shared folder
   // ---------------------------------------------------------------------------------
