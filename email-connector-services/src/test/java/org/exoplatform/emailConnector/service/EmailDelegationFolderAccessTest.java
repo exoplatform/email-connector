@@ -446,6 +446,24 @@ class EmailDelegationFolderAccessTest {
   }
 
   /**
+   * A listing that gives INBOX a role (a server calling it the Trash, EXO-90556) never
+   * records INBOX as that role's folder: no role path may later write a role's letters
+   * on INBOX, which only "Remove access" touches.
+   */
+  @Test
+  void aRoleTheListingGivesInboxIsNeverRecordedAsItsFolder() throws Exception {
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted());
+    Map<String, Object> written = answerTheFolderGrantsWrite();
+    when(engine.listOwnFolders(any())).thenReturn(List.of(own(INBOX, FolderRole.TRASH), own("Projects", null)));
+
+    service.setFolderAccess(OWNER, 100L, List.of(change("Projects", FolderAccess.NONE)));
+
+    @SuppressWarnings("unchecked")
+    Map<FolderRole, String> roleFolders = (Map<FolderRole, String>) written.get("ownerRoleFolders");
+    assertFalse(roleFolders.containsValue(INBOX), "INBOX is never a role's folder: " + roleFolders);
+  }
+
+  /**
    * The delegate's copy of a folder under INBOX is found by the name discovery
    * registered: on a Dovecot-style shared namespace {@code INBOX/Sub} is listed as
    * {@code <root>/INBOX/Sub}, and a top-level {@code Sub} beside it is never taken for
@@ -788,6 +806,30 @@ class EmailDelegationFolderAccessTest {
 
     verify(engine, never()).grant(any(), eq("Clients"), anyString(), any(), any(), any());
     verify(engine).grant(any(), eq("Clients/2024"), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), eq(OWNER_RIGHTS), isNull());
+  }
+
+  /**
+   * EXO-90556 -- a Stalwart Reader reads back {@code lrsw}, its {@code s} coupled with a
+   * {@code w}: a rename leaves that entry as it is, because the Reader grant writes
+   * {@code lrs} and a rename writes only the letters already held. The EXO-90556 spec
+   * ledger (L-6) relies on Stalwart keeping a folder's ACL across a rename; this mocked
+   * test cannot show that.
+   */
+  @Test
+  void aRenameLeavesAStalwartReaderAsItIs() throws Exception {
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(accepted()));
+    when(engine.listOwnFolders(any())).thenReturn(List.of(own("Clients", null)));
+    when(engine.listAcl(any(), eq("Clients"))).thenReturn(List.of(ace(GRANTEE_MAILBOX, "lrsw")));
+    // The IMAP reading on Stalwart: a w beside s alone is a Reader's coupled w.
+    when(engine.presetOf(any())).thenAnswer(invocation -> {
+      String letters = ((MailboxRights) invocation.getArgument(0)).letters();
+      return "lrsw".equals(letters) ? DelegationPreset.READER : DelegationPreset.fromRights(invocation.getArgument(0));
+    });
+
+    service.ownerFolderChanged(OWNER, "Projects", "Clients");
+
+    verify(engine).listAcl(any(), eq("Clients"));
+    verify(engine, never()).grant(any(), eq("Clients"), anyString(), any(), any(), any());
   }
 
   /**
