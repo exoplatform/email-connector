@@ -114,7 +114,6 @@ import javax.mail.search.AndTerm;
 import javax.mail.search.ComparisonTerm;
 import javax.mail.search.FlagTerm;
 import javax.mail.search.FromStringTerm;
-import javax.mail.search.HeaderTerm;
 import javax.mail.search.OrTerm;
 import javax.mail.search.ReceivedDateTerm;
 import javax.mail.search.SearchException;
@@ -1765,14 +1764,59 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * The undo-move search looks a domain-literal id up by its local part, which every
-   * spelling of the raw header contains; a plain domain is searched as it is.
+   * The search keys cover every server (EXO-90597): the bare id, which is all Stalwart
+   * matches, the bracketed id for a server matching the whole raw value, and for a domain
+   * literal the local part and "@", which every raw spelling contains on a substring
+   * server. A blank id has no key at all.
    */
   @Test
-  void aDomainLiteralIdIsSearchedByItsLocalPart() {
-    assertEquals("a.1@", EmailBoxService.messageIdSearchKey("<a.1@192.168.0.248>"));
-    assertEquals("a.1@", EmailBoxService.messageIdSearchKey("<a.1@[192.168.0.248]>"));
-    assertEquals("<a.1@host.example>", EmailBoxService.messageIdSearchKey("<a.1@host.example>"));
+  void aMessageIdIsSearchedBareBracketedAndForALiteralByItsLocalPart() {
+    assertEquals(List.of("a.1@Host.Example", "<a.1@Host.Example>"), EmailBoxService.messageIdSearchKeys(" <a.1@Host.Example> "));
+    assertEquals(List.of("a.1@host", "<a.1@host>"), EmailBoxService.messageIdSearchKeys("a.1@host"));
+    assertEquals(List.of("a.1@192.168.0.248", "<a.1@192.168.0.248>", "a.1@"),
+                 EmailBoxService.messageIdSearchKeys("<a.1@192.168.0.248>"));
+    assertEquals(List.of("a.1@[192.168.0.248]", "<a.1@[192.168.0.248]>", "a.1@"),
+                 EmailBoxService.messageIdSearchKeys("<a.1@[192.168.0.248]>"));
+    assertEquals(List.of("a.1@[IPv6:2001:db8::1]", "<a.1@[IPv6:2001:db8::1]>", "a.1@"),
+                 EmailBoxService.messageIdSearchKeys("<a.1@[IPv6:2001:db8::1]>"));
+    assertEquals(List.of(), EmailBoxService.messageIdSearchKeys("<>"));
+    assertEquals(List.of(), EmailBoxService.messageIdSearchKeys(" "));
+    assertEquals(List.of(), EmailBoxService.messageIdSearchKeys(null));
+  }
+
+  /**
+   * The keys travel as ONE search: an OR of {@code HEADER Message-ID} terms, the bare id
+   * among them -- the only spelling Stalwart answers.
+   */
+  @Test
+  void theMessageIdSearchIsOneOrOfHeaderTermsCarryingTheBareId() {
+    SearchTerm term = EmailBoxService.messageIdSearchTerm("<a.1@host>");
+    assertTrue(term instanceof OrTerm);
+    List<String> patterns = Arrays.stream(((OrTerm) term).getTerms()).map(t -> ((MessageIDTerm) t).getPattern()).toList();
+    assertEquals(List.of("a.1@host", "<a.1@host>"), patterns);
+    assertNull(EmailBoxService.messageIdSearchTerm("<>"));
+  }
+
+  /**
+   * A HEADER search is a substring match (Dovecot answers {@code a.1@host} with
+   * {@code <xa.1@host.org>}, observed live): the longer id containing the searched one
+   * is filtered out, and a blank id never reaches the server -- a blank HEADER search
+   * would answer the whole folder.
+   *
+   * @throws Exception when the mocked folder misbehaves
+   */
+  @Test
+  void aMessageIdSearchKeepsOnlyTheExactIdNeverALongerOneContainingIt() throws Exception {
+    Folder folder = mock(Folder.class);
+    Message exact = aMessageCarrying("<a.1@host>");
+    Message longer = aMessageCarrying("<xa.1@host.org>");
+    Message headerless = mock(Message.class);
+    when(folder.search(any(SearchTerm.class))).thenReturn(new Message[] { longer, exact, headerless });
+
+    assertEquals(List.of(exact), EmailBoxService.searchByMessageId(folder, "<a.1@host>"));
+    assertEquals(List.of(), EmailBoxService.searchByMessageId(folder, "<>"));
+    // any() and not any(SearchTerm.class): the latter would not count a null term.
+    verify(folder, times(1)).search(any());
   }
 
   // ---------------------------------------------------------------------------------
@@ -7729,6 +7773,13 @@ public class EmailBoxServiceTest {
     assertEquals(DraftState.SYNCED, saved.getDraftState());
   }
 
+  /**
+   * Without APPENDUID the appended draft is found again by its minted Message-ID, and
+   * only by the exact id: a longer id the server's substring search returns after ours
+   * is never taken for our copy, although it is the last hit.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
   @Test
   void aPushFallsBackToAMessageIdSearchWhenTheServerHasNoUidplus() throws Exception {
     // Without UIDPLUS there is no way to ask what UID the message we just wrote got.
@@ -7736,9 +7787,19 @@ public class EmailBoxServiceTest {
     givenAUsableMailbox();
     IMAPFolder draftsFolder = givenADraftsFolder();
     when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { null });
+    // The server answers the search with our copy and, after it, a longer id that merely
+    // contains ours: the exact filter keeps ours although it is not the last hit.
     Message appended = mock(Message.class);
-    when(draftsFolder.search(any(HeaderTerm.class))).thenReturn(new Message[] { appended });
+    Message lookalike = mock(Message.class);
+    java.util.concurrent.atomic.AtomicReference<String> searchedBare = new java.util.concurrent.atomic.AtomicReference<>();
+    when(draftsFolder.search(any(SearchTerm.class))).thenAnswer(invocation -> {
+      searchedBare.set(((MessageIDTerm) ((OrTerm) invocation.getArgument(0)).getTerms()[0]).getPattern());
+      return new Message[] { appended, lookalike };
+    });
+    lenient().when(appended.getHeader("Message-ID")).thenAnswer(invocation -> new String[] { "<" + searchedBare.get() + ">" });
+    lenient().when(lookalike.getHeader("Message-ID")).thenAnswer(invocation -> new String[] { "<x" + searchedBare.get() + ".org>" });
     when(draftsFolder.getUID(appended)).thenReturn(77L);
+    lenient().when(draftsFolder.getUID(lookalike)).thenReturn(78L);
     when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
     when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
                                                                                         .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
@@ -11311,7 +11372,7 @@ public class EmailBoxServiceTest {
   void undoingAMoveFindsTheMessageByIdentityAndCopiesItBackWhereItCameFrom() {
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(factures.getMessageByUID(77L)).thenReturn(message);
     when(emailBoxStorage.getEmailIdsByMailHeaderId(TEST_USER, "<a@host>", "CUSTOM:1")).thenReturn(List.of(44L));
@@ -11338,7 +11399,7 @@ public class EmailBoxServiceTest {
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message first = aMessageCarrying("<a@host>");
     Message second = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { first, second });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { first, second });
 
     int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
 
@@ -11359,7 +11420,7 @@ public class EmailBoxServiceTest {
   void anUndoTakesOnlyAnExactIdentityNotTheServersSubstringMatch() {
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message lookalike = aMessageCarrying("<a@host.example>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { lookalike });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { lookalike });
 
     int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
 
@@ -11377,7 +11438,7 @@ public class EmailBoxServiceTest {
   @SneakyThrows
   void anUndoWithNothingToFindIsCountedAndTouchesNothing() {
     IMAPFolder factures = givenAMirroredFacturesFolder();
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[0]);
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[0]);
 
     int failed = emailBoxService.undoMove(Arrays.asList("<gone@host>", " ", null), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
 
@@ -11402,7 +11463,7 @@ public class EmailBoxServiceTest {
     when(emailFolderStorage.getFolder(TEST_USER, 1L)).thenReturn(registeredFolder(1L, "Factures", true));
     when(trashStore().getFolder("Factures")).thenReturn(factures);
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(factures.getMessageByUID(77L)).thenReturn(message);
 
@@ -11430,7 +11491,7 @@ public class EmailBoxServiceTest {
     lenient().when(inbox.isOpen()).thenReturn(true);
     when(trashStore().getFolder("INBOX")).thenReturn(inbox);
     Message message = aMessageCarrying("<a@host>");
-    when(inbox.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(inbox.getUID(message)).thenReturn(5L);
     when(inbox.getMessageByUID(5L)).thenReturn(message);
 
@@ -11476,7 +11537,7 @@ public class EmailBoxServiceTest {
     ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(factures.getMessageByUID(77L)).thenReturn(message);
 
@@ -11506,7 +11567,7 @@ public class EmailBoxServiceTest {
     row.setMailHeaderId("<a@host>");
     when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(5L), eq(TEST_USER), any(), eq(MailFolder.INBOX), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(row);
     when(inbox.getMessageByUID(5L)).thenReturn(message);
-    lenient().when(inbox.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    lenient().when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     lenient().when(inbox.getUID(message)).thenReturn(5L);
 
     assertEquals(0, emailBoxService.moveToFolder(List.of(5L), TEST_USER, MailFolder.INBOX, "CUSTOM:1"));
@@ -11529,7 +11590,7 @@ public class EmailBoxServiceTest {
     ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(factures.getMessageByUID(77L)).thenReturn(message);
     ScheduledFuture<?> queuedByTheMove = mock(ScheduledFuture.class);
@@ -11556,7 +11617,7 @@ public class EmailBoxServiceTest {
     ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(factures.getMessageByUID(77L)).thenReturn(message);
 
@@ -11711,7 +11772,7 @@ public class EmailBoxServiceTest {
     System.setProperty(EmailBoxService.UNDO_REFRESH_ENABLED_PROPERTY, "false");
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(factures.getMessageByUID(77L)).thenReturn(message);
 
@@ -11730,7 +11791,7 @@ public class EmailBoxServiceTest {
   void anUndoThatMovedNothingDoesNotRefreshAnything() {
     ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[0]);
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[0]);
 
     emailBoxService.undoMove(List.of("<gone@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
 
@@ -11884,7 +11945,7 @@ public class EmailBoxServiceTest {
   void anUndoWhoseCopyTheServerRefusedCountsItAndTouchesNothingElse() {
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     doThrow(new MessagingException("COPY rejected")).when(factures).copyMessages(any(), any());
 
@@ -11909,7 +11970,7 @@ public class EmailBoxServiceTest {
     ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(factures.getMessageByUID(77L)).thenReturn(message);
     doThrow(new MessagingException("STORE refused")).when(message).setFlag(Flags.Flag.DELETED, true);
@@ -11934,7 +11995,7 @@ public class EmailBoxServiceTest {
   void anUndoWhoseCopyExpungedTheSourceIsASuccess() {
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(message.isExpunged()).thenReturn(true);
 
@@ -11961,7 +12022,7 @@ public class EmailBoxServiceTest {
     ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
-    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.search(any(SearchTerm.class))).thenReturn(new Message[] { message });
     when(factures.getUID(message)).thenReturn(77L);
     when(factures.getMessageByUID(77L)).thenReturn(message);
     syncingUsers().add(TEST_USER);
@@ -13536,14 +13597,19 @@ public class EmailBoxServiceTest {
     lenient().when(sentFolder.getFullName()).thenReturn("Sent");
     when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { sentFolder });
     ArgumentCaptor<SearchTerm> term = ArgumentCaptor.forClass(SearchTerm.class);
-    when(sentFolder.search(term.capture())).thenReturn(new Message[] { mock(Message.class) }, new Message[0]);
+    Message sentCopy = aMessageCarrying("<draft@example.org>");
+    Message longerId = aMessageCarrying("<draft@example.org.uk>");
+    when(sentFolder.search(term.capture())).thenReturn(new Message[] { sentCopy }, new Message[] { longerId }, new Message[0]);
 
     assertTrue(emailBoxService.isInSentFolder(TEST_USER, "<draft@example.org>"));
-    assertTrue(term.getValue() instanceof HeaderTerm);
-    assertEquals("Message-ID", ((HeaderTerm) term.getValue()).getHeaderName());
-    assertEquals("<draft@example.org>", ((HeaderTerm) term.getValue()).getPattern());
+    // The bare id is searched: it is all Stalwart matches (EXO-90597).
+    assertTrue(term.getValue() instanceof OrTerm);
+    assertTrue(Arrays.stream(((OrTerm) term.getValue()).getTerms())
+                     .anyMatch(t -> "draft@example.org".equals(((MessageIDTerm) t).getPattern())));
+    // A longer id the server's substring match returned is not our mail: not confirmed.
     assertFalse(emailBoxService.isInSentFolder(TEST_USER, "<draft@example.org>"));
-    verify(sentFolder, times(2)).open(Folder.READ_ONLY);
+    assertFalse(emailBoxService.isInSentFolder(TEST_USER, "<draft@example.org>"));
+    verify(sentFolder, times(3)).open(Folder.READ_ONLY);
   }
 
   /**
