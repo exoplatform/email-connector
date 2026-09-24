@@ -33,6 +33,7 @@ import EmailConnectorContactsChoiceStep from './components/drawer/common/EmailCo
 import EmailConnectorUserSettingSharing from './components/main/EmailConnectorUserSettingSharing.vue';
 import EmailConnectorUserSettingMailboxSharingDrawer from './components/sharing/EmailConnectorUserSettingMailboxSharingDrawer.vue';
 import EmailConnectorUserSettingSharingInviteDrawer from './components/sharing/EmailConnectorUserSettingSharingInviteDrawer.vue';
+import EmailConnectorUserSettingFolderAccessDrawer from './components/sharing/EmailConnectorUserSettingFolderAccessDrawer.vue';
 
 const components = {
   'email-connector-user-setting-app': EmailConnectorUserSettingApp,
@@ -54,6 +55,7 @@ const components = {
   'email-connector-user-setting-sharing': EmailConnectorUserSettingSharing,
   'email-connector-user-setting-mailbox-sharing-drawer': EmailConnectorUserSettingMailboxSharingDrawer,
   'email-connector-user-setting-sharing-invite-drawer': EmailConnectorUserSettingSharingInviteDrawer,
+  'email-connector-user-setting-folder-access-drawer': EmailConnectorUserSettingFolderAccessDrawer,
 };
 
 for (const key in components) {

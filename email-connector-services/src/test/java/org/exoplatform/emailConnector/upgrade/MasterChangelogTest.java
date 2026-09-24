@@ -797,6 +797,64 @@ public class MasterChangelogTest {
   }
 
   /**
+   * EXO-90556 -- 1.0.0-86 adds the nullable EMAIL_DELEGATION.FOLDER_ACCESS to a table
+   * that already holds a share, which reads null -- every role folder follows its
+   * preset, as it did -- and keeps its grant record; the changeset rolls back to a tag
+   * placed immediately before it, dropping the column and nothing else, and applies
+   * again.
+   *
+   * @throws Exception when the changeset does not apply or roll back
+   */
+  @Test
+  void theDelegationFolderAccessRollsBackAndReapplies() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback86" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-86"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-delegation-folder-access");
+      assertFalse(columnExists(connection, "EMAIL_DELEGATION", "FOLDER_ACCESS"), "not before 1.0.0-86");
+      try (Statement statement = connection.createStatement()) {
+        statement.executeUpdate("INSERT INTO EMAIL_DELEGATION (ID, GRANTEE_ID, OWNER_ID, OWNER_MAILBOX, CONNECTOR_ID, PRESET, RIGHTS, STATUS,"
+            + " ORIGIN, GRANTED_ROLES, CREATED_DATE, UPDATED_DATE) VALUES (1, 'bob', 'alice', 'alice@acme.com', 7, 'EDITOR', 'lrswite',"
+            + " 'ACCEPTED', 'EXO', 'INBOX,SENT,TRASH', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
+      }
+      liquibase.update("");
+      assertEquals(100, columnSize(connection, "EMAIL_DELEGATION", "FOLDER_ACCESS"), "1.0.0-86 adds EMAIL_DELEGATION.FOLDER_ACCESS");
+      try (Statement statement = connection.createStatement()) {
+        try (ResultSet row = statement.executeQuery("SELECT FOLDER_ACCESS, GRANTED_ROLES FROM EMAIL_DELEGATION WHERE ID = 1")) {
+          assertTrue(row.next());
+          assertNull(row.getString(1), "an existing share has no exception: its folders follow the preset");
+          assertEquals("INBOX,SENT,TRASH", row.getString(2), "and keeps its grant record");
+        }
+        statement.executeUpdate("UPDATE EMAIL_DELEGATION SET FOLDER_ACCESS = 'SENT=EDITOR,ARCHIVE=EDITOR,TRASH=EDITOR,JUNK=EDITOR' WHERE ID = 1");
+      }
+      liquibase.rollback("before-delegation-folder-access", "");
+      assertFalse(columnExists(connection, "EMAIL_DELEGATION", "FOLDER_ACCESS"), "the rollback drops it");
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "SEARCH_INCLUDED"), "and nothing before it");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "DRAFT_DELEGATION_ID"), "not 1.0.0-87 either, which runs before it");
+      liquibase.update("");
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "FOLDER_ACCESS"), "the changeset applies again after its rollback");
+    }
+  }
+
+  /**
+   * EXO-90556 -- 1.0.0-86 as MySQL and PostgreSQL would run it, bounded to its own
+   * changeset: one nullable, unquoted VARCHAR(100), and a rollback that drops it.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theDelegationFolderAccessOnMySqlAndPostgreSql() throws Exception {
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-86", "1.0.0-86").toUpperCase(Locale.ROOT);
+      assertTrue(update.contains("ALTER TABLE EMAIL_DELEGATION ADD FOLDER_ACCESS VARCHAR(100)"), vendor + ": " + update);
+      assertFalse(update.contains("NOT NULL"), vendor + " the column is nullable: " + update);
+      assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-86", "1.0.0-86").toUpperCase(Locale.ROOT).trim();
+      assertEquals("ALTER TABLE EMAIL_DELEGATION DROP COLUMN FOLDER_ACCESS;", rollback, vendor + " rollback drops that column only");
+    }
+  }
+
+  /**
    * The declared size of a column, from the JDBC metadata.
    *
    * @param connection the database
@@ -1016,7 +1074,7 @@ public class MasterChangelogTest {
     StringBuilder sql = new StringBuilder();
     Database database = offlineDatabase(vendor);
     for (ChangeSet changeSet : changeSetsFrom(database, vendor, fromId)) {
-      if (throughId != null && sequenceNumber(changeSet.getId()) > sequenceNumber(throughId)) {
+      if (throughId != null && outside(changeSet.getId(), fromId, throughId)) {
         continue;
       }
       for (Change change : changeSet.getChanges()) {
@@ -1056,7 +1114,7 @@ public class MasterChangelogTest {
     List<ChangeSet> changeSets = new ArrayList<>(changeSetsFrom(database, vendor, fromId));
     java.util.Collections.reverse(changeSets);
     for (ChangeSet changeSet : changeSets) {
-      if (throughId != null && sequenceNumber(changeSet.getId()) > sequenceNumber(throughId)) {
+      if (throughId != null && outside(changeSet.getId(), fromId, throughId)) {
         continue;
       }
       for (Change change : changeSet.getRollback().getChanges()) {
@@ -1101,6 +1159,22 @@ public class MasterChangelogTest {
       }
     }
     return selected;
+  }
+
+  /**
+   * Whether a changeset lies outside a bounded range of ids, by number: the file is read
+   * in its own order, where a changeset appended later may carry a lower number than
+   * the one before it (1.0.0-86 after 1.0.0-87), so a range is never "from here to
+   * there in the file".
+   *
+   * @param id the changeset's id
+   * @param fromId the first id of the range
+   * @param throughId the last id of the range
+   * @return true when its number is below the first or above the last
+   */
+  private static boolean outside(String id, String fromId, String throughId) {
+    int number = sequenceNumber(id);
+    return number < sequenceNumber(fromId) || number > sequenceNumber(throughId);
   }
 
   /**
