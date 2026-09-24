@@ -5786,18 +5786,53 @@ public class EmailBoxService {
     if (emailDelegationService.delegationOf(username, folderKey) == null) {
       throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
     }
+    return searchMirror(username, folderKey, query, from, unreadOnly, false, sinceDays, limit);
+  }
+
+  /**
+   * The search of one folder's mirror behind {@link #searchSharedMailboxMirror} and the
+   * mail drawer's own search box in a shared mailbox (EXO-90590), once the caller has
+   * checked that the user may read that folder: the rows the shared mailbox's sync
+   * brought in, filtered here -- which the mirror's own size bounds -- newest first.
+   * The Favorites narrowing is the drawer's chip: in a shared mailbox the star is its
+   * owner's (EXO-90550), which is what that mailbox's Favorites list shows too.
+   *
+   * @param username the reader
+   * @param folderKey the shared folder's key, already checked
+   * @param query free text matched against the subject or the sender, may be blank
+   * @param from text matched against the sender only, may be blank
+   * @param unreadOnly only unread messages
+   * @param favoritesOnly only starred messages
+   * @param sinceDays only messages received in the last N days, null for all
+   * @param limit how many hits to return, newest first
+   * @return the newest matching mirrored messages and how many matched
+   * @throws IllegalArgumentException {@code emailConnector.search.invalidSinceDays} for a
+   *           negative window, {@code emailConnector.search.criteriaRequired} when no
+   *           criterion at all was given
+   */
+  private EmailSearchResultPage searchMirror(String username,
+                                             String folderKey,
+                                             String query,
+                                             String from,
+                                             boolean unreadOnly,
+                                             boolean favoritesOnly,
+                                             Integer sinceDays,
+                                             int limit) {
     if (sinceDays != null && sinceDays < 0) {
       throw new IllegalArgumentException("emailConnector.search.invalidSinceDays");
     }
     String term = StringUtils.trimToNull(query);
     String sender = StringUtils.trimToNull(from);
-    if (term == null && sender == null && !unreadOnly && sinceDays == null) {
+    if (term == null && sender == null && !unreadOnly && !favoritesOnly && sinceDays == null) {
       throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
     }
     Date since = sinceDays == null ? null : new Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(sinceDays));
-    List<Email> matches = emailBoxStorage.getEmails(username, folderKey)
+    // The search's own read, not the listing's: no attachment, category or excerpt, which
+    // a search discards -- this runs once per keystroke in the drawer's search box.
+    List<Email> matches = emailBoxStorage.getEmailsForSearchInFolders(username, List.of(folderKey))
                                          .stream()
                                          .filter(email -> !unreadOnly || !email.isRead())
+                                         .filter(email -> !favoritesOnly || email.isStarred())
                                          .filter(email -> since == null
                                              || email.getReceivedDate() != null && !email.getReceivedDate().before(since))
                                          .filter(email -> sender == null || senderMatches(email, sender))
@@ -5819,7 +5854,7 @@ public class EmailBoxService {
                                                                                  null,
                                                                                  email.getId()))
                                              .toList();
-    return new EmailSearchResultPage(results, matches.size());
+    return new EmailSearchResultPage(results, matches.size(), favoritesOnly);
   }
 
   /**
@@ -13092,6 +13127,13 @@ public class EmailBoxService {
    * asking for everything and dropping the rest here would return the newest hits and
    * then throw most of them away, leaving an older favorite invisible behind a page of
    * discarded matches.
+   * <p>
+   * A folder of a mailbox shared with the user (EXO-90590) is searched in the user's
+   * mirror of it instead, never on the server: only while its share is accepted, and
+   * only a folder the unified search would read there too
+   * ({@link EmailDelegationService#isSearchableSharedFolder}) -- the mirror holds that
+   * folder's recent window, so its hits are what the mailbox's list shows, not the
+   * owner's whole history. No recipient filter there.
    *
    * @param username the mailbox owner
    * @param query free text matched against the subject or the sender
@@ -13102,10 +13144,14 @@ public class EmailBoxService {
    * @param unreadOnly when {@code true}, only unread messages match
    * @param favoritesOnly when {@code true}, only messages carrying \Flagged match
    * @param sinceDays only messages received in the last N days match, null for no limit
-   * @param folder the folder to search: INBOX, SENT or ARCHIVE
+   * @param folder the folder to search: INBOX, SENT or ARCHIVE, or a searchable folder
+   *          of a mailbox shared with the user
    * @param limit how many hits to return
    * @return the newest matching messages plus the total match count
    * @throws IllegalAccessException if the user is not allowed to search their mailbox
+   * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for any
+   *           other folder, and the codes of an unusable criterion
+   * @throws DelegationRevokedException when the folder's share is no longer accepted
    */
   public EmailSearchResultPage searchEmails(String username,
                                             String query,
@@ -13122,6 +13168,14 @@ public class EmailBoxService {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEARCH_EMAIL_MESSAGE, username));
     }
     if (!isSearchableFolder(folder)) {
+      if (StringUtils.isBlank(to) && emailDelegationService.isSearchableSharedFolder(username, folder)) {
+        // A folder of a mailbox shared with the user, where the mail drawer's own search
+        // box runs while it shows that mailbox (EXO-90590): answered from the user's
+        // mirror of that folder -- what that mailbox's list shows -- and never from the
+        // server, which the user's own session reaches only under the shared namespace.
+        // The key is re-checked against the user's own accepted shares on every search.
+        return searchMirror(username, folder, query, from, unreadOnly, favoritesOnly, sinceDays, limit);
+      }
       throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
     }
     if (sinceDays != null && sinceDays < 0) {

@@ -218,6 +218,23 @@ public class EmailBoxRestTest {
            .andExpect(status().reason(DelegationRevokedException.REVOKED));
   }
 
+  /**
+   * EXO-90590 -- the mail drawer's search box in a shared mailbox whose share was
+   * withdrawn meanwhile is <b>410 Gone</b> with the share's code, as the listing is, so
+   * the drawer leaves that mailbox and says why rather than showing a failed search.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void aSearchInAWithdrawnShareAnswersGone() throws Exception {
+    when(emailBoxService.searchEmails(anyString(), anyString(), any(), any(), anyBoolean(), anyBoolean(), any(), anyString(), anyInt()))
+                                                                                                                                   .thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search").param("query", "budget").param("folder", "CUSTOM:8").with(testSimpleUser()))
+           .andExpect(status().isGone())
+           .andExpect(status().reason(DelegationRevokedException.REVOKED));
+  }
+
   @Test
   void synchronizeUserEmails() throws Exception {
     ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/synchronization").with(testSimpleUser()));
