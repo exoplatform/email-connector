@@ -65,7 +65,9 @@ export default {
       return this.notification?.parameters || {};
     },
     /**
-     * @returns {String} which transition this is: ACCEPTED, DECLINED, LEFT or REVOKED
+     * @returns {String} which transition this is: ACCEPTED, DECLINED, LEFT or REVOKED, or
+     *   the owner's consent to writing in her name as it now stands: SEND_MODE_ON_BEHALF,
+     *   SEND_MODE_AS or SEND_MODE_NONE (EXO-90582)
      */
     response() {
       return this.parameters.DELEGATION_RESPONSE || '';
@@ -74,13 +76,22 @@ export default {
      * @returns {String} the icon of the transition
      */
     icon() {
+      if (this.granted) {
+        return 'fa-pen';
+      }
       return this.response === 'ACCEPTED' ? 'fa-check-circle' : 'fa-times-circle';
+    },
+    /**
+     * @returns {Boolean} whether the news is a consent to write in the owner's name
+     */
+    granted() {
+      return this.response === 'SEND_MODE_ON_BEHALF' || this.response === 'SEND_MODE_AS';
     },
     /**
      * @returns {String} its colour class
      */
     iconClass() {
-      return this.response === 'ACCEPTED' ? 'success--text' : 'icon-default-color';
+      return this.response === 'ACCEPTED' || this.granted ? 'success--text' : 'icon-default-color';
     },
     /**
      * @returns {String} the heading the server wrote in the reader's language
