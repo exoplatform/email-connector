@@ -40,9 +40,10 @@ public class EmailModel {
   @JsonProperty("email_id")
   private Long                 id;
 
-  // IMAP UID of the message. Read tools surface it so the agent can chain it
-  // into write tools (mark_read, reply_email, archive_email, delete_email...),
-  // which all key off mailRemoteId rather than the local database id.
+  // IMAP UID of the message, given only for a mail of the user's own INBOX: a UID
+  // numbers a message within one folder, so one handed out for a mail of another folder
+  // or mailbox would name an unrelated INBOX mail in the write tools, which resolve a
+  // bare UID there (EXO-90555). email_id names any mail.
   @JsonProperty("mail_remote_id")
   private Long                 mailRemoteId;
 
@@ -54,6 +55,13 @@ public class EmailModel {
    */
   @JsonProperty("thread_id")
   private String               threadId;
+
+  /**
+   * The folder the mail is in -- INBOX, SENT, ARCHIVE, DRAFTS, TRASH, JUNK -- in the
+   * mailbox it was read from (EXO-90555); null for a folder with none of those roles.
+   * Never an internal folder key.
+   */
+  private String               folder;
 
   private String               userId;
 
