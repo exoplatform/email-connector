@@ -95,7 +95,6 @@ import javax.mail.util.ByteArrayDataSource;
 import javax.mail.search.ComparisonTerm;
 import javax.mail.search.FlagTerm;
 import javax.mail.search.FromStringTerm;
-import javax.mail.search.HeaderTerm;
 import javax.mail.search.MessageIDTerm;
 import javax.mail.search.OrTerm;
 import javax.mail.search.ReceivedDateTerm;
@@ -3851,11 +3850,13 @@ public class EmailBoxService {
    * (a copy the user made, a duplicate delivery) with nothing to say which is "the"
    * one the move filed.
    * <p>
-   * The server's search is asked first ({@code HEADER Message-ID}, one round-trip,
-   * no message bodies), and its answers are then checked for EXACT equality, the way
-   * {@link #isExpectedMessageAtUid} checks: IMAP's HEADER search is a substring
-   * match, so {@code <a@host>} also answers {@code <a@host.example>}, and a match on
-   * part of an identifier is not an identity.
+   * Found through {@link #searchByMessageId}: the server's search is asked first
+   * ({@code HEADER Message-ID}, one round-trip, no message bodies), with the keys every
+   * server answers (the bare id is all Stalwart matches, EXO-90597), and its answers
+   * are then checked for EXACT equality, the way {@link #isExpectedMessageAtUid}
+   * checks: IMAP's HEADER search is a substring match on most servers, so
+   * {@code <a@host>} also answers {@code <a@host.example>}, and a match on part of an
+   * identifier is not an identity.
    *
    * @param folder the OPEN folder to look in
    * @param mailHeaderId the Message-ID to look for
@@ -3875,19 +3876,7 @@ public class EmailBoxService {
       return null;
     }
     String expected = StringUtils.trim(mailHeaderId);
-    // Searched by the id's local part: IMAP SEARCH matches a substring of the raw
-    // header, and the row may hold the ENVELOPE's spelling of a domain literal
-    // (x@10.0.0.1 for x@[10.0.0.1], EXO-90437), which the raw header does not contain.
-    // The exact filter below still decides.
-    Message[] hits = folder.search(new MessageIDTerm(messageIdSearchKey(expected)));
-    List<Message> exact = new ArrayList<>();
-    for (Message hit : hits == null ? new Message[0] : hits) {
-      String[] messageIds = hit.getHeader(HEADER_MESSAGE_ID);
-      String actual = messageIds != null && messageIds.length > 0 ? StringUtils.trim(messageIds[0]) : null;
-      if (sameMessageId(actual, expected)) {
-        exact.add(hit);
-      }
-    }
+    List<Message> exact = searchByMessageId(folder, expected);
     if (exact.isEmpty()) {
       LOG.warn("No message carrying {} in folder {} of user {}; it was not moved back", expected, folderKey, username);
       return null;
@@ -8634,10 +8623,14 @@ public class EmailBoxService {
    * how a scheduled send whose outcome is unknown is resolved (EXO-90434). A server
    * that files its own copy of what it relays (Gmail, Outlook) has it at once; on
    * others the copy exists only if the send got as far as appending it.
+   * <p>
+   * Looked up through {@link #searchByMessageId}, so on every server (Stalwart matches
+   * only the bare id, EXO-90597) and exactly: a longer id the server's substring match
+   * returns is not this mail, and must not confirm it as sent.
    *
    * @param username the mailbox owner
    * @param messageId the Message-ID the draft was pinned with
-   * @return true when a message with that id is in the Sent folder
+   * @return true when a message carrying exactly that id is in the Sent folder
    * @throws IllegalStateException when the mailbox cannot be read
    */
   public boolean isInSentFolder(String username, String messageId) {
@@ -8657,8 +8650,7 @@ public class EmailBoxService {
         return false;
       }
       sentFolder.open(Folder.READ_ONLY);
-      Message[] found = sentFolder.search(new HeaderTerm(HEADER_MESSAGE_ID, messageId));
-      return found != null && found.length > 0;
+      return !searchByMessageId(sentFolder, messageId).isEmpty();
     } catch (Exception e) {
       throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username), e);
     } finally {
@@ -9989,21 +9981,94 @@ public class EmailBoxService {
   }
 
   /**
-   * What to search a folder for to find a Message-ID whatever the spelling of its
-   * domain: the id itself when its domain is a plain name, else its local part and the
-   * "@" -- a substring every spelling of the raw header contains.
+   * The messages of an open folder that carry the given Message-ID, exactly: an IMAP
+   * search on the keys of {@link #messageIdSearchKeys}, then every hit's raw header
+   * compared with {@link #sameMessageId}. The server's search only narrows; this filter
+   * decides, because a {@code HEADER} search is a substring match on most servers
+   * (Dovecot answers {@code a@host} with a message carrying {@code xa@host.org}) and a
+   * part of an identifier is not an identity. A blank id searches nothing, since a
+   * blank {@code HEADER} search would answer the whole folder.
    *
-   * @param messageId the Message-ID, as the row remembers it
-   * @return the search key
+   * @param folder the OPEN folder to look in
+   * @param messageId the Message-ID to look for, as the row or the draft remembers it
+   * @return the messages carrying exactly that id, in the server's order; empty when none
+   * @throws MessagingException if the folder cannot be searched or a hit's header read
    */
-  static String messageIdSearchKey(String messageId) {
-    String normalized = normalizeMessageId(messageId);
-    if (normalized == null || normalized.indexOf('@') < 0) {
-      return messageId;
+  static List<Message> searchByMessageId(Folder folder, String messageId) throws MessagingException {
+    SearchTerm term = messageIdSearchTerm(messageId);
+    if (term == null) {
+      return List.of();
     }
-    String domain = StringUtils.substringAfterLast(normalized, "@");
-    boolean literal = domain.matches("[0-9.]+") || domain.contains(":") || StringUtils.contains(messageId, "[");
-    return literal ? StringUtils.substringBeforeLast(normalized, "@") + "@" : messageId;
+    Message[] hits = folder.search(term);
+    List<Message> exact = new ArrayList<>();
+    for (Message hit : hits == null ? new Message[0] : hits) {
+      String[] messageIds = hit.getHeader(HEADER_MESSAGE_ID);
+      String actual = messageIds != null && messageIds.length > 0 ? StringUtils.trim(messageIds[0]) : null;
+      if (sameMessageId(actual, messageId)) {
+        exact.add(hit);
+      }
+    }
+    return exact;
+  }
+
+  /**
+   * The IMAP search that finds a Message-ID on every server: one {@code HEADER
+   * Message-ID} term per key of {@link #messageIdSearchKeys} (always two or more for a
+   * non-blank id), OR'd into a single SEARCH command.
+   *
+   * @param messageId the Message-ID, as the row or the draft remembers it
+   * @return the search term, or null when the id is blank (nothing to search)
+   */
+  static SearchTerm messageIdSearchTerm(String messageId) {
+    List<String> keys = messageIdSearchKeys(messageId);
+    if (keys.isEmpty()) {
+      return null;
+    }
+    return new OrTerm(keys.stream().map(key -> (SearchTerm) new MessageIDTerm(key)).toArray(SearchTerm[]::new));
+  }
+
+  /**
+   * What to search a folder for to find a Message-ID on both server behaviours seen in
+   * the field (EXO-90597). Servers disagree on what {@code HEADER Message-ID} matches:
+   * <ul>
+   * <li>Stalwart (v0.11.8) matches the parsed id <em>exactly</em> and case-sensitively,
+   * without its angle brackets: {@code <x@host>} finds nothing, {@code x@host} finds it,
+   * {@code x@} and {@code x@HOST} find nothing;</li>
+   * <li>Dovecot matches any case-insensitive substring of the raw header, so any key
+   * below that is a substring of the raw header finds it;</li>
+   * <li>the bracketed id, the form the header itself carries, is kept as a conservative
+   * extra for a server that would match the raw value as a whole; none is known.</li>
+   * </ul>
+   * So the keys are the bare id and the bracketed id, and, when the domain is a literal,
+   * also the local part and the "@": the row may hold an ENVELOPE's spelling of a
+   * literal ({@code x@10.0.0.1} for {@code x@[10.0.0.1]}, EXO-90437), which the raw
+   * header does not contain but on a substring server contains {@code x@}. Such a row
+   * is not findable on an exact-match server; none is known to produce it, Stalwart's
+   * ENVELOPE keeping the square brackets, and the row always holds what the same
+   * server's ENVELOPE gave. Every key over-matches somewhere, which
+   * {@link #searchByMessageId}'s exact filter answers.
+   *
+   * @param messageId the Message-ID, as the row or the draft remembers it
+   * @return the distinct search keys, bare id first; empty when the id is blank
+   */
+  static List<String> messageIdSearchKeys(String messageId) {
+    String bare = StringUtils.trimToEmpty(messageId);
+    bare = StringUtils.removeEnd(StringUtils.removeStart(bare, "<"), ">").trim();
+    if (bare.isEmpty()) {
+      return List.of();
+    }
+    Set<String> keys = new LinkedHashSet<>();
+    keys.add(bare);
+    keys.add("<" + bare + ">");
+    int at = bare.lastIndexOf('@');
+    if (at > 0) {
+      String domain = StringUtils.removeEnd(StringUtils.removeStart(bare.substring(at + 1), "["), "]");
+      boolean literal = domain.matches("[0-9.]+") || domain.contains(":") || bare.substring(at + 1).startsWith("[");
+      if (literal) {
+        keys.add(bare.substring(0, at + 1));
+      }
+    }
+    return List.copyOf(keys);
   }
 
   /**
@@ -10180,11 +10245,11 @@ public class EmailBoxService {
     if (StringUtils.isBlank(messageId)) {
       return -1;
     }
-    Message[] found = draftsFolder.search(new HeaderTerm(HEADER_MESSAGE_ID, messageId));
-    if (found == null || found.length == 0) {
+    List<Message> found = searchByMessageId(draftsFolder, messageId);
+    if (found.isEmpty()) {
       return -1;
     }
-    return draftsFolder.getUID(found[found.length - 1]);
+    return draftsFolder.getUID(found.get(found.size() - 1));
   }
 
   /**
