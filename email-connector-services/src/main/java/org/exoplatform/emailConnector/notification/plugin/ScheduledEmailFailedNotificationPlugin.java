@@ -34,8 +34,9 @@ import org.exoplatform.services.resources.ResourceBundleService;
 
 /**
  * Tells the owner of a scheduled mail that it was not sent, or that its sending could
- * not be confirmed (EXO-90434). A successful send notifies nobody: the mail simply
- * moves to Sent.
+ * not be confirmed (EXO-90434). A successful send notifies nobody -- the mail simply
+ * moves to Sent -- except a mail sent from a shared mailbox whose copy could not be
+ * filed in the owner's Sent (EXO-90595, reason {@code OWNER_COPY_FAILED}).
  * <p>
  * The payload is the mail's subject and a reason CODE -- never the mail server's own
  * words, which may carry addresses or internal host names -- and the plugin turns the
@@ -49,7 +50,7 @@ public class ScheduledEmailFailedNotificationPlugin extends BaseNotificationPlug
   /** The scheduled mail's subject. */
   public static final ArgumentLiteral<String> SUBJECT           = new ArgumentLiteral<>(String.class, "subject");
 
-  /** The reason code: a {@code ScheduledSendError} name. */
+  /** The reason code: a {@code ScheduledSendError} name, or {@code OWNER_COPY_FAILED}. */
   public static final ArgumentLiteral<String> REASON            = new ArgumentLiteral<>(String.class, "reason");
 
   private static final String                 TITLE_KEY         = "scheduledEmailFailed.notification.title";

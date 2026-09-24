@@ -17,7 +17,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- EXO-90434 -- a scheduled mail was not sent, or could not be confirmed sent: said
        from the notification's SUBJECT and REASON code, in the reader's language, and a
-       click opens the mailbox on its Scheduled view, where the mail waits for the user. -->
+       click opens the mailbox on its Scheduled view, where the mail waits for the user.
+       EXO-90595 -- a mail sent from a shared mailbox whose copy could not be filed in
+       its owner's Sent (OWNER_COPY_FAILED) is no longer scheduled: the click opens Sent. -->
   <div
     role="button"
     tabindex="0"
@@ -126,7 +128,8 @@ export default {
      * @returns {void}
      */
     openScheduledView() {
-      document.dispatchEvent(new CustomEvent('open-email-box-folder', { detail: { folder: 'SCHEDULED' } }));
+      const folder = this.parameters.REASON === 'OWNER_COPY_FAILED' ? 'SENT' : 'SCHEDULED';
+      document.dispatchEvent(new CustomEvent('open-email-box-folder', { detail: { folder } }));
     },
   },
 };
