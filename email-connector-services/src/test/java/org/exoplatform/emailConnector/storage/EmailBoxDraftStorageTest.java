@@ -115,6 +115,32 @@ public class EmailBoxDraftStorageTest {
   }
 
   /**
+   * EXO-90595 -- the mailbox a draft was written in is written by its first save, read
+   * back on every read, and never moved by a later save, even one that names another:
+   * the edit path mutates the loaded row column by column and leaves this one alone.
+   * Over the shipped changelog, so the column itself is the one 1.0.0-87 adds.
+   */
+  @Test
+  void aDraftsMailboxIsSettledByItsFirstSaveAndNeverMoved() {
+    Email first = draft("draft-shared", 1L, "written in Anne's mailbox");
+    first.setSendDelegationId(100L);
+    assertEquals(100L, emailBoxStorage.saveDraft(first).getSendDelegationId());
+
+    Email later = draft("draft-shared", 2L, "edited later");
+    later.setSendDelegationId(200L);
+    emailBoxStorage.saveDraft(later);
+    Email cleared = draft("draft-shared", 3L, "and again");
+    cleared.setSendDelegationId(null);
+    emailBoxStorage.saveDraft(cleared);
+
+    Email reread = emailBoxStorage.getDraftByLocalId(USERNAME, "draft-shared");
+    assertEquals("and again", reread.getContent().getBody(), "the edits landed");
+    assertEquals(100L, reread.getSendDelegationId(), "the mailbox did not move");
+    assertNull(emailBoxStorage.saveDraft(draft("draft-own", 1L, "mine")).getSendDelegationId(),
+               "a draft of the writer's own mailbox names none");
+  }
+
+  /**
    * The composer autosaving twice, which is what every draft that gets written at
    * all does: the first save creates the row, and every save after it updates the
    * same one.
