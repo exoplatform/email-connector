@@ -75,18 +75,31 @@ export default {
       type: Boolean,
       default: false,
     },
+    // Whether the search ran in a mailbox shared with the user (EXO-90590): it reads the
+    // copy of that mailbox kept in eXo, not its owner's whole mailbox, and says so.
+    sharedMailbox: {
+      type: Boolean,
+      default: false,
+    },
   },
   computed: {
     hasResults() {
       return this.results.length > 0;
     },
-    // One quiet caption above the results: searching, failed, or truncated.
+    /**
+     * One quiet caption above the results: searching, failed, or truncated -- and, in a
+     * shared mailbox, what was searched (EXO-90590): the recent mail kept in eXo, where
+     * the user's own mailbox is searched on the mail server, so the same term can find
+     * less there.
+     *
+     * @returns {String} the caption, or null for none
+     */
     statusLine() {
       if (this.serverSearching) {
-        return this.$t('emailConnector.mailBox.search.searching');
+        return this.$t(this.sharedMailbox ? 'emailConnector.mailBox.search.shared.searching' : 'emailConnector.mailBox.search.searching');
       }
       if (this.serverError) {
-        return this.$t('emailConnector.mailBox.search.error');
+        return this.$t(this.sharedMailbox ? 'emailConnector.mailBox.search.shared.error' : 'emailConnector.mailBox.search.error');
       }
       if (this.totalMatches > this.results.length) {
         return this.$t('emailConnector.mailBox.search.showingOf', {
@@ -94,7 +107,7 @@ export default {
           1: this.totalMatches,
         });
       }
-      return null;
+      return this.sharedMailbox ? this.$t('emailConnector.mailBox.search.shared.recentOnly') : null;
     },
   },
   methods: {

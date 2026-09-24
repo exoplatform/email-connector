@@ -82,6 +82,7 @@ import org.exoplatform.emailConnector.model.FolderMessageCounts;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.GrantGranularity;
 import org.exoplatform.emailConnector.model.GrantedDelegations;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
@@ -2837,6 +2838,52 @@ class EmailDelegationServiceTest {
     verify(identityManager, times(1)).getOrCreateUserIdentity(OWNER);
     verify(emailFolderStorage, never()).getDelegatedFolders(GRANTEE, 102L);
     assertSame(SharedMailboxSearchFolders.NONE, service.getSharedMailboxSearchFolders(null));
+  }
+
+  /**
+   * EXO-90590 -- the mail drawer's own search box searches a folder of a shared mailbox
+   * by the unified search's rule, whatever the share's search toggle says: a folder
+   * still listed, readable, and not the owner's Trash or Spam. The key is resolved
+   * against the caller's own rows: a folder of their own mailbox, of nothing, or whose
+   * share is not theirs is no shared folder, and a share no longer accepted says so.
+   */
+  @Test
+  void theDrawerSearchesASharedFolderByTheUnifiedSearchRuleWhateverTheToggle() {
+    EmailDelegation share = accepted("lrs");
+    share.setSearchIncluded(false);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(share);
+    EmailFolder gone = sharedRoleFolder(17L, null, "lr");
+    gone.setMissing(true);
+    EmailFolder own = sharedRoleFolder(21L, null, "lr");
+    own.setDelegationId(null);
+    EmailFolder ofAnotherGrantee = sharedRoleFolder(22L, null, "lr");
+    ofAnotherGrantee.setDelegationId(200L);
+    List.of(delegatedFolder(12L),
+            sharedRoleFolder(13L, FolderRole.SENT, "lr"),
+            sharedRoleFolder(14L, FolderRole.TRASH, "lr"),
+            sharedRoleFolder(15L, FolderRole.JUNK, "lr"),
+            sharedRoleFolder(16L, FolderRole.ARCHIVE, "l"),
+            gone,
+            own,
+            ofAnotherGrantee)
+        .forEach(folder -> when(emailFolderStorage.getFolder(GRANTEE, folder.getId())).thenReturn(folder));
+
+    assertTrue(service.isSearchableSharedFolder(GRANTEE, "CUSTOM:12"), "the shared INBOX, the toggle off");
+    assertTrue(service.isSearchableSharedFolder(GRANTEE, "CUSTOM:13"), "a readable folder of the share");
+    assertFalse(service.isSearchableSharedFolder(GRANTEE, "CUSTOM:14"), "the owner's Trash");
+    assertFalse(service.isSearchableSharedFolder(GRANTEE, "CUSTOM:15"), "the owner's Spam");
+    assertFalse(service.isSearchableSharedFolder(GRANTEE, "CUSTOM:16"), "a folder the caller may not read");
+    assertFalse(service.isSearchableSharedFolder(GRANTEE, "CUSTOM:17"), "a folder no longer listed");
+    assertFalse(service.isSearchableSharedFolder(GRANTEE, "CUSTOM:21"), "a folder of the caller's own mailbox");
+    assertFalse(service.isSearchableSharedFolder(GRANTEE, "CUSTOM:22"), "a folder whose share is not the caller's");
+    assertFalse(service.isSearchableSharedFolder(GRANTEE, "CUSTOM:99"), "no such folder of the caller's");
+    assertFalse(service.isSearchableSharedFolder(GRANTEE, "CUSTOM:x"), "a malformed key");
+    assertFalse(service.isSearchableSharedFolder(GRANTEE, MailFolder.INBOX), "the caller's own INBOX");
+
+    share.setStatus(DelegationStatus.DECLINED);
+    DelegationRevokedException revoked = assertThrows(DelegationRevokedException.class,
+                                                      () -> service.isSearchableSharedFolder(GRANTEE, "CUSTOM:12"));
+    assertEquals(DelegationRevokedException.REVOKED, revoked.getMessage());
   }
 
   /**

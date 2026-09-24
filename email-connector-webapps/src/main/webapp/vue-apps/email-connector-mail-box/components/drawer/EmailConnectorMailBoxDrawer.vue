@@ -168,6 +168,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :total-matches="searchTotalMatches"
             :server-searching="searchServerRunning"
             :server-error="searchServerError"
+            :shared-mailbox="!!currentSharedMailbox"
             draggable-hits
             @open-result="openSearchResult" />
           <!-- The Scheduled view (EXO-90434): its own list, no chips. -->
@@ -249,6 +250,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :total-matches="searchTotalMatches"
           :server-searching="searchServerRunning"
           :server-error="searchServerError"
+          :shared-mailbox="!!currentSharedMailbox"
           @open-result="openSearchResult" />
         <!-- Full screen: the reader. With nothing open it shows the "select an email"
              placeholder while the list beside it holds something to select, and nothing
@@ -1123,12 +1125,17 @@ export default {
     hasActiveFilters() {
       return this.favoriteOnly || this.unreadOnly || !!this.categoryViewId;
     },
-    // The header filter is the platform's own (exo-drawer); it hides the go-back
-    // button, so it steps aside while select mode needs that button.
+    /**
+     * Whether the header filter field is offered. The filter is the platform's own
+     * (exo-drawer); it hides the go-back button, so it steps aside while select mode
+     * needs that button, and it is off where there is nothing to search
+     * (isFolderSearchable). In a shared mailbox it searches that mailbox's copy of the
+     * folder shown (EXO-90590).
+     *
+     * @returns {Boolean} true when the search box is offered
+     */
     canSearch() {
-      // Not in a shared mailbox in phase 1: the search reaches the user's OWN mailbox on
-      // the server, and its hits would be offered under somebody else's name.
-      return !this.syncBlocked && !this.selectMode && !this.scheduledView && !this.currentSharedMailbox;
+      return !this.syncBlocked && !this.selectMode && this.isFolderSearchable(this.currentFolder);
     },
     /**
      * Whether the Scheduled view is listed (EXO-90434): its own list replaces the
@@ -1808,10 +1815,45 @@ export default {
       this.cancelSelectMode();
       this.runServerSearch();
     },
-    // The whole-mailbox search (IMAP SEARCH on the server). The request id guards
-    // against out-of-order answers: only the latest term's response may land.
+    /**
+     * Whether a folder has a search: not the Scheduled view (EXO-90434), and not the
+     * owner's Trash or Spam in a shared mailbox (EXO-90590) -- the server searches
+     * neither, as the platform's search leaves them out. Any other folder of a shared
+     * mailbox is searched in the copy of it kept here; the user's own folders are
+     * searched as before.
+     *
+     * @param {String} folder a folder key
+     * @returns {Boolean} true when the search box searches it
+     */
+    isFolderSearchable(folder) {
+      if (isScheduledView(folder)) {
+        return false;
+      }
+      const role = this.$emailConnectorMailBoxService.sharedFolderRole(folder);
+      return role !== 'TRASH' && role !== 'JUNK';
+    },
+    /**
+     * Empties the header filter field. The field is the exo-drawer's, inside the
+     * pinneable-drawer wrapper the emailBoxDrawer ref points at, which does not forward
+     * resetFilter (EXO-90578); a plain exo-drawer is the ref itself.
+     *
+     * @returns {void}
+     */
+    resetSearchField() {
+      const drawer = this.$refs.emailBoxDrawer;
+      (drawer?.$refs?.drawer || drawer)?.resetFilter?.();
+    },
+    /**
+     * The search of the folder shown, beside the instant local matches: an IMAP SEARCH
+     * on the server in the user's own mailbox, the copy kept here of the folder in a
+     * shared one (EXO-90590). The request id guards against out-of-order answers: only
+     * the latest term's response may land.
+     *
+     * @returns {void}
+     */
     runServerSearch() {
       const requestId = ++this.searchRequestId;
+      const sharedMailbox = this.currentSharedMailbox;
       this.searchServerRunning = true;
       this.searchServerError = false;
       this.$emailConnectorMailBoxService.searchEmails(this.searchTerm, this.currentFolder, SEARCH_PAGE_SIZE, this.favoriteOnly, this.unreadOnly)
@@ -1822,8 +1864,15 @@ export default {
           this.searchServerResults = this.withLocalFavorites(page?.results || [], requestId);
           this.searchTotalMatches = page?.totalMatches || 0;
         })
-        .catch(() => {
+        .catch(async () => {
           if (requestId !== this.searchRequestId) {
+            return;
+          }
+          // In a shared mailbox, a failure may be the share withdrawn: asked before it is
+          // shown, and re-checked after, since a later search or a switch may have taken
+          // over while the answer was on its way.
+          if (sharedMailbox && (await this.leftSharedMailboxAfterFailure(sharedMailbox, requestId)
+              || requestId !== this.searchRequestId)) {
             return;
           }
           // The instant local matches stay listed; only flag that the whole-mailbox
@@ -2004,7 +2053,9 @@ export default {
         .find(row => row.mailRemoteId === result.mailRemoteId && row.folder === result.folder);
       if (serverRow) {
         this.$set(serverRow, 'cached', true);
-        if (read) {
+        // Not in a shared mailbox without the right to keep read state (EXO-90590): the
+        // hit keeps its state, as its row in the list does.
+        if (read && canMarkReadIn(result.folder)) {
           this.$set(serverRow, 'read', true);
         }
       }
@@ -3228,6 +3279,31 @@ export default {
       }
     },
     /**
+     * After a search of a shared mailbox failed (EXO-90590), asks the switcher's entries
+     * whether that mailbox is still shared with the user, as a failed listing does: gone
+     * from them, the search ends, its field is emptied, and the user is taken back to
+     * their own mailbox and told why; still there, the failure is a hiccup the caller
+     * shows as one. A search superseded meanwhile, or a mailbox left meanwhile, is not
+     * this one's to act on.
+     *
+     * @param {Object} sharedMailbox the switcher entry the search ran in
+     * @param {Number} requestId the search's request id
+     * @returns {Promise<Boolean>} true when the user was taken out of that mailbox
+     */
+    async leftSharedMailboxAfterFailure(sharedMailbox, requestId) {
+      if (sharedMailbox.delegationId !== this.currentSharedMailbox?.delegationId) {
+        return false;
+      }
+      await loadSharedMailboxes();
+      if (this.currentSharedMailbox || requestId !== this.searchRequestId) {
+        return false;
+      }
+      this.clearSearch();
+      this.resetSearchField();
+      await this.leaveUnavailableSharedMailbox();
+      return true;
+    },
+    /**
      * Leaves a shared mailbox that is no longer among the switcher's entries, for the
      * user's own, and says so.
      *
@@ -3470,11 +3546,12 @@ export default {
       }
       this.currentFolder = folder;
       this.cancelSelectMode();
-      // The Scheduled view has no search (EXO-90434): a running one ends with the switch,
-      // its field too, or its results would stand in for the view's list.
-      if (isScheduledView(folder) && this.searchActive) {
+      // A folder with no search -- the Scheduled view (EXO-90434), a shared mailbox's
+      // Trash or Spam (EXO-90590) -- ends a running one with the switch, its field too,
+      // or its results would stand in for that folder's list.
+      if (!this.isFolderSearchable(folder) && this.searchActive) {
         this.clearSearch();
-        this.$refs.emailBoxDrawer?.resetFilter?.();
+        this.resetSearchField();
       }
       if (this.expanded) {
         this.pinnedEmail = false;

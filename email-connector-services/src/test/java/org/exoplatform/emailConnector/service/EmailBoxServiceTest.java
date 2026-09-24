@@ -12750,6 +12750,56 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90590 -- the mail drawer's own search box, in a folder of a mailbox shared with
+   * the user, is answered from that folder's mirror and never from the mail server: the
+   * same criteria as the user's own search box, the Favorites chip included (alone, it
+   * is a criterion), newest first; and only for a folder the delegation service finds
+   * searchable for this user, re-checked on every search. Anything else is not a folder
+   * to search, and a share withdrawn meanwhile says so.
+   */
+  @Test
+  void theDrawersSearchInASharedMailboxReadsTheFoldersMirror() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    when(emailDelegationService.isSearchableSharedFolder(TEST_USER, "CUSTOM:8")).thenReturn(true);
+    Email budget = mirrored(1L, "Budget 2027", "carol@acme.com", false, 1);
+    Email invoice = mirrored(2L, "Invoice", "budget-office@acme.com", true, 2);
+    invoice.setStarred(true);
+    Email other = mirrored(4L, "Lunch", "erin@acme.com", false, 1);
+    when(emailBoxStorage.getEmails(TEST_USER, "CUSTOM:8")).thenReturn(List.of(other, invoice, budget));
+
+    EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, "budget", null, null, false, false, null, "CUSTOM:8", 10);
+    assertEquals(2, page.getTotalMatches());
+    assertEquals(List.of(1L, 2L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList(), "newest first");
+    assertEquals("CUSTOM:8", page.getResults().get(0).getFolder(), "opened in the shared folder");
+    assertTrue(page.getResults().get(0).isCached(), "a mirrored row is read locally");
+
+    EmailSearchResultPage favorites = emailBoxService.searchEmails(TEST_USER, "budget", null, null, false, true, null, "CUSTOM:8", 10);
+    assertEquals(List.of(2L), favorites.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList(), "the Favorites chip");
+    assertTrue(favorites.isFavoritesOnly());
+    assertEquals(List.of(2L),
+                 emailBoxService.searchEmails(TEST_USER, null, null, null, false, true, null, "CUSTOM:8", 10)
+                                .getResults()
+                                .stream()
+                                .map(EmailSearchResult::getMailRemoteId)
+                                .toList(),
+                 "the Favorites chip alone is a criterion");
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailBoxService.searchEmails(TEST_USER, "budget", null, "bob", false, false, null, "CUSTOM:8", 10),
+                 "no recipient filter in a shared mailbox");
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailBoxService.searchEmails(TEST_USER, "budget", null, null, false, false, null, "CUSTOM:9", 10),
+                 "a folder the delegation service does not find searchable for this user");
+    when(emailDelegationService.isSearchableSharedFolder(TEST_USER, "CUSTOM:8")).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    assertThrows(DelegationRevokedException.class,
+                 () -> emailBoxService.searchEmails(TEST_USER, "budget", null, null, false, false, null, "CUSTOM:8", 10),
+                 "a share withdrawn meanwhile");
+    verify(emailBoxStorage, never()).getEmails(TEST_USER, "CUSTOM:9");
+  }
+
+  /**
    * EXO-90554 -- the unified search returns the searchable folders of the mailboxes
    * shared with the user, each hit carrying its share and its owner's name, interleaved
    * newest first with the user's own hits, which carry neither. The own read still

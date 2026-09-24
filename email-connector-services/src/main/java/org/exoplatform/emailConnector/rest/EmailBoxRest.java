@@ -535,10 +535,11 @@ public class EmailBoxRest {
   @GetMapping("/search")
   @Secured("users")
   @Operation(summary = "Searches the mailbox on the server", method = "GET",
-             description = "Runs an IMAP SEARCH over the remote folder (INBOX by default), so it finds mail anywhere in the mailbox, not just the locally-cached window. Returns the newest hits (uid, folder, subject, sender, date, read flag, cached flag) plus the total match count. At least one criterion (query, from, to, unread or sinceDays) is required.")
+             description = "Runs an IMAP SEARCH over the remote folder (INBOX by default), so it finds mail anywhere in the mailbox, not just the locally-cached window. Returns the newest hits (uid, folder, subject, sender, date, read flag, cached flag) plus the total match count. At least one criterion (query, from, to, unread, favorites or sinceDays) is required. A folder of a mailbox shared with the caller (CUSTOM:<id>) is searched in the caller's copy of it instead, never on the server: its recent window only, while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read, and without the to filter.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Bad Request: unknown folder or no search criterion"),
+      @ApiResponse(responseCode = "400", description = "Bad Request: a folder that cannot be searched (emailConnector.folder.notBrowsable), or no search criterion"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "410", description = "The mailbox shared with the caller that holds this folder is no longer shared with them"),
       @ApiResponse(responseCode = "500", description = "The mailbox could not be reached or searched"), })
   public EmailSearchResultPage searchEmails(HttpServletRequest request,
                                             @Parameter(description = "Free text matched against subject or sender")
@@ -559,7 +560,7 @@ public class EmailBoxRest {
                                             @Parameter(description = "Restrict to messages received in the last N days")
                                             @RequestParam(value = "sinceDays", required = false)
                                             Integer sinceDays,
-                                            @Parameter(description = "Folder to search: INBOX, SENT or ARCHIVE")
+                                            @Parameter(description = "Folder to search: INBOX, SENT or ARCHIVE, or CUSTOM:<id> for a folder of a mailbox shared with the caller")
                                             @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
                                             String folder,
                                             @Parameter(description = "Maximum number of hits to return (newest first)")
@@ -567,6 +568,9 @@ public class EmailBoxRest {
                                             int limit) {
     try {
       return emailBoxService.searchEmails(request.getRemoteUser(), query, from, to, unread, favorites, sinceDays, folder, limit);
+    } catch (DelegationRevokedException e) {
+      // The shared mailbox searched is gone, which the drawer answers by leaving it.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
