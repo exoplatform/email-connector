@@ -204,6 +204,20 @@ public class EmailDelegationStorage {
   }
 
   /**
+   * The grantee's search toggle, written alone (EXO-90554), for the reason
+   * {@link #updatePreferences} is. The update date is stamped.
+   *
+   * @param granteeId the grantee, whose row it must be
+   * @param id the row id
+   * @param searchIncluded whether the unified search returns this shared mailbox
+   * @return the row as it now stands, null when no such row of that grantee exists
+   */
+  public EmailDelegation updateSearchIncluded(String granteeId, long id, boolean searchIncluded) {
+    emailDelegationDAO.updateSearchIncluded(id, granteeId, searchIncluded, new Date());
+    return getAsGrantee(granteeId, id);
+  }
+
+  /**
    * What an owner's change of access wrote on the server, written alone (stack review
    * N-1): a row-wide write from the read made before the SETACL round-trip would put
    * back a leave or a revoke committed meanwhile. A share that ended meanwhile (revoked,
@@ -357,6 +371,7 @@ public class EmailDelegationStorage {
     entity.setOrigin(delegation.getOrigin() == null ? null : delegation.getOrigin().name());
     entity.setBadgeIncluded(delegation.isBadgeIncluded());
     entity.setNotifyNewMail(delegation.isNotifyNewMail());
+    entity.setSearchIncluded(delegation.isSearchIncluded());
     entity.setLastActivityDate(delegation.getLastActivityDate());
     entity.setLastRightsCheckDate(delegation.getLastRightsCheckDate());
     entity.setInvitedDate(delegation.getInvitedDate());
@@ -396,7 +411,8 @@ public class EmailDelegationStorage {
                                entity.getCreatedDate(),
                                entity.getUpdatedDate(),
                                entity.getGrantedRoles(),
-                               roleFoldersFromJson(entity.getOwnerRoleFolders()));
+                               roleFoldersFromJson(entity.getOwnerRoleFolders()),
+                               entity.isSearchIncluded());
   }
 
   /**
