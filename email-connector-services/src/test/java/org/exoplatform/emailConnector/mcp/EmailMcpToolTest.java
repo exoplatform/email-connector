@@ -60,6 +60,7 @@ import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.mcp.model.SharedMailboxModel;
@@ -1008,7 +1009,7 @@ class EmailMcpToolTest {
     UserEmailSetting setting = new UserEmailSetting();
     setting.setEmailAddress("testuser1@example.com");
     when(userEmailSettingService.getUserEmailSetting(USERNAME)).thenReturn(setting);
-    when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(EmailBoxService.OwnerCopy.FILED);
+    when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(OwnerCopy.FILED);
 
     String result = emailMcpTool.replyAll(null, "<p>Noted</p>", OWNER_MAILBOX, EMAIL_ID, List.of("carol@acme.com"), List.of("dave@acme.com"));
 
@@ -1031,7 +1032,7 @@ class EmailMcpToolTest {
     original.setFolder(SHARED_INBOX);
     when(emailBoxService.getSharedMailboxEmailById(EMAIL_ID, USERNAME, 100L)).thenReturn(original);
     when(emailBoxService.getEmailByMailRemoteIdAndUserId(REMOTE_ID, USERNAME, SHARED_INBOX, false, true, false, false)).thenReturn(original);
-    when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(EmailBoxService.OwnerCopy.SKIPPED);
+    when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(OwnerCopy.SKIPPED);
 
     String result = emailMcpTool.forwardEmail(null, List.of("bob@acme.com"), null, null, OWNER_MAILBOX, EMAIL_ID);
 
@@ -1044,7 +1045,7 @@ class EmailMcpToolTest {
   @Test
   void aSendFromASharedMailboxSaysTheOwnersCopyFailed() throws Exception {
     givenAliceShares();
-    when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(EmailBoxService.OwnerCopy.FAILED);
+    when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(OwnerCopy.FAILED);
 
     String result = emailMcpTool.sendEmail(List.of("bob@acme.com"), "Hi", "<p>x</p>", null, null, OWNER_MAILBOX);
 
@@ -1146,7 +1147,7 @@ class EmailMcpToolTest {
     Email sent = sentMail("CUSTOM:6");
     when(emailBoxService.getSharedMailboxEmailById(SENT_EMAIL_ID, USERNAME, 100L)).thenReturn(sent);
     when(emailBoxService.getEmailByMailRemoteIdAndUserId(REMOTE_ID, USERNAME, "CUSTOM:6", false, true, false, false)).thenReturn(sent);
-    when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(EmailBoxService.OwnerCopy.FILED);
+    when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(OwnerCopy.FILED);
 
     emailMcpTool.replyEmail(null, "<p>Any news?</p>", OWNER_MAILBOX, SENT_EMAIL_ID, List.of("testuser1@example.com"));
 
@@ -1343,7 +1344,7 @@ class EmailMcpToolTest {
     UserEmailSetting setting = new UserEmailSetting();
     setting.setEmailAddress("testuser1@example.com");
     when(userEmailSettingService.getUserEmailSetting(USERNAME)).thenReturn(setting);
-    when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(EmailBoxService.OwnerCopy.FILED);
+    when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(OwnerCopy.FILED);
     return original;
   }
 
