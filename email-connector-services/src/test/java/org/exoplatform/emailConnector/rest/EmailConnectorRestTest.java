@@ -447,6 +447,24 @@ public class EmailConnectorRestTest {
     mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/custom-folders-sync?enabled=false").with(testAdminUser())).andExpect(status().isOk());
   }
 
+  /**
+   * EXO-90551 -- the administration switch of the copy into a shared mailbox owner's
+   * Sent: read and written by an administrator, the value reaching the service, and a
+   * refusal of the service is a 401.
+   */
+  @Test
+  void sharedMailboxSentCopySwitch() throws Exception {
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(false);
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/shared-mailbox-sent-copy").with(testAdminUser()))
+           .andExpect(status().isOk())
+           .andExpect(content().string("false"));
+    mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/shared-mailbox-sent-copy?enabled=true").with(testAdminUser())).andExpect(status().isOk());
+    verify(emailConnectorService).saveSharedMailboxSentCopyEnabled(true, ADMIN_USER);
+    doThrow(new IllegalAccessException("not an administrator")).when(emailConnectorService).saveSharedMailboxSentCopyEnabled(false, ADMIN_USER);
+    mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/shared-mailbox-sent-copy?enabled=false").with(testAdminUser()))
+           .andExpect(status().isUnauthorized());
+  }
+
   @Test
   void getEmailConnectorIllustration() throws Exception {
     when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(mock(EmailConnector.class));

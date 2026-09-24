@@ -97,6 +97,7 @@ import javax.mail.MessageRemovedException;
 import javax.mail.MessagingException;
 import javax.mail.Multipart;
 import javax.mail.Part;
+import javax.mail.ReadOnlyFolderException;
 import javax.mail.Session;
 import javax.mail.Store;
 import javax.mail.Transport;
@@ -2234,6 +2235,159 @@ public class EmailBoxServiceTest {
       verify(sentFolder).close(false);
       verify(store).close();
     }
+  }
+
+  /**
+   * EXO-90551 -- a mail sent from a shared mailbox goes out from the sender's account as
+   * ever, is filed in the sender's own Sent, and THEN a copy of the very same message,
+   * marked read, is filed in the owner's Sent -- the folder the registry names for that
+   * share, never the sender's -- and the answer says FILED.
+   */
+  @Test
+  @SneakyThrows
+  void aSendFromASharedMailboxFilesTheOwnersCopyAfterTheSendersOwn() {
+    SendRig rig = givenASendableMailbox();
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    when(ownerSent.exists()).thenReturn(true);
+    // A share may grant i without r: the folder cannot then be opened read-write, and
+    // the APPEND, which needs i alone, must not depend on it.
+    lenient().doThrow(new ReadOnlyFolderException(ownerSent, "Cannot open in desired mode")).when(ownerSent).open(anyInt());
+    when(rig.store().getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(rig.session());
+
+      assertEquals(EmailBoxService.OwnerCopy.FILED, emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 100L));
+
+      ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sent.capture()));
+      InOrder order = inOrder(rig.ownSent(), ownerSent);
+      order.verify(rig.ownSent()).appendMessages(any(Message[].class));
+      ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
+      order.verify(ownerSent).appendMessages(filed.capture());
+      assertSame(sent.getValue(), filed.getValue()[0], "the very message that went out");
+      assertTrue(filed.getValue()[0].isSet(Flags.Flag.SEEN), "filed as read: it is sent mail, not new mail");
+      verify(ownerSent, never()).open(anyInt());
+    }
+  }
+
+  /**
+   * EXO-90551 -- a share that is not the sender's (or no share at all under that id), or
+   * one no longer accepted, is refused before anything is sent: nothing goes out,
+   * nothing is filed anywhere.
+   */
+  @Test
+  @SneakyThrows
+  void aSendFromAShareThatIsNotTheSendersSendsNothing() {
+    SendRig rig = givenASendableMailbox();
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 7L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 8L)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(rig.session());
+
+      assertThrows(ObjectNotFoundException.class, () -> emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 7L));
+      assertThrows(DelegationRevokedException.class, () -> emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 8L));
+
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+      verify(rig.ownSent(), never()).appendMessages(any(Message[].class));
+    }
+  }
+
+  /**
+   * EXO-90551 -- no copy by design: a share with no Sent the sender may file into, or the
+   * copy switched off by an administrator. The mail goes out and is filed in the sender's
+   * own Sent, and the answer says SKIPPED.
+   */
+  @Test
+  @SneakyThrows
+  void aSendWithNoOwnersSentToFileIntoIsSkipped() {
+    SendRig rig = givenASendableMailbox();
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn(null);
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 101L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(false);
+
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(rig.session());
+
+      assertEquals(EmailBoxService.OwnerCopy.SKIPPED, emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 100L), "no Sent to file into");
+      assertEquals(EmailBoxService.OwnerCopy.SKIPPED, emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 101L), "switched off");
+
+      transportMock.verify(() -> Transport.send(any(Message.class)), times(2));
+      verify(rig.ownSent(), times(2)).appendMessages(any(Message[].class));
+      verify(emailFolderStorage, never()).getFolder(TEST_USER, 10L);
+    }
+  }
+
+  /**
+   * EXO-90551 -- the owner's copy fails (the server refuses the APPEND): the mail is out
+   * and in the sender's own Sent all the same, and the answer says FAILED -- never "not
+   * sent".
+   */
+  @Test
+  @SneakyThrows
+  void aFailedOwnersCopyLeavesTheSendSuccessful() {
+    SendRig rig = givenASendableMailbox();
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    when(ownerSent.exists()).thenReturn(true);
+    when(rig.store().getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+    doThrow(new MessagingException("NO [NOPERM]")).when(ownerSent).appendMessages(any(Message[].class));
+
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(rig.session());
+
+      assertEquals(EmailBoxService.OwnerCopy.FAILED, emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 100L));
+
+      transportMock.verify(() -> Transport.send(any(Message.class)));
+      verify(rig.ownSent()).appendMessages(any(Message[].class));
+    }
+  }
+
+  /**
+   * A mailbox that can send, with its own Sent folder, for the EXO-90551 send tests.
+   *
+   * @param session the SMTP session the send is built on
+   * @param store the sender's IMAP store
+   * @param ownSent the sender's own Sent folder
+   */
+  private record SendRig(Session session, IMAPStore store, IMAPFolder ownSent) {
+  }
+
+  /**
+   * The sender's connected mailbox, its SMTP session and its own Sent folder.
+   *
+   * @return the rig
+   */
+  @SneakyThrows
+  private SendRig givenASendableMailbox() {
+    // Lenient: a send refused before anything is touched uses none of it.
+    lenient().when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    lenient().when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    lenient().when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Session session = mock(Session.class);
+    lenient().when(session.getProperties()).thenReturn(new Properties());
+    IMAPStore store = mock(IMAPStore.class);
+    lenient().when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    Folder root = mock(Folder.class);
+    lenient().when(store.getDefaultFolder()).thenReturn(root);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder sentFolder = mock(IMAPFolder.class);
+    lenient().when(sentFolder.getFullName()).thenReturn("sent");
+    lenient().when(root.listSubscribed("*")).thenReturn(new Folder[] { sentFolder });
+    lenient().when(sentFolder.exists()).thenReturn(true);
+    lenient().when(sentFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
+    lenient().when(sentFolder.isOpen()).thenReturn(true);
+    return new SendRig(session, store, sentFolder);
   }
 
   @Test
@@ -4620,6 +4774,23 @@ public class EmailBoxServiceTest {
     emailBoxService.refreshFolder(TEST_USER, MailFolder.TRASH, EmailBoxService.FolderRefreshCause.DELETE);
 
     verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * EXO-90551 -- the re-read of the owner's Sent after its copy is filed rides the
+   * sender's own Sent re-read switch, not the move's: turning moves' re-reads off must
+   * not silence it, turning Sent re-reads off must.
+   */
+  @Test
+  void theOwnersCopyRefreshRidesTheSentSwitch() {
+    System.setProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY, "false");
+    System.setProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY, "true");
+    try {
+      assertFalse(EmailBoxService.FolderRefreshCause.SENT_COPY.isEnabled());
+    } finally {
+      System.clearProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY);
+      System.clearProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY);
+    }
   }
 
   /**
@@ -7404,6 +7575,51 @@ public class EmailBoxServiceTest {
     givenAUsableMailbox();
     Email draft = draft(null);
     assertThrows(IllegalArgumentException.class, () -> emailBoxService.sendDraft(draft, TEST_USER));
+  }
+
+  /**
+   * EXO-90551 -- the composer's own draft of a mail written in a shared mailbox (the
+   * common send path: any composer that paused holds one) is sent as any draft, and a
+   * copy of the very message is filed in the owner's Sent; the answer says FILED.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftSentFromASharedMailboxFilesTheOwnersCopy() {
+    mockDraftSendFixture();
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPStore store = (IMAPStore) userEmailSettingService.connect("1", TEST_USER);
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    when(ownerSent.exists()).thenReturn(true);
+    when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertEquals(EmailBoxService.OwnerCopy.FILED, emailBoxService.sendDraft(draft("draft-1"), TEST_USER, 100L));
+
+      ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sent.capture()));
+      ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
+      verify(ownerSent).appendMessages(filed.capture());
+      assertSame(sent.getValue(), filed.getValue()[0], "the very message that went out");
+    }
+  }
+
+  /**
+   * EXO-90551 -- a draft sent from a share that is not the sender's is refused before
+   * the draft is claimed: nothing goes out, and the draft is left exactly where it was.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftSentFromAShareThatIsNotTheSendersIsNotClaimed() {
+    lenient().when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 7L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertThrows(ObjectNotFoundException.class, () -> emailBoxService.sendDraft(draft("draft-1"), TEST_USER, 7L));
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+    }
+    verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
   }
 
   @Test

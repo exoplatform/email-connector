@@ -1389,23 +1389,47 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Sends a composed mail, from the caller's own account; from a mailbox shared with the
+   * caller when {@code delegationId} names it, in which case a copy is also filed in its
+   * owner's Sent folder (EXO-90551).
+   *
+   * @param request the caller's request, for the acting user
+   * @param email the composed mail
+   * @param delegationId the share the mail is sent from, or null
+   * @return {@code ownerCopy}: FILED, FAILED or SKIPPED when a share is named; empty
+   *         otherwise
+   */
   @PostMapping("/send")
   @Secured("users")
-  @Operation(summary = "Sends email", method = "POST", description = "This will send email. With readReceiptRequested set, the message asks for a read receipt (Disposition-Notification-To naming the caller's sending address).")
+  @Operation(summary = "Sends email", method = "POST", description = "This will send email. With readReceiptRequested set, the message asks for a read receipt (Disposition-Notification-To naming the caller's sending address). With delegationId, the mail is sent from a mailbox shared with the caller: it still goes out from the caller's account, and a copy is also filed in the owner's Sent folder; the answer says what became of that copy (ownerCopy: FILED, FAILED or SKIPPED). A copy that could not be filed never makes the send fail.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
-      @ApiResponse(responseCode = "404", description = "Not found"),
-      @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public void sendEmail(HttpServletRequest request,
-                        @Parameter(description = "Email to be sent", required = true)
-                        @RequestBody
-                        Email email) {
+      @ApiResponse(responseCode = "404", description = "Not found, or no such share of the caller"),
+      @ApiResponse(responseCode = "409", description = "Conflict"),
+      @ApiResponse(responseCode = "410", description = "The named mailbox is no longer shared with the caller; nothing was sent"), })
+  public Map<String, String> sendEmail(HttpServletRequest request,
+                                       @Parameter(description = "Email to be sent", required = true)
+                                       @RequestBody
+                                       Email email,
+                                       @Parameter(description = "The share the mail is sent from, when it is sent from a mailbox shared with the caller")
+                                       @RequestParam(value = "delegationId", required = false)
+                                       Long delegationId) {
     try {
       if (email == null || email.getTo() == null || email.getTo().isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      emailBoxService.sendEmail(email, request.getRemoteUser());
+      EmailBoxService.OwnerCopy ownerCopy = emailBoxService.sendEmail(email, request.getRemoteUser(), delegationId);
+      Map<String, String> response = new HashMap<>();
+      if (ownerCopy != null) {
+        response.put("ownerCopy", ownerCopy.name());
+      }
+      return response;
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
@@ -1450,6 +1474,16 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Sends the composer's draft; from a mailbox shared with the caller when
+   * {@code delegationId} names it, filing a copy in its owner's Sent (EXO-90551).
+   *
+   * @param request the caller's request, for the acting user
+   * @param draftLocalId the draft's local id
+   * @param draft the draft as the composer is showing it
+   * @param delegationId the share the draft is sent from, or null
+   * @return {@code ownerCopy} when a share is named; empty otherwise
+   */
   @PostMapping("/drafts/{draftLocalId}/send")
   @Secured("users")
   @Operation(summary = "Sends a draft", method = "POST",
@@ -1459,14 +1493,18 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "No draft under that local id"),
       @ApiResponse(responseCode = "409", description = "The draft is scheduled; it is sent through its schedule (emailConnector.scheduled.locked)"),
+      @ApiResponse(responseCode = "410", description = "The named mailbox is no longer shared with the caller; nothing was sent"),
       @ApiResponse(responseCode = "500", description = "The mail server refused the message"), })
-  public void sendDraft(HttpServletRequest request,
-                        @Parameter(description = "The draft's local id", required = true)
-                        @PathVariable("draftLocalId")
-                        String draftLocalId,
-                        @Parameter(description = "The draft as the composer is showing it", required = true)
-                        @RequestBody
-                        Email draft) {
+  public Map<String, String> sendDraft(HttpServletRequest request,
+                                       @Parameter(description = "The draft's local id", required = true)
+                                       @PathVariable("draftLocalId")
+                                       String draftLocalId,
+                                       @Parameter(description = "The draft as the composer is showing it", required = true)
+                                       @RequestBody
+                                       Email draft,
+                                       @Parameter(description = "The share the draft is sent from, when it was written in a mailbox shared with the caller (EXO-90551)")
+                                       @RequestParam(value = "delegationId", required = false)
+                                       Long delegationId) {
     try {
       if (draft == null || CollectionUtils.isEmpty(draft.getTo())) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
@@ -1474,7 +1512,14 @@ public class EmailBoxRest {
       // The path is what names the draft; a body claiming a different id would be two
       // answers to one question, and the addressable one wins.
       draft.setDraftLocalId(draftLocalId);
-      emailBoxService.sendDraft(draft, request.getRemoteUser());
+      EmailBoxService.OwnerCopy ownerCopy = emailBoxService.sendDraft(draft, request.getRemoteUser(), delegationId);
+      Map<String, String> response = new HashMap<>();
+      if (ownerCopy != null) {
+        response.put("ownerCopy", ownerCopy.name());
+      }
+      return response;
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (ScheduledSendConflictException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (IllegalAccessException e) {

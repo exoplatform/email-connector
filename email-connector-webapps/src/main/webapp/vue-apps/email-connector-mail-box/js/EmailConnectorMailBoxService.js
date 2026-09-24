@@ -1295,12 +1295,18 @@ export function synchronize() {
  * Sends (or replies/forwards) an email. The whole email object is serialized, so
  * it also carries email.attachments = [{ uploadId, name, mimeType, size }], the
  * commons upload ids the backend resolves to bytes and attaches to the message.
+ * From a mailbox shared with the user when `delegationId` names it, in which case a
+ * copy is also filed in its owner's Sent folder (EXO-90551).
  *
  * @param {Object} email the composed email, including its optional attachments
- * @returns {Promise} resolves once the email has been sent
+ * @param {Number} delegationId the share the mail is sent from, or nothing
+ * @returns {Promise<Object>} resolves once the email has been sent, with { ownerCopy } --
+ *          FILED, FAILED or SKIPPED -- when a share is named; rejects with a
+ *          {@link refusal} error -- its code says a share is gone
  */
-export function sendEmail(email) {
-  return fetch('/email-connector/rest/email-box/send', {
+export function sendEmail(email, delegationId) {
+  const query = delegationId ? `?delegationId=${encodeURIComponent(delegationId)}` : '';
+  return fetch(`/email-connector/rest/email-box/send${query}`, {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -1309,8 +1315,9 @@ export function sendEmail(email) {
     body: JSON.stringify(email)
   }).then((resp) => {
     if (!resp?.ok) {
-      throw new Error('Error when sending email');
+      return refusal(resp, 'Error when sending email');
     }
+    return resp.json().catch(() => ({}));
   });
 }
 
@@ -1363,10 +1370,14 @@ export function saveDraft(draft, push) {
  *
  * @param {string} draftLocalId the draft's local id
  * @param {Object} draft the composed draft as the composer is showing it
- * @returns {Promise} resolves once the mail is out and the draft is gone
+ * @param {Number} delegationId the share the draft is sent from, or nothing -- a copy
+ *        is then also filed in the owner's Sent (EXO-90551)
+ * @returns {Promise<Object>} resolves once the mail is out and the draft is gone, with
+ *          { ownerCopy } when a share is named; rejects with a {@link refusal} error -- its code says a share is gone
  */
-export function sendDraft(draftLocalId, draft) {
-  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}/send`, {
+export function sendDraft(draftLocalId, draft, delegationId) {
+  const query = delegationId ? `?delegationId=${encodeURIComponent(delegationId)}` : '';
+  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}/send${query}`, {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -1375,8 +1386,9 @@ export function sendDraft(draftLocalId, draft) {
     body: JSON.stringify(draft)
   }).then((resp) => {
     if (!resp?.ok) {
-      throw new Error('Error when sending draft');
+      return refusal(resp, 'Error when sending draft');
     }
+    return resp.json().catch(() => ({}));
   });
 }
 

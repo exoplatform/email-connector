@@ -1330,6 +1330,9 @@ public class EmailDelegationService {
     FolderMessageCounts counts = emailBoxStorage.getFolderCounts(granteeUsername);
     Map<String, Integer> unreadCounts = counts == null || counts.getUnreadCounts() == null ? Map.of()
                                                                                            : counts.getUnreadCounts();
+    // Read once for the whole list (EXO-90551 review): the switcher is drawn every time
+    // the drawer opens.
+    boolean sentCopyEnabled = isSentCopyEnabled();
     List<SharedMailboxEntry> entries = new ArrayList<>();
     for (EmailDelegation delegation : accepted) {
       List<EmailFolder> folders = emailFolderStorage.getDelegatedFolders(granteeUsername, delegation.getId());
@@ -1354,7 +1357,8 @@ public class EmailDelegationService {
                                          // eXo wrote before folders were shared. One made in the
                                          // mail server's interface records no roles either, and
                                          // may well cover its Trash.
-                                         delegation.isInboxOnly() && delegation.getOrigin() == DelegationOrigin.EXO));
+                                         delegation.isInboxOnly() && delegation.getOrigin() == DelegationOrigin.EXO,
+                                         sentCopyEnabled && sentCopyOf(folders, delegation)));
     }
     return entries;
   }
@@ -2015,6 +2019,75 @@ public class EmailDelegationService {
                              .map(EmailFolder::getKey)
                              .findFirst()
                              .orElse(null);
+  }
+
+  /**
+   * Where a mail the delegate sends from a shared mailbox is filed for its owner
+   * (EXO-90551): that share's Sent folder, when the delegate may insert into it. The
+   * share is resolved with the caller as grantee, so a share of somebody else -- or an
+   * unknown id -- is "no such delegation", and one no longer accepted is a revocation:
+   * a client-supplied id never selects another user's folder.
+   *
+   * @param granteeUsername the sender, who must be the share's grantee
+   * @param delegationId the share the mail is sent from
+   * @return the owner's Sent folder key, or null when the share has no Sent the sender
+   *         may file into (no Sent shared, no i there)
+   * @throws ObjectNotFoundException when no such share belongs to the sender
+   * @throws DelegationRevokedException when the share is no longer accepted
+   */
+  public String ownerSentFolderKey(String granteeUsername, long delegationId) throws ObjectNotFoundException {
+    EmailDelegation delegation = asGrantee(granteeUsername, delegationId);
+    if (delegation.getStatus() != DelegationStatus.ACCEPTED) {
+      throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
+    }
+    String key = roleFolderKey(granteeUsername, delegationId, FolderRole.SENT);
+    if (key == null) {
+      return null;
+    }
+    try {
+      checkRight(granteeUsername, key, MailboxRights.INSERT);
+      return key;
+    } catch (MailboxRightMissingException e) {
+      return null;
+    }
+  }
+
+  /**
+   * Whether an administrator left the owner's Sent copy on (EXO-90551). A setting that
+   * cannot be read answers no rather than failing the switcher: the switcher then
+   * promises no copy, which is the safe side of the promise.
+   *
+   * @return true when the copy is switched on
+   */
+  private boolean isSentCopyEnabled() {
+    try {
+      return emailConnectorService.isSharedMailboxSentCopyEnabled();
+    } catch (RuntimeException e) {
+      LOG.debug("Could not read whether the owner's Sent copy is switched on; the switcher promises none", e);
+      return false;
+    }
+  }
+
+  /**
+   * Whether a mail sent from this share is filed in its owner's Sent (EXO-90551), for the
+   * switcher entry, from the rows the list already holds: the answer
+   * {@link #ownerSentFolderKey} gives for an accepted share -- the share's Sent, still
+   * listed, and the delegate's letters on it holding i -- without reading the share and
+   * its folders again per entry. Both read the letters through {@link #folderRights}, so
+   * the promise and the send agree.
+   *
+   * @param folders the share's registered folders
+   * @param delegation the accepted share
+   * @return true when the copy will be filed
+   */
+  private static boolean sentCopyOf(List<EmailFolder> folders, EmailDelegation delegation) {
+    return folders.stream()
+                  .filter(folder -> MailFolderView.TYPE_DELEGATED.equals(folder.getType()))
+                  .filter(folder -> !folder.isMissing())
+                  .filter(folder -> folder.getRole() == FolderRole.SENT)
+                  .findFirst()
+                  .map(folder -> folderRights(folder, delegation).has(MailboxRights.INSERT))
+                  .orElse(false);
   }
 
   /**

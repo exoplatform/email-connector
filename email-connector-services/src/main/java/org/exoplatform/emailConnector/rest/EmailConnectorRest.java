@@ -404,6 +404,45 @@ public class EmailConnectorRest {
     }
   }
 
+  /**
+   * Whether a mail sent from a shared mailbox is also filed in its owner's Sent folder,
+   * administration-wide (EXO-90551).
+   *
+   * @param request the caller's request
+   * @return the switch
+   */
+  @GetMapping("/shared-mailbox-sent-copy")
+  @Secured("administrators")
+  @Operation(summary = "Gets whether a shared mailbox send is copied into its owner's Sent", method = "GET", description = "This will get the administration-wide switch of the copy into a shared mailbox owner's Sent folder")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public boolean isSharedMailboxSentCopyEnabled(HttpServletRequest request) {
+    return emailConnectorService.isSharedMailboxSentCopyEnabled();
+  }
+
+  /**
+   * Switches the copy of a shared mailbox send into its owner's Sent folder on or off,
+   * administration-wide (EXO-90551).
+   *
+   * @param request the caller's request
+   * @param enabled whether the copy should be filed
+   */
+  @PatchMapping("/shared-mailbox-sent-copy")
+  @Secured("administrators")
+  @Operation(summary = "Updates whether a shared mailbox send is copied into its owner's Sent", method = "PATCH", description = "This will update the administration-wide switch of the copy into a shared mailbox owner's Sent folder")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public void updateSharedMailboxSentCopyEnabled(HttpServletRequest request,
+                                                 @Parameter(description = "Whether the copy into the owner's Sent should be filed", required = true)
+                                                 @RequestParam("enabled")
+                                                 boolean enabled) {
+    try {
+      emailConnectorService.saveSharedMailboxSentCopyEnabled(enabled, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    }
+  }
+
   @PostMapping()
   @Secured("administrators")
   @Operation(summary = "Creates email connector", method = "POST", description = "This will create email connector")

@@ -1551,6 +1551,67 @@ class EmailDelegationServiceTest {
   }
 
   /**
+   * EXO-90551 -- the switcher entry says whether the composer's copy into the owner's
+   * Sent will be filed: a Sent shared with i and the copy switched on; not when the
+   * administrator switched it off, nor without i.
+   */
+  @Test
+  void theSwitcherSaysWhetherTheOwnersSentCopyWillBeFiled() throws Exception {
+    EmailDelegation share = aDovecotShare();
+    EmailFolder inbox = sharedInbox(share);
+    EmailFolder sent = delegated(22L, ROOT + "/Sent", true);
+    sent.setRole(FolderRole.SENT);
+    sent.setRightsCheckDate(new Date());
+    sent.setRights("lrswite");
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(inbox, sent));
+    lenient().when(emailFolderStorage.getFolder(GRANTEE, 22L)).thenReturn(sent);
+    when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(share));
+    lenient().when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(share);
+
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    assertTrue(service.getSharedMailboxes(GRANTEE).get(0).sentCopy(), "a Sent with i, the copy on");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(false);
+    assertFalse(service.getSharedMailboxes(GRANTEE).get(0).sentCopy(), "switched off");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    sent.setRights("lrs");
+    assertFalse(service.getSharedMailboxes(GRANTEE).get(0).sentCopy(), "no i on the owner's Sent");
+    sent.setRights("lrswite");
+    sent.setMissing(true);
+    assertFalse(service.getSharedMailboxes(GRANTEE).get(0).sentCopy(), "the owner's Sent no longer listed");
+    // From the rows the list already holds (EXO-90551 review): no share re-read per entry.
+    verify(emailDelegationStorage, never()).getAsGrantee(eq(GRANTEE), anyLong());
+  }
+
+  /**
+   * EXO-90551 -- where a mail sent from a shared mailbox is filed for its owner: the
+   * share is the sender's own (another's, or an unknown id, is "not found"), accepted (or
+   * a revocation), and the answer is that share's Sent when the sender holds i there --
+   * null when there is none, or no i.
+   */
+  @Test
+  void theOwnersSentIsTheSendersOwnShareSentWithI() throws Exception {
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 7L)).thenReturn(null);
+    assertThrows(ObjectNotFoundException.class, () -> service.ownerSentFolderKey(GRANTEE, 7L));
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(row(DelegationStatus.PENDING, DelegationOrigin.EXO));
+    assertThrows(DelegationRevokedException.class, () -> service.ownerSentFolderKey(GRANTEE, 100L));
+
+    EmailDelegation accepted = aDovecotShare();
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(accepted);
+    EmailFolder sent = delegated(22L, ROOT + "/Sent", true);
+    sent.setRole(FolderRole.SENT);
+    sent.setRightsCheckDate(new Date());
+    sent.setRights("lrswite");
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(sharedInbox(accepted), sent));
+    when(emailFolderStorage.getFolder(GRANTEE, 22L)).thenReturn(sent);
+    assertEquals(sent.getKey(), service.ownerSentFolderKey(GRANTEE, 100L), "the share's Sent, with i");
+
+    sent.setRights("lrs");
+    assertNull(service.ownerSentFolderKey(GRANTEE, 100L), "no i on it: nothing to file into");
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(sharedInbox(accepted)));
+    assertNull(service.ownerSentFolderKey(GRANTEE, 100L), "no Sent shared");
+  }
+
+  /**
    * The owner's folders by role, as the owner's session names them.
    *
    * @return the map

@@ -52,6 +52,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         v-if="sharedMailbox"
         :entry="sharedMailbox"
         :reply="sharedMailboxReply"
+        :sent-copy="!!sharedMailbox.sentCopy"
         :copy-owner="ownerCopied"
         :owner-is-recipient="ownerInTo"
         @update:copy-owner="setOwnerCopied" />
@@ -1329,7 +1330,9 @@ export default {
       this.sharedMailbox = this.$emailConnectorMailBoxService.sharedMailboxState().current;
       this.sharedMailboxReply = !!this.sharedMailbox && !!email && !forward;
       if (this.sharedMailbox) {
-        this.setOwnerCopied(true);
+        // PO decision Q-3 (EXO-90551): off when the copy into the owner's Sent will be
+        // filed -- the owner then finds the mail there -- on otherwise; always visible.
+        this.setOwnerCopied(!this.sharedMailbox.sentCopy);
       }
     },
     /**
@@ -2145,11 +2148,22 @@ export default {
       // exists because sending a draft is not "send, then tidy up from the client":
       // the save, the send and the two removals have to happen in one order, on the
       // server, where a failure between them can be reasoned about.
+      // From a shared mailbox, the share is named so that its owner's Sent gets a copy
+      // too (EXO-90551); the answer says whether it did.
+      const delegationId = this.sharedMailbox?.delegationId;
+      const owner = this.sharedMailbox?.ownerFullName;
       const send = this.draftSession.localId
-        ? this.$emailConnectorMailBoxService.sendDraft(this.draftSession.localId, this.email)
-        : this.$emailConnectorMailBoxService.sendEmail(this.email);
-      send.then(() => {
-        this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.success'), 'success');
+        ? this.$emailConnectorMailBoxService.sendDraft(this.draftSession.localId, this.email, delegationId)
+        : this.$emailConnectorMailBoxService.sendEmail(this.email, delegationId);
+      // What the notice promised when the composer opened (Q-3): a copy in the owner's
+      // Sent. Anything short of it having been filed is said.
+      const ownerCopyPromised = !!this.sharedMailbox?.sentCopy;
+      send.then(result => {
+        if (result?.ownerCopy === 'FAILED' || ownerCopyPromised && result?.ownerCopy !== 'FILED') {
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.ownerCopyFailed', { 0: owner }), 'warning');
+        } else {
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.success'), 'success');
+        }
         // The row and its server copy are already gone; all that is left here is to
         // forget the draft so the close below cannot save it back.
         this.emptyComposer();
@@ -2161,8 +2175,15 @@ export default {
         this.$root.$emit('email-sent');
         this.$root.$emit('refresh-email-box');
         this.close();
-      }).catch(() => {
-        this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.error'), 'error');
+      }).catch(error => {
+        // A share withdrawn while composing (EXO-90551): nothing went out, and retrying
+        // cannot help -- say so rather than "try again". Whether to offer a send from
+        // the user's own mailbox instead is a PO call, not made here.
+        if (delegationId && error?.code?.startsWith?.('emailConnector.delegation.')) {
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.sharedMailboxGone', { 0: owner }), 'error');
+        } else {
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.error'), 'error');
+        }
       }).finally(() => this.loading = false);
     },
     /**
