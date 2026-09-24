@@ -21,6 +21,8 @@ import static io.meeds.mcp.server.tool.util.McpToolPluginUtils.getInteger;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -695,22 +697,36 @@ public class EmailMcpTool implements McpToolPlugin {
    * The original is named by its {@code email_id} -- in any folder of the mailbox
    * named, Sent and Archive included -- or by the UID of a mail of the user's own INBOX
    * ({@link #mailOf}).
+   * <p>
+   * The recipient is worked out from the original, never taken from the caller: it is
+   * the original's sender. {@code to} is what the agent read off that mail, passed so
+   * that the approval the user answers -- shown from the tool's arguments before the
+   * tool runs -- names who the reply goes to (EXO-90592). It must name that same
+   * recipient ({@link #requireSameRecipients}); any other is refused and nothing is
+   * sent, so an approved card never widens nor redirects the reply. What goes out is
+   * the recipient worked out here, whatever spelling {@code to} used.
    *
    * @param mailRemoteId the UID of a mail of the user's own INBOX, or null
    * @param bodyHtml the HTML body
    * @param mailbox the shared mailbox, blank for the user's own
    * @param emailId the original's local id, or null
+   * @param to the recipient the agent read off the original: its sender's address
    * @return the outcome, in words
    * @throws ObjectNotFoundException when the original or the mailbox is not found
    * @throws IllegalAccessException if the user may not send
+   * @throws IllegalArgumentException when {@code to} is not the original's sender
    */
-  public String replyEmail(Long mailRemoteId, String bodyHtml, String mailbox, Long emailId) throws ObjectNotFoundException,
-                                                                                             IllegalAccessException {
+  public String replyEmail(Long mailRemoteId,
+                           String bodyHtml,
+                           String mailbox,
+                           Long emailId,
+                           List<String> to) throws ObjectNotFoundException, IllegalAccessException {
     String username = getCurrentUserName();
     SharedMailboxEntry share = sharedMailbox(mailbox);
     Email original = fetch(mailOf(emailId, mailRemoteId, share), false, true, false);
     Email reply = buildReplyShell(original, bodyHtml);
     reply.setTo(senderAsRecipients(original));
+    requireSameRecipients("to", to, reply.getTo(), Set.of());
     String copy = send(reply, username, share);
     return String.format("Reply sent to %s%s.%s", senderAddress(original), fromMailbox(share), copy);
   }
@@ -723,17 +739,34 @@ public class EmailMcpTool implements McpToolPlugin {
    * owner is the mailbox the reply is sent from, and gets their copy in their Sent.
    *
    * The original is named as {@link #replyEmail} names it.
+   * <p>
+   * {@code to} and {@code cc} are what the agent read off the original, passed so that
+   * the approval card names every recipient (EXO-90592). They must name the same
+   * addresses as the ones worked out here -- To and Cc each, as sets -- or the reply is
+   * refused and nothing is sent ({@link #requireSameRecipients}). The two addresses the
+   * Cc rule leaves out -- the user's own, and in a shared mailbox its owner's -- are
+   * tolerated in {@code cc} and still left out: they are the sending side, the agent
+   * copying the original's To verbatim lists them, and tolerating them can neither
+   * widen nor redirect the reply, since what goes out is the list worked out here.
    *
    * @param mailRemoteId the UID of a mail of the user's own INBOX, or null
    * @param bodyHtml the HTML body
    * @param mailbox the shared mailbox, blank for the user's own
    * @param emailId the original's local id, or null
+   * @param to the recipient the agent read off the original: its sender's address
+   * @param cc the copied recipients the agent read off the original: its To and Cc
    * @return the outcome, in words
    * @throws ObjectNotFoundException when the original or the mailbox is not found
    * @throws IllegalAccessException if the user may not send
+   * @throws IllegalArgumentException when {@code to} or {@code cc} is not what the
+   *           original gives
    */
-  public String replyAll(Long mailRemoteId, String bodyHtml, String mailbox, Long emailId) throws ObjectNotFoundException,
-                                                                                           IllegalAccessException {
+  public String replyAll(Long mailRemoteId,
+                         String bodyHtml,
+                         String mailbox,
+                         Long emailId,
+                         List<String> to,
+                         List<String> cc) throws ObjectNotFoundException, IllegalAccessException {
     String username = getCurrentUserName();
     SharedMailboxEntry share = sharedMailbox(mailbox);
     Email original = fetch(mailOf(emailId, mailRemoteId, share), false, true, false);
@@ -747,6 +780,8 @@ public class EmailMcpTool implements McpToolPlugin {
       ccRecipients.removeIf(recipient -> recipient.getAddress().equalsIgnoreCase(share.ownerMailbox()));
     }
     reply.setCc(ccRecipients);
+    requireSameRecipients("to", to, reply.getTo(), Set.of());
+    requireSameRecipients("cc", cc, ccRecipients, leftOutOfCc(selfAddress, share));
     String copy = send(reply, username, share);
     return String.format("Reply-all sent to %s%s.%s", senderAddress(original), fromMailbox(share), copy);
   }
@@ -983,6 +1018,10 @@ public class EmailMcpTool implements McpToolPlugin {
    * ARCHIVE, through the share's own folder roles -- never as a {@code CUSTOM:<id>} key,
    * so the same rule applies there: a UID is chainable only from a message whose folder
    * is INBOX. A folder of the share with no such role says nothing.
+   * <p>
+   * Its To and Cc addresses come along (EXO-90592): {@code reply_email} and
+   * {@code reply_all} take the recipients the reader read off the message it answers,
+   * so that the approval names them.
    *
    * @param email the cached message
    * @param share the shared mailbox read, null for the user's own
@@ -995,10 +1034,29 @@ public class EmailMcpTool implements McpToolPlugin {
                                        folderNameOf(email, share),
                                        sender == null ? null : sender.getName(),
                                        sender == null ? null : sender.getAddress(),
+                                       addressesOf(email.getTo()),
+                                       addressesOf(email.getCc()),
                                        email.getReceivedDate(),
                                        email.getSubject(),
                                        plainTextBody(email),
                                        attachmentNames(email));
+  }
+
+  /**
+   * The bare addresses of a message's recipients, in their order, blanks left out.
+   *
+   * @param recipients the recipients, possibly null
+   * @return their addresses, never null
+   */
+  private static List<String> addressesOf(List<EmailRecipient> recipients) {
+    if (recipients == null) {
+      return List.of();
+    }
+    return recipients.stream()
+                     .filter(Objects::nonNull)
+                     .map(EmailRecipient::getAddress)
+                     .filter(StringUtils::isNotBlank)
+                     .toList();
   }
 
   /**
@@ -1158,6 +1216,158 @@ public class EmailMcpTool implements McpToolPlugin {
    */
   private String senderAddress(Email original) {
     return original.getSender() != null ? original.getSender().getAddress() : null;
+  }
+
+  /**
+   * Refuse a reply whose recipients, as the agent passed them, are not the ones worked
+   * out from the original (EXO-90592). The approval card is drawn from the tool's
+   * arguments before the tool runs, so this check is what makes the card true: the
+   * user approved these addresses, and the reply goes to exactly them or not at all.
+   * <p>
+   * Each given entry must be a bare address ({@link #requireBareAddresses}): the card
+   * shows the entry as it was given, through a sanitised HTML rendering, so a display
+   * name would be shown where the address it wraps is swallowed as a tag -- the card
+   * would name one person while the reply goes to another. The two lists are then
+   * compared as sets of {@link #normalisedAddress normalised} addresses: order,
+   * repetition, case and surrounding blanks do not count, an address does. The
+   * {@code tolerated} addresses -- the ones the server's own rule leaves out -- are
+   * dropped from the given list before comparing. Whatever is given, the caller sends
+   * the list worked out, never the one given.
+   *
+   * @param field the argument's name, for the refusal
+   * @param given the addresses the agent passed, possibly null
+   * @param derived the recipients worked out from the original
+   * @param tolerated normalised addresses the given list may carry although the
+   *          derived one leaves them out
+   * @throws IllegalArgumentException when an entry is not a bare address, or the two
+   *           differ; nothing has been sent
+   */
+  private static void requireSameRecipients(String field,
+                                            List<String> given,
+                                            List<EmailRecipient> derived,
+                                            Set<String> tolerated) {
+    requireBareAddresses(field, given);
+    requireShowableDerived(field, derived);
+    Set<String> expected = derived == null ? Set.of()
+                                           : derived.stream()
+                                                    .filter(Objects::nonNull)
+                                                    .map(recipient -> normalisedAddress(recipient.getAddress()))
+                                                    .filter(StringUtils::isNotEmpty)
+                                                    .collect(Collectors.toCollection(LinkedHashSet::new));
+    Set<String> actual = given == null ? Set.of()
+                                       : given.stream()
+                                              .map(EmailMcpTool::normalisedAddress)
+                                              .filter(address -> !tolerated.contains(address))
+                                              .collect(Collectors.toCollection(LinkedHashSet::new));
+    if (!expected.equals(actual)) {
+      throw new IllegalArgumentException(String.format("Nothing was sent: %s must name exactly the addresses the reply goes to, "
+          + "worked out from the email: [%s]; it named [%s]. Read them off the email, never add or change one, and ask the "
+          + "user to approve again with those addresses shown.",
+                                                       field,
+                                                       String.join(", ", expected),
+                                                       given == null ? "" : String.join(", ", given)));
+    }
+  }
+
+  /**
+   * Refuse any given recipient that is not a bare address once trimmed
+   * ({@link #isBareAddress}): a blank entry, or one carrying a blank, an angle bracket,
+   * a quote, a comma, a semicolon or an ampersand -- a display name, an empty
+   * {@code <>}, two addresses in one, a character entity. The approval card renders
+   * the entry as given, as sanitised HTML, so what it shows must be the address itself
+   * and nothing an HTML parser could swallow (EXO-90592).
+   *
+   * @param field the argument's name, for the refusal
+   * @param given the addresses the agent passed, possibly null
+   * @throws IllegalArgumentException naming the first entry that is not a bare
+   *           address; nothing has been sent
+   */
+  private static void requireBareAddresses(String field, List<String> given) {
+    if (given == null) {
+      return;
+    }
+    for (String entry : given) {
+      if (!isBareAddress(entry)) {
+        throw new IllegalArgumentException(String.format("Nothing was sent: %s must list bare addresses, such as alice@acme.com -- "
+            + "no name, no brackets, no blank entry; \"%s\" is not one. Call again with the bare addresses read off the email, "
+            + "and ask the user to approve again.", field, StringUtils.defaultString(entry)));
+      }
+    }
+  }
+
+  /**
+   * Refuse a reply one of whose recipients, as worked out from the original, is not a
+   * bare address -- a group such as {@code undisclosed-recipients:;}, a quoted local
+   * part with a blank. No given list could match it, since every given entry must be
+   * bare ({@link #requireBareAddresses}), and the card could not show it truthfully
+   * either; so the refusal says so, rather than asking the agent for an address it
+   * cannot give.
+   *
+   * @param field the argument's name, for the refusal
+   * @param derived the recipients worked out from the original, possibly null
+   * @throws IllegalArgumentException naming the first such recipient; nothing has been
+   *           sent
+   */
+  private static void requireShowableDerived(String field, List<EmailRecipient> derived) {
+    if (derived == null) {
+      return;
+    }
+    for (EmailRecipient recipient : derived) {
+      if (recipient != null && StringUtils.isNotBlank(recipient.getAddress()) && !isBareAddress(recipient.getAddress())) {
+        String instead = "to".equals(field) ? "forward the email, or write a new one, to the addresses the user names"
+                                            : "to answer the sender alone use reply_email, or forward the email to the addresses "
+                                                + "the user names";
+        throw new IllegalArgumentException(String.format("Nothing was sent: the email lists, in what would be the reply's %s, "
+            + "\"%s\", which is not an address a reply can be approved for. Tell the user; %s.",
+                                                         field,
+                                                         recipient.getAddress(),
+                                                         instead));
+      }
+    }
+  }
+
+  /**
+   * Whether an entry, trimmed, is a bare address as the approval card can show it: not
+   * blank, and carrying no blank, angle bracket, quote, comma, semicolon nor ampersand
+   * -- the last because the card's sanitised HTML decodes a character entity, so an
+   * entry could show another address than it spells.
+   *
+   * @param entry the entry, possibly null
+   * @return true for a bare address
+   */
+  private static boolean isBareAddress(String entry) {
+    String value = StringUtils.trimToEmpty(entry);
+    return !value.isEmpty() && !StringUtils.containsWhitespace(value) && !StringUtils.containsAny(value, '<', '>', '"', ',', ';', '&');
+  }
+
+  /**
+   * An address as recipients are compared: trimmed and lower-cased. Nothing else is
+   * taken away -- a given entry is a bare address ({@link #requireBareAddresses}), so
+   * what is compared is what the approval card shows.
+   *
+   * @param address the address, possibly null
+   * @return the address, trimmed and lower-cased; empty for a blank one
+   */
+  private static String normalisedAddress(String address) {
+    return StringUtils.trimToEmpty(address).toLowerCase(Locale.ROOT);
+  }
+
+  /**
+   * The addresses a reply-all's Cc leaves out, normalised: the user's own and, from a
+   * shared mailbox, its owner's.
+   *
+   * @param selfAddress the user's own address, possibly null
+   * @param share the shared mailbox, null for the user's own
+   * @return the normalised addresses left out of the Cc
+   */
+  private static Set<String> leftOutOfCc(String selfAddress, SharedMailboxEntry share) {
+    Set<String> leftOut = new HashSet<>();
+    leftOut.add(normalisedAddress(selfAddress));
+    if (share != null) {
+      leftOut.add(normalisedAddress(share.ownerMailbox()));
+    }
+    leftOut.remove("");
+    return leftOut;
   }
 
   /**
