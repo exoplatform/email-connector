@@ -54,6 +54,7 @@ import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.SyncStatus;
@@ -1691,15 +1692,15 @@ public class EmailMcpTool implements McpToolPlugin {
       emailBoxService.sendEmail(email, username);
       return "";
     }
-    EmailBoxService.OwnerCopy copy;
+    OwnerCopy copy;
     try {
       copy = emailBoxService.sendEmail(email, username, share.delegationId());
     } catch (DelegationRevokedException e) {
       throw refusedIn(share, "send from it", e);
     }
-    if (copy == EmailBoxService.OwnerCopy.FILED) {
+    if (copy == OwnerCopy.FILED) {
       return String.format(" A copy was filed in the Sent folder of %s.", ownerOf(share));
-    } else if (copy == EmailBoxService.OwnerCopy.FAILED) {
+    } else if (copy == OwnerCopy.FAILED) {
       return String.format(" The copy in the Sent folder of %s could not be filed; the mail itself was sent.", ownerOf(share));
     }
     return String.format(" No copy was filed in the Sent folder of %s: filing there is not shared with you, or is switched off.",
