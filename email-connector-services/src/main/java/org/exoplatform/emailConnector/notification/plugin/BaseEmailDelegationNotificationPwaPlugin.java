@@ -45,8 +45,11 @@ public abstract class BaseEmailDelegationNotificationPwaPlugin implements PwaNot
   @Override
   public PwaNotificationMessage process(NotificationInfo notification, LocaleConfig localeConfig) {
     PwaNotificationMessage message = new PwaNotificationMessage();
-    message.setTitle(notification.getValueOwnerParameter(NotificationConstants.TITLE));
-    message.setBody(notification.getValueOwnerParameter(NotificationConstants.CONTENT));
+    // The title and the sentence are written as HTML for the web and mail channels (a
+    // display name is escaped into them); a device shows text, so the entities are
+    // decoded here rather than shown as "&#39;".
+    message.setTitle(htmlToText(notification.getValueOwnerParameter(NotificationConstants.TITLE)));
+    message.setBody(htmlToText(notification.getValueOwnerParameter(NotificationConstants.CONTENT)));
     message.setUrl(notification.getValueOwnerParameter(NotificationConstants.LINK));
     return message;
   }
