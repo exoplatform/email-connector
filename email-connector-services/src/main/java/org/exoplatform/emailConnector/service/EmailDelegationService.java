@@ -633,8 +633,8 @@ public class EmailDelegationService {
           }
         }
         notNarrowed.addAll(narrowFormerRoleFolders(engine, session, identifier, recordedFolders, roleFolders));
-        if (!removed.isEmpty()) {
-          // The owner's names, so the delegate's copy of a removed folder is named for sure.
+        if (!following.isEmpty()) {
+          // The owner's names, so the delegate's copy of each folder is named for sure.
           ownerNames = ownerNamesOf(engine, session);
         }
       }
@@ -688,7 +688,7 @@ public class EmailDelegationService {
         if (removed.contains(role)) {
           dropDelegatedFolderTree(delegation, roleFolders.get(role), false, ownerNames);
         } else {
-          narrowDelegatedFolder(delegation, roleFolders.get(role), DelegationPreset.READER.rights(), null);
+          narrowDelegatedFolder(delegation, roleFolders.get(role), DelegationPreset.READER.rights(), ownerNames);
         }
       }
     }
@@ -1389,7 +1389,8 @@ public class EmailDelegationService {
    * <p>
    * On the owner's own session, on the owner's own action; best effort: the rename or
    * the delete has happened, and nothing here undoes it or fails it. A mailbox shared
-   * with nobody costs nothing.
+   * with nobody costs nothing; one shared costs one listing of the owner's folders, which
+   * names the delegates' copies for sure.
    *
    * @param ownerUsername the owner, who renamed or deleted the folder
    * @param oldName the folder's full name before
@@ -1417,16 +1418,15 @@ public class EmailDelegationService {
       if (shares.isEmpty()) {
         return;
       }
-      // After a rename the owner's listing is read anyway, and names the delegates' old
-      // copies for sure; after a delete nothing is listed.
+      // The owner's listing names the delegates' old copies for sure: read anyway after a
+      // rename, to write the grants again; read for it alone after a delete.
       Set<String> ownerNames = null;
-      if (newName != null) {
-        try {
-          ownerNames = regrantRenamed(connector, ownerUsername, ownerMailbox, shares, newName);
-        } catch (RuntimeException e) {
-          // The old copies still go, by the names that need no listing.
-          LOG.info("The shares of {}'s renamed folder could not be written again", ownerUsername, e);
-        }
+      try {
+        ownerNames = newName != null ? regrantRenamed(connector, ownerUsername, ownerMailbox, shares, newName)
+                                     : listOwnerNames(connector, ownerUsername, ownerMailbox);
+      } catch (RuntimeException e) {
+        // The old copies still go, by the names that need no listing.
+        LOG.info("{}'s folders could not be listed after a rename or a delete", ownerUsername, e);
       }
       for (EmailDelegation share : shares) {
         dropDelegatedFolderTree(share, oldName, true, ownerNames);
@@ -1501,6 +1501,23 @@ public class EmailDelegationService {
         }
       }
       return ownerNames;
+    }
+  }
+
+  /**
+   * Every folder name of the owner's mailbox, read on the owner's own session, after a
+   * delete from eXo: see {@link #ownerFolderChanged}.
+   *
+   * @param connector the owner's connector
+   * @param ownerUsername the owner
+   * @param ownerMailbox the owner's mailbox
+   * @return the names; null on a server that does not share folder by folder or cannot
+   *         list them
+   */
+  private Set<String> listOwnerNames(EmailConnector connector, String ownerUsername, String ownerMailbox) {
+    MailboxAclEngine engine = aclEngineRegistry.engineFor(connector);
+    try (MailboxAclSession session = session(connector, ownerUsername, ownerMailbox)) {
+      return engine.probe(session).grantGranularity() == GrantGranularity.FOLDER ? ownerNamesOf(engine, session) : null;
     }
   }
 
