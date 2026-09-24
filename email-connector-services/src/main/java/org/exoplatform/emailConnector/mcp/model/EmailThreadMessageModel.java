@@ -87,6 +87,16 @@ public class EmailThreadMessageModel {
   @JsonProperty("sender_address")
   private String       senderAddress;
 
+  /**
+   * The addresses the message was sent to, bare. Carried so that a reply to everyone
+   * can name, on the approval the user answers, every recipient it goes to -- which
+   * {@code reply_all} requires (EXO-90592).
+   */
+  private List<String> to;
+
+  /** The addresses the message was copied to, bare -- see {@link #to}. */
+  private List<String> cc;
+
   @JsonProperty("received_date")
   private Date         receivedDate;
 
