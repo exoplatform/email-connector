@@ -1587,17 +1587,63 @@ public class EmailDelegationService {
       if (!delegation.isSearchIncluded()) {
         continue;
       }
-      List<EmailFolder> searched = folders.stream()
-                                          .filter(folder -> !folder.isMissing())
-                                          .filter(folder -> folder.getRole() != FolderRole.TRASH && folder.getRole() != FolderRole.JUNK)
-                                          .filter(folder -> folderRights(folder, delegation).canRead())
-                                          .toList();
+      List<EmailFolder> searched = folders.stream().filter(folder -> isSearchableSharedFolder(folder, delegation)).toList();
       if (!searched.isEmpty()) {
         SharedMailboxSearchScope scope = new SharedMailboxSearchScope(delegation.getId(), ownerFullName(delegation));
         searched.forEach(folder -> searchable.put(folder.getKey(), scope));
       }
     }
     return new SharedMailboxSearchFolders(sharedKeys, searchable);
+  }
+
+  /**
+   * Whether the mail drawer's own search box may search a folder of a mailbox shared
+   * with the caller (EXO-90590) -- the folder the drawer shows, by the rule the unified
+   * search applies to that share's folders ({@link #getSharedMailboxSearchFolders}): the
+   * last discovery still listed it, the caller may read it, and it is not the owner's
+   * Trash or Spam. The share's search toggle does not apply: it opts the mailbox out of
+   * the platform's search results, not out of a search the caller runs inside the
+   * mailbox they opened, which the caller's own mailbox never lets them switch off either.
+   * <p>
+   * The key is the client's and is trusted for nothing: the folder row is read by
+   * {@code (id, userId)} and its share by {@code (id, granteeId)}, so a key of another
+   * user's folder, of the caller's own mailbox or of nothing at all answers false, as a
+   * folder of another share of the caller's answers for that share and no other.
+   *
+   * @param username the caller
+   * @param folderKey the folder key the drawer searches, {@code CUSTOM:<id>}
+   * @return true when that folder of a share of the caller's may be searched
+   * @throws DelegationRevokedException when the folder's share is no longer accepted
+   */
+  public boolean isSearchableSharedFolder(String username, String folderKey) {
+    EmailFolder folder = delegatedFolderOf(username, folderKey);
+    EmailDelegation delegation = folder == null ? null : emailDelegationStorage.getAsGrantee(username, folder.getDelegationId());
+    if (delegation == null) {
+      return false;
+    }
+    if (delegation.getStatus() != DelegationStatus.ACCEPTED) {
+      throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
+    }
+    return isSearchableSharedFolder(folder, delegation);
+  }
+
+  /**
+   * The one rule of what a search reads in a mailbox shared with the caller, for the
+   * unified search and the mail drawer's search box alike: a folder the last discovery
+   * still listed, that the caller may read, and that is not the owner's Trash or Spam --
+   * the folders the caller's own search leaves out of their own mailbox
+   * ({@link MailFolder#HIDDEN_FOLDERS}), for the same reason: a hit says nothing of the
+   * bin it came out of.
+   *
+   * @param folder a registered folder of the share
+   * @param delegation the share, accepted
+   * @return true when a search reads that folder
+   */
+  private static boolean isSearchableSharedFolder(EmailFolder folder, EmailDelegation delegation) {
+    return !folder.isMissing()
+        && folder.getRole() != FolderRole.TRASH
+        && folder.getRole() != FolderRole.JUNK
+        && folderRights(folder, delegation).canRead();
   }
 
   /**
