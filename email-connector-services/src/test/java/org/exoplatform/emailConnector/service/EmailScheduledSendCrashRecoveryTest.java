@@ -127,6 +127,9 @@ public class EmailScheduledSendCrashRecoveryTest {
   @MockitoBean
   private UploadService                     uploadService;
 
+  @MockitoBean
+  private EmailDelegationService            emailDelegationService;
+
   private EmailScheduledSendService         service;
 
   private MockedStatic<ExoContainerContext> containerContext;
