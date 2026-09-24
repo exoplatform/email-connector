@@ -167,6 +167,14 @@ class EmailDelegationFolderAccessTest {
     lenient().when(engine.myRights(any(), anyString())).thenReturn(OWNER_RIGHTS);
     lenient().when(engine.presetOf(any())).thenAnswer(invocation -> DelegationPreset.fromRights(invocation.getArgument(0)));
     lenient().when(engine.listOwnFolders(any())).thenReturn(ownFolders());
+    // The IMAP engine's letters: an Editor holds e where mail leaves, never on Trash.
+    lenient().when(engine.lettersFor(any(), any())).thenAnswer(invocation -> {
+      DelegationPreset preset = invocation.getArgument(0);
+      if (preset == DelegationPreset.EDITOR) {
+        return invocation.getArgument(1) == FolderRole.TRASH ? MailboxRights.of("lrswit") : MailboxRights.of("lrswite");
+      }
+      return preset == null ? MailboxRights.NONE : preset.rights();
+    });
     lenient().when(engine.grant(any(), anyString(), anyString(), any(), any(), any())).thenAnswer(invocation -> {
       DelegationPreset preset = invocation.getArgument(3);
       return MailboxAce.ofLetters(GRANTEE_MAILBOX, preset.rights());
@@ -643,6 +651,65 @@ class EmailDelegationFolderAccessTest {
     verify(engine, never()).grant(any(), eq("Clients/2024"), anyString(), any(), any(), any());
     verify(engine, never()).listAcl(any(), eq("Clients-old"));
     verify(emailFolderStorage).markDiscoveryDue(100L);
+  }
+
+  /**
+   * A rename never widens: an entry read as an Editor whose letters the Editor grant
+   * would not write again exactly -- {@code lrswit} on a folder where the grant writes
+   * {@code lrswite}, the {@code e} of permanent deletion -- is left as it is; the same
+   * letters are written again; and a share made in the mail server's own interface is
+   * never rewritten.
+   */
+  @Test
+  void aRenameWritesTheSameLettersOrNothing() throws Exception {
+    EmailDelegation serverMade = accepted();
+    serverMade.setId(101L);
+    serverMade.setGranteeId("carol");
+    serverMade.setGranteeMailbox("carol@acme.com");
+    serverMade.setOrigin(DelegationOrigin.SERVER);
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(accepted(), serverMade));
+    when(engine.listOwnFolders(any())).thenReturn(List.of(own("Clients", null), own("Clients/2024", null)));
+    when(engine.listAcl(any(), eq("Clients"))).thenReturn(List.of(ace(GRANTEE_MAILBOX, "lrswit"), ace("carol@acme.com", "lrs")));
+    when(engine.listAcl(any(), eq("Clients/2024"))).thenReturn(List.of(ace(GRANTEE_MAILBOX, "lrswite")));
+    // The IMAP reading: e beside t still reads as an Editor, lrswit too.
+    when(engine.presetOf(any())).thenAnswer(invocation -> {
+      String letters = ((MailboxRights) invocation.getArgument(0)).letters();
+      return "lrswite".equals(letters) || "lrswit".equals(letters) ? DelegationPreset.EDITOR : DelegationPreset.fromRights(invocation.getArgument(0));
+    });
+
+    service.ownerFolderChanged(OWNER, "Projects", "Clients");
+
+    verify(engine, never()).grant(any(), eq("Clients"), anyString(), any(), any(), any());
+    verify(engine).grant(any(), eq("Clients/2024"), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), eq(OWNER_RIGHTS), isNull());
+  }
+
+  /**
+   * "Change access" to Reader on a folder that refuses the narrower letters removes the
+   * delegate's entry there -- and the delegate's copy of that folder leaves their
+   * screens at once, as a folder set to Not shared does, rather than stay readable until
+   * their next discovery.
+   */
+  @Test
+  void changeAccessDropsTheCopyOfAFolderWhoseAccessItRemoved() throws Exception {
+    EmailDelegation share = accepted();
+    share.setGrantedRoles("INBOX,SENT,ARCHIVE");
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(share);
+    when(engine.findRoleFolders(any())).thenReturn(roleFolders());
+    when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), any(), any())).thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
+                                                                                                           MailboxRights.of("lrs")));
+    when(engine.grant(any(), eq("Sent"), anyString(), eq(DelegationPreset.READER), any(), any()))
+                                                                                               .thenThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED,
+                                                                                                                                  "NO"));
+    when(emailDelegationStorage.updateGrantedRights(eq(OWNER), eq(100L), any(), any(), any(), any(), any(), anyString(), any()))
+                                                                                                                               .thenReturn(share);
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(granteeFolders());
+
+    service.changePreset(OWNER, 100L, DelegationPreset.READER);
+
+    verify(engine).revoke(any(), eq("Sent"), eq(GRANTEE_MAILBOX));
+    verify(emailFolderStorage).deleteFolder(GRANTEE, 14L);
+    verify(emailFolderStorage, never()).updateDelegatedRights(eq(GRANTEE), eq(14L), anyLong(), any(), anyString(), any());
+    verify(emailFolderStorage, never()).deleteFolder(GRANTEE, 15L);
   }
 
   /**
