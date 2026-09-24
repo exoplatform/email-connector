@@ -50,7 +50,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :category-view-id="categoryViewId"
         :sync-in-progress="syncInProgress"
         :has-webmail-access="hasWebmailAccess"
-        :hide-views="hideViews" />
+        :hide-views="hideViews"
+        :hide-sync="hideSync" />
     </v-menu>
   </v-list-item-action>
 </template>
@@ -88,6 +89,12 @@ export default {
     // Whether FOLDERS and CATEGORIES are left out: the full-screen folder column holds
     // them (EXO-90415).
     hideViews: {
+      type: Boolean,
+      default: false,
+    },
+    // Whether Synchronize is left out: in full screen it is a button beside this menu
+    // (EXO-90624).
+    hideSync: {
       type: Boolean,
       default: false,
     },
