@@ -1711,24 +1711,17 @@ class EmailDelegationServiceTest {
 
   /**
    * EXO-90595 -- the share a draft's first save records is one of the writer's own
-   * received shares, accepted: another's, or an unknown id, is "not found", and one not
-   * accepted -- pending, declined, revoked, gone -- is a revocation.
+   * received shares, looked up with the writer as grantee: another's, or an unknown id,
+   * is "not found". Its status is not checked there -- the sends check it.
    */
   @Test
-  void aDraftsShareIsTheWritersOwnAcceptedShare() throws Exception {
+  void aDraftsShareIsOneOfTheWritersOwnShares() throws Exception {
     when(emailDelegationStorage.getAsGrantee(GRANTEE, 7L)).thenReturn(null);
-    assertThrows(ObjectNotFoundException.class, () -> service.requireAcceptedShare(GRANTEE, 7L));
-    for (DelegationStatus status : List.of(DelegationStatus.PENDING,
-                                           DelegationStatus.DECLINED,
-                                           DelegationStatus.REVOKED,
-                                           DelegationStatus.GONE,
-                                           DelegationStatus.AVAILABLE)) {
-      when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(row(status, DelegationOrigin.EXO));
-      assertThrows(DelegationRevokedException.class, () -> service.requireAcceptedShare(GRANTEE, 100L), status.name());
-    }
-    EmailDelegation accepted = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
-    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(accepted);
-    assertSame(accepted, service.requireAcceptedShare(GRANTEE, 100L));
+    assertThrows(ObjectNotFoundException.class, () -> service.requireOwnShare(GRANTEE, 7L));
+    EmailDelegation revoked = row(DelegationStatus.REVOKED, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(revoked);
+    assertSame(revoked, service.requireOwnShare(GRANTEE, 100L));
+    verify(emailDelegationStorage, never()).getAsOwner(anyString(), anyLong());
   }
 
   /**
