@@ -186,6 +186,9 @@ class AiToolDefinitionsTest {
       assertTrue(description.contains("always say in words in whose name it leaves: 'as you', 'on behalf of <owner's name>' or 'as <owner's name>'"),
                  name + ": " + description);
       assertTrue(description.contains("send_modes"), name + ": " + description);
+      assertFalse(description.contains(".."), name + ": a sentence ends once");
+      assertFalse(description.contains("on behalf of the current user"),
+                  name + ": \"on behalf of\" names the owner_on_behalf identity only");
       assertFalse(description.contains("from the user's own address, with a copy"), name + ": " + description);
       assertFalse(description.contains("still goes out from the user's own address"), name + ": " + description);
     }
@@ -203,7 +206,10 @@ class AiToolDefinitionsTest {
    */
   @Test
   void theApprovalCardOfEachSendingToolShowsTheIdentity() throws Exception {
-    java.nio.file.Path bundle = java.nio.file.Path.of("..",
+    // Surefire runs in the module's basedir and says so; an IDE run from the repository
+    // root does not, so the path starts from basedir whenever it is given.
+    java.nio.file.Path bundle = java.nio.file.Path.of(System.getProperty("basedir", "."),
+                                                      "..",
                                                       "email-connector-webapps",
                                                       "src",
                                                       "main",
