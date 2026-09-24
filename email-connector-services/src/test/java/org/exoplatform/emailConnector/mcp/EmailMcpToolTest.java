@@ -1177,6 +1177,9 @@ class EmailMcpToolTest {
                                                      () -> emailMcpTool.replyEmail(888L, "<p>x</p>", null, SENT_EMAIL_ID));
     assertTrue(mismatch.getMessage().contains("not the same mail"), mismatch.getMessage());
     assertThrows(IllegalArgumentException.class, () -> emailMcpTool.archiveEmail(List.of(888L), null, List.of(EMAIL_ID)));
+    IllegalArgumentException withANull = assertThrows(IllegalArgumentException.class,
+                                                       () -> emailMcpTool.archiveEmail(java.util.Arrays.asList((Long) null), null, List.of(EMAIL_ID)));
+    assertTrue(withANull.getMessage().contains("do not name the same mails"), withANull.getMessage());
     givenAliceShares();
     assertThrows(IllegalArgumentException.class, () -> emailMcpTool.replyAll(REMOTE_ID, "<p>x</p>", OWNER_MAILBOX, null));
     assertThrows(IllegalArgumentException.class, () -> emailMcpTool.deleteEmail(List.of(REMOTE_ID), OWNER_MAILBOX, null));
