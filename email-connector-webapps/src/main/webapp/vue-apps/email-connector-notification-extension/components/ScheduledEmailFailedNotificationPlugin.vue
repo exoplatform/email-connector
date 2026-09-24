@@ -23,9 +23,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <div
     role="button"
     tabindex="0"
-    @click.stop.prevent="openScheduledView"
-    @keydown.enter="openScheduledView"
-    @keydown.space="openScheduledView">
+    @click.stop.prevent="openMailbox"
+    @keydown.enter="openMailbox"
+    @keydown.space="openMailbox">
     <user-notification-template
       :notification="notification"
       :url="link"
@@ -123,11 +123,12 @@ export default {
       return typeof this.$te === 'function' && this.$te(key) ? this.$t(key) : null;
     },
     /**
-     * Opens the mailbox on its Scheduled view.
+     * Opens the mailbox on its Scheduled view, where a mail that was not sent waits, or
+     * on Sent for a mail that went out but whose owner copy failed (OWNER_COPY_FAILED).
      *
      * @returns {void}
      */
-    openScheduledView() {
+    openMailbox() {
       const folder = this.parameters.REASON === 'OWNER_COPY_FAILED' ? 'SENT' : 'SCHEDULED';
       document.dispatchEvent(new CustomEvent('open-email-box-folder', { detail: { folder } }));
     },
