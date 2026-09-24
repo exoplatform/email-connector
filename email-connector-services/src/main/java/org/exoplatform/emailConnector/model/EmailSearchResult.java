@@ -64,4 +64,34 @@ public class EmailSearchResult {
   // cache can carry one: a hit found on the server is envelope-only, and fetching
   // each body to quote it would cost one round-trip per result.
   private String      excerpt;
+
+  // The cached row's local id, when the hit was read from the local copy rather than
+  // off the mail server (EXO-90555): the key an agent names one mail by, which a UID,
+  // numbered per folder, is not. Null for a server hit.
+  private Long        emailId;
+
+  /**
+   * A hit without a local id -- every hit but one read from a shared mailbox's mirror.
+   *
+   * @param mailRemoteId the UID in the searched folder
+   * @param folder the folder searched
+   * @param subject the subject
+   * @param sender the sender
+   * @param receivedDate the reception date
+   * @param read whether it is read
+   * @param starred whether it is starred
+   * @param cached whether it is in the local cache
+   * @param excerpt a piece of it around the match, or null
+   */
+  public EmailSearchResult(Long mailRemoteId,
+                           String folder,
+                           String subject,
+                           EmailSender sender,
+                           Date receivedDate,
+                           boolean read,
+                           boolean starred,
+                           boolean cached,
+                           String excerpt) {
+    this(mailRemoteId, folder, subject, sender, receivedDate, read, starred, cached, excerpt, null);
+  }
 }
