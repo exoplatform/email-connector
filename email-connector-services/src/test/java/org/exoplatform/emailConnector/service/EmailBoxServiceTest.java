@@ -2728,6 +2728,8 @@ public class EmailBoxServiceTest {
                                                                             new MessagingException("550 5.7.60 SMTP; Client does not have permissions to send as this sender"))));
     assertFalse(EmailBoxService.isSenderPolicyRefusal(new MessagingException("451 4.7.1 You are not allowed to send from this address, try later")));
     assertFalse(EmailBoxService.isSenderPolicyRefusal(new MessagingException("550 5.1.1 User unknown")));
+    assertFalse(EmailBoxService.isSenderPolicyRefusal(new MessagingException("554 5.7.1 Message rejected: resend as plain text")),
+                "a phrase inside another word is not one");
     assertFalse(EmailBoxService.isSenderPolicyRefusal(new MessagingException("relay refused")));
     MessagingException loop = new MessagingException("421 closing");
     loop.setNextException(loop);
@@ -13997,6 +13999,46 @@ public class EmailBoxServiceTest {
     order.verify(ownerSent).appendMessages(filed.capture());
     order.verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
     assertSame(transmitted.get(0), filed.getValue()[0], "the very message that went out");
+  }
+
+  /**
+   * EXO-90583 -- a scheduled mail of a shared mailbox whose owner lets the sender write
+   * in her name still goes in the sender's own name: a draft remembers no name yet
+   * (EXO-90584), the composer refuses to schedule in the owner's, and the owner's
+   * consent is never consulted here -- From the sender, no Sender, JavaMail's own
+   * envelope, and no X-Exo-Sent-By on the owner's copy.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduledMailGoesInTheSendersOwnName() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(DELEGATE_ADDRESS);
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setSendDelegationId(100L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    when(ownerSent.exists()).thenReturn(true);
+    when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+    List<MimeMessage> transmitted = new ArrayList<>();
+    doAnswer(invocation -> transmitted.add(invocation.getArgument(0))).when(smtpTransmitter).transmit(any(MimeMessage.class));
+
+    emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+    });
+
+    MimeMessage sent = transmitted.get(0);
+    assertEquals(DELEGATE_ADDRESS, ((InternetAddress) sent.getFrom()[0]).getAddress());
+    assertNull(sent.getHeader("Sender"));
+    assertNull(sent.getSession().getProperty("mail.smtp.from"));
+    assertNull(sent.getHeader("X-Exo-Sent-By"));
+    verify(emailDelegationService, never()).checkSendMode(anyString(), anyLong(), any());
   }
 
   /**

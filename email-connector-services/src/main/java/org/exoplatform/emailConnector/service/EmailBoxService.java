@@ -233,13 +233,12 @@ public class EmailBoxService {
    * The texts a mail server's refusal of a sender carries (EXO-90583, EXO-90586): Stalwart
    * ("You are not allowed to send from this address"), Postfix with a login map ("Sender
    * address rejected: not owned by user …"), and the send-as wording of servers that grant
-   * it per mailbox. Lower case, matched as substrings of a 5xx reply.
+   * it per mailbox. Whole words, case ignored, looked for in a 5xx reply: a false match
+   * in the owner's name records a refusal that switches her consent off.
    */
-  private static final List<String> SENDER_POLICY_TEXTS                                     = List.of("not allowed to send from",
-                                                                                                      "not owned by",
-                                                                                                      "send as",
-                                                                                                      "sendas",
-                                                                                                      "send on behalf");
+  private static final Pattern    SENDER_POLICY_TEXT                                          =
+                                                     Pattern.compile("\\b(?:not allowed to send from|not owned by|send as|sendas|send on behalf)\\b",
+                                                                     Pattern.CASE_INSENSITIVE);
 
   /** A reply code opening a server's text, for a failure that carries no code of its own. */
   private static final Pattern    SMTP_REPLY_CODE                                             = Pattern.compile("^\\s*([2-5]\\d\\d)\\b");
@@ -8828,7 +8827,7 @@ public class EmailBoxService {
     if (code < 500 || code > 599) {
       return false;
     }
-    return SENDER_POLICY_TEXTS.stream().anyMatch(text::contains);
+    return SENDER_POLICY_TEXT.matcher(text).find();
   }
 
   /**

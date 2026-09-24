@@ -417,7 +417,9 @@ export default {
       // the view's: a switch of mailbox while composing leaves it as it is.
       sendMode: 'NONE',
       // Whether the owner's mail server refused this mail in their name: the banner and
-      // its "Send as yourself" stay until the user sends again or changes the name.
+      // its "Send as yourself" stay until the user sends again or changes the name. The
+      // mail is then back in the user's own name on screen, since the owner's can no
+      // longer be used.
       sendModeRefused: false,
       // The mailbox the mail belongs to (EXO-90595): the share's delegation id, or null
       // for the user's own. Set when the composer opens -- from the switcher for a new
@@ -1442,11 +1444,12 @@ export default {
       this.sharedMailbox = this.$emailConnectorMailBoxService.sharedMailboxState().current;
       this.mailboxDelegationId = this.sharedMailbox?.delegationId || null;
       this.sharedMailboxReply = !!this.sharedMailbox && !!email && !forward;
-      // PO decision Q-4 (EXO-90583): in the owner's name, in the mode they granted --
-      // the widest the server accepts now -- when they allow it; the user's own
-      // otherwise. Always changeable in the band.
+      // PO decision Q-4 (EXO-90583): a reply from the shared mailbox starts in the owner's
+      // name when they allow it, in the more transparent shape they allow -- on their
+      // behalf whenever that is usable (Q-1); a new mail or a forward starts in the
+      // user's own. Always changeable in the band.
       const modes = this.identityModes;
-      this.setIdentity(modes.length ? modes[modes.length - 1] : 'NONE');
+      this.setIdentity(this.sharedMailboxReply && modes.length ? modes[0] : 'NONE');
     },
     /**
      * The name the mail goes out in (EXO-90583), and what follows from it: the
@@ -1477,7 +1480,7 @@ export default {
      * @returns {void}
      */
     sendAsSelf() {
-      this.setIdentity('NONE');
+      this.sendModeRefused = false;
       this.sendEmail();
     },
     /**
@@ -2390,7 +2393,7 @@ export default {
       // too (EXO-90551); the answer says whether it did. The mail's own mailbox, never
       // the switcher's: for a draft, the server checks it is the draft's (EXO-90595).
       const delegationId = this.mailboxDelegationId;
-      const owner = this.sharedMailbox?.ownerFullName;
+      const owner = this.sharedMailboxOwnerName;
       // In the owner's name when the band says so (EXO-90583); the server checks it
       // against the owner's consent, on the mail's own share.
       const sendMode = delegationId && this.inOwnersName ? this.sendMode : null;
@@ -2427,6 +2430,10 @@ export default {
         // out, the mail stays, and the banner offers to send it in the user's own name --
         // never done without the user's click.
         if (sendMode && error?.code === 'emailConnector.sendMode.refusedByServer') {
+          // The owner's name is no longer offered (the refusal is recorded): the band
+          // says the mail now goes as the user, and the banner says why. Nothing is sent
+          // until the user sends again.
+          this.setIdentity('NONE');
           this.sendModeRefused = true;
           this.reloadSharedMailbox();
         } else if (sendMode && error?.code?.startsWith?.('emailConnector.sendMode.')) {
