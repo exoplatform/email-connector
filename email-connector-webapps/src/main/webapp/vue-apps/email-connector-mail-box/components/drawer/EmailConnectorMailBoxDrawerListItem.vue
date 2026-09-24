@@ -334,7 +334,7 @@ export default {
      * @returns {String} the line, or an empty string
      */
     draftMailboxLabel() {
-      return this.isDraft ? this.$emailConnectorMailBoxService.draftMailboxLabel(this.email.sendMailbox, this) : '';
+      return this.isDraft ? this.$emailConnectorMailBoxService.draftMailboxLabel(this.email.sendMailbox, this, this.email.sendMode) : '';
     },
     // Who the row names, which is not the same question for a draft as for a message.
     //
