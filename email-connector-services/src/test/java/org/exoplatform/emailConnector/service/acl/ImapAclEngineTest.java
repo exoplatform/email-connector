@@ -35,6 +35,7 @@ import static org.mockito.Mockito.when;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import javax.mail.Folder;
 import javax.mail.FolderNotFoundException;
@@ -64,6 +65,7 @@ import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.OwnFolder;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 
 /**
@@ -182,6 +184,27 @@ class ImapAclEngineTest {
     MailboxAclCapabilities capabilities = engine.probe(unreachable);
     assertFalse(capabilities.supported());
     assertEquals(MailboxAclException.UNREACHABLE, capabilities.reasonCode());
+  }
+
+  /**
+   * EXO-90582 -- a supported answer carries the shapes of writing in the owner's name the
+   * administrator declared for the session's connector, and says eXo alone holds the
+   * consent; an unsupported one carries none.
+   */
+  @Test
+  void probeCarriesTheConnectorsDeclaredSendModes() throws MessagingException {
+    when(store.hasCapability("ACL")).thenReturn(true);
+    when(store.hasCapability("NAMESPACE")).thenReturn(true);
+    try {
+      assertEquals(Set.of(SendMode.ON_BEHALF), engine.probe(session()).sendModes(), "on behalf by default");
+      System.setProperty(SendMode.MODES_PROPERTY_PREFIX + 7L, "as");
+      MailboxAclCapabilities capabilities = engine.probe(session());
+      assertEquals(Set.of(SendMode.ON_BEHALF, SendMode.AS), capabilities.sendModes());
+      assertFalse(capabilities.sendModeOnServer(), "an ACL letter cannot say send: eXo holds it");
+      assertTrue(engine.probe(session(mock(Store.class))).sendModes().isEmpty(), "nothing where sharing is unsupported");
+    } finally {
+      System.clearProperty(SendMode.MODES_PROPERTY_PREFIX + 7L);
+    }
   }
 
   /**
