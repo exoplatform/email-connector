@@ -199,7 +199,7 @@ export default {
      * @returns {String} the line, or an empty string
      */
     mailboxLabel() {
-      return this.$emailConnectorMailBoxService.draftMailboxLabel(this.scheduled.mailbox, this);
+      return this.$emailConnectorMailBoxService.draftMailboxLabel(this.scheduled.mailbox, this, this.scheduled.sendMode);
     },
     /**
      * @returns {Object} what the mail's state says, or null while it simply waits
