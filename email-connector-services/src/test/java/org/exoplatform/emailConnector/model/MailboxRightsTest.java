@@ -201,6 +201,13 @@ class MailboxRightsTest {
    * EXO-90548 -- taking mail out of a folder is offered with t AND e: without e a server
    * keeps the original (silently, on Dovecot).
    */
+  @Test
+  void movingMailOutNeedsDeleteAndExpunge() {
+    assertTrue(MailboxRights.of("lrswite").affordances().get("moveOut"));
+    assertFalse(MailboxRights.of("lrswit").affordances().get("moveOut"));
+    assertTrue(MailboxRights.of("lrswit").affordances().get("delete"), "the flag alone is still said as it is");
+  }
+
   /**
    * EXO-90556, live on Stalwart 0.11.8 -- a Reader granted {@code lrs} reads back
    * {@code wsrl} (GETACL) and {@code rlsw} (MYRIGHTS): the letters stay the server's, and
@@ -220,12 +227,5 @@ class MailboxRightsTest {
     assertTrue(MailboxRights.of("rlitesw").affordances().get("star"));
     assertTrue(MailboxRights.of("lrw").affordances().get("star"), "no s: a real w");
     assertFalse(MailboxRights.of("lrswi").hasCoupledWrite());
-  }
-
-  @Test
-  void movingMailOutNeedsDeleteAndExpunge() {
-    assertTrue(MailboxRights.of("lrswite").affordances().get("moveOut"));
-    assertFalse(MailboxRights.of("lrswit").affordances().get("moveOut"));
-    assertTrue(MailboxRights.of("lrswit").affordances().get("delete"), "the flag alone is still said as it is");
   }
 }

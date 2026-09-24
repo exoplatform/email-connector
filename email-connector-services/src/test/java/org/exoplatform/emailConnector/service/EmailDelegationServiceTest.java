@@ -1233,6 +1233,31 @@ class EmailDelegationServiceTest {
   }
 
   /**
+   * A row that recorded INBOX as a role's folder (a stale reading, EXO-90556) never makes
+   * INBOX a "former" role folder: narrowing the Trash that moved to "Deleted Items" writes
+   * no Trash letters on INBOX and removes nothing there -- only "Remove access" touches
+   * INBOX -- even though INBOX's ACL names the grantee.
+   */
+  @Test
+  void changePresetNeverNarrowsInboxAsAFormerRoleFolder() throws Exception {
+    EmailDelegation accepted = aRowSharingRoleFolders();
+    Map<FolderRole, String> stale = new EnumMap<>(ownerRoleFolders());
+    stale.put(FolderRole.TRASH, INBOX);
+    accepted.setOwnerRoleFolders(stale);
+    givenTheOwnersRowToChange(accepted);
+    Map<FolderRole, String> moved = new EnumMap<>(ownerRoleFolders());
+    moved.put(FolderRole.TRASH, "Deleted Items");
+    when(engine.findRoleFolders(any())).thenReturn(moved);
+    lenient().when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswit"))));
+
+    service.changePreset(OWNER, 100L, DelegationPreset.READER);
+
+    verify(engine).grant(any(), eq("Deleted Items"), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any(), eq(FolderRole.TRASH));
+    verify(engine, never()).grant(any(), eq(INBOX), any(), any(), any(), eq(FolderRole.TRASH));
+    verify(engine, never()).revoke(any(), eq(INBOX), any());
+  }
+
+  /**
    * "Remove access" removes every entry of the grantee on the owner's folders -- the
    * ones the server lists, one written in another application included, and the ones the
    * grant recorded -- INBOX once; a folder that refuses does not stop it.
