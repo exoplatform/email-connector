@@ -1404,6 +1404,22 @@ public class EmailBoxStorage {
     return emailBoxDao.findByUserIdForSearch(userId, excluded).stream().map(this::fromEntityForSearch).toList();
   }
 
+  /**
+   * The cached messages of some folders, as the search over cached mail needs them --
+   * the folders of the mailboxes shared with the user that the unified search reads
+   * (EXO-90554). One query for all of them.
+   *
+   * @param userId the user whose mirror it is
+   * @param folders the folder keys to read; nothing is read when empty
+   * @return their cached messages, newest first, carrying only what a search reads
+   */
+  public List<Email> getEmailsForSearchInFolders(String userId, Collection<String> folders) {
+    if (folders == null || folders.isEmpty()) {
+      return List.of();
+    }
+    return emailBoxDao.findByUserIdAndFoldersForSearch(userId, folders).stream().map(this::fromEntityForSearch).toList();
+  }
+
   @SneakyThrows
   private Email fromEntityForSearch(EmailBoxEntity emailBoxEntity) {
     if (emailBoxEntity == null) {

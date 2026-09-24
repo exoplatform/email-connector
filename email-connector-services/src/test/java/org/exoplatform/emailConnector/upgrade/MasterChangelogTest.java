@@ -676,12 +676,61 @@ public class MasterChangelogTest {
   @Test
   void theSharedInboxNotificationBoundaryOnMySqlAndPostgreSql() throws Exception {
     for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
-      String update = offlineUpdateSql(vendor, "1.0.0-84").toUpperCase(Locale.ROOT);
+      // Bounded to its own changeset: 1.0.0-85 adds a NOT NULL column.
+      String update = offlineUpdateSql(vendor, "1.0.0-84", "1.0.0-84").toUpperCase(Locale.ROOT);
       assertTrue(update.contains("ALTER TABLE EMAIL_FOLDER ADD NOTIFIED_UID BIGINT"), vendor + ": " + update);
       assertFalse(update.contains("NOT NULL"), vendor + " the column is nullable: " + update);
       assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
       String rollback = offlineRollbackSql(vendor, "1.0.0-84").toUpperCase(Locale.ROOT);
       assertTrue(rollback.contains("ALTER TABLE EMAIL_FOLDER DROP COLUMN NOTIFIED_UID"), vendor + " rollback: " + rollback);
+    }
+  }
+
+  /**
+   * EXO-90554 -- 1.0.0-85 adds EMAIL_DELEGATION.SEARCH_INCLUDED, reading TRUE on a row
+   * that existed before it (searched by default, PO decision Q-6), rolls back to a tag
+   * placed immediately before it and applies again.
+   *
+   * @throws Exception when the changeset does not apply or roll back
+   */
+  @Test
+  void theDelegationSearchToggleRollsBackAndReapplies() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback85" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-85"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-delegation-search-toggle");
+      assertFalse(columnExists(connection, "EMAIL_DELEGATION", "SEARCH_INCLUDED"), "not before 1.0.0-85");
+      try (Statement statement = connection.createStatement()) {
+        statement.executeUpdate("INSERT INTO EMAIL_DELEGATION (ID, GRANTEE_ID, OWNER_ID, OWNER_MAILBOX, CONNECTOR_ID, PRESET, RIGHTS, STATUS,"
+            + " ORIGIN, CREATED_DATE, UPDATED_DATE) VALUES (1, 'bob', 'alice', 'alice@acme.com', 7, 'READER', 'lrs', 'ACCEPTED', 'EXO',"
+            + " CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
+      }
+      liquibase.update("");
+      try (Statement statement = connection.createStatement();
+          ResultSet row = statement.executeQuery("SELECT SEARCH_INCLUDED FROM EMAIL_DELEGATION WHERE ID = 1")) {
+        assertTrue(row.next());
+        assertTrue(row.getBoolean(1), "an existing share is searched by default");
+      }
+      liquibase.rollback("before-delegation-search-toggle", "");
+      assertFalse(columnExists(connection, "EMAIL_DELEGATION", "SEARCH_INCLUDED"), "the rollback drops it");
+      liquibase.update("");
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "SEARCH_INCLUDED"), "the changeset applies again after its rollback");
+    }
+  }
+
+  /**
+   * EXO-90554 -- 1.0.0-85 as MySQL and PostgreSQL would run it, and its rollback.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theDelegationSearchToggleOnMySqlAndPostgreSql() throws Exception {
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-85").toUpperCase(Locale.ROOT);
+      assertTrue(update.contains("ALTER TABLE EMAIL_DELEGATION ADD SEARCH_INCLUDED") && update.contains("DEFAULT")
+          && update.contains("NOT NULL"), vendor + ": " + update);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-85").toUpperCase(Locale.ROOT);
+      assertTrue(rollback.contains("DROP COLUMN SEARCH_INCLUDED"), vendor + " rollback: " + rollback);
     }
   }
 
@@ -725,7 +774,8 @@ public class MasterChangelogTest {
   @Test
   void theSharedMailboxFolderChangesetsOnMySqlAndPostgreSql() throws Exception {
     for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
-      String update = offlineUpdateSql(vendor, "1.0.0-81").toUpperCase(Locale.ROOT);
+      // Bounded to the slice's own changesets: a later one may well add a NOT NULL column.
+      String update = offlineUpdateSql(vendor, "1.0.0-81", "1.0.0-83").toUpperCase(Locale.ROOT);
       assertTrue(update.contains("ALTER TABLE EMAIL_FOLDER ADD FOLDER_ROLE VARCHAR(20)"), vendor + " unquoted: " + update);
       for (String column : List.of("RIGHTS VARCHAR(32)", "RIGHTS_CHECK_DATE TIMESTAMP", "ALTER TABLE EMAIL_DELEGATION ADD GRANTED_ROLES VARCHAR(100)",
                                    "OWNER_ROLE_FOLDERS VARCHAR(2000)")) {
@@ -887,9 +937,26 @@ public class MasterChangelogTest {
    * @throws Exception when it cannot be generated
    */
   private String offlineUpdateSql(String vendor, String fromId) throws Exception {
+    return offlineUpdateSql(vendor, fromId, null);
+  }
+
+  /**
+   * The SQL a vendor's database would run for the changesets from an id through another,
+   * as {@link #offlineUpdateSql(String, String)} renders it.
+   *
+   * @param vendor the offline URL's vendor part, e.g. {@code mysql?version=8.0.17}
+   * @param fromId the first changeset whose SQL is generated
+   * @param throughId the last one, null for the end of the file
+   * @return the SQL, one statement per line
+   * @throws Exception when it cannot be generated
+   */
+  private String offlineUpdateSql(String vendor, String fromId, String throughId) throws Exception {
     StringBuilder sql = new StringBuilder();
     Database database = offlineDatabase(vendor);
     for (ChangeSet changeSet : changeSetsFrom(database, vendor, fromId)) {
+      if (throughId != null && sequenceNumber(changeSet.getId()) > sequenceNumber(throughId)) {
+        continue;
+      }
       for (Change change : changeSet.getChanges()) {
         appendSql(sql, change.generateStatements(database), database);
       }
