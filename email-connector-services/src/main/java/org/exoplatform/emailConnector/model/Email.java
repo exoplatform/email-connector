@@ -197,4 +197,11 @@ public class Email {
   // readReceiptState is one cached copy's mirror of the answer, this is the answer.
   @JsonProperty(access = JsonProperty.Access.READ_ONLY)
   private ReadReceiptState     readReceiptAnswer;
+
+  // On a draft, the mailbox shared with its writer that it was written in (EXO-90595):
+  // the share's delegation id, null for the writer's own mailbox. In on a draft's FIRST
+  // save only, where the server resolves it against the writer's own accepted shares;
+  // ignored by every later save and by every send. Out on every read of a draft, so the
+  // composer resumes it in its own mailbox whatever the switcher shows.
+  private Long                 sendDelegationId;
 }

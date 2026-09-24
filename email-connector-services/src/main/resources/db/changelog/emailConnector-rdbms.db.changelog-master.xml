@@ -1745,4 +1745,25 @@
       <dropColumn tableName="EMAIL_DELEGATION" columnName="SEARCH_INCLUDED"/>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-87">
+    <comment>
+      EMAIL_BOX.DRAFT_DELEGATION_ID (EXO-90595): on a draft row, the mailbox shared with
+      the row's user that the draft was written in -- an EMAIL_DELEGATION id, resolved on
+      the server against the writer's own accepted shares at the draft's first save and
+      never changed after. A scheduled mail is its draft row, so it carries it too. Null
+      means the writer's own mailbox, and is what every row written before this reads.
+      The send of the draft, interactive or scheduled, goes through that share and checks
+      it again; a share that has ended fails the send, it never falls back to the
+      writer's own mailbox. No foreign key on purpose: ON DELETE SET NULL would turn an
+      ended share into exactly that fallback. Nullable, no default, no index (a draft is
+      read by USER_ID and DRAFT_LOCAL_ID). The identity a draft is sent under (phase 3)
+      is a sibling column in a changeset of its own. Rolled back explicitly.
+    </comment>
+    <addColumn tableName="EMAIL_BOX">
+      <column name="DRAFT_DELEGATION_ID" type="BIGINT"/>
+    </addColumn>
+    <rollback>
+      <dropColumn tableName="EMAIL_BOX" columnName="DRAFT_DELEGATION_ID"/>
+    </rollback>
+  </changeSet>
 </databaseChangeLog>

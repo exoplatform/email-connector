@@ -815,6 +815,13 @@ public class EmailBoxService {
   private static final String     ATTACHMENT_GONE_CODE                                        =
                                                        "emailConnector.drafts.send.attachmentGone";
 
+  /**
+   * The message code a draft send naming a mailbox other than the draft's own is refused
+   * with (EXO-90595).
+   */
+  public static final String      MAILBOX_MISMATCH_CODE                                       =
+                                                        "emailConnector.drafts.send.mailboxMismatch";
+
   // The message code the size cap is refused with, which a scheduled send maps to its own
   // error code rather than letting it read as an internal failure.
   private static final String     MAX_SIZE_ERROR_CODE                                         =
@@ -9014,6 +9021,12 @@ public class EmailBoxService {
    * {@link #sendEmail} gives it) on the first save only; on every later save it is
    * ignored, because a resumed draft carries its OWN minted id in that field and
    * threading it against itself is exactly the loop that would follow.
+   * <p>
+   * The mailbox the draft is written in is part of that identity (EXO-90595): a first
+   * save naming a share ({@code sendDelegationId}) records it once the share resolves as
+   * one of the writer's own accepted shares, and no later save can move it -- a draft
+   * opened while the switcher shows another mailbox stays the draft of the mailbox it
+   * was written in.
    *
    * @param draft the composed draft; a blank {@code draftLocalId} means a first save
    * @param username the mailbox owner
@@ -9022,8 +9035,13 @@ public class EmailBoxService {
    *         null when the save carried a local id the user has no draft under (the
    *         draft has since been sent or discarded — see below)
    * @throws IllegalAccessException if the user may not use their mailbox
+   * @throws ObjectNotFoundException when a first save names a share that is not the
+   *           writer's
+   * @throws DelegationRevokedException when a first save names a share no longer
+   *           accepted
    */
-  public Email saveDraft(Email draft, String username, boolean pushToServer) throws IllegalAccessException {
+  public Email saveDraft(Email draft, String username, boolean pushToServer) throws IllegalAccessException,
+                                                                             ObjectNotFoundException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -9050,8 +9068,14 @@ public class EmailBoxService {
         // autosave landing now would change a mail the owner already decided to send.
         requireNotScheduled(username, draftLocalId);
       }
-      Email toStore = stored == null ? buildFirstDraftRevision(draft, draftLocalId, username, userEmailSetting)
-                                     : buildNextDraftRevision(draft, stored);
+      Email toStore;
+      if (stored == null) {
+        Long share = firstSaveShare(draft, username);
+        toStore = buildFirstDraftRevision(draft, draftLocalId, username, userEmailSetting);
+        toStore.setSendDelegationId(share);
+      } else {
+        toStore = buildNextDraftRevision(draft, stored);
+      }
       Email saved = emailBoxStorage.saveDraft(toStore);
       if (!pushToServer || !isServerDraftsEnabled() || DraftState.SYNCED.equals(saved.getDraftState())) {
         return saved;
@@ -9147,26 +9171,34 @@ public class EmailBoxService {
   }
 
   /**
-   * {@link #sendDraft(Email, String)}, from a mailbox shared with the sender when a share
-   * is named (EXO-90551): the composer's own draft of a mail written there is sent as
-   * any draft is, and a copy is filed in the owner's Sent folder, as
-   * {@link #sendEmail(Email, String, Long)} files it. The share is resolved before the
-   * draft is claimed, so a refusal leaves the draft exactly where it was.
+   * {@link #sendDraft(Email, String)} of a draft written in a mailbox shared with the
+   * sender (EXO-90551): sent as any draft is, and a copy is filed in the owner's Sent
+   * folder, as {@link #sendEmail(Email, String, Long)} files it.
+   * <p>
+   * The mailbox is the DRAFT's (EXO-90595): the share its first save recorded, whatever
+   * the composer's switcher shows now. A {@code delegationId} naming another mailbox --
+   * the draft's own mailbox included, when the request names a share for a draft of the
+   * sender's own -- is refused, never followed: the composer shows the user which
+   * mailbox the mail goes from, and the server never sends from one it did not show.
+   * None named means the draft's. The share is resolved again here, before the draft is
+   * claimed, so a refusal leaves the draft exactly where it was.
    *
    * @param draft the composed draft as the composer is showing it, carrying the local id
    *          of the row it is editing
    * @param username the sender
-   * @param delegationId the share the mail is sent from, null for the sender's own mailbox
-   * @return what became of the owner's copy, null when no share is named
+   * @param delegationId the share the composer believes the draft belongs to, or null
+   * @return what became of the owner's copy, null for a draft of the sender's own mailbox
    * @throws IllegalAccessException if the user may not send from their mailbox
    * @throws ObjectNotFoundException if the user has no draft under that local id, or the
-   *           named share is not theirs
-   * @throws DelegationRevokedException when the named share is no longer accepted
+   *           draft's share is not theirs
+   * @throws DelegationRevokedException when the draft's share is no longer accepted
+   * @throws IllegalArgumentException {@value #MAILBOX_MISMATCH_CODE} when
+   *           {@code delegationId} is not the draft's
    */
   public OwnerCopy sendDraft(Email draft, String username, Long delegationId) throws IllegalAccessException,
                                                                                   ObjectNotFoundException {
-    String ownerSentKey = ownerSentKeyFor(username, delegationId);
     OwnerCopy ownerCopy = null;
+    Long share = null;
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -9199,6 +9231,11 @@ public class EmailBoxService {
       // A scheduled draft is sent by its schedule ("send now"), never from a composer:
       // two senders of one draft is how a mail goes out twice.
       requireNotScheduled(username, draftLocalId);
+      share = stored.getSendDelegationId();
+      if (delegationId != null && !delegationId.equals(share)) {
+        throw new IllegalArgumentException(MAILBOX_MISMATCH_CODE);
+      }
+      String ownerSentKey = draftShareSentKey(username, stored);
       // The files the draft has been carrying since some earlier session, read once and
       // checked BEFORE anything is written or claimed. A send that cannot carry every
       // file it shows must leave the draft exactly where it was: nothing saved, nothing
@@ -9226,7 +9263,7 @@ public class EmailBoxService {
         draftLocks.remove(lockKey);
       }
     }
-    return delegationId == null ? null : ownerCopy;
+    return share == null ? null : ownerCopy;
   }
 
   /**
@@ -9596,6 +9633,9 @@ public class EmailBoxService {
    *           {@code scheduler} refuses with
    * @throws ScheduledSendConflictException when the draft is already scheduled or being
    *           sent
+   * @throws DelegationRevokedException when the draft was written in a mailbox no longer
+   *           shared with the user (EXO-90595); {@code ObjectNotFoundException} when that
+   *           share is not theirs at all
    * @throws IllegalStateException {@code emailConnector.scheduled.serverCopyRemains} when
    *           the server copy could not be removed
    */
@@ -9630,6 +9670,9 @@ public class EmailBoxService {
         throw new ScheduledSendConflictException(ScheduledSendConflictException.SENDING);
       }
       requireNotScheduled(username, draftLocalId);
+      // A draft of a mailbox no longer shared with its writer would only fail at its date
+      // (EXO-90595): refused now, while the writer is there to be told.
+      draftShareSentKey(username, stored);
       try {
         readSendableDraftFiles(stored, username, userEmailSetting);
       } catch (IllegalStateException e) {
@@ -9796,13 +9839,19 @@ public class EmailBoxService {
    * If the node stops between the acceptance and the record, the caller's recovery
    * finds the send interrupted and never sends again (see
    * {@code EmailScheduledSendService}).
+   * <p>
+   * A draft written in a mailbox shared with its owner (EXO-90595) goes through that
+   * share: checked again before anything else -- no longer the owner's, or no longer
+   * accepted, and the send fails PERMANENT with {@link ScheduledSendError#MAILBOX_UNSHARED},
+   * nothing sent -- and, once transmitted, a copy is filed in the mailbox owner's Sent
+   * as an interactive send files it.
    *
    * @param username the mailbox owner, as whom the mail is sent
    * @param draftLocalId the draft's handle
    * @param onTransmitted run once the mail server accepted the message
    * @throws ScheduledSendFailure classified: TRANSIENT (nothing reached the server),
-   *           PERMANENT (refused before anything was accepted), AMBIGUOUS (may have
-   *           been accepted)
+   *           PERMANENT (refused before anything was accepted, a mailbox no longer
+   *           shared included), AMBIGUOUS (may have been accepted)
    * @throws ObjectNotFoundException if the draft is gone
    */
   public void sendStoredDraft(String username,
@@ -9832,6 +9881,15 @@ public class EmailBoxService {
         // schedule lock just before the schedule landed). Nothing is transmitted here:
         // the retry finds the draft gone (sent) or back to its state (refused).
         throw new ScheduledSendFailure(ScheduledSendFailure.Kind.TRANSIENT, ScheduledSendError.NETWORK, null);
+      }
+      // The mailbox the mail was written in, checked again now and before anything else
+      // (EXO-90595): a share that has ended since fails the send, which is then never
+      // made from the owner's own mailbox instead.
+      String ownerSentKey;
+      try {
+        ownerSentKey = draftShareSentKey(username, stored);
+      } catch (ObjectNotFoundException | DelegationRevokedException e) {
+        throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.MAILBOX_UNSHARED, e);
       }
       List<EmailAttachment> storedAttachments;
       try {
@@ -9874,6 +9932,11 @@ public class EmailBoxService {
         afterTransmission(message, stored, StringUtils.isNotBlank(stored.getInReplyTo()), username, userEmailSetting);
       } catch (RuntimeException e) {
         LOG.warn("A scheduled mail of user {} was sent but its post-send bookkeeping failed", username, e);
+      }
+      if (ownerSentKey != null) {
+        // The owner's copy of a mail sent from their mailbox (EXO-90551), before the
+        // cleanup frees the stored files its parts stream from. Fenced: the mail is out.
+        copyToOwnerSent(message, username, userEmailSetting, ownerSentKey);
       }
       cleanupSentDraft(stored, username, userEmailSetting);
     } finally {
@@ -12453,7 +12516,9 @@ public class EmailBoxService {
                                                 // attachments are parts of a message on the server.
                                                 null, false, null, null, null,
                                                 // The read-receipt fields, set by name just below.
-                                                false, null, null, false, null, null);
+                                                false, null, null, false, null, null,
+                                                // A synced message is no draft of a shared mailbox (EXO-90595).
+                                                null);
           captureReadReceiptRequest(message, cached, folderKey);
           alignReadReceiptAnswer(cached, username);
           emailBoxStorage.createEmail(cached);
@@ -15270,6 +15335,46 @@ public class EmailBoxService {
     }
     String key = emailDelegationService.ownerSentFolderKey(username, delegationId);
     return key != null && emailConnectorService.isSharedMailboxSentCopyEnabled() ? key : null;
+  }
+
+  /**
+   * The share a draft's first save records (EXO-90595): the one the composer names, once
+   * it resolves as one of the writer's own accepted shares -- the client's id is never
+   * stored on its word. Null for a draft of the writer's own mailbox.
+   *
+   * @param draft the draft as the composer sent it
+   * @param username the writer
+   * @return the share's id, or null
+   * @throws ObjectNotFoundException when the named share is not the writer's
+   * @throws DelegationRevokedException when the named share is no longer accepted
+   */
+  private Long firstSaveShare(Email draft, String username) throws ObjectNotFoundException {
+    Long named = draft.getSendDelegationId();
+    if (named == null) {
+      return null;
+    }
+    return emailDelegationService.requireAcceptedShare(username, named).getId();
+  }
+
+  /**
+   * The one place a stored draft's mailbox is resolved before it is sent, interactively,
+   * scheduled or by its schedule (EXO-90595): the share the draft recorded, checked again
+   * now -- still the sender's, still accepted -- and the owner's Sent it files its copy
+   * into (EXO-90551, and the administrator's switch). A draft of the sender's own mailbox
+   * resolves to no copy. Called before anything is sent, claimed or taken apart, so an
+   * ended share refuses the send rather than let it leave from the sender's own mailbox.
+   * <p>
+   * The identity a draft is sent under (phase 3, on behalf of / as the owner) is checked
+   * here too when it arrives, from its own column beside the share's.
+   *
+   * @param username the sender
+   * @param stored the draft's row
+   * @return the owner's Sent folder key, or null when no copy is to be filed
+   * @throws ObjectNotFoundException when the draft's share is not the sender's
+   * @throws DelegationRevokedException when the draft's share is no longer accepted
+   */
+  private String draftShareSentKey(String username, Email stored) throws ObjectNotFoundException {
+    return ownerSentKeyFor(username, stored.getSendDelegationId());
   }
 
   /**

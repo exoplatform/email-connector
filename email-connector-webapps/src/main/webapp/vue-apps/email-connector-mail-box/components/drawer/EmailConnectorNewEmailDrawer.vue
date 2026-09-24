@@ -48,6 +48,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         text>
         {{ scheduledEditBanner }}
       </v-alert>
+      <!-- A draft of a mailbox no longer shared with the user (EXO-90595): it cannot be
+           sent from there, and the server never sends it from the user's own instead. -->
+      <v-alert
+        v-if="mailboxUnshared"
+        class="mx-4 mt-3 mb-0 shared-mailbox-unshared-banner"
+        type="warning"
+        dense
+        text>
+        {{ $t('emailConnector.mailBox.sharedMailbox.composer.unshared') }}
+      </v-alert>
       <email-connector-new-email-shared-mailbox-notice
         v-if="sharedMailbox"
         :entry="sharedMailbox"
@@ -367,6 +377,12 @@ export default {
       // whether the composer answers a message there, for the band's wording.
       sharedMailbox: null,
       sharedMailboxReply: false,
+      // The mailbox the mail belongs to (EXO-90595): the share's delegation id, or null
+      // for the user's own. Set when the composer opens -- from the switcher for a new
+      // mail, from the draft itself for a resumed one -- and never from the switcher
+      // afterwards: a draft's first save records it on the server, and every send names
+      // it. sharedMailbox above is its switcher entry, null once it is no longer shared.
+      mailboxDelegationId: null,
       // What is typed into each field but not yet a chip. Send stays reachable
       // while To holds something, so clicking Send can blur the field into
       // committing it. After that blur, anything still pending is text the field
@@ -492,6 +508,15 @@ export default {
     },
   },
   computed: {
+    /**
+     * Whether the mail belongs to a shared mailbox the switcher no longer offers: a
+     * resumed draft, or a scheduled mail being edited, whose share has ended (EXO-90595).
+     *
+     * @returns {Boolean} true when the mail's mailbox is no longer shared with the user
+     */
+    mailboxUnshared() {
+      return !!this.mailboxDelegationId && !this.sharedMailbox;
+    },
     /**
      * Whether the shared mailbox's owner is among the copied (or direct) recipients --
      * what the band's "Copy the owner" box shows, read off the chips so that removing
@@ -1292,6 +1317,7 @@ export default {
       this.draftSession.localId = draft.draftLocalId;
       this.draftSession.revision = draft.draftRevision || 0;
       this.draftSession.state = draft.draftState;
+      this.seedDraftMailbox(draft);
       this.newEmailDrawer = true;
       this.$nextTick(() => this.measureEditorMaxHeight());
       this.$nextTick(() => {
@@ -1328,12 +1354,31 @@ export default {
      */
     seedSharedMailbox(email, forward) {
       this.sharedMailbox = this.$emailConnectorMailBoxService.sharedMailboxState().current;
+      this.mailboxDelegationId = this.sharedMailbox?.delegationId || null;
       this.sharedMailboxReply = !!this.sharedMailbox && !!email && !forward;
       if (this.sharedMailbox) {
         // PO decision Q-3 (EXO-90551): off when the copy into the owner's Sent will be
         // filed -- the owner then finds the mail there -- on otherwise; always visible.
         this.setOwnerCopied(!this.sharedMailbox.sentCopy);
       }
+    },
+    /**
+     * Takes the mailbox a stored draft belongs to from the draft itself (EXO-90595),
+     * never from the switcher: a draft written in a shared mailbox stays that mailbox's
+     * whatever mailbox the drawer shows now, and one of the user's own stays theirs.
+     * Its band is the share's switcher entry; a share the switcher no longer offers
+     * leaves no band, and the warning says the draft cannot be sent from there. The Cc
+     * the draft was saved with is left as it is.
+     *
+     * @param {object} draft - the stored draft
+     * @returns {void}
+     */
+    seedDraftMailbox(draft) {
+      const delegationId = draft?.sendDelegationId || null;
+      const entries = this.$emailConnectorMailBoxService.sharedMailboxState().entries || [];
+      this.mailboxDelegationId = delegationId;
+      this.sharedMailbox = delegationId && entries.find(entry => entry.delegationId === delegationId) || null;
+      this.sharedMailboxReply = !!this.sharedMailbox && !!draft?.inReplyTo;
     },
     /**
      * Copies the shared mailbox's owner, or stops copying them: a Cc chip added or
@@ -1512,6 +1557,7 @@ export default {
       this.bcc = [];
       this.sharedMailbox = null;
       this.sharedMailboxReply = false;
+      this.mailboxDelegationId = null;
       // Reset with its siblings: the content template is v-if'd, so the field is
       // destroyed here and rebuilt with term '' -- an initial value, which the
       // watcher does not report. Left behind, a stale pending term would render
@@ -1615,6 +1661,8 @@ export default {
         // Every save carries the choice: the server reads a missing value as "no", and
         // a draft saved without it would be sent without the receipt asked for.
         readReceiptRequested: this.readReceiptRequested,
+        // The mailbox the draft belongs to, recorded by its first save (EXO-90595).
+        mailboxDelegationId: this.mailboxDelegationId,
         hasContent: this.hasContent,
         signature: this.composeSignature(),
       };
@@ -1903,6 +1951,9 @@ export default {
           cc: snapshot.cc,
           bcc: snapshot.bcc,
           readReceiptRequested: !!snapshot.readReceiptRequested,
+          // On a FIRST save only, as the parent's id: the server records the mailbox then,
+          // once it resolves as one of the user's own shares, and never moves it after.
+          sendDelegationId: session.localId ? null : snapshot.mailboxDelegationId || null,
         };
         // Captured before the request: the answer is judged against what this session
         // believed a moment ago, and the assignment below is what replaces it.
@@ -2149,8 +2200,9 @@ export default {
       // the save, the send and the two removals have to happen in one order, on the
       // server, where a failure between them can be reasoned about.
       // From a shared mailbox, the share is named so that its owner's Sent gets a copy
-      // too (EXO-90551); the answer says whether it did.
-      const delegationId = this.sharedMailbox?.delegationId;
+      // too (EXO-90551); the answer says whether it did. The mail's own mailbox, never
+      // the switcher's: for a draft, the server checks it is the draft's (EXO-90595).
+      const delegationId = this.mailboxDelegationId;
       const owner = this.sharedMailbox?.ownerFullName;
       const send = this.draftSession.localId
         ? this.$emailConnectorMailBoxService.sendDraft(this.draftSession.localId, this.email, delegationId)
@@ -2180,7 +2232,11 @@ export default {
         // cannot help -- say so rather than "try again". Whether to offer a send from
         // the user's own mailbox instead is a PO call, not made here.
         if (delegationId && error?.code?.startsWith?.('emailConnector.delegation.')) {
-          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.sharedMailboxGone', { 0: owner }), 'error');
+          this.$root.$emit('alert-message', owner
+            ? this.$t('emailConnector.mailBox.newEmail.drawer.send.sharedMailboxGone', { 0: owner })
+            : this.$t('emailConnector.mailBox.sharedMailbox.composer.unshared'), 'error');
+        } else if (error?.code === 'emailConnector.drafts.send.mailboxMismatch') {
+          this.$root.$emit('alert-message', this.$t(error.code), 'error');
         } else {
           this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.error'), 'error');
         }

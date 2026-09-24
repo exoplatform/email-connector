@@ -2788,18 +2788,39 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * A usable mailbox holding one local-only draft written in the given mailbox
+   * (EXO-90595), and nothing a send would reach: the fixture of the refusals that come
+   * before any of it.
+   *
+   * @param delegationId the share the draft was written in, null for the own mailbox
+   * @return the stored draft
+   */
+  private Email givenAStoredDraftOfMailbox(Long delegationId) {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    stored.setMailRemoteId(null);
+    stored.setSendDelegationId(delegationId);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    return stored;
+  }
+
+  /**
    * A mailbox holding one local-only draft that is ready to be sent — the shortest
    * fixture that reaches {@code deliver} through the draft path.
+   *
+   * @return the stored draft, for a test to give it a mailbox
    */
   @SneakyThrows
-  private void mockDraftSendFixture() {
+  private Email mockDraftSendFixture() {
     givenAUsableMailbox();
-    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    lenient().when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
     givenADraftsFolder();
     Email stored = storedDraft();
     stored.setDraftState(DraftState.LOCAL_ONLY);
     stored.setMailRemoteId(null);
     when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    return stored;
   }
 
   /**
@@ -7631,7 +7652,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aDraftSentFromASharedMailboxFilesTheOwnersCopy() {
-    mockDraftSendFixture();
+    mockDraftSendFixture().setSendDelegationId(100L);
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
     when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
     when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
@@ -7658,7 +7679,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aDraftSentFromAShareThatIsNotTheSendersIsNotClaimed() {
-    lenient().when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    givenAStoredDraftOfMailbox(7L);
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 7L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
 
     try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
@@ -7666,6 +7687,145 @@ public class EmailBoxServiceTest {
       transportMock.verify(() -> Transport.send(any(Message.class)), never());
     }
     verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
+  }
+
+  /**
+   * EXO-90595 (F4) -- a draft written in a shared mailbox is sent through ITS share when
+   * the request names none: the composer's switcher, whatever it shows now, is not
+   * where the mailbox comes from. The owner's copy is filed and the answer says so.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftIsSentThroughTheShareItWasWrittenInWhenTheRequestNamesNone() {
+    mockDraftSendFixture().setSendDelegationId(100L);
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPStore store = (IMAPStore) userEmailSettingService.connect("1", TEST_USER);
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    when(ownerSent.exists()).thenReturn(true);
+    when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertEquals(EmailBoxService.OwnerCopy.FILED, emailBoxService.sendDraft(draft("draft-1"), TEST_USER, null));
+
+      transportMock.verify(() -> Transport.send(any(Message.class)));
+      verify(ownerSent).appendMessages(any(Message[].class));
+    }
+  }
+
+  /**
+   * EXO-90595 (F4) -- a send naming another mailbox than the draft's is refused before
+   * anything is saved, claimed or sent, both ways: a draft of a share sent as from
+   * another share, and a draft of the sender's own mailbox sent as from a share. The
+   * server never sends from a mailbox other than the one the draft belongs to.
+   */
+  @Test
+  @SneakyThrows
+  void aSendNamingAnotherMailboxThanTheDraftsIsRefusedBeforeAnythingIsClaimed() {
+    Email stored = givenAStoredDraftOfMailbox(null);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      stored.setSendDelegationId(100L);
+      IllegalArgumentException otherShare = assertThrows(IllegalArgumentException.class,
+                                                         () -> emailBoxService.sendDraft(draft("draft-1"), TEST_USER, 101L));
+      assertEquals(EmailBoxService.MAILBOX_MISMATCH_CODE, otherShare.getMessage());
+      stored.setSendDelegationId(null);
+      IllegalArgumentException ownDraft = assertThrows(IllegalArgumentException.class,
+                                                       () -> emailBoxService.sendDraft(draft("draft-1"), TEST_USER, 100L));
+      assertEquals(EmailBoxService.MAILBOX_MISMATCH_CODE, ownDraft.getMessage());
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+    }
+    verify(emailDelegationService, never()).ownerSentFolderKey(anyString(), anyLong());
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+    verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
+  }
+
+  /**
+   * EXO-90595 -- a draft whose share ended since it was written is refused before it is
+   * claimed, whatever the request names: never sent from the sender's own mailbox
+   * instead, and left exactly where it was.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftOfAShareThatEndedIsNeverSentFromTheSendersOwnMailbox() {
+    givenAStoredDraftOfMailbox(100L);
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertThrows(DelegationRevokedException.class, () -> emailBoxService.sendDraft(draft("draft-1"), TEST_USER, null));
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+    }
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+    verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
+  }
+
+  /**
+   * EXO-90595 -- a draft's first save records the mailbox it is written in only once the
+   * server resolved it as one of the writer's own accepted shares; the id stored is the
+   * resolved share's, not the client's word.
+   */
+  @Test
+  @SneakyThrows
+  void aFirstSaveRecordsTheShareTheServerResolvedAsTheWritersOwn() {
+    givenAUsableMailbox();
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailDelegation share = new EmailDelegation();
+    share.setId(100L);
+    share.setStatus(DelegationStatus.ACCEPTED);
+    when(emailDelegationService.requireAcceptedShare(TEST_USER, 100L)).thenReturn(share);
+    Email draft = draft(null);
+    draft.setSendDelegationId(100L);
+
+    Email saved = emailBoxService.saveDraft(draft, TEST_USER, false);
+
+    assertEquals(100L, saved.getSendDelegationId());
+    verify(emailDelegationService).requireAcceptedShare(TEST_USER, 100L);
+  }
+
+  /**
+   * EXO-90595 -- a first save naming a share that is not the writer's, or one no longer
+   * accepted, is refused and nothing is written: a client-chosen id never becomes a
+   * draft's mailbox on its word.
+   */
+  @Test
+  @SneakyThrows
+  void aFirstSaveNamingAShareThatIsNotTheWritersAcceptedOneWritesNothing() {
+    givenAUsableMailbox();
+    when(emailDelegationService.requireAcceptedShare(TEST_USER, 7L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+    when(emailDelegationService.requireAcceptedShare(TEST_USER, 8L)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    Email foreign = draft(null);
+    foreign.setSendDelegationId(7L);
+    Email revoked = draft(null);
+    revoked.setSendDelegationId(8L);
+
+    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.saveDraft(foreign, TEST_USER, false));
+    assertThrows(DelegationRevokedException.class, () -> emailBoxService.saveDraft(revoked, TEST_USER, false));
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+  }
+
+  /**
+   * EXO-90595 -- a later save never resolves nor carries a mailbox: the draft's is
+   * settled by its first save, and the row the storage is asked to write names none, so
+   * its edit path has nothing to move it with.
+   */
+  @Test
+  @SneakyThrows
+  void aLaterSaveNeitherResolvesNorCarriesAMailbox() {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    stored.setSendDelegationId(100L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    Email draft = draft("draft-1");
+    draft.setSendDelegationId(200L);
+
+    emailBoxService.saveDraft(draft, TEST_USER, false);
+
+    ArgumentCaptor<Email> written = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).saveDraft(written.capture());
+    assertNull(written.getValue().getSendDelegationId(), "an edit carries no mailbox");
+    verify(emailDelegationService, never()).requireAcceptedShare(anyString(), anyLong());
   }
 
   @Test
@@ -9203,7 +9363,7 @@ public class EmailBoxServiceTest {
                      null,
                      null,
                      null, null, false, null, null, null,
-                     false, null, null, false, null, null);
+                     false, null, null, false, null, null, null);
   }
 
   private EmailConnector emailConnector() {
@@ -13251,6 +13411,99 @@ public class EmailBoxServiceTest {
       verify(onTransmitted, never()).run();
     }
     verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * EXO-90595 -- a scheduled mail written in a shared mailbox goes through that share:
+   * once the mail server accepted it and after the sender's own bookkeeping, a copy of
+   * the very message that went out is filed in the owner's Sent, before the draft is
+   * taken apart (its parts stream from the draft's files).
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduledMailOfASharedMailboxFilesTheOwnersCopyOnceSent() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setSendDelegationId(100L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    when(ownerSent.exists()).thenReturn(true);
+    when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+    List<MimeMessage> transmitted = new ArrayList<>();
+    doAnswer(invocation -> transmitted.add(invocation.getArgument(0))).when(smtpTransmitter).transmit(any(MimeMessage.class));
+
+    emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+    });
+
+    ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
+    InOrder order = inOrder(smtpTransmitter, ownerSent, emailBoxStorage);
+    order.verify(smtpTransmitter).transmit(any(MimeMessage.class));
+    order.verify(ownerSent).appendMessages(filed.capture());
+    order.verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+    assertSame(transmitted.get(0), filed.getValue()[0], "the very message that went out");
+  }
+
+  /**
+   * EXO-90595 -- a scheduled mail whose shared mailbox is no longer the sender's, or no
+   * longer accepted, fails for good with MAILBOX_UNSHARED before anything happens:
+   * nothing transmitted, nothing recorded, nothing taken apart -- never sent from the
+   * sender's own mailbox instead. Not a "draft gone" either, which would leave the
+   * schedule row without an outcome.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduledMailWhoseMailboxIsNoLongerSharedFailsForGoodAndIsNeverSent() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Email stored = storedDraft();
+    stored.setSendDelegationId(100L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED))
+                                                                   .thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+
+    for (String outcome : List.of("revoked", "not the sender's")) {
+      Runnable onTransmitted = mock(Runnable.class);
+      ScheduledSendFailure failure = assertThrows(ScheduledSendFailure.class,
+                                                  () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted),
+                                                  outcome);
+      assertEquals(ScheduledSendFailure.Kind.PERMANENT, failure.getKind(), outcome);
+      assertEquals(ScheduledSendError.MAILBOX_UNSHARED, failure.getError(), outcome);
+      verify(onTransmitted, never()).run();
+    }
+    verify(smtpTransmitter, never()).transmit(any(MimeMessage.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * EXO-90595 -- a draft of a mailbox no longer shared with its writer is not scheduled:
+   * refused while the writer is there, before its text is saved or its schedule made.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftOfAMailboxNoLongerSharedIsNotScheduled() throws Exception {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    stored.setSendDelegationId(100L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    @SuppressWarnings("unchecked")
+    Function<Email, EmailScheduledSend> scheduler = mock(Function.class);
+
+    assertThrows(DelegationRevokedException.class, () -> emailBoxService.scheduleDraft(draft("draft-1"), TEST_USER, scheduler));
+
+    verify(scheduler, never()).apply(any(Email.class));
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
   }
 
   /**

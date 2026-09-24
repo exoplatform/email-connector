@@ -44,6 +44,7 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
+import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
@@ -182,6 +183,9 @@ public class EmailScheduledSendService {
 
   @Autowired
   private IdentityManager            identityManager;
+
+  @Autowired
+  private EmailDelegationService     emailDelegationService;
 
   // The rows this JVM is sending (or checking) right now: excluded from every recovery,
   // so a restart's recovery, or a stale-claim sweep, never takes a live run for a dead one.
@@ -907,8 +911,31 @@ public class EmailScheduledSendService {
       scheduled.setTo(draft.getTo());
       scheduled.setSubject(draft.getSubject());
       scheduled.setSnippet(snippet(draft.getContent()));
+      scheduled.setMailbox(draftMailbox(row.getUserId(), draft.getSendDelegationId()));
     }
     return scheduled;
+  }
+
+  /**
+   * The shared mailbox a scheduled mail was written in, as the view names it
+   * (EXO-90595), or null for the owner's own. A share that ended is still named, marked
+   * as no longer shared, since that is why the mail will not go. Never fails the list.
+   *
+   * @param username the mail's owner
+   * @param delegationId the share its draft records, may be null
+   * @return the mailbox, or null
+   */
+  private DraftMailbox draftMailbox(String username, Long delegationId) {
+    if (delegationId == null) {
+      return null;
+    }
+    try {
+      DraftMailbox mailbox = emailDelegationService.draftMailbox(username, delegationId);
+      return mailbox != null ? mailbox : new DraftMailbox(delegationId, null, null, false);
+    } catch (RuntimeException e) {
+      LOG.debug("The mailbox of a scheduled mail of user {} could not be named", username, e);
+      return new DraftMailbox(delegationId, null, null, false);
+    }
   }
 
   /**

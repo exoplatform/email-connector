@@ -1444,12 +1444,13 @@ public class EmailBoxRest {
   @PostMapping("/drafts")
   @Secured("users")
   @Operation(summary = "Saves a draft", method = "POST",
-             description = "Saves the composed draft locally, and — when 'push' is set and the account has a Drafts folder — appends it to the mail server's Drafts folder as well. A blank draftLocalId starts a new draft; the id in the answer is the handle to keep saving, resuming and discarding it by. The answer also carries the draft's state, which tells the composer whether the words made it to the server or live only here. readReceiptRequested is saved with the draft, so a resumed or scheduled draft keeps asking for a read receipt.")
+             description = "Saves the composed draft locally, and — when 'push' is set and the account has a Drafts folder — appends it to the mail server's Drafts folder as well. A blank draftLocalId starts a new draft; the id in the answer is the handle to keep saving, resuming and discarding it by. The answer also carries the draft's state, which tells the composer whether the words made it to the server or live only here. readReceiptRequested is saved with the draft, so a resumed or scheduled draft keeps asking for a read receipt. sendDelegationId, on a draft's FIRST save only, names the mailbox shared with the caller the draft is written in: it must be one of the caller's own accepted shares, and is then recorded on the draft for good -- later saves never move it, and the draft is sent through that share whatever mailbox the composer shows later. Every answer carries the draft's sendDelegationId, null for the caller's own mailbox.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
-      @ApiResponse(responseCode = "404", description = "No draft under that local id (it has been sent or discarded)"),
-      @ApiResponse(responseCode = "409", description = "The draft is scheduled to be sent, and locked (emailConnector.scheduled.locked)"), })
+      @ApiResponse(responseCode = "404", description = "No draft under that local id (it has been sent or discarded), or a first save naming a share that is not the caller's"),
+      @ApiResponse(responseCode = "409", description = "The draft is scheduled to be sent, and locked (emailConnector.scheduled.locked)"),
+      @ApiResponse(responseCode = "410", description = "A first save naming a mailbox no longer shared with the caller; nothing was saved"), })
   public Email saveDraft(HttpServletRequest request,
                          @Parameter(description = "The composed draft", required = true)
                          @RequestBody
@@ -1471,6 +1472,10 @@ public class EmailBoxRest {
       return saved;
     } catch (ScheduledSendConflictException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
@@ -1479,21 +1484,23 @@ public class EmailBoxRest {
   }
 
   /**
-   * Sends the composer's draft; from a mailbox shared with the caller when
-   * {@code delegationId} names it, filing a copy in its owner's Sent (EXO-90551).
+   * Sends the composer's draft, from the mailbox the draft was written in: through its
+   * share, filing a copy in its owner's Sent (EXO-90551), when it was written in a
+   * mailbox shared with the caller (EXO-90595). A {@code delegationId} that is not the
+   * draft's is refused.
    *
    * @param request the caller's request, for the acting user
    * @param draftLocalId the draft's local id
    * @param draft the draft as the composer is showing it
-   * @param delegationId the share the draft is sent from, or null
+   * @param delegationId the share the composer believes the draft belongs to, or null
    * @return {@code ownerCopy} when a share is named; empty otherwise
    */
   @PostMapping("/drafts/{draftLocalId}/send")
   @Secured("users")
   @Operation(summary = "Sends a draft", method = "POST",
-             description = "Sends the draft, in this order: the text the composer is showing is written to the draft's row, the mail is transmitted, the copy on the mail server is removed, and the local row is removed. A refused send changes nothing — the draft is still there, in both places. A send that succeeded but whose cleanup did not still removes the local row, deliberately: a draft of an already-sent mail is a worse outcome than a stray copy in a Drafts folder.")
+             description = "Sends the draft, in this order: the text the composer is showing is written to the draft's row, the mail is transmitted, the copy on the mail server is removed, and the local row is removed. A refused send changes nothing — the draft is still there, in both places. A send that succeeded but whose cleanup did not still removes the local row, deliberately: a draft of an already-sent mail is a worse outcome than a stray copy in a Drafts folder. The mail goes from the mailbox the draft was written in (its sendDelegationId): a draft of a mailbox shared with the caller is sent through that share and a copy filed in its owner's Sent (ownerCopy in the answer), whatever mailbox the composer shows now. delegationId, when given, must be the draft's own; any other value is refused with 400 emailConnector.drafts.send.mailboxMismatch before anything is saved or sent.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "No local id, or a send of this draft is already in flight"),
+      @ApiResponse(responseCode = "400", description = "No local id, a send of this draft is already in flight, or delegationId is not the draft's mailbox (emailConnector.drafts.send.mailboxMismatch)"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "No draft under that local id"),
       @ApiResponse(responseCode = "409", description = "The draft is scheduled; it is sent through its schedule (emailConnector.scheduled.locked)"),
@@ -1506,7 +1513,7 @@ public class EmailBoxRest {
                                        @Parameter(description = "The draft as the composer is showing it", required = true)
                                        @RequestBody
                                        Email draft,
-                                       @Parameter(description = "The share the draft is sent from, when it was written in a mailbox shared with the caller (EXO-90551)")
+                                       @Parameter(description = "The share the composer believes the draft belongs to; must be the draft's own (EXO-90595)")
                                        @RequestParam(value = "delegationId", required = false)
                                        Long delegationId) {
     try {
@@ -1575,12 +1582,13 @@ public class EmailBoxRest {
   @PostMapping("/drafts/{draftLocalId}/schedule")
   @Secured("users")
   @Operation(summary = "Schedules a draft to be sent at a date", method = "POST",
-             description = "Saves the text the composer shows onto the draft, then freezes it: the draft is removed from the mail server's Drafts folder (so no other client can send it), locked against edits, listed under Scheduled instead of Drafts, and sent as the caller at scheduledDate (epoch milliseconds, UTC), by whichever node gets to it first and only once. timeZone is the zone the date was chosen in, for display. The date must be at least one minute and at most one year ahead of the server's clock. Answers 400 with a message code (emailConnector.scheduled.date.tooSoon, .date.tooFar, .timeZone.invalid, .limitReached, .recipientsMandatory, emailConnector.drafts.send.attachmentGone), 404 for a draft the caller does not have, 409 when it is already scheduled or being sent, 500 when its copy on the mail server could not be removed (emailConnector.scheduled.serverCopyRemains; nothing is scheduled then).")
+             description = "Saves the text the composer shows onto the draft, then freezes it: the draft is removed from the mail server's Drafts folder (so no other client can send it), locked against edits, listed under Scheduled instead of Drafts, and sent as the caller at scheduledDate (epoch milliseconds, UTC), by whichever node gets to it first and only once. timeZone is the zone the date was chosen in, for display. The date must be at least one minute and at most one year ahead of the server's clock. Answers 400 with a message code (emailConnector.scheduled.date.tooSoon, .date.tooFar, .timeZone.invalid, .limitReached, .recipientsMandatory, emailConnector.drafts.send.attachmentGone), 404 for a draft the caller does not have, 409 when it is already scheduled or being sent, 500 when its copy on the mail server could not be removed (emailConnector.scheduled.serverCopyRemains; nothing is scheduled then). A draft written in a mailbox shared with the caller is sent through that share at its date, checked again then: 410 now when that mailbox is no longer shared with the caller (emailConnector.delegation.revoked).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Already scheduled, or being sent"),
+      @ApiResponse(responseCode = "410", description = "The draft's mailbox is no longer shared with the caller"),
       @ApiResponse(responseCode = "500", description = "The draft's copy on the mail server could not be removed"), })
   public ScheduledEmail scheduleDraft(HttpServletRequest request,
                                       @Parameter(description = "The draft's local id", required = true)
@@ -1604,6 +1612,8 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (ScheduledSendConflictException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (IllegalArgumentException e) {
@@ -1624,7 +1634,7 @@ public class EmailBoxRest {
   @GetMapping("/scheduled")
   @Secured("users")
   @Operation(summary = "Lists the caller's scheduled mails", method = "GET",
-             description = "The caller's mails scheduled to be sent, soonest first: recipients, subject, a one-line snippet, the instant (epoch ms), the zone it was chosen in, the status (SCHEDULED, SENDING, FAILED, UNCERTAIN) and, when not sent, the reason code. A mail that was sent is no longer listed: it is in Sent.")
+             description = "The caller's mails scheduled to be sent, soonest first: recipients, subject, a one-line snippet, the instant (epoch ms), the zone it was chosen in, the status (SCHEDULED, SENDING, FAILED, UNCERTAIN) and, when not sent, the reason code (MAILBOX_UNSHARED: written in a mailbox no longer shared with the caller, never sent from the caller's own instead). mailbox names the mailbox shared with the caller the mail was written in and goes from -- delegationId, ownerFullName, ownerMailbox, and shared, false once it no longer is -- and is absent for the caller's own. A mail that was sent is no longer listed: it is in Sent.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
   public List<ScheduledEmail> getScheduledEmails(HttpServletRequest request,

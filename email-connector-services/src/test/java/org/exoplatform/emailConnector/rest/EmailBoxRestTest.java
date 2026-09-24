@@ -1373,6 +1373,43 @@ public class EmailBoxRestTest {
   }
 
   /**
+   * EXO-90595 -- the mailbox a draft belongs to reaches the composer as statuses: a first
+   * save naming a share that is not the caller's answers 404 and one no longer shared
+   * 410, a schedule of a draft whose mailbox is no longer shared 410, and a send naming
+   * another mailbox than the draft's 400 with its code.
+   *
+   * @throws Exception if a request fails
+   */
+  @Test
+  void aDraftsMailboxRefusalsAnswerTheirStatuses() throws Exception {
+    doThrow(new ObjectNotFoundException("emailConnector.delegation.notFound")).doThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED))
+                                                                              .when(emailBoxService)
+                                                                              .saveDraft(any(Email.class), anyString(), anyBoolean());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts").with(testSimpleUser())
+                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                    .content(asJsonString(new Email())))
+           .andExpect(status().isNotFound());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts").with(testSimpleUser())
+                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                    .content(asJsonString(new Email())))
+           .andExpect(status().isGone());
+    doThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED)).when(emailScheduledSendService)
+                                                                               .schedule(any(Email.class), anyLong(), anyString(), anyString());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/schedule").with(testSimpleUser())
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .content(asJsonString(new ScheduleRequest(new Email(), 1L, "UTC"))))
+           .andExpect(status().isGone());
+    Email draft = new Email();
+    draft.setTo(List.of(new EmailRecipient("Bob", "bob@example.org", null, false)));
+    doThrow(new IllegalArgumentException(EmailBoxService.MAILBOX_MISMATCH_CODE)).when(emailBoxService)
+                                                                                .sendDraft(any(Email.class), anyString(), eq(101L));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send?delegationId=101").with(testSimpleUser())
+                                                                                   .contentType(MediaType.APPLICATION_JSON)
+                                                                                   .content(asJsonString(draft)))
+           .andExpect(status().isBadRequest());
+  }
+
+  /**
    * A scheduled draft's lock reaches the composer as 409 on its save, and a draft being
    * sent refuses its discard with 409.
    *

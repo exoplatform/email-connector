@@ -17,9 +17,11 @@
 package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -37,6 +39,7 @@ import static org.mockito.Mockito.when;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -62,6 +65,7 @@ import org.exoplatform.container.ExoContainer;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
+import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
@@ -111,6 +115,9 @@ public class EmailScheduledSendServiceTest {
 
   @Mock
   private ExoContainer                                container;
+
+  @Mock
+  private EmailDelegationService                      emailDelegationService;
 
   @InjectMocks
   private EmailScheduledSendService                   service;
@@ -544,6 +551,60 @@ public class EmailScheduledSendServiceTest {
     ScheduledEmail result = service.sendNow(LOCAL_ID, USER);
     verify(emailBoxService, times(1)).sendStoredDraft(eq(USER), eq(LOCAL_ID), any(Runnable.class));
     assertEquals(ScheduledSendStatus.SENT, result.getStatus());
+  }
+
+  /**
+   * EXO-90595 -- a mail written in a mailbox no longer shared with its owner fails for
+   * good, and the owner is told why, with the notification every refused scheduled mail
+   * sends.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aMailWhoseMailboxIsNoLongerSharedFailsAndItsOwnerIsToldWhy() throws Exception {
+    givenTheSendFails(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.MAILBOX_UNSHARED);
+    service.runClaimed(claimedRow(1));
+    verify(storage).endRun(eq(31L),
+                           eq("node-a"),
+                           eq(NOW),
+                           eq(ScheduledSendStatus.FAILED),
+                           eq(ScheduledSendError.MAILBOX_UNSHARED),
+                           isNull(),
+                           any(Date.class));
+    assertEquals(1, notified.size());
+    verify(notified.get(0)).append(ScheduledEmailFailedNotificationPlugin.REASON, "MAILBOX_UNSHARED");
+  }
+
+  /**
+   * EXO-90595 -- the "Scheduled" view names the shared mailbox each mail was written in,
+   * as the writer's own share resolves it, an ended one included (marked no longer
+   * shared); a mail of the owner's own mailbox names none, and a share that no longer
+   * resolves at all still reads as not shared rather than as the owner's own.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theScheduledViewNamesTheMailboxEachMailWasWrittenIn() throws Exception {
+    EmailScheduledSend own = claimedRow(0);
+    EmailScheduledSend shared = claimedRow(0);
+    shared.setEmailId(10L);
+    EmailScheduledSend unresolved = claimedRow(0);
+    unresolved.setEmailId(11L);
+    when(storage.getListed(USER, 0, 20)).thenReturn(List.of(own, shared, unresolved));
+    Email ownDraft = draft();
+    Email sharedDraft = draft();
+    sharedDraft.setSendDelegationId(100L);
+    Email unresolvedDraft = draft();
+    unresolvedDraft.setSendDelegationId(7L);
+    when(emailBoxStorage.getListedEmailsByIds(eq(USER), anyList())).thenReturn(Map.of(9L, ownDraft, 10L, sharedDraft, 11L, unresolvedDraft));
+    DraftMailbox anne = new DraftMailbox(100L, "Anne Dupont", "anne@example.org", false);
+    when(emailDelegationService.draftMailbox(USER, 100L)).thenReturn(anne);
+
+    List<ScheduledEmail> listed = service.getScheduledEmails(USER, 0, 20);
+
+    assertNull(listed.get(0).getMailbox(), "the owner's own mailbox");
+    assertEquals(anne, listed.get(1).getMailbox());
+    assertEquals(new DraftMailbox(7L, null, null, false), listed.get(2).getMailbox());
   }
 
   /**

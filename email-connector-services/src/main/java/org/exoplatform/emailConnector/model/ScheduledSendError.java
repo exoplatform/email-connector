@@ -51,5 +51,12 @@ public enum ScheduledSendError {
   INTERRUPTED,
 
   /** The transmission failed once the message was on its way; whether it went out is unknown. */
-  UNCONFIRMED
+  UNCONFIRMED,
+
+  /**
+   * The mail was written in a mailbox shared with its owner, and that mailbox is no longer
+   * shared with them (EXO-90595): nothing was sent, and it is never sent from the owner's
+   * own mailbox instead.
+   */
+  MAILBOX_UNSHARED
 }
