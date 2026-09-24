@@ -1745,6 +1745,28 @@ class EmailDelegationServiceTest {
   }
 
   /**
+   * EXO-90595 -- a page's mailboxes are named with one lookup per share however many of
+   * its drafts a share holds; a share that is not the writer's, or cannot be read,
+   * reads as not shared rather than failing the page or passing for the writer's own.
+   */
+  @Test
+  void aPagesDraftMailboxesAreLookedUpOncePerShare() {
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO));
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 7L)).thenReturn(null);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 8L)).thenThrow(new IllegalStateException("database away"));
+    java.util.List<Long> ids = new java.util.ArrayList<>(List.of(100L, 7L, 100L, 8L));
+    ids.add(null);
+
+    Map<Long, DraftMailbox> mailboxes = service.draftMailboxes(GRANTEE, ids);
+
+    assertTrue(mailboxes.get(100L).shared());
+    assertEquals(new DraftMailbox(7L, null, null, false), mailboxes.get(7L));
+    assertEquals(new DraftMailbox(8L, null, null, false), mailboxes.get(8L));
+    assertEquals(3, mailboxes.size());
+    verify(emailDelegationStorage, times(1)).getAsGrantee(GRANTEE, 100L);
+  }
+
+  /**
    * The owner's folders by role, as the owner's session names them.
    *
    * @return the map
