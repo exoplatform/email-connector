@@ -297,6 +297,55 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   List<String> ended);
 
   /**
+   * The owner's consent to the grantee writing mail in the owner's name (EXO-90582), and
+   * nothing else of the row: the mode, when it was set, and the server's last refusal
+   * cleared -- a consent set again is a fresh one. Only that owner's row, and only a
+   * share on offer or in use ({@code live}): a declined, available, revoked or gone share
+   * never carries a consent, stricter than the other owner writes, which merely skip an
+   * ended share.
+   *
+   * @param id the row id
+   * @param ownerId the owner, whose row it must be
+   * @param sendMode the consent as stored, null for none
+   * @param sendModeDate when it was set, null with no consent
+   * @param updated the update stamp
+   * @param live the statuses a consent may be written on
+   * @return the rows updated: one, or zero when the row is not that owner's or not live
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.sendMode = :sendMode, d.sendModeDate = :sendModeDate, d.sendRefusedDate = NULL,"
+      + " d.updatedDate = :updated WHERE d.id = :id AND d.ownerId = :ownerId AND d.status IN :live")
+  int updateSendMode(@Param("id")
+  long id, @Param("ownerId")
+  String ownerId, @Param("sendMode")
+  String sendMode, @Param("sendModeDate")
+  Date sendModeDate, @Param("updated")
+  Date updated, @Param("live")
+  List<String> live);
+
+  /**
+   * Takes the owner's consent to writing in her name off a share that is no longer on
+   * offer or in use (EXO-90582): run after the write that ended it, so a consent written
+   * while that write was on its way -- the status still live then -- goes too, and one
+   * asked after it finds the share ended. A row that is live again (re-invited, accepted)
+   * is left alone, and so is a row with nothing to take off.
+   *
+   * @param id the row id
+   * @param live the statuses a consent may stay on
+   * @return the rows updated: one, or zero when the row is live, carries no consent, or
+   *         is unknown
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.sendMode = NULL, d.sendModeDate = NULL, d.sendRefusedDate = NULL"
+      + " WHERE d.id = :id AND d.status NOT IN :live"
+      + " AND (d.sendMode IS NOT NULL OR d.sendModeDate IS NOT NULL OR d.sendRefusedDate IS NOT NULL)")
+  int clearSendMode(@Param("id")
+  long id, @Param("live")
+  List<String> live);
+
+  /**
    * A grantee's accept, and nothing else of the row (EXO-90548 review, finding 1): the
    * status, where the shared tree is, the grantee's own letters, the server's words only
    * when none were recorded, the preset only when one is given, and the stamps. The

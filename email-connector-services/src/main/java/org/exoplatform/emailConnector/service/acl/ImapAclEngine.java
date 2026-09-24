@@ -49,6 +49,7 @@ import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.OwnFolder;
+import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 import org.exoplatform.emailConnector.service.EmailFolderService;
 import org.exoplatform.services.log.ExoLogger;
@@ -123,7 +124,9 @@ public class ImapAclEngine implements MailboxAclEngine {
    * {@code BAD}/{@code NO} is unsupported with the reason; a closed or dropped
    * connection is unreachable, kept apart so the interface never tells a user their
    * server cannot share when it is merely down. NAMESPACE is read as a hint only:
-   * discovery works without it.
+   * discovery works without it. A supported answer carries the shapes of writing in the
+   * owner's name the administrator declared for the connector (EXO-90582), and says the
+   * consent is never written on the server.
    *
    * @param session the caller's session
    * @return the capabilities
@@ -149,16 +152,30 @@ public class ImapAclEngine implements MailboxAclEngine {
       return MailboxAclCapabilities.unsupported(MailboxAclException.UNREACHABLE);
     }
     if (aclAdvertised) {
-      return MailboxAclCapabilities.imap(true, namespaceAdvertised);
+      return MailboxAclCapabilities.imap(true, namespaceAdvertised, declaredSendModes(session));
     }
     try {
       folder(store, MailFolder.INBOX).myRights();
-      return MailboxAclCapabilities.imap(false, namespaceAdvertised);
+      return MailboxAclCapabilities.imap(false, namespaceAdvertised, declaredSendModes(session));
     } catch (MessagingException e) {
       String code = isConnectionFailure(e) ? MailboxAclException.UNREACHABLE : MailboxAclException.UNSUPPORTED;
       LOG.debug("MYRIGHTS INBOX did not answer on a server advertising no ACL ({}): {}", code, e.getMessage());
       return MailboxAclCapabilities.unsupported(code);
     }
+  }
+
+  /**
+   * The shapes of writing in the owner's name the administrator declared for the
+   * session's connector (EXO-90582): an IMAP server has nothing to answer about it --
+   * RFC 4314 has no send right, and a submission server's sender check cannot be asked
+   * without sending -- so the declaration is the engine's answer, and eXo alone holds
+   * the consent.
+   *
+   * @param session the caller's session
+   * @return the declared shapes, empty when none or the feature is switched off
+   */
+  private static Set<SendMode> declaredSendModes(MailboxAclSession session) {
+    return SendMode.declaredFor(session.connector() == null ? null : session.connector().getId());
   }
 
   /**

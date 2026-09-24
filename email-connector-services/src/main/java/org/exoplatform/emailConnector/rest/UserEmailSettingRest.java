@@ -56,6 +56,7 @@ import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.rest.model.DelegationFoldersRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationInviteRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationPreferencesRequest;
+import org.exoplatform.emailConnector.rest.model.DelegationSendModeRequest;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
@@ -642,6 +643,44 @@ public class UserEmailSettingRest {
                                                  DelegationFoldersRequest body) {
     try {
       return emailDelegationService.setFolderAccess(request.getRemoteUser(), id, body == null ? null : body.getFolders());
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (MailboxAclException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getCode());
+    }
+  }
+
+  /**
+   * Sets, changes or withdraws the caller's consent to one grantee writing mail in the
+   * caller's name.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param id the delegation id, resolved with the caller as owner
+   * @param body the consent: NONE, ON_BEHALF or AS
+   * @return the delegation as it now stands
+   */
+  @PutMapping("/delegations/{id}/send-mode")
+  @Secured("users")
+  @Operation(summary = "Sets the caller's consent to a grantee writing mail in the caller's name",
+             method = "PUT",
+             description = "ON_BEHALF lets the grantee send mail showing the caller as the author and the grantee as the sender; AS lets them send mail showing the caller alone; NONE withdraws the consent. Recorded on the share, with its date; nothing is sent and no ACL letter is written. A consent needs the shape declared by the administrator for the caller's connector and the share still on the caller's INBOX; a withdrawal is always recorded. Only for a share on offer or in use that eXo made. Owner only: a delegation that is not the caller's own is answered 404.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "An unknown mode (emailConnector.sendMode.invalid), a shape switched off or not declared (emailConnector.sendMode.disabled, .unsupported), or a share that cannot carry it (emailConnector.delegation.notChangeable)"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "404", description = "No such delegation of the caller's mailbox"),
+      @ApiResponse(responseCode = "502", description = "The mail server does not support sharing or could not be asked (emailConnector.delegation.*)") })
+  public EmailDelegation setDelegationSendMode(HttpServletRequest request,
+                                               @Parameter(description = "The delegation id", required = true)
+                                               @PathVariable("id")
+                                               long id,
+                                               @RequestBody
+                                               DelegationSendModeRequest body) {
+    try {
+      return emailDelegationService.setSendMode(request.getRemoteUser(), id, body == null ? null : body.getSendMode());
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
