@@ -855,6 +855,77 @@ public class MasterChangelogTest {
   }
 
   /**
+   * EXO-90582 -- 1.0.0-88 adds EMAIL_DELEGATION.SEND_MODE, SEND_MODE_DATE and
+   * SEND_REFUSED_DATE to a table that already holds a share, which reads no consent and
+   * keeps what it held; the changeset rolls back to a tag placed immediately before it,
+   * dropping those three columns and nothing else, and applies again.
+   *
+   * @throws Exception when the changeset does not apply or roll back
+   */
+  @Test
+  void theDelegationSendModeRollsBackAndReapplies() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback88" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-88"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-delegation-send-mode");
+      assertFalse(columnExists(connection, "EMAIL_DELEGATION", "SEND_MODE"), "not before 1.0.0-88");
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "FOLDER_ACCESS"), "1.0.0-86 runs before it");
+      try (Statement statement = connection.createStatement()) {
+        statement.executeUpdate("INSERT INTO EMAIL_DELEGATION (ID, GRANTEE_ID, OWNER_ID, OWNER_MAILBOX, CONNECTOR_ID, PRESET, RIGHTS, STATUS,"
+            + " ORIGIN, FOLDER_ACCESS, CREATED_DATE, UPDATED_DATE) VALUES (1, 'bob', 'alice', 'alice@acme.com', 7, 'EDITOR', 'lrswite',"
+            + " 'ACCEPTED', 'EXO', 'TRASH=READER', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
+      }
+      liquibase.update("");
+      assertEquals(16, columnSize(connection, "EMAIL_DELEGATION", "SEND_MODE"), "1.0.0-88 adds EMAIL_DELEGATION.SEND_MODE");
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "SEND_MODE_DATE"), "and SEND_MODE_DATE");
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "SEND_REFUSED_DATE"), "and SEND_REFUSED_DATE");
+      try (Statement statement = connection.createStatement()) {
+        try (ResultSet row = statement.executeQuery("SELECT SEND_MODE, SEND_MODE_DATE, SEND_REFUSED_DATE, FOLDER_ACCESS FROM EMAIL_DELEGATION WHERE ID = 1")) {
+          assertTrue(row.next());
+          assertNull(row.getString(1), "an existing share carries no consent");
+          assertNull(row.getTimestamp(2));
+          assertNull(row.getTimestamp(3));
+          assertEquals("TRASH=READER", row.getString(4), "and keeps what it held");
+        }
+        statement.executeUpdate("UPDATE EMAIL_DELEGATION SET SEND_MODE = 'ON_BEHALF', SEND_MODE_DATE = CURRENT_TIMESTAMP,"
+            + " SEND_REFUSED_DATE = CURRENT_TIMESTAMP WHERE ID = 1");
+      }
+      liquibase.rollback("before-delegation-send-mode", "");
+      for (String column : List.of("SEND_MODE", "SEND_MODE_DATE", "SEND_REFUSED_DATE")) {
+        assertFalse(columnExists(connection, "EMAIL_DELEGATION", column), "the rollback drops " + column);
+      }
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "FOLDER_ACCESS"), "and nothing before it");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "DRAFT_DELEGATION_ID"), "not 1.0.0-87 either");
+      liquibase.update("");
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "SEND_MODE"), "the changeset applies again after its rollback");
+    }
+  }
+
+  /**
+   * EXO-90582 -- 1.0.0-88 as MySQL and PostgreSQL would run it, bounded to its own
+   * changeset: three nullable, unquoted columns, no default, and a rollback that drops
+   * those three only.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theDelegationSendModeOnMySqlAndPostgreSql() throws Exception {
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-88", "1.0.0-88").toUpperCase(Locale.ROOT);
+      assertTrue(update.contains("SEND_MODE VARCHAR(16)"), vendor + ": " + update);
+      assertTrue(update.contains("SEND_MODE_DATE") && update.contains("SEND_REFUSED_DATE"), vendor + ": " + update);
+      assertTrue(update.contains("ALTER TABLE EMAIL_DELEGATION"), vendor + ": " + update);
+      assertFalse(update.contains("NOT NULL"), vendor + " every column is nullable: " + update);
+      assertFalse(update.contains("DEFAULT"), vendor + " no default: " + update);
+      assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-88", "1.0.0-88").toUpperCase(Locale.ROOT).trim();
+      assertEquals("ALTER TABLE EMAIL_DELEGATION DROP COLUMN SEND_REFUSED_DATE;\n"
+          + "ALTER TABLE EMAIL_DELEGATION DROP COLUMN SEND_MODE_DATE;\n"
+          + "ALTER TABLE EMAIL_DELEGATION DROP COLUMN SEND_MODE;", rollback, vendor + " rollback drops those three only");
+    }
+  }
+
+  /**
    * The declared size of a column, from the JDBC metadata.
    *
    * @param connection the database
