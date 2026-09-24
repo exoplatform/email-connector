@@ -2213,23 +2213,20 @@ public class EmailDelegationService {
 
   /**
    * The share a draft is being written in, as the draft's first save records it
-   * (EXO-90595): one of the writer's own received shares, ACCEPTED. Resolved with the
-   * caller as grantee, as {@link #ownerSentFolderKey} resolves it, so a client-supplied
-   * id never names another user's mailbox: somebody else's share and an unknown id are
-   * both "no such delegation".
+   * (EXO-90595): one of the writer's own received shares, whatever its status. Resolved
+   * with the caller as grantee, as {@link #ownerSentFolderKey} resolves it, so a
+   * client-supplied id never names another user's mailbox: somebody else's share and an
+   * unknown id are both "no such delegation". Its status is not checked here: a share
+   * that ended while the words were being typed still owns the draft, which keeps them,
+   * and every send of it checks the share again and refuses.
    *
    * @param granteeUsername the writer, who must be the share's grantee
    * @param delegationId the share the client names
    * @return the share
    * @throws ObjectNotFoundException when no such share belongs to the writer
-   * @throws DelegationRevokedException when the share is no longer accepted
    */
-  public EmailDelegation requireAcceptedShare(String granteeUsername, long delegationId) throws ObjectNotFoundException {
-    EmailDelegation delegation = asGrantee(granteeUsername, delegationId);
-    if (delegation.getStatus() != DelegationStatus.ACCEPTED) {
-      throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
-    }
-    return delegation;
+  public EmailDelegation requireOwnShare(String granteeUsername, long delegationId) throws ObjectNotFoundException {
+    return asGrantee(granteeUsername, delegationId);
   }
 
   /**
