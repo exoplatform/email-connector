@@ -307,6 +307,38 @@ public class EmailFolderStorage {
   }
 
   /**
+   * Sets, moves or clears the new-mail notification boundary of a shared INBOX, if it
+   * still holds what the caller read (EXO-90553): a baseline when there was none, a
+   * silent move otherwise -- nothing is notified for the mail it passes over.
+   *
+   * @param userId the grantee
+   * @param id the registry id
+   * @param fromUid the boundary the caller read, null for none
+   * @param toUid the new boundary, null to clear it
+   * @return whether this caller moved it
+   */
+  public boolean replaceNotifiedUid(String userId, long id, Long fromUid, Long toUid) {
+    if (fromUid == null) {
+      return toUid != null && emailFolderDAO.initialiseNotifiedUid(id, userId, toUid) == 1;
+    }
+    return emailFolderDAO.replaceNotifiedUid(id, userId, fromUid, toUid) == 1;
+  }
+
+  /**
+   * Takes the range (fromUid, toUid] of a shared INBOX's new mail for its notification
+   * (EXO-90553): one caller gets it, whichever node or path asks.
+   *
+   * @param userId the grantee
+   * @param id the registry id
+   * @param fromUid the boundary the caller read
+   * @param toUid the highest cached UID
+   * @return whether this caller took the range and is the one to notify it
+   */
+  public boolean advanceNotifiedUid(String userId, long id, long fromUid, long toUid) {
+    return emailFolderDAO.advanceNotifiedUid(id, userId, fromUid, toUid) == 1;
+  }
+
+  /**
    * Entity to DTO. The snapshot is rebuilt only when every one of its signals is
    * present: a half-written one is no snapshot, and the sync's skip check must not be
    * handed something it would refuse anyway.
@@ -340,6 +372,7 @@ public class EmailFolderStorage {
                            entity.getDelegationId(),
                            FolderRole.of(entity.getRole()),
                            entity.getRights(),
-                           entity.getRightsCheckDate());
+                           entity.getRightsCheckDate(),
+                           entity.getNotifiedUid());
   }
 }

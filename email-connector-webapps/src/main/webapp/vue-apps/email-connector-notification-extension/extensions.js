@@ -22,6 +22,7 @@ extensionRegistry.registerExtension('WebNotification', 'notification-group-exten
     'ScheduledEmailFailedNotificationPlugin',
     'EmailDelegationInvitationPlugin',
     'EmailDelegationResponseNotificationPlugin',
+    'DelegatedNewEmailsNotificationPlugin',
   ],
   icon: 'fa-envelope',
 });
@@ -44,4 +45,9 @@ extensionRegistry.registerExtension('WebNotification', 'notification-content-ext
   type: 'EmailDelegationResponseNotificationPlugin',
   rank: 10,
   vueComponent: Vue.options.components['user-notification-email-delegation-response'],
+});
+extensionRegistry.registerExtension('WebNotification', 'notification-content-extension', {
+  type: 'DelegatedNewEmailsNotificationPlugin',
+  rank: 10,
+  vueComponent: Vue.options.components['user-notification-delegated-new-emails'],
 });
