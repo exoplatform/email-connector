@@ -47,7 +47,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :grantee="grantee"
           :disabled="revokingId !== null || changingId !== null"
           :per-folder="perFolder"
+          :send-modes="sendModes"
           @change-preset="askChangePreset(grantee, $event)"
+          @change-send-mode="askChangeSendMode(grantee, $event)"
           @extend="askExtend(grantee)"
           @folders="openFolders(grantee)"
           @revoke="openRevoke(grantee)" />
@@ -79,6 +81,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :ok-label="$t('UserSettings.emailConnector.sharing.replace.confirm.ok')"
       :cancel-label="$t('UserSettings.emailConnector.sharing.cancel')"
       @ok="confirmChangePreset" />
+    <!-- Letting someone write mail in the owner's name (EXO-90582) is asked first, with
+         what recipients will see and whether the owner keeps a copy: a grant, and the
+         step from on behalf to as. Narrowing it is not asked (PO decision Q-C). -->
+    <exo-confirm-dialog
+      ref="sendModeConfirmDialog"
+      :title="sendModeConfirmTitle"
+      :message="sendModeConfirmMessage"
+      :ok-label="$t('UserSettings.emailConnector.sharing.sendMode.confirm.ok')"
+      :cancel-label="$t('UserSettings.emailConnector.sharing.cancel')"
+      @ok="confirmChangeSendMode" />
   </div>
 </template>
 
@@ -95,6 +107,8 @@ export default {
     loading: false,
     loaded: false,
     capabilities: null,
+    // Whether an administrator left the owner's Sent copy of a delegate's mail on (EXO-90551).
+    sentCopyEnabled: false,
     grantees: [],
     revokingId: null,
     revokeTarget: null,
@@ -106,6 +120,11 @@ export default {
     // The folders the Extend being confirmed adds, by name: kept apart from extendTarget,
     // which the confirmation clears as it closes, so its text does not empty on the way out.
     extendNames: '',
+    // The consent to writing in the owner's name waiting for its confirmation: {grantee, mode}.
+    pendingSendMode: null,
+    // What that confirmation says, kept apart from pendingSendMode for the same reason.
+    sendModeConfirmTitle: '',
+    sendModeConfirmMessage: '',
   }),
   computed: {
     /**
@@ -131,6 +150,15 @@ export default {
      */
     perFolder() {
       return this.supported && this.capabilities?.grantGranularity === 'FOLDER';
+    },
+    /**
+     * The shapes of writing in the owner's name her mail server is declared to accept
+     * (EXO-90582): none where nothing is declared, which hides the choice.
+     *
+     * @returns {Array} ON_BEHALF, AS, or empty
+     */
+    sendModes() {
+      return this.supported ? (this.capabilities?.sendModes || []) : [];
     },
     /**
      * @returns {Boolean} whether a new share may be offered
@@ -177,6 +205,16 @@ export default {
     perFolder(value) {
       this.$emit('per-folder', value);
     },
+    /**
+     * Tells the drawer which shapes of writing in the owner's name the server accepts,
+     * for the invitation's consent sentence (EXO-90582).
+     *
+     * @param {Array} value the declared shapes
+     * @returns {void}
+     */
+    sendModes(value) {
+      this.$emit('send-modes', value);
+    },
   },
   created() {
     this.$root.$on('email-delegation-granted', this.onGranted);
@@ -207,6 +245,7 @@ export default {
       return this.$emailConnectorUserSettingService.getGrantedDelegations()
         .then(answer => {
           this.capabilities = answer?.capabilities || null;
+          this.sentCopyEnabled = !!answer?.sentCopyEnabled;
           this.grantees = answer?.grantees || [];
           this.loaded = true;
           // The settings row's summary counts from this read rather than making its
@@ -322,6 +361,100 @@ export default {
           this.load();
           this.$root.$emit('email-delegations-updated');
         });
+    },
+    /**
+     * A row's "Writing mail in your name" choice (EXO-90582): a grant, and the step from on
+     * behalf to as, after the confirmation that says what it gives; a withdrawal and the
+     * step back to on behalf at once (PO decision Q-C).
+     *
+     * @param {Object} grantee the row
+     * @param {String} mode NONE, ON_BEHALF or AS
+     * @returns {void}
+     */
+    askChangeSendMode(grantee, mode) {
+      const current = grantee?.delegation?.sendMode || 'NONE';
+      const widens = mode === 'AS' ? current !== 'AS' : mode === 'ON_BEHALF' && current === 'NONE';
+      if (!widens) {
+        this.changeSendMode(grantee, mode);
+        return;
+      }
+      const name = this.displayName(grantee);
+      const copy = this.$t(this.ownerKeepsACopy(grantee)
+        ? 'UserSettings.emailConnector.sharing.sendMode.confirm.copy'
+        : 'UserSettings.emailConnector.sharing.sendMode.confirm.noCopy');
+      this.pendingSendMode = { grantee, mode };
+      this.sendModeConfirmTitle = this.$t(`UserSettings.emailConnector.sharing.sendMode.confirm.title.${mode}`, { 0: name });
+      this.sendModeConfirmMessage = this.$t(`UserSettings.emailConnector.sharing.sendMode.confirm.message.${mode}`, { 0: name, 1: copy });
+      this.$refs.sendModeConfirmDialog.open();
+    },
+    /**
+     * Makes the change the consent confirmation was asked for.
+     *
+     * @returns {void}
+     */
+    confirmChangeSendMode() {
+      const change = this.pendingSendMode;
+      this.pendingSendMode = null;
+      if (change) {
+        this.changeSendMode(change.grantee, change.mode);
+      }
+    },
+    /**
+     * Records the owner's consent to a person writing mail in her name, and shows the list
+     * as it now stands. Nothing is sent and nothing changes on the mail server's ACL.
+     *
+     * @param {Object} grantee the row
+     * @param {String} mode NONE, ON_BEHALF or AS
+     * @returns {void}
+     */
+    changeSendMode(grantee, mode) {
+      const id = grantee?.delegation?.id;
+      if (!id) {
+        return;
+      }
+      this.changingId = id;
+      this.$emailConnectorUserSettingService.setDelegationSendMode(id, mode)
+        .then(() => this.showAlert(this.$t(mode === 'NONE'
+          ? 'UserSettings.emailConnector.sharing.sendMode.withdrawn'
+          : 'UserSettings.emailConnector.sharing.sendMode.changed'), 'success'))
+        .catch(error => this.showAlert(this.messageOf(error, 'UserSettings.emailConnector.sharing.sendMode.error'), 'error'))
+        .finally(() => {
+          this.changingId = null;
+          this.load();
+          this.$root.$emit('email-delegations-updated');
+        });
+    },
+    /**
+     * Whether a mail the person sends in the owner's name will be filed in the owner's own
+     * Sent (EXO-90551): the share covers her Sent, with an Editor's access there, and an
+     * administrator left the copy on. What the consent says, so she knows before agreeing
+     * whether she will keep a copy.
+     *
+     * @param {Object} grantee the row
+     * @returns {Boolean} true when a copy is filed
+     */
+    ownerKeepsACopy(grantee) {
+      const delegation = grantee?.delegation;
+      if (!this.sentCopyEnabled || !delegation) {
+        return false;
+      }
+      const roles = (delegation.grantedRoles || '').split(',');
+      const wholeMailbox = delegation.grantedRoles === 'MAILBOX';
+      if (!wholeMailbox && !roles.includes('SENT')) {
+        return false;
+      }
+      const exception = delegation.folderAccess?.SENT;
+      return exception ? exception === 'EDITOR' : delegation.preset === 'EDITOR';
+    },
+    /**
+     * The person a row names, as the confirmations say it: their eXo name, else their
+     * identifier on the mail server.
+     *
+     * @param {Object} grantee the row
+     * @returns {String} the name
+     */
+    displayName(grantee) {
+      return grantee?.granteeId || grantee?.identifier || '';
     },
     /**
      * A row's "Folders and access": the drawer that reads and sets each folder's access
