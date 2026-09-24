@@ -28,7 +28,8 @@ import org.exoplatform.services.resources.ResourceBundleService;
     @TemplateConfig(pluginId = NotificationConstants.NEW_EMAILS_NOTIFICATION_PLUGIN, template = "war:/conf/email-connector/templates/notification/mail/NewEmailsNotificationPlugin.gtmpl"),
     @TemplateConfig(pluginId = NotificationConstants.SCHEDULED_EMAIL_FAILED_NOTIFICATION_PLUGIN, template = "war:/conf/email-connector/templates/notification/mail/ScheduledEmailFailedNotificationPlugin.gtmpl"),
     @TemplateConfig(pluginId = NotificationConstants.EMAIL_DELEGATION_INVITATION_NOTIFICATION_PLUGIN, template = "war:/conf/email-connector/templates/notification/mail/EmailDelegationInvitationPlugin.gtmpl"),
-    @TemplateConfig(pluginId = NotificationConstants.EMAIL_DELEGATION_RESPONSE_NOTIFICATION_PLUGIN, template = "war:/conf/email-connector/templates/notification/mail/EmailDelegationResponseNotificationPlugin.gtmpl") })
+    @TemplateConfig(pluginId = NotificationConstants.EMAIL_DELEGATION_RESPONSE_NOTIFICATION_PLUGIN, template = "war:/conf/email-connector/templates/notification/mail/EmailDelegationResponseNotificationPlugin.gtmpl"),
+    @TemplateConfig(pluginId = NotificationConstants.DELEGATED_NEW_EMAILS_NOTIFICATION_PLUGIN, template = "war:/conf/email-connector/templates/notification/mail/DelegatedNewEmailsNotificationPlugin.gtmpl") })
 public class MailTemplateProvider extends TemplateProvider {
 
   public MailTemplateProvider(InitParams initParams, ResourceBundleService resourceBundleService) {
@@ -39,6 +40,8 @@ public class MailTemplateProvider extends TemplateProvider {
     this.templateBuilders.put(PluginKey.key(NotificationConstants.EMAIL_DELEGATION_INVITATION_NOTIFICATION_PLUGIN),
                               new MailTemplateBuilder(this));
     this.templateBuilders.put(PluginKey.key(NotificationConstants.EMAIL_DELEGATION_RESPONSE_NOTIFICATION_PLUGIN),
+                              new MailTemplateBuilder(this));
+    this.templateBuilders.put(PluginKey.key(NotificationConstants.DELEGATED_NEW_EMAILS_NOTIFICATION_PLUGIN),
                               new MailTemplateBuilder(this));
   }
 }
