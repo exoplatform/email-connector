@@ -577,6 +577,29 @@ public class EmailScheduledSendServiceTest {
   }
 
   /**
+   * EXO-90584, PO decision Q-5 -- a mail scheduled in the mailbox owner's name whose
+   * consent was withdrawn or narrowed fails for good, and its writer is told why with
+   * the notification every refused scheduled mail sends; it is never sent in the
+   * writer's own name instead (the send decides that; here nothing retries it).
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aMailWhoseNameIsNoLongerAllowedFailsAndItsWriterIsToldWhy() throws Exception {
+    givenTheSendFails(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.SEND_MODE_WITHDRAWN);
+    service.runClaimed(claimedRow(1));
+    verify(storage).endRun(eq(31L),
+                           eq("node-a"),
+                           eq(NOW),
+                           eq(ScheduledSendStatus.FAILED),
+                           eq(ScheduledSendError.SEND_MODE_WITHDRAWN),
+                           isNull(),
+                           any(Date.class));
+    assertEquals(1, notified.size());
+    verify(notified.get(0)).append(ScheduledEmailFailedNotificationPlugin.REASON, "SEND_MODE_WITHDRAWN");
+  }
+
+  /**
    * EXO-90595 -- a scheduled mail of a shared mailbox that went out but whose copy could
    * not be filed in the owner's Sent tells its sender so, through the scheduled-mail
    * notification with a reason of its own; nothing about the send is recorded as a
@@ -624,6 +647,8 @@ public class EmailScheduledSendServiceTest {
     Email ownDraft = draft();
     Email sharedDraft = draft();
     sharedDraft.setSendDelegationId(100L);
+    sharedDraft.setSendMode("ON_BEHALF");
+    ownDraft.setSendMode("NONE");
     Email unresolvedDraft = draft();
     unresolvedDraft.setSendDelegationId(7L);
     Email sameShareDraft = draft();
@@ -648,6 +673,8 @@ public class EmailScheduledSendServiceTest {
     assertEquals(anne, listed.get(1).getMailbox());
     assertEquals(new DraftMailbox(7L, null, null, false), listed.get(2).getMailbox());
     assertEquals(anne, listed.get(3).getMailbox());
+    assertEquals("ON_BEHALF", listed.get(1).getSendMode(), "the name it goes out in from that mailbox (EXO-90584)");
+    assertNull(listed.get(0).getSendMode(), "none named for the owner's own mailbox");
     verify(emailDelegationService, times(1)).draftMailboxes(eq(USER), anyCollection());
   }
 

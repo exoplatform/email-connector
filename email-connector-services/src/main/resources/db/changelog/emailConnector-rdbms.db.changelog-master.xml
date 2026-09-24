@@ -1807,4 +1807,25 @@
       <dropColumn tableName="EMAIL_DELEGATION" columnName="SEND_MODE"/>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-89">
+    <comment>
+      EMAIL_BOX.DRAFT_SEND_MODE (EXO-90584, phase-3 slice 3.3): on a draft row of a mailbox
+      shared with the row's user (DRAFT_DELEGATION_ID), the name the draft is to go out
+      in -- ON_BEHALF (From: the owner, Sender: the writer), AS (From: the owner) or NONE
+      (the writer's own) -- as the writer last left it; written with every revision. A
+      scheduled mail is its draft row, so it carries it too, and its send checks the
+      owner's consent again then: a consent withdrawn or narrowed fails the send, which
+      never goes out in the writer's own name instead. Null means the draft never said
+      (every row written before this, and every draft of the writer's own mailbox).
+      Never a right: the consent lives on EMAIL_DELEGATION.SEND_MODE (1.0.0-88).
+      Nullable, no default, no index (a draft is read by USER_ID and DRAFT_LOCAL_ID).
+      Rolled back explicitly.
+    </comment>
+    <addColumn tableName="EMAIL_BOX">
+      <column name="DRAFT_SEND_MODE" type="VARCHAR(16)"/>
+    </addColumn>
+    <rollback>
+      <dropColumn tableName="EMAIL_BOX" columnName="DRAFT_SEND_MODE"/>
+    </rollback>
+  </changeSet>
 </databaseChangeLog>
