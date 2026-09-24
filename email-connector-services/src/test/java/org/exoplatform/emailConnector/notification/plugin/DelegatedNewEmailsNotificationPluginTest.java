@@ -45,6 +45,8 @@ import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.model.Profile;
 import org.exoplatform.social.core.manager.IdentityManager;
 
+import io.meeds.pwa.model.PwaNotificationMessage;
+
 /**
  * The shared mailbox's new-mail notification (EXO-90553): it names the owner first, as
  * a person, counts in the receiver's language, links to the shared mailbox rather than
@@ -135,6 +137,22 @@ public class DelegatedNewEmailsNotificationPluginTest {
     assertFalse(plugin.isValid(context("", "", "7", "3")));
     assertFalse(plugin.isValid(context("anne", "anne@acme.com", "7", "0")));
     assertFalse(plugin.isValid(context("anne", "anne@acme.com", "7", "x")));
+  }
+
+  /**
+   * The push twin shows text: the owner's name, escaped into the sentence for the web
+   * and mail channels, reaches the device decoded, with the shared mailbox's link.
+   */
+  @Test
+  void thePushShowsTheSentenceAsText() {
+    NotificationInfo info = NotificationInfo.instance()
+                                            .with(NotificationConstants.TITLE, "New emails in a shared mailbox")
+                                            .with(NotificationConstants.CONTENT, "O&#39;Brien &amp; Co&#39;s mailbox: 3 new messages")
+                                            .with(NotificationConstants.LINK, "/portal/dw?openEmailBox=true&mailbox=7");
+    PwaNotificationMessage message = new DelegatedNewEmailsNotificationPwaPlugin().process(info, null);
+    assertEquals("O'Brien & Co's mailbox: 3 new messages", message.getBody());
+    assertEquals("New emails in a shared mailbox", message.getTitle());
+    assertEquals("/portal/dw?openEmailBox=true&mailbox=7", message.getUrl());
   }
 
   /**
