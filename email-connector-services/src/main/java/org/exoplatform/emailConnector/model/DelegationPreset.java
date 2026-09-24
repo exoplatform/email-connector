@@ -42,8 +42,11 @@ public enum DelegationPreset {
 
   /**
    * {@code lrswit}: a Reader who can also star and tag, file into and move or trash
-   * out of the folder. Never {@code e} (expunge), {@code x} (delete the mailbox),
-   * {@code k}, {@code p} or {@code a}.
+   * out of the folder. On an IMAP server the engine adds {@code e} (expunge) on every
+   * folder mail leaves from -- INBOX, Sent, Archive, Spam and the owner's own folders --
+   * and never on Trash, where it would be permanent deletion (PO decision Q-1,
+   * {@code ImapAclEngine.lettersFor}). Never {@code x} (delete the mailbox), {@code k},
+   * {@code p} or {@code a}.
    */
   EDITOR("lrswit"),
 

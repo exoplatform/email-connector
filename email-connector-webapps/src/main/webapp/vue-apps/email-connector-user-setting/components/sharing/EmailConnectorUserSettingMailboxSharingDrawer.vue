@@ -67,7 +67,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <email-connector-user-setting-sharing-drawer
         v-show="tab === 0"
         ref="mine"
-        @can-share="canShare = $event" />
+        @can-share="canShare = $event"
+        @per-folder="perFolder = $event" />
       <email-connector-user-setting-shared-with-me-drawer
         v-show="tab === 1"
         ref="sharedWithMe" />
@@ -100,6 +101,8 @@ export default {
     drawer: false,
     tab: 0,
     canShare: false,
+    // Whether the owner's mail server shares folder by folder (EXO-90556).
+    perFolder: false,
     pendingCount: 0,
     // The tabs already loaded since the drawer opened.
     shown: [],
@@ -144,6 +147,7 @@ export default {
       if (!this.drawer) {
         this.shown = [];
         this.canShare = false;
+        this.perFolder = false;
       }
       this.tab = index;
       this.drawer = true;
@@ -204,13 +208,14 @@ export default {
         .catch(() => this.pendingCount = 0);
     },
     /**
-     * Opens the second-level drawer that picks a person and a preset. This drawer
-     * stays open behind it, as the folders drawer does for its name drawer.
+     * Opens the second-level drawer that picks a person and a preset -- and, on a server
+     * that shares folder by folder, the folders (EXO-90556). This drawer stays open
+     * behind it, as the folders drawer does for its name drawer.
      *
      * @returns {void}
      */
     openInvite() {
-      this.$root.$emit('open-email-sharing-invite-drawer');
+      this.$root.$emit('open-email-sharing-invite-drawer', { perFolder: this.perFolder });
     },
     /**
      * Closes the drawer and tells the settings row to re-read its summary.
