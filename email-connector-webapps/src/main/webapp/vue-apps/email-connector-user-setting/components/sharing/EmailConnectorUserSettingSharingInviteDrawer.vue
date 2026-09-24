@@ -68,6 +68,37 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             </template>
           </v-radio>
         </v-radio-group>
+        <!-- Folder by folder (EXO-90556, PO decision P-2), only on a mail server that
+             shares that way: chosen before anything is written, so a folder left out is
+             never shared, not shared and taken back a moment later. -->
+        <template v-if="perFolder">
+          <v-btn
+            class="px-0 mb-2 text-none"
+            color="primary"
+            text
+            small
+            @click="toggleFolders">
+            <v-icon size="12" class="me-1">{{ foldersOpen ? 'fas fa-chevron-up' : 'fas fa-chevron-down' }}</v-icon>
+            {{ $t('UserSettings.emailConnector.sharing.invite.folders') }}
+          </v-btn>
+          <div v-if="foldersOpen" class="mb-2">
+            <div class="caption text-sub-title text-wrap mb-2">{{ $t('UserSettings.emailConnector.sharing.invite.folders.hint') }}</div>
+            <v-progress-linear
+              v-if="foldersLoading"
+              indeterminate
+              color="primary" />
+            <email-connector-user-setting-folder-access-list
+              :folders="folders"
+              :choices="choices"
+              :inbox-label="$t(`UserSettings.emailConnector.sharing.preset.${preset}`)"
+              :disabled="saving"
+              @change="choose" />
+            <div v-if="truncated" class="caption text-sub-title text-wrap mt-2">
+              {{ $t('UserSettings.emailConnector.sharing.folders.truncated') }}
+            </div>
+            <div class="caption text-sub-title text-wrap mt-2">{{ $t('UserSettings.emailConnector.sharing.folders.inherit') }}</div>
+          </div>
+        </template>
         <!-- The consent, said before the button and not in a tooltip: the access is
              written on the mail server the moment this is pressed, it reaches every
              mail client the person uses and not only eXo, and declining the invitation
@@ -100,12 +131,28 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { changesOf, chooseWithDescendants } from '../../js/EmailConnectorFolderAccess.js';
+import EmailConnectorUserSettingFolderAccessList from './EmailConnectorUserSettingFolderAccessList.vue';
+
 export default {
+  components: {
+    'email-connector-user-setting-folder-access-list': EmailConnectorUserSettingFolderAccessList,
+  },
   data: () => ({
     drawer: false,
     saving: false,
     grantee: null,
     preset: 'READER',
+    // Whether the owner's mail server shares folder by folder (EXO-90556), as the
+    // sharing list read it.
+    perFolder: false,
+    foldersOpen: false,
+    foldersLoading: false,
+    folders: [],
+    truncated: false,
+    // The access chosen per folder, by full name: the role folders follow the preset
+    // until the owner chooses otherwise, the owner's other folders are not shared.
+    choices: {},
   }),
   computed: {
     /**
@@ -139,6 +186,21 @@ export default {
       };
     },
   },
+  watch: {
+    /**
+     * The role folders that follow the preset move with it; one the owner set apart
+     * stays where it is.
+     *
+     * @param {String} preset the new preset
+     * @param {String} previous the preset before
+     * @returns {void}
+     */
+    preset(preset, previous) {
+      const choices = Object.assign({}, this.choices);
+      this.folders.filter(folder => folder.role && choices[folder.folder] === previous).forEach(folder => choices[folder.folder] = preset);
+      this.choices = choices;
+    },
+  },
   created() {
     this.$root.$on('open-email-sharing-invite-drawer', this.open);
   },
@@ -150,13 +212,77 @@ export default {
      * Opens the drawer on an empty choice — never on the last one, which would let a
      * second share go to the first person by a misplaced press.
      *
+     * @param {Object} options {perFolder}: whether the mail server shares folder by folder
      * @returns {void}
      */
-    open() {
+    open(options) {
       this.grantee = null;
       this.preset = 'READER';
+      this.perFolder = !!options?.perFolder;
+      this.foldersOpen = false;
+      this.folders = [];
+      this.truncated = false;
+      this.choices = {};
       this.drawer = true;
       this.$refs.inviteDrawer.open();
+    },
+    /**
+     * Shows or hides the folder choice, reading the owner's folders the first time.
+     *
+     * @returns {void}
+     */
+    toggleFolders() {
+      this.foldersOpen = !this.foldersOpen;
+      if (!this.foldersOpen || this.folders.length || this.foldersLoading) {
+        return;
+      }
+      this.foldersLoading = true;
+      this.$emailConnectorUserSettingService.getShareableFolders()
+        .then(answer => {
+          this.folders = answer?.folders || [];
+          this.truncated = !!answer?.truncated;
+          const choices = {};
+          this.folders.filter(folder => folder.editable).forEach(folder => choices[folder.folder] = folder.role ? this.preset : 'NONE');
+          this.choices = choices;
+        })
+        .catch(error => {
+          this.foldersOpen = false;
+          const code = error?.message;
+          const known = !!code && typeof this.$te === 'function' && this.$te(code);
+          this.showAlert(known ? this.$t(code) : this.$t('UserSettings.emailConnector.sharing.folders.error'), 'error');
+        })
+        .finally(() => this.foldersLoading = false);
+    },
+    /**
+     * The owner chose an access for a folder: it, and the folders inside it.
+     *
+     * @param {Object} change {folder, access}
+     * @returns {void}
+     */
+    choose(change) {
+      this.choices = chooseWithDescendants(this.folders, this.choices, change.folder, change.access);
+    },
+    /**
+     * The owner's choice for Sent, Archive, Trash and Spam where it differs from the
+     * preset, by role -- what the invitation itself carries.
+     *
+     * @returns {Object} the choice, empty when every role folder follows the preset
+     */
+    roleAccess() {
+      const access = {};
+      this.folders.filter(folder => folder.role && folder.editable && this.choices[folder.folder] && this.choices[folder.folder] !== this.preset)
+        .forEach(folder => access[folder.role] = this.choices[folder.folder]);
+      return access;
+    },
+    /**
+     * The owner's other folders chosen to be shared -- written once the share exists.
+     *
+     * @returns {Array} the changes, [{folder, access}]
+     */
+    otherFolders() {
+      const none = {};
+      this.folders.forEach(folder => none[folder.folder] = 'NONE');
+      return changesOf(this.folders.filter(folder => !folder.role), none, this.choices);
     },
     /**
      * Shows a message on the platform's toast, through the document event it listens
@@ -182,9 +308,20 @@ export default {
         return;
       }
       this.saving = true;
-      this.$emailConnectorUserSettingService.inviteDelegation(this.granteeUsername, this.preset)
-        .then(() => {
-          this.showAlert(this.$t('UserSettings.emailConnector.sharing.shared'), 'success');
+      const others = this.otherFolders();
+      this.$emailConnectorUserSettingService.inviteDelegation(this.granteeUsername, this.preset, this.roleAccess())
+        .then(delegation => {
+          if (!others.length || !delegation?.id) {
+            return true;
+          }
+          // The owner's other folders chosen, once the share exists: each its own write.
+          return this.$emailConnectorUserSettingService.setDelegationFolders(delegation.id, others)
+            .then(answer => !(answer?.results || []).some(result => result.outcome !== 'DONE'))
+            .catch(() => false);
+        })
+        .then(complete => {
+          this.showAlert(this.$t(complete ? 'UserSettings.emailConnector.sharing.shared' : 'UserSettings.emailConnector.sharing.invite.folders.partial'),
+            complete ? 'success' : 'warning');
           // The list behind this drawer is the mail server's; it just changed.
           this.$root.$emit('email-delegation-granted');
           this.$root.$emit('email-delegations-updated');
