@@ -119,6 +119,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </div>
         <div class="caption text-sub-title text-wrap">{{ $t('UserSettings.emailConnector.sharedWithMe.notify.hint') }}</div>
       </template>
+      <!-- The search choice (EXO-90554): whether the platform's search returns this
+           mailbox's mail, labelled with its owner. Any share in use has something to
+           search. -->
+      <div v-if="searchOffered" class="d-flex align-center mt-1">
+        <span class="caption text-wrap">{{ $t('UserSettings.emailConnector.sharedWithMe.search') }}</span>
+        <v-spacer />
+        <v-switch
+          :input-value="delegation.searchIncluded"
+          :loading="saving"
+          :disabled="disabled"
+          :aria-label="$t('UserSettings.emailConnector.sharedWithMe.search')"
+          class="mt-0 pt-0 ms-2 flex-grow-0"
+          dense
+          hide-details
+          @change="$emit('search', !!$event)" />
+      </div>
       <div v-if="visibleActions.length" class="d-flex justify-end mt-1">
         <v-btn
           v-for="action in visibleActions"
@@ -199,6 +215,14 @@ export default {
      * @returns {Boolean} true when the switch is shown
      */
     notifyOffered() {
+      return this.delegation.status === 'ACCEPTED';
+    },
+    /**
+     * Whether the search choice applies: a share in use (EXO-90554).
+     *
+     * @returns {Boolean} true when the switch is shown
+     */
+    searchOffered() {
       return this.delegation.status === 'ACCEPTED';
     },
     /**

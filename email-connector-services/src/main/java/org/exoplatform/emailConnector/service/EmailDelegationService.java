@@ -65,6 +65,8 @@ import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.SharedMailboxFolder;
+import org.exoplatform.emailConnector.model.SharedMailboxSearchFolders;
+import org.exoplatform.emailConnector.model.SharedMailboxSearchScope;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngine;
@@ -1266,7 +1268,53 @@ public class EmailDelegationService {
                                            long id,
                                            Boolean badgeIncluded,
                                            Boolean notifyNewMail) throws ObjectNotFoundException {
+    return updatePreferences(granteeUsername, id, badgeIncluded, notifyNewMail, null);
+  }
+
+  /**
+   * The caller's per-delegation toggles, the search one included (EXO-90554): whether
+   * the unified search returns this shared mailbox's mail, labelled with its owner. A
+   * null leaves a toggle as it is. The search toggle is written on its own, so it never
+   * carries the other two back to an earlier read.
+   *
+   * @param granteeUsername the caller
+   * @param id the delegation id
+   * @param badgeIncluded the badge toggle, or null
+   * @param notifyNewMail the notification toggle, or null
+   * @param searchIncluded the search toggle, or null
+   * @return the row as it now stands
+   * @throws ObjectNotFoundException when no such row belongs to the caller as grantee
+   */
+  public EmailDelegation updatePreferences(String granteeUsername,
+                                           long id,
+                                           Boolean badgeIncluded,
+                                           Boolean notifyNewMail,
+                                           Boolean searchIncluded) throws ObjectNotFoundException {
+    EmailDelegation updated = updateBadgeAndNotify(granteeUsername, id, badgeIncluded, notifyNewMail);
+    if (updated != null && searchIncluded != null && searchIncluded != updated.isSearchIncluded()) {
+      updated = emailDelegationStorage.updateSearchIncluded(granteeUsername, id, searchIncluded);
+    }
+    return updated;
+  }
+
+  /**
+   * The badge and notification toggles of {@link #updatePreferences}.
+   *
+   * @param granteeUsername the caller
+   * @param id the delegation id
+   * @param badgeIncluded the badge toggle, or null
+   * @param notifyNewMail the notification toggle, or null
+   * @return the row as it now stands
+   * @throws ObjectNotFoundException when no such row belongs to the caller as grantee
+   */
+  private EmailDelegation updateBadgeAndNotify(String granteeUsername,
+                                               long id,
+                                               Boolean badgeIncluded,
+                                               Boolean notifyNewMail) throws ObjectNotFoundException {
     EmailDelegation delegation = asGrantee(granteeUsername, id);
+    if (badgeIncluded == null && notifyNewMail == null) {
+      return delegation;
+    }
     boolean badgeChanged = badgeIncluded != null && badgeIncluded != delegation.isBadgeIncluded();
     // The two toggles alone (#432-2): a whole-row write from this read would put back a
     // status, a revoke date or rights the owner changed since -- a revoke made while
@@ -1506,6 +1554,50 @@ public class EmailDelegationService {
       }
     }
     return keys;
+  }
+
+  /**
+   * The folders of the mailboxes shared with the caller as the unified search needs them
+   * (EXO-90554, PO decision Q-6), in one pass over the caller's shares: every folder of
+   * an ACCEPTED share -- what the read of the caller's own mail leaves out, as
+   * {@link #getDelegatedFolderKeys} does -- and, among them, the ones the search reads,
+   * each with whose mailbox it is. A folder is searched when its share's search toggle
+   * is on, the last discovery still listed it, the caller may read it, and it is not the
+   * owner's Trash or Spam -- the folders the caller's own search leaves out of their own
+   * mailbox ({@link MailFolder#HIDDEN_FOLDERS}), for the same reason: a hit says nothing
+   * of the bin it came out of. Read from eXo's rows, no mail server; the owner's name is
+   * resolved once per share, never per folder or per hit.
+   *
+   * @param username the caller
+   * @return the folders, never null
+   */
+  public SharedMailboxSearchFolders getSharedMailboxSearchFolders(String username) {
+    if (StringUtils.isBlank(username)) {
+      return SharedMailboxSearchFolders.NONE;
+    }
+    List<String> sharedKeys = new ArrayList<>();
+    Map<String, SharedMailboxSearchScope> searchable = new HashMap<>();
+    for (EmailDelegation delegation : emailDelegationStorage.getReceived(username)) {
+      // Only a share in use has folders: leaving, declining and revoking drop them.
+      if (delegation.getStatus() != DelegationStatus.ACCEPTED) {
+        continue;
+      }
+      List<EmailFolder> folders = emailFolderStorage.getDelegatedFolders(username, delegation.getId());
+      folders.forEach(folder -> sharedKeys.add(folder.getKey()));
+      if (!delegation.isSearchIncluded()) {
+        continue;
+      }
+      List<EmailFolder> searched = folders.stream()
+                                          .filter(folder -> !folder.isMissing())
+                                          .filter(folder -> folder.getRole() != FolderRole.TRASH && folder.getRole() != FolderRole.JUNK)
+                                          .filter(folder -> folderRights(folder, delegation).canRead())
+                                          .toList();
+      if (!searched.isEmpty()) {
+        SharedMailboxSearchScope scope = new SharedMailboxSearchScope(delegation.getId(), ownerFullName(delegation));
+        searched.forEach(folder -> searchable.put(folder.getKey(), scope));
+      }
+    }
+    return new SharedMailboxSearchFolders(sharedKeys, searchable);
   }
 
   /**
