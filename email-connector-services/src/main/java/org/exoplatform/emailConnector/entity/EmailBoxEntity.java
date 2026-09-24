@@ -217,4 +217,12 @@ public class EmailBoxEntity {
   // set by name, like the read-receipt columns.
   @Column(name = "DRAFT_DELEGATION_ID")
   private Long                        draftDelegationId;
+
+  // On a draft of a mailbox shared with USER_ID, the name it is to go out in (EXO-90584):
+  // NONE, ON_BEHALF or AS, as the writer last left it, written with every revision; null
+  // when the draft never said (every row before changeset 1.0.0-89, and every draft of the
+  // writer's own mailbox). Never a right: every send checks the owner's consent again.
+  // Declared last and set by name, like the draft's mailbox.
+  @Column(name = "DRAFT_SEND_MODE")
+  private String                      draftSendMode;
 }
