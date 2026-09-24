@@ -49,6 +49,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
 import org.exoplatform.emailConnector.model.EmailScheduledSend;
+import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.ScheduledEmail;
 import org.exoplatform.emailConnector.model.ScheduledSendError;
 import org.exoplatform.emailConnector.model.ScheduledSendStatus;
@@ -572,7 +573,7 @@ public class EmailScheduledSendService {
         }
       });
       LOG.info("A scheduled mail of user {} was sent", username);
-      if (sent != null && sent.ownerCopy() == EmailBoxService.OwnerCopy.FAILED) {
+      if (sent != null && sent.ownerCopy() == OwnerCopy.FAILED) {
         // Sent all the same (EXO-90595): the sender is told the shared mailbox's owner has
         // no copy in their Sent, and nothing about the send is recorded as failed.
         notifyOwner(username, sent.subject(), OWNER_COPY_FAILED_REASON);
