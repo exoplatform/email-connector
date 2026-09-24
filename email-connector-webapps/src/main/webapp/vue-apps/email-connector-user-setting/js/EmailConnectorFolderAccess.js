@@ -22,8 +22,9 @@
 /**
  * The choices after the owner chose an access for a folder: that folder, and every
  * folder inside it, get it -- a choice on a parent applies to its children by default,
- * and each child can still be changed afterwards (PO decision P-3). The folder list says
- * each folder's parent; INBOX, the share itself, is never changed here.
+ * and each child can still be changed afterwards (PO decision P-3). "Inside" is by full
+ * name and the folder's own delimiter, so a folder under a container that cannot hold
+ * mail (not listed) is reached too; INBOX, the share itself, is never changed here.
  *
  * @param {Array} folders the folders, as the server lists them
  * @param {Object} choices the access chosen per folder, by full name
@@ -33,20 +34,10 @@
  */
 export function chooseWithDescendants(folders, choices, folder, access) {
   const next = Object.assign({}, choices, { [folder]: access });
-  const inside = new Set([folder]);
-  let grown = true;
-  // Parents may be listed after their children (the role folders come first), so the
-  // set grows until a pass adds nothing.
-  while (grown) {
-    grown = false;
-    for (const candidate of folders || []) {
-      if (candidate.editable && !inside.has(candidate.folder) && inside.has(candidate.parent)) {
-        inside.add(candidate.folder);
-        next[candidate.folder] = access;
-        grown = true;
-      }
-    }
-  }
+  const chosen = (folders || []).find(candidate => candidate.folder === folder);
+  const prefix = `${folder}${chosen?.delimiter || '/'}`;
+  (folders || []).filter(candidate => candidate.editable && candidate.folder.startsWith(prefix))
+    .forEach(candidate => next[candidate.folder] = access);
   return next;
 }
 
