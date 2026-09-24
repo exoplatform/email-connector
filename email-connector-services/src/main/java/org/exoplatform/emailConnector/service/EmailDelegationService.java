@@ -274,10 +274,10 @@ public class EmailDelegationService {
    * the ACL no longer carries is moved to {@code REVOKED}. An identifier nobody eXo
    * knows holds is listed raw, with no row and no action.
    * <p>
-   * Unsupported server: the answer says why and lists eXo's own rows only. A supported
-   * one also says whether an administrator left the owner's Sent copy of a delegate's
-   * mail on, which the consent to writing in the owner's name tells her about
-   * (EXO-90582).
+   * Unsupported server: the answer says why and lists eXo's own rows only. On a server
+   * that accepts writing in the owner's name, each live share eXo made also carries what
+   * the consent to it says: the grantee's display name, and whether the owner keeps a
+   * copy (EXO-90582).
    *
    * @param ownerUsername the caller
    * @return the overview
@@ -293,7 +293,7 @@ public class EmailDelegationService {
     try (MailboxAclSession session = session(connector, ownerUsername, ownerMailbox)) {
       MailboxAclCapabilities capabilities = engine.probe(session);
       if (!capabilities.supported()) {
-        return new GrantedDelegations(capabilities, ownerMailbox, rowsOnly(rows), false);
+        return new GrantedDelegations(capabilities, ownerMailbox, rowsOnly(rows));
       }
       List<MailboxAce> acl = engine.listAcl(session, OWNER_INBOX);
       List<DelegationGrantee> grantees = merge(ownerUsername, ownerMailbox, connector, acl, rows);
@@ -309,9 +309,82 @@ public class EmailDelegationService {
                                                                               : grantee)
                            .toList();
       }
-      // What the consent to writing in her name tells the owner about her copy
-      // (EXO-90582): read once for the whole list.
-      return new GrantedDelegations(capabilities, ownerMailbox, grantees, isSentCopyEnabled());
+      if (!capabilities.sendModes().isEmpty()) {
+        // What the consent to writing in her name tells the owner (EXO-90582): who, and
+        // whether she keeps a copy -- the switch read once for the whole list.
+        boolean sentCopyEnabled = isSentCopyEnabled();
+        grantees = grantees.stream().map(grantee -> withConsentContext(grantee, sentCopyEnabled)).toList();
+      }
+      return new GrantedDelegations(capabilities, ownerMailbox, grantees);
+    }
+  }
+
+  /**
+   * One grantee of the owner's list with what the consent to their writing in her name
+   * says (EXO-90582): their display name, and whether a mail they write in her name will
+   * be filed in her Sent. For a share in use whose Sent the grantee's discovery found,
+   * that is exactly the promise the send path keeps ({@link #sentCopyOf}); before that --
+   * a pending share, or one not discovered yet -- it is what the grant wrote: her Sent
+   * shared with an Editor's access. Only for a live share eXo made: nothing else offers
+   * the consent.
+   *
+   * @param grantee the entry
+   * @param sentCopyEnabled whether an administrator left the owner's copy on
+   * @return the entry, with its consent context when it may be offered one
+   */
+  private DelegationGrantee withConsentContext(DelegationGrantee grantee, boolean sentCopyEnabled) {
+    EmailDelegation delegation = grantee.delegation();
+    if (delegation == null || delegation.getId() == null || !isLive(delegation) || delegation.getOrigin() != DelegationOrigin.EXO) {
+      return grantee;
+    }
+    boolean sentCopy = false;
+    if (sentCopyEnabled) {
+      List<EmailFolder> folders = delegation.getStatus() == DelegationStatus.ACCEPTED
+          ? emailFolderStorage.getDelegatedFolders(delegation.getGranteeId(), delegation.getId())
+          : List.of();
+      boolean sentDiscovered = folders.stream()
+                                      .anyMatch(folder -> MailFolderView.TYPE_DELEGATED.equals(folder.getType()) && !folder.isMissing()
+                                          && folder.getRole() == FolderRole.SENT);
+      sentCopy = sentDiscovered ? sentCopyOf(folders, delegation) : sentSharedAsEditor(delegation);
+    }
+    return grantee.withConsentContext(fullNameOf(delegation.getGranteeId(), grantee.identifier()), sentCopy);
+  }
+
+  /**
+   * Whether the grant shares the owner's Sent with an Editor's access -- the letters that
+   * let a delegate file a copy there: Sent among the roles granted (or the whole mailbox),
+   * and the owner's exception on it, or the share's preset when none, reading Editor.
+   *
+   * @param delegation the share
+   * @return true when the grant covers Sent as an Editor
+   */
+  private static boolean sentSharedAsEditor(EmailDelegation delegation) {
+    if (!delegation.grantsWholeMailbox() && !delegation.grantedRoleSet().contains(FolderRole.SENT)) {
+      return false;
+    }
+    FolderAccess exception = delegation.accessException(FolderRole.SENT);
+    return exception == null ? delegation.getPreset() == DelegationPreset.EDITOR : exception == FolderAccess.EDITOR;
+  }
+
+  /**
+   * An eXo user's display name, the fallback when it cannot be read.
+   *
+   * @param username the user, possibly null
+   * @param fallback what to answer otherwise
+   * @return the name
+   */
+  private String fullNameOf(String username, String fallback) {
+    String name = StringUtils.defaultString(fallback);
+    if (StringUtils.isBlank(username) || identityManager == null) {
+      return name;
+    }
+    try {
+      Identity identity = identityManager.getOrCreateUserIdentity(username);
+      String fullName = identity == null || identity.getProfile() == null ? null : identity.getProfile().getFullName();
+      return StringUtils.isBlank(fullName) ? name : fullName;
+    } catch (RuntimeException e) {
+      LOG.debug("The display name of {} could not be resolved", username, e);
+      return name;
     }
   }
 
@@ -1416,8 +1489,9 @@ public class EmailDelegationService {
    * own session: the server must support sharing, declare the shape too, and still name
    * the grantee on INBOX -- a share removed in another mail application is not given a
    * consent. A withdrawal is never refused for any of those: switched off, undeclared,
-   * unsupported or unreachable, taking the consent back is always the owner's to do, and
-   * a server-side copy that cannot be taken off is logged and left.
+   * unsupported or unreachable, taking the consent back is always the owner's to do. It
+   * is recorded first, then taken off the server where an engine wrote it there; a
+   * server-side copy that cannot be taken off is logged and left.
    *
    * @param ownerUsername the caller, the mailbox's owner
    * @param id the delegation id
@@ -1447,15 +1521,18 @@ public class EmailDelegationService {
       throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
     }
     SendMode previous = delegation.getSendMode() == null ? SendMode.NONE : delegation.getSendMode();
-    if (mode == SendMode.NONE) {
-      withdrawSendModeOnServer(ownerUsername, delegation);
-    } else {
+    if (mode != SendMode.NONE) {
       grantSendMode(ownerUsername, delegation, mode);
     }
+    // A withdrawal is recorded before the server is asked anything: eXo's record is what
+    // the send path reads, and it must not wait on a login.
     EmailDelegation updated = emailDelegationStorage.updateSendMode(ownerUsername, id, mode);
     if (updated == null) {
       // Ended while the server was being asked: the owner's next reconcile reads it.
       throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
+    }
+    if (mode == SendMode.NONE) {
+      withdrawSendModeOnServer(ownerUsername, delegation);
     }
     LOG.info("Mailbox send mode set: actor={} ownerMailbox={} grantee={} mode={} previous={}",
              ownerUsername,
@@ -2769,18 +2846,7 @@ public class EmailDelegationService {
    * @return the name, never null
    */
   private String ownerFullName(EmailDelegation delegation) {
-    String fallback = StringUtils.defaultString(delegation.getOwnerMailbox());
-    if (StringUtils.isBlank(delegation.getOwnerId()) || identityManager == null) {
-      return fallback;
-    }
-    try {
-      Identity identity = identityManager.getOrCreateUserIdentity(delegation.getOwnerId());
-      String fullName = identity == null || identity.getProfile() == null ? null : identity.getProfile().getFullName();
-      return StringUtils.isBlank(fullName) ? fallback : fullName;
-    } catch (RuntimeException e) {
-      LOG.debug("The display name of mailbox owner {} could not be resolved", delegation.getOwnerId(), e);
-      return fallback;
-    }
+    return fullNameOf(delegation.getOwnerId(), delegation.getOwnerMailbox());
   }
 
   // ---------------------------------------------------------------------------------
@@ -4056,7 +4122,9 @@ public class EmailDelegationService {
                                          row.getRights(),
                                          row.getNativeRights(),
                                          row.getMailboxRights().affordances(),
-                                         List.of()));
+                                         List.of(),
+                                         null,
+                                         false));
     }
     return grantees;
   }
