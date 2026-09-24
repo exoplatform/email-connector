@@ -468,7 +468,7 @@ export function answerDelegation(id, answer) {
  * The caller's own toggles on one shared mailbox. A field left out stays as it is.
  *
  * @param {Number} id the delegation id
- * @param {Object} preferences {badgeIncluded, notifyNewMail}
+ * @param {Object} preferences {badgeIncluded, notifyNewMail, searchIncluded}
  * @returns {Promise<Object>} the delegation as it now stands
  */
 export function updateDelegationPreferences(id, preferences) {
