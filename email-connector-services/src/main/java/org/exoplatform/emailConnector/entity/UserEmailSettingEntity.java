@@ -22,6 +22,7 @@ import org.exoplatform.emailConnector.model.SyncStatus;
 
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import lombok.ToString;
 
 @Data
 @NoArgsConstructor
@@ -31,6 +32,12 @@ public class UserEmailSettingEntity {
 
   private String       emailAddress;
 
+  /**
+   * The mail password, encrypted in storage and decoded on read. Left out of
+   * {@code toString()}, which would otherwise print it into any log line or
+   * exception message the setting reaches (EXO-90610).
+   */
+  @ToString.Exclude
   private String       emailPassword;
 
   private Integer      emailBoxUserSyncPeriod;

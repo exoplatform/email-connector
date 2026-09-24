@@ -312,6 +312,164 @@ public class UserEmailSettingServiceTest {
     verifyNoInteractions(emailConnectorService);
   }
 
+  /** EXO-90610. The stored read says whether there is a readable password to keep. */
+  @Test
+  @SneakyThrows
+  void theStoredReadSaysWhetherAPasswordIsKept() {
+    stubStoredSetting("1", "testEmail", "cipher", "clear");
+
+    assertTrue(userEmailSettingService.getStoredUserEmailSetting(TEST_USER).isPasswordStored());
+  }
+
+  /**
+   * EXO-90610. The settings read never carries the password, so re-saving the same
+   * account posts a blank one, which means unchanged: the stored password is what the
+   * mailbox is opened with and what is saved again.
+   */
+  @Test
+  @SneakyThrows
+  void aBlankPasswordOnTheSameAccountKeepsTheStoredOne() {
+    AbstractCodec codec = stubStoredSetting("1", "testEmail", "cipher", "clear");
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
+    UserEmailSetting posted = userEmailSetting();
+    posted.setEmailPassword("");
+    posted.setEmailAddress("TestEmail");
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+
+      userEmailSettingService.connectUserEmailSetting(posted, TEST_USER, false);
+
+      verify(store).connect();
+      verify(codec).encode("clear");
+      verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+    }
+  }
+
+  /**
+   * EXO-90610. The stored password belongs to one mailbox: a blank password for
+   * another address is refused, before any mailbox is tried and before anything is
+   * saved.
+   */
+  @Test
+  @SneakyThrows
+  void aBlankPasswordForAnotherAddressIsRefused() {
+    stubStoredSetting("1", "testEmail", "cipher", "clear");
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
+    UserEmailSetting posted = userEmailSetting();
+    posted.setEmailPassword(null);
+    posted.setEmailAddress("other@example.invalid");
+
+    assertRefusedWithoutTryingAnyMailbox(posted);
+  }
+
+  /**
+   * EXO-90610. Same rule for another connector. canConnect lets it through when the
+   * stored connector was deactivated, and the stored password must then never reach
+   * the other connector's server.
+   */
+  @Test
+  @SneakyThrows
+  void aBlankPasswordForAnotherConnectorIsRefused() {
+    stubStoredSetting("1", "testEmail", "cipher", "clear");
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    EmailConnector deactivated = emailConnector();
+    deactivated.setActive(false);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(deactivated);
+    when(emailConnectorService.getEmailConnector(2L)).thenReturn(emailConnector());
+    UserEmailSetting posted = userEmailSetting();
+    posted.setEmailPassword("");
+    posted.setEmailConnectorId("2");
+
+    assertRefusedWithoutTryingAnyMailbox(posted);
+  }
+
+  private void assertRefusedWithoutTryingAnyMailbox(UserEmailSetting posted) {
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                      () -> userEmailSettingService.connectUserEmailSetting(posted,
+                                                                                                           TEST_USER,
+                                                                                                           false));
+
+      assertEquals(UserEmailSettingService.PASSWORD_REQUIRED, refused.getMessage());
+      mockedSession.verifyNoInteractions();
+    }
+    verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+  }
+
+  /**
+   * EXO-90610. A stored password the instance cannot decode is no password to keep:
+   * a blank password on the same account is refused, and no mailbox is tried with a
+   * missing one.
+   */
+  @Test
+  @SneakyThrows
+  void aBlankPasswordOnTheSameAccountWithNoReadablePasswordIsRefused() {
+    AbstractCodec codec = stubStoredSetting("1", "testEmail", "cipherFromAnotherKey", null);
+    when(codec.decode("cipherFromAnotherKey")).thenThrow(new UndeclaredThrowableException(new BadPaddingException("Given final block not properly padded")));
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
+    UserEmailSetting posted = userEmailSetting();
+    posted.setEmailPassword("");
+
+    assertRefusedWithoutTryingAnyMailbox(posted);
+  }
+
+  /** EXO-90610. With nothing stored, a blank password is refused before any mailbox is tried. */
+  @Test
+  @SneakyThrows
+  void aBlankPasswordWithNothingStoredIsRefused() {
+    when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenReturn(null);
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
+    UserEmailSetting posted = userEmailSetting();
+    posted.setEmailPassword("");
+
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> userEmailSettingService.connectUserEmailSetting(posted,
+                                                                                                         TEST_USER,
+                                                                                                         false));
+
+    assertEquals(UserEmailSettingService.PASSWORD_REQUIRED, refused.getMessage());
+    verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+  }
+
+  /** EXO-90610. A typed password is used as typed, whatever is stored. */
+  @Test
+  @SneakyThrows
+  void aTypedPasswordReplacesTheStoredOne() {
+    AbstractCodec codec = stubStoredSetting("1", "testEmail", "cipher", "clear");
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
+    UserEmailSetting posted = userEmailSetting();
+    posted.setEmailPassword("typed");
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      when(session.getStore()).thenReturn(mock(Store.class));
+
+      userEmailSettingService.connectUserEmailSetting(posted, TEST_USER, false);
+
+      verify(codec).encode("typed");
+      verify(codec, never()).encode("clear");
+    }
+  }
+
+  private AbstractCodec stubStoredSetting(String connectorId, String address, String cipher, String clear) throws Exception {
+    SettingValue storedValue = mock(SettingValue.class);
+    when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenReturn(storedValue);
+    when(storedValue.getValue()).thenReturn("{\"emailConnectorId\":\"" + connectorId + "\",\"emailAddress\":\"" + address
+        + "\",\"emailPassword\":\"" + cipher + "\"}");
+    AbstractCodec codec = mock(AbstractCodec.class);
+    when(codecInitializer.getCodec()).thenReturn(codec);
+    when(codec.decode(cipher)).thenReturn(clear);
+    return codec;
+  }
+
   /** EXO-89997. No stored document is no mailbox. */
   @Test
   void noStoredSettingIsNoStoredMailbox() {
@@ -383,6 +541,7 @@ public class UserEmailSettingServiceTest {
     assertEquals("testEmail", read.getEmailAddress());
     assertNull(read.getEmailPassword());
     assertTrue("the read marks the model, so a write handed it back keeps the stored ciphertext", read.isPasswordUnreadable());
+    assertFalse("a password that cannot be decoded is not one the screen may offer to keep", read.isPasswordStored());
   }
 
   /**
