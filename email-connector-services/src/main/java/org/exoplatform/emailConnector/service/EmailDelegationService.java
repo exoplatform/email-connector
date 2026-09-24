@@ -50,6 +50,7 @@ import org.exoplatform.emailConnector.model.DelegationOrigin;
 import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.DiscoveredFolder;
+import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailFolder;
@@ -2208,6 +2209,48 @@ public class EmailDelegationService {
     } catch (MailboxRightMissingException e) {
       return null;
     }
+  }
+
+  /**
+   * The share a draft is being written in, as the draft's first save records it
+   * (EXO-90595): one of the writer's own received shares, ACCEPTED. Resolved with the
+   * caller as grantee, as {@link #ownerSentFolderKey} resolves it, so a client-supplied
+   * id never names another user's mailbox: somebody else's share and an unknown id are
+   * both "no such delegation".
+   *
+   * @param granteeUsername the writer, who must be the share's grantee
+   * @param delegationId the share the client names
+   * @return the share
+   * @throws ObjectNotFoundException when no such share belongs to the writer
+   * @throws DelegationRevokedException when the share is no longer accepted
+   */
+  public EmailDelegation requireAcceptedShare(String granteeUsername, long delegationId) throws ObjectNotFoundException {
+    EmailDelegation delegation = asGrantee(granteeUsername, delegationId);
+    if (delegation.getStatus() != DelegationStatus.ACCEPTED) {
+      throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
+    }
+    return delegation;
+  }
+
+  /**
+   * The mailbox a draft or a scheduled mail of the writer's was written in, as the
+   * "Scheduled" view names it (EXO-90595): its owner, and whether it is still shared
+   * with the writer. Only among the writer's own received shares, whatever their
+   * status -- an ended share is named, so the view can say why the mail cannot go.
+   *
+   * @param granteeUsername the writer
+   * @param delegationId the share the draft records
+   * @return the mailbox, or null when no such share belongs to the writer
+   */
+  public DraftMailbox draftMailbox(String granteeUsername, long delegationId) {
+    EmailDelegation delegation = emailDelegationStorage.getAsGrantee(granteeUsername, delegationId);
+    if (delegation == null) {
+      return null;
+    }
+    return new DraftMailbox(delegationId,
+                            ownerFullName(delegation),
+                            delegation.getOwnerMailbox(),
+                            delegation.getStatus() == DelegationStatus.ACCEPTED);
   }
 
   /**
