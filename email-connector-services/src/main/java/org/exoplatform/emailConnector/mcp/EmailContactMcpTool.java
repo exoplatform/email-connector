@@ -139,7 +139,7 @@ public class EmailContactMcpTool implements McpToolPlugin {
   public ContactModel getContact(long contactId) throws ObjectNotFoundException {
     EmailContact contact = emailContactService.getContact(contactId, getCurrentUserName());
     if (contact == null) {
-      throw new ObjectNotFoundException("Contact with id %s not found");
+      throw new ObjectNotFoundException(String.format("No contact with id %d in your address book.", contactId));
     }
     return toContactModel(contact);
   }
