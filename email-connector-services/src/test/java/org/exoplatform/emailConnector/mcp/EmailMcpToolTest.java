@@ -147,9 +147,24 @@ class EmailMcpToolTest {
    */
   @Test
   void getEmailByIdRefusesSomebodyElsesEmail() throws Exception {
-    when(emailBoxService.getOwnMailboxEmailById(eq(EMAIL_ID), eq(USERNAME))).thenThrow(new IllegalAccessException("not yours"));
-    assertThrows(IllegalAccessException.class, () -> emailMcpTool.getEmailById(EMAIL_ID, null));
+    // The owning lookup answers another user's row as no row (EXO-90555): the agent is
+    // told "not found", never "not allowed", which would say the row exists.
+    when(emailBoxService.getOwnMailboxEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(null);
+    ObjectNotFoundException refused = assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.getEmailById(EMAIL_ID, null));
+    assertTrue(refused.getMessage().startsWith("No email with email_id " + EMAIL_ID + " in your mailbox."), refused.getMessage());
     verify(emailBoxService, never()).getEmailById(anyLong(), any());
+  }
+
+  /** A draft not on the server yet has no UID to act on, and is said to be one. */
+  @Test
+  void aDraftNotOnTheServerIsSaidToBeOne() throws Exception {
+    Email draft = buildEmail(EMAIL_ID);
+    draft.setMailRemoteId(null);
+    when(emailBoxService.getOwnMailboxEmailById(EMAIL_ID, USERNAME)).thenReturn(draft);
+
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> emailMcpTool.replyEmail(null, "<p>x</p>", null, EMAIL_ID));
+    assertTrue(refused.getMessage().contains("is a draft that is not on the mail server yet"), refused.getMessage());
+    verify(emailBoxService, never()).sendEmail(any(Email.class), any());
   }
 
   /**
