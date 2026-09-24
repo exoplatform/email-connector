@@ -373,6 +373,23 @@ public class EmailDelegationStorage {
   }
 
   /**
+   * Records, on the grantee's row, that the owner's mail server refused a mail sent in
+   * the owner's name under the consent set at {@code consentDate} (EXO-90583): see
+   * {@link EmailDelegationDAO#markSendRefused}. A consent with no date is never marked.
+   *
+   * @param granteeId the grantee, whose row it must be
+   * @param id the row id
+   * @param consentDate when the consent the mail was sent under was set
+   * @return true when the refusal was recorded
+   */
+  public boolean markSendRefused(String granteeId, long id, Date consentDate) {
+    if (consentDate == null) {
+      return false;
+    }
+    return emailDelegationDAO.markSendRefused(id, granteeId, consentDate, new Date(), LIVE) > 0;
+  }
+
+  /**
    * A grantee's accept, written alone (EXO-90548 review, finding 1): a row-wide write
    * from the read made before the server calls would put back the folder roles an
    * owner's Extend wrote meanwhile. Only a row of that grantee still pending, declined
