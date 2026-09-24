@@ -52,7 +52,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :saving="savingId === delegation.id"
           :disabled="savingId !== null"
           @answer="onAnswer(delegation, $event)"
-          @badge="saveBadge(delegation, $event)" />
+          @badge="saveBadge(delegation, $event)"
+          @notify="saveNotify(delegation, $event)" />
       </v-list>
     </template>
     <!-- Leaving is the one answer that takes a mailbox away from the user's screens,
@@ -236,6 +237,25 @@ export default {
     saveBadge(delegation, included) {
       this.savingId = delegation.id;
       this.$emailConnectorUserSettingService.updateDelegationPreferences(delegation.id, {badgeIncluded: !!included})
+        .then(() => this.showAlert(this.$t('UserSettings.emailConnector.preferences.saved'), 'success'))
+        .catch(() => this.showAlert(this.$t('UserSettings.emailConnector.preferences.error'), 'error'))
+        .finally(() => {
+          this.savingId = null;
+          this.load(false);
+        });
+    },
+    /**
+     * Stores whether new mail in this shared inbox notifies the reader (EXO-90553). Off
+     * by default; on, it notifies only while the reader keeps using the mailbox, since
+     * a share nobody opens is not checked.
+     *
+     * @param {Object} delegation the row
+     * @param {Boolean} notify whether new mail there notifies
+     * @returns {void}
+     */
+    saveNotify(delegation, notify) {
+      this.savingId = delegation.id;
+      this.$emailConnectorUserSettingService.updateDelegationPreferences(delegation.id, {notifyNewMail: !!notify})
         .then(() => this.showAlert(this.$t('UserSettings.emailConnector.preferences.saved'), 'success'))
         .catch(() => this.showAlert(this.$t('UserSettings.emailConnector.preferences.error'), 'error'))
         .finally(() => {
