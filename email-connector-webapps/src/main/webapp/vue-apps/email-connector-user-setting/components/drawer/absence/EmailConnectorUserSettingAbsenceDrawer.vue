@@ -103,6 +103,8 @@ import absenceMixin, { OPEN_ABSENCE_DRAWER_EVENT, notifyAbsenceUpdated } from '.
 export default {
   mixins: [absenceMixin],
   data: () => ({
+    // The drawer does not show the forward: the Settings row does.
+    absenceWithForwarding: false,
     drawer: false,
     saving: false,
     canSave: false,
