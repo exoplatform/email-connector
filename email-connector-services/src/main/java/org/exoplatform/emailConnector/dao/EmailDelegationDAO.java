@@ -315,7 +315,7 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   @Transactional
   @Modifying(clearAutomatically = true, flushAutomatically = true)
   @Query("UPDATE EmailDelegationEntity d SET d.sendMode = :sendMode, d.sendModeDate = :sendModeDate, d.sendRefusedDate = NULL,"
-      + " d.updatedDate = :updated WHERE d.id = :id AND d.ownerId = :ownerId AND d.status IN :live")
+      + " d.sendRefusedMode = NULL, d.updatedDate = :updated WHERE d.id = :id AND d.ownerId = :ownerId AND d.status IN :live")
   int updateSendMode(@Param("id")
   long id, @Param("ownerId")
   String ownerId, @Param("sendMode")
@@ -338,23 +338,33 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
    */
   @Transactional
   @Modifying(clearAutomatically = true, flushAutomatically = true)
-  @Query("UPDATE EmailDelegationEntity d SET d.sendMode = NULL, d.sendModeDate = NULL, d.sendRefusedDate = NULL"
-      + " WHERE d.id = :id AND d.status NOT IN :live"
-      + " AND (d.sendMode IS NOT NULL OR d.sendModeDate IS NOT NULL OR d.sendRefusedDate IS NOT NULL)")
+  @Query("UPDATE EmailDelegationEntity d SET d.sendMode = NULL, d.sendModeDate = NULL, d.sendRefusedDate = NULL,"
+      + " d.sendRefusedMode = NULL WHERE d.id = :id AND d.status NOT IN :live"
+      + " AND (d.sendMode IS NOT NULL OR d.sendModeDate IS NOT NULL OR d.sendRefusedDate IS NOT NULL"
+      + " OR d.sendRefusedMode IS NOT NULL)")
   int clearSendMode(@Param("id")
   long id, @Param("live")
   List<String> live);
 
   /**
    * Records that the owner's mail server refused a mail the grantee sent in the owner's
-   * name (EXO-90583), and nothing else of the row: the refusal's date and the update
-   * stamp. Only that grantee's row, only a share in use or on offer, and only while it
-   * still carries the consent the mail was sent under ({@code sendModeDate}): a consent
-   * withdrawn or set again since is left as the owner made it.
+   * name (EXO-90583), and the shape it was sent in (EXO-90626), and nothing else of the
+   * row: the refusal's date and shape and the update stamp. Only that grantee's row, only
+   * a share in use or on offer, and only while it still carries the consent the mail was
+   * sent under ({@code sendModeDate}): a consent withdrawn or set again since is left as
+   * the owner made it.
+   * <p>
+   * A later refusal never narrows what stands refused: a refusal already standing on
+   * behalf (which blocks both shapes), or one recorded before shapes were (null, read the
+   * same), is kept when a later refusal is as the owner -- two mails refused in turn, in
+   * either order, leave the narrower shape refused. The shape is assigned before the
+   * date on purpose: MySQL evaluates a SET list left to right, each assignment seeing the
+   * ones before it, so the CASE must read the date as it stood.
    *
    * @param id the row id
    * @param granteeId the grantee, whose row it must be
    * @param consentDate when the consent the mail was sent under was set
+   * @param mode the shape the refused mail was sent in, {@code ON_BEHALF} or {@code AS}
    * @param refused when the server refused it
    * @param live the statuses a consent may live on
    * @return the rows updated: one, or zero when the row is not that grantee's, not live,
@@ -362,13 +372,16 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
    */
   @Transactional
   @Modifying(clearAutomatically = true, flushAutomatically = true)
-  @Query("UPDATE EmailDelegationEntity d SET d.sendRefusedDate = :refused, d.updatedDate = :refused"
+  @Query("UPDATE EmailDelegationEntity d SET d.sendRefusedMode = CASE WHEN d.sendRefusedDate IS NOT NULL"
+      + " AND (d.sendRefusedMode IS NULL OR d.sendRefusedMode = 'ON_BEHALF') THEN d.sendRefusedMode ELSE :mode END,"
+      + " d.sendRefusedDate = :refused, d.updatedDate = :refused"
       + " WHERE d.id = :id AND d.granteeId = :granteeId AND d.status IN :live"
       + " AND d.sendMode IS NOT NULL AND d.sendModeDate = :consentDate")
   int markSendRefused(@Param("id")
   long id, @Param("granteeId")
   String granteeId, @Param("consentDate")
-  Date consentDate, @Param("refused")
+  Date consentDate, @Param("mode")
+  String mode, @Param("refused")
   Date refused, @Param("live")
   List<String> live);
 
