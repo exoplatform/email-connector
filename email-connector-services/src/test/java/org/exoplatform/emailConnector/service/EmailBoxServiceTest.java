@@ -1135,9 +1135,9 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
     List<Long> mailRemoteIds = List.of(1212l);
     assertThrows(IllegalAccessException.class,
-                 () -> emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, true, false));
+                 () -> emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, MailFolder.INBOX, true, false));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
-    emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, true, false);
+    emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, MailFolder.INBOX, true, false);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
     reset(emailBoxStorage);
     Store store = mock(Store.class);
@@ -1148,7 +1148,7 @@ public class EmailBoxServiceTest {
     when(store.isConnected()).thenReturn(true);
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
-    int failed = emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, true, true);
+    int failed = emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, MailFolder.INBOX, true, true);
     assertEquals(0, failed);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
     verify(inbox).open(Folder.READ_WRITE);
@@ -1160,10 +1160,66 @@ public class EmailBoxServiceTest {
     // must be counted as a failure and the optimistic local star reverted.
     reset(emailBoxStorage);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(null);
-    int failedWhenNotFound = emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, true, true);
+    int failedWhenNotFound = emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, MailFolder.INBOX, true, true);
     assertEquals(1, failedWhenNotFound);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212l), TEST_USER, false, "INBOX");
+  }
+
+  /**
+   * EXO-90208 -- a star toggled on a row of a user folder is pushed to that folder. A
+   * UID numbers a message within one folder, so the same number in the INBOX is another
+   * message, and it must stay untouched; the mirror is written under the row's folder.
+   */
+  @Test
+  @SneakyThrows
+  void aStarIsPushedAgainstTheFolderTheRowIsListedIn() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(registeredFolder(6L, "Projets", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder projets = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Projets");
+    when(store.getFolder("Projets")).thenReturn(projets);
+    lenient().when(projets.isOpen()).thenReturn(true);
+    Message projetsMessage = mock(Message.class);
+    when(projets.getMessageByUID(1212L)).thenReturn(projetsMessage);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(store.getFolder("INBOX")).thenReturn(inbox);
+    Message inboxMessage = mock(Message.class);
+    lenient().when(((UIDFolder) inbox).getMessageByUID(1212L)).thenReturn(inboxMessage);
+
+    int failed = emailBoxService.updateEmailStarredStatus(List.of(1212L), TEST_USER, "CUSTOM:6", true, true);
+
+    assertEquals(0, failed);
+    verify(projets).open(Folder.READ_WRITE);
+    verify(projetsMessage).setFlag(Flags.Flag.FLAGGED, true);
+    verify(inboxMessage, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L), TEST_USER, true, "CUSTOM:6");
+    verify(projets).close(false);
+  }
+
+  /**
+   * A row cached under a folder the mailbox no longer offers: nothing can be flagged, so
+   * the optimistic star goes back and every id counts as failed.
+   */
+  @Test
+  @SneakyThrows
+  void aStarOnAFolderTheMailboxNoLongerHasIsRevertedAndCounted() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+
+    int failed = emailBoxService.updateEmailStarredStatus(List.of(1212L, 1313L), TEST_USER, "CUSTOM:9", true, true);
+
+    assertEquals(2, failed);
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L, 1313L), TEST_USER, true, "CUSTOM:9");
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L, 1313L), TEST_USER, false, "CUSTOM:9");
   }
 
   @Test
@@ -1183,7 +1239,7 @@ public class EmailBoxServiceTest {
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
     doThrow(new MessagingException("STORE rejected")).when(message).setFlag(Flags.Flag.FLAGGED, true);
-    int failed = emailBoxService.updateEmailStarredStatus(List.of(1212l), TEST_USER, true, true);
+    int failed = emailBoxService.updateEmailStarredStatus(List.of(1212l), TEST_USER, MailFolder.INBOX, true, true);
     assertEquals(1, failed);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212l), TEST_USER, true, "INBOX");
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212l), TEST_USER, false, "INBOX");

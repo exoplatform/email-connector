@@ -774,7 +774,7 @@ public class EmailBoxRest {
 
   @PatchMapping("/starred")
   @Secured("users")
-  @Operation(summary = "Stars or unstars emails", method = "PATCH", description = "Sets or clears the IMAP \\Flagged flag ('star') of the given emails, locally and on the mail server, so the star shows in every mail client. Returns the number of emails whose remote update failed (their local change is reverted).")
+  @Operation(summary = "Stars or unstars emails", method = "PATCH", description = "Sets or clears the IMAP \\Flagged flag ('star') of the given emails, in the folder they are listed in, locally and on the mail server, so the star shows in every mail client. The folder is part of the address: IMAP UIDs are numbered per folder. Returns the number of emails whose remote update failed (their local change is reverted).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -785,12 +785,15 @@ public class EmailBoxRest {
                                                        @RequestBody
                                                        List<Long> mailRemoteIds,
                                                        @RequestParam("starred")
-                                                       boolean starred) {
+                                                       boolean starred,
+                                                       @Parameter(description = "The folder those ids are numbered in (INBOX, SENT, ARCHIVE, a user folder's key…); INBOX when omitted")
+                                                       @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                                       String folder) {
     try {
       if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      int failedUpdates = emailBoxService.updateEmailStarredStatus(mailRemoteIds, request.getRemoteUser(), starred, true);
+      int failedUpdates = emailBoxService.updateEmailStarredStatus(mailRemoteIds, request.getRemoteUser(), folder, starred, true);
       Map<String, Integer> response = new HashMap<>();
       response.put("failedUpdates", failedUpdates);
       return response;

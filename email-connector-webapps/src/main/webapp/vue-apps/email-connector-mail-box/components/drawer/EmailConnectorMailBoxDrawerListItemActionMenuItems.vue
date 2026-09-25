@@ -65,7 +65,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </span>
     </v-list-item>
     <!-- Favorite/unfavorite the conversation: the mail server's own \Flagged flag, so it
-         shows in every client. Inbox only — the flag is pushed through INBOX. -->
+         shows in every client. Pushed to the row's own folder. -->
     <v-list-item
       v-if="canFavorite"
       class="ps-2 pe-3 height-auto"
@@ -327,10 +327,10 @@ export default {
     threadFavorite() {
       return this.thread ? this.thread.emails.some(message => message.starred) : !!this.email.starred;
     },
-    // The favorite is pushed through the INBOX folder, so only inbox rows offer it —
-    // which already keeps it off a Trash row, before readOnly below has any say.
+    // The favorite is pushed to the row's own folder, so every folder offers it but the
+    // read-only ones (Trash, Spam), like every other action that writes to the server.
     canFavorite() {
-      return (this.email.folder || 'INBOX') === 'INBOX';
+      return !this.readOnly;
     },
     /**
      * Whether this row sits in a folder the interface may only read (Trash, Spam), in
@@ -459,7 +459,7 @@ export default {
     },
     updateEmailFavoriteStatus() {
       this.$emit('close');
-      this.$root.$emit('update-email-favorite-status', !this.threadFavorite, this.threadIds);
+      this.$root.$emit('update-email-favorite-status', !this.threadFavorite, this.threadIds, this.actingFolder);
     },
     deleteEmail() {
       this.$emit('close');

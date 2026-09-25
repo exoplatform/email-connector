@@ -438,10 +438,10 @@ export default {
     },
     // Patch the favorite flag on this conversation's INBOX messages (favorite ids are
     // INBOX UIDs; the same number in another folder is a different message).
-    applyFavoriteStatus(favorite, mailRemoteIds = []) {
+    applyFavoriteStatus(favorite, mailRemoteIds = [], folder = 'INBOX') {
       const ids = new Set(mailRemoteIds);
       this.messages.forEach(message => {
-        if ((message.folder || 'INBOX') === 'INBOX' && ids.has(message.mailRemoteId)) {
+        if ((message.folder || 'INBOX') === folder && ids.has(message.mailRemoteId)) {
           this.$set(message, 'starred', favorite);
         }
       });

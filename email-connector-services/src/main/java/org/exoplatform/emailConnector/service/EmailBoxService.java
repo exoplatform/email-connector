@@ -267,7 +267,6 @@ public class EmailBoxService {
   // into this PR's new code. New code uses the constants.
   private static final String     STORE_CLOSE_ERROR_MESSAGE                                   = "Error when closing store";
 
-  private static final String     INBOX_CLOSE_ERROR_MESSAGE                                   = "Error when closing inbox";
 
   private static final String     STORE_CONNECT_ERROR_MESSAGE                                 =
                                                                                               "Error when connecting store for user {}";
@@ -5536,9 +5535,15 @@ public class EmailBoxService {
    * failure (including a message no longer on the server) reverts the local change
    * for that email and is counted — a star the server never took must not survive
    * locally, or the two copies silently diverge until the next sync.
+   * <p>
+   * The folder is part of the address, as for {@link #updateEmailReadStatus}: a UID
+   * numbers a message within one folder, so a star toggled on a row of the user's
+   * "Work" folder is pushed to that folder, never to an INBOX message that happens to
+   * carry the same number.
    *
    * @param mailRemoteIds the IMAP UIDs of the emails to update
    * @param username the user acting on their own mailbox
+   * @param folder the folder those UIDs are numbered in; blank means INBOX
    * @param starred {@code true} to star, {@code false} to unstar
    * @param updateRemoteStarredStatus whether the flag must also be pushed to the
    *          IMAP server (skipped, e.g., during sync where the flag comes from the
@@ -5549,6 +5554,7 @@ public class EmailBoxService {
    */
   public int updateEmailStarredStatus(List<Long> mailRemoteIds,
                                       String username,
+                                      String folder,
                                       boolean starred,
                                       boolean updateRemoteStarredStatus) throws IllegalAccessException {
     int failedEmailUpdates = 0;
@@ -5558,54 +5564,62 @@ public class EmailBoxService {
           || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
         throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_UPDATE_EMAIL_MESSAGE, username));
       }
-      emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, starred, MailFolder.INBOX);
+      String sourceFolder = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
+      emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, starred, sourceFolder);
       Store store = null;
-      Folder inbox = null;
+      Folder remoteFolder = null;
       try {
         if (updateRemoteStarredStatus) {
           store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
-          inbox = store.getFolder(INBOX_FOLDER_NAME);
-          inbox.open(Folder.READ_WRITE);
+          // Through the resolver the rows were cached by, as updateEmailReadStatus does.
+          remoteFolder = resolveCachedFolder(store, sourceFolder, username);
+          if (remoteFolder == null) {
+            // Rows cached under a folder the mailbox no longer offers: nothing can be
+            // flagged, so the optimistic local change goes back and every id fails.
+            emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, !starred, sourceFolder);
+            LOG.warn("No {} folder for user {}; the star of {} message(s) could not be pushed",
+                     sourceFolder,
+                     username,
+                     mailRemoteIds.size());
+            emailFavoriteService.reconcileFavorites(username);
+            return mailRemoteIds.size();
+          }
+          remoteFolder.open(Folder.READ_WRITE);
         }
         for (Long mailRemoteId : mailRemoteIds) {
           try {
             if (updateRemoteStarredStatus) {
-              Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
+              Message remoteMessage = ((UIDFolder) remoteFolder).getMessageByUID(mailRemoteId);
               // Guard the not-found case explicitly: getMessageByUID returns null
               // (rather than throwing) when the UID is unknown to the server.
               if (remoteMessage == null) {
-                emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(List.of(mailRemoteId),
-                                                                        username,
-                                                                        !starred,
-                                                                        MailFolder.INBOX);
+                emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(List.of(mailRemoteId), username, !starred, sourceFolder);
                 failedEmailUpdates++;
-                LOG.warn("Email {} not found on IMAP server for user {}, starred status update reverted",
+                LOG.warn("Email {} not found in folder {} on IMAP server for user {}, starred status update reverted",
                          mailRemoteId,
+                         sourceFolder,
                          username);
                 continue;
               }
               remoteMessage.setFlag(Flags.Flag.FLAGGED, starred);
             }
           } catch (Exception e) {
-            emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(List.of(mailRemoteId),
-                                                                    username,
-                                                                    !starred,
-                                                                    MailFolder.INBOX);
+            emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(List.of(mailRemoteId), username, !starred, sourceFolder);
             failedEmailUpdates++;
-            LOG.error("Error when updating email {} starred status for user {}", mailRemoteId, username, e);
+            LOG.error("Error when updating email {} of folder {} starred status for user {}", mailRemoteId, sourceFolder, username, e);
           }
         }
       } catch (Exception e) {
-        emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, !starred, MailFolder.INBOX);
+        emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, !starred, sourceFolder);
         LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
         throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
       } finally {
         try {
-          if (inbox != null && inbox.isOpen()) {
-            inbox.close(false);
+          if (remoteFolder != null && remoteFolder.isOpen()) {
+            remoteFolder.close(false);
           }
         } catch (MessagingException e) {
-          LOG.warn(INBOX_CLOSE_ERROR_MESSAGE, e);
+          LOG.warn("Error when closing folder {} of user {}", sourceFolder, username, e);
         }
         try {
           if (store != null) {

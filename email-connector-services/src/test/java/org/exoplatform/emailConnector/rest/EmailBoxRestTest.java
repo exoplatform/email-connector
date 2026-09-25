@@ -257,13 +257,21 @@ public class EmailBoxRestTest {
     emailIds = List.of(123L, 456L, 789L);
     // The count of remote failures is the one part of this endpoint's contract the front end
     // reads: it drives the rollback of the optimistic star. Pin the payload, not just the status.
-    when(emailBoxService.updateEmailStarredStatus(emailIds, SIMPLE_USER, true, true)).thenReturn(2);
+    when(emailBoxService.updateEmailStarredStatus(emailIds, SIMPLE_USER, "INBOX", true, true)).thenReturn(2);
     response = mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=true").with(testSimpleUser())
                                                                               .content(asJsonString(emailIds))
                                                                               .contentType(MediaType.APPLICATION_JSON)
                                                                               .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk()).andExpect(jsonPath("$.failedUpdates").value(2));
-    verify(emailBoxService).updateEmailStarredStatus(emailIds, SIMPLE_USER, true, true);
+    verify(emailBoxService).updateEmailStarredStatus(emailIds, SIMPLE_USER, "INBOX", true, true);
+    // And the row's own folder when it is not the inbox: a star toggled in a user
+    // folder is addressed there, where its UID means that message.
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=false&folder=CUSTOM:6").with(testSimpleUser())
+                                                                                     .content(asJsonString(emailIds))
+                                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                                     .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailBoxService).updateEmailStarredStatus(emailIds, SIMPLE_USER, "CUSTOM:6", false, true);
   }
 
   @Test
