@@ -108,7 +108,7 @@ public class UserEmailSettingRest {
           + "only when it answered. Refuses a provider that expects the user to type credentials.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Connected"),
       @ApiResponse(responseCode = "400", description = "The provider expects the user to supply something"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "500", description = "The mailbox refused the service account") })
   public void connectThroughProvider(HttpServletRequest request,
                                      @Parameter(description = "Email connector to connect to", required = true)
@@ -117,7 +117,7 @@ public class UserEmailSettingRest {
     try {
       userEmailSettingService.connectThroughProvider(emailConnectorId, request.getRemoteUser());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
@@ -125,6 +125,13 @@ public class UserEmailSettingRest {
     }
   }
 
+  /**
+   * Sets user email setting.
+   *
+   * @param request the caller's request, for the acting user
+   * @param broadcast broadcast email box cleanup event
+   * @param userEmailSetting the user email setting
+   */
   @PutMapping()
   @Secured("users")
   @Operation(summary = "Sets user email setting", method = "PUT", description = "This will set user email setting")
@@ -142,7 +149,7 @@ public class UserEmailSettingRest {
     try {
       userEmailSettingService.connectUserEmailSetting(userEmailSetting, request.getRemoteUser(), broadcast);
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
@@ -197,6 +204,14 @@ public class UserEmailSettingRest {
     userEmailSettingService.updateAddressBookBinding(request.getRemoteUser(), userEmailSetting.getCarddavEnabled());
   }
 
+  /**
+   * Turns the automatic address-book push on or off for the caller. Stores whether a
+   * contact the caller authors through the contact form should be published to their
+   * CardDAV address book on its own, with no second click.
+   *
+   * @param request the caller's request, for the acting user
+   * @param userEmailSetting the user email setting
+   */
   @PutMapping("/address-book/auto-publish")
   @Secured("users")
   @Operation(summary = "Turns the automatic address-book push on or off for the caller",
@@ -222,7 +237,7 @@ public class UserEmailSettingRest {
   @Operation(summary = "Gets the caller's read-receipt preferences", method = "GET",
              description = "Answers whether the composer requests a read receipt by default (requestByDefault, false unless chosen), what to do when a received message asks for one (responsePolicy: ASK, the default; NEVER; ALWAYS), and whether the administrator allows ALWAYS (alwaysAllowed; when not, a stored ALWAYS is answered as ASK).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public ReadReceiptSettings getReadReceiptSettings(HttpServletRequest request) {
     return readReceiptService.getSettings(request.getRemoteUser());
   }
@@ -240,7 +255,7 @@ public class UserEmailSettingRest {
              description = "Stores requestByDefault and responsePolicy (a missing policy is stored as ASK; alwaysAllowed is ignored). ALWAYS is refused while the administrator disables it (email.connector.readReceipt.allowAlways=false). Even under ALWAYS a receipt is only sent without asking when the request's Return-Path matches its one address, the caller is a To or Cc recipient, and the message came through no mailing list and was not machine-generated; every other case still asks.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "ALWAYS while the administrator disables it, or no body (emailConnector.readReceipt.notAllowed)"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public ReadReceiptSettings saveReadReceiptSettings(HttpServletRequest request,
                                                      @RequestBody
                                                      ReadReceiptSettings settings) {
@@ -251,6 +266,11 @@ public class UserEmailSettingRest {
     }
   }
 
+  /**
+   * Deletes user email setting.
+   *
+   * @param request the caller's request, for the acting user
+   */
   @DeleteMapping()
   @Secured("users")
   @Operation(summary = "Deletes user email setting", method = "DELETE", description = "This will delete user email setting")
@@ -267,17 +287,34 @@ public class UserEmailSettingRest {
     }
   }
 
+  /**
+   * Gets the caller's email signature. Answers the stored preference (the on/off switch
+   * and the caller's own markup, when they wrote one) together with the default signature
+   * computed from their profile as it stands right now - name linked to the profile page,
+   * position and company, location, the phone the platform is configured to display, and
+   * the signature image.
+   *
+   * @param request the caller's request, for the acting user
+   * @return the email signature
+   */
   @GetMapping("/signature")
   @Secured("users")
   @Operation(summary = "Gets the caller's email signature",
              method = "GET",
              description = "Answers the stored preference (the on/off switch and the caller's own markup, when they wrote one) together with the default signature computed from their profile as it stands right now - name linked to the profile page, position and company, location, the phone the platform is configured to display, and the signature image. The image URL in the markup points at this resource's own /signature/image, which the send path replaces with an embedded cid: part so external recipients see it.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public EmailSignature getEmailSignature(HttpServletRequest request) {
     return emailSignatureService.getEmailSignature(request.getRemoteUser());
   }
 
+  /**
+   * Stores the caller's email signature preference. Stores the on/off switch and the
+   * caller's own markup.
+   *
+   * @param request the caller's request, for the acting user
+   * @param signature the signature
+   */
   @PutMapping("/signature")
   @Secured("users")
   @Operation(summary = "Stores the caller's email signature preference",
@@ -285,7 +322,7 @@ public class UserEmailSettingRest {
              description = "Stores the on/off switch and the caller's own markup. The markup is sanitized on the way in and capped in size; sending it null (or blank) resets to the computed default, which then keeps following the profile.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "The custom markup exceeds the size cap"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public void saveEmailSignature(HttpServletRequest request,
                                  @RequestBody
                                  EmailSignature signature) {
@@ -296,13 +333,21 @@ public class UserEmailSettingRest {
     }
   }
 
+  /**
+   * Streams the caller's signature image. The EFFECTIVE image - the picture the caller
+   * uploaded through the cropper when they set one, the platform's company logo
+   * otherwise.
+   *
+   * @param request the caller's request, for the acting user
+   * @return the answer, as ResponseEntity&lt;InputStreamResource&gt;
+   */
   @GetMapping("/signature/image")
   @Secured("users")
   @Operation(summary = "Streams the caller's signature image",
              method = "GET",
              description = "The EFFECTIVE image - the picture the caller uploaded through the cropper when they set one, the platform's company logo otherwise. This URL only renders for the logged-in caller; in a message that actually goes out, the send path swaps it for a cid: reference to an embedded multipart/related part, which is the only form an external recipient's client renders. Answers 404 when there is no image at all.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public ResponseEntity<InputStreamResource> getSignatureImage(HttpServletRequest request) {
     EmailSignatureLogo logo = emailSignatureService.getSignatureLogo(request.getRemoteUser());
@@ -316,6 +361,14 @@ public class UserEmailSettingRest {
                          .body(new InputStreamResource(new ByteArrayInputStream(logo.bytes())));
   }
 
+  /**
+   * Replaces the caller's signature image. Takes the upload id the platform's image
+   * cropper produced and stores the picture as the caller's own signature image,
+   * replacing the company logo for their signature only.
+   *
+   * @param request the caller's request, for the acting user
+   * @param uploadId the upload id the image cropper produced
+   */
   @PutMapping("/signature/image")
   @Secured("users")
   @Operation(summary = "Replaces the caller's signature image",
@@ -323,7 +376,7 @@ public class UserEmailSettingRest {
              description = "Takes the upload id the platform's image cropper produced and stores the picture as the caller's own signature image, replacing the company logo for their signature only.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "The upload is gone or is not an image"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public void saveSignatureImage(HttpServletRequest request,
                                  @Parameter(description = "The upload id the image cropper produced", required = true)
                                  @RequestParam("uploadId")
@@ -335,13 +388,20 @@ public class UserEmailSettingRest {
     }
   }
 
+  /**
+   * Puts the caller's signature image back to the company logo. Deletes the caller's own
+   * uploaded signature image; their signature then carries the platform's company logo
+   * again.
+   *
+   * @param request the caller's request, for the acting user
+   */
   @DeleteMapping("/signature/image")
   @Secured("users")
   @Operation(summary = "Puts the caller's signature image back to the company logo",
              method = "DELETE",
              description = "Deletes the caller's own uploaded signature image; their signature then carries the platform's company logo again.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public void deleteSignatureImage(HttpServletRequest request) {
     emailSignatureService.deleteSignatureLogo(request.getRemoteUser());
   }
@@ -353,7 +413,7 @@ public class UserEmailSettingRest {
   // connected among them, backend-spring.md), ObjectNotFoundException 404,
   // IllegalArgumentException 400 with the code, MailboxAclException 502 with the code
   // (the mail server would not or could not), DelegationRevokedException 410 with the
-  // code (the share is gone -- a business state, not an authentication failure).
+  // code (the share is gone -- a business state, not a refusal).
   // ---------------------------------------------------------------------------------
 
   /**
@@ -395,7 +455,7 @@ public class UserEmailSettingRest {
              method = "GET",
              description = "The caller's delegation rows in every state: PENDING invitations, ACCEPTED subscriptions, DECLINED and REVOKED history, AVAILABLE shares seen on the server that nobody invited from eXo. With discover=true the caller's own session lists the Other Users namespace first, so a share granted in the mail server's own interface is offered (proposed, never auto-subscribed); an unreachable server leaves the rows as they are. Each row carries the affordances its last observed rights unlock.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+      @ApiResponse(responseCode = "403", description = "Not signed in") })
   public List<EmailDelegation> getReceivedDelegations(HttpServletRequest request,
                                                       @Parameter(description = "Whether to discover shares on the mail server as well")
                                                       @RequestParam(name = "discover", defaultValue = "true")
@@ -415,7 +475,7 @@ public class UserEmailSettingRest {
              method = "GET",
              description = "One entry per ACCEPTED share whose INBOX is registered: the owner, the rights the server last granted and the affordances they unlock, the CUSTOM:<id> key the shared INBOX is listed under in GET /email-box?folder=, and its unread count in the caller's mirror. Read from eXo's rows, no connection to the mail server. Empty when nothing is shared with the caller, which is what hides the switcher.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+      @ApiResponse(responseCode = "403", description = "Not signed in") })
   public List<SharedMailboxEntry> getSharedMailboxes(HttpServletRequest request) {
     return emailDelegationService.getSharedMailboxes(request.getRemoteUser());
   }
@@ -580,13 +640,13 @@ public class UserEmailSettingRest {
              description = "One LIST on the caller's own session: INBOX first (the share itself, not editable), then Sent, Archive, Trash and Spam, then the caller's other folders as a tree, never Drafts, at most exo.email.delegation.maxFolders beside INBOX (truncated says when more exist). No ACL is read. Only on a server that grants per folder.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "A server that grants a whole mailbox at once (emailConnector.delegation.perFolderUnsupported)"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation, or no connected mailbox"),
       @ApiResponse(responseCode = "502", description = "The mail server does not support ACLs or could not be asked (emailConnector.delegation.*)") })
   public DelegationFolders getOwnFolders(HttpServletRequest request) {
     try {
       return emailDelegationService.getOwnFolders(request.getRemoteUser());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (MailboxAclException e) {
@@ -609,7 +669,7 @@ public class UserEmailSettingRest {
              description = "The folders of GET /delegations/folders, each with the grantee's access read with GETACL on that folder, on the caller's own session: READER, EDITOR or NONE; null with the raw letters for an entry that reads as no preset (written in another mail application), null with readable false when the ACL could not be read. Nothing is written. Owner only: a delegation that is not the caller's own is answered 404.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "A share no longer on the server or of another mailbox, or a server that grants a whole mailbox at once (emailConnector.delegation.*)"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation, or no connected mailbox"),
       @ApiResponse(responseCode = "404", description = "No such delegation of the caller's mailbox"),
       @ApiResponse(responseCode = "502", description = "The mail server does not support ACLs or could not be asked (emailConnector.delegation.*)") })
   public DelegationFolders getDelegationFolders(HttpServletRequest request,
@@ -621,7 +681,7 @@ public class UserEmailSettingRest {
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (MailboxAclException e) {
@@ -644,7 +704,7 @@ public class UserEmailSettingRest {
              description = "For each folder named (as GET /delegations/{id}/folders names it), READER or EDITOR writes the preset's letters for that folder's role -- read on the caller's session, never taken from the request: Editor holds e where mail leaves, never on Trash -- and NONE removes the grantee's entry. Every name is checked against the caller's own shareable folders before anything is written; INBOX and Drafts are refused. Each folder is its own write, answered in results: DONE, REMOVED (a narrower access refused, the entry removed instead), REFUSED, NOTHING_TO_GRANT, NOT_NARROWED or NOT_REACHED; one refused undoes nothing. A folder no longer shared leaves the grantee's screens at once. The grantee is not notified. Owner only: a delegation that is not the caller's own is answered 404.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled, folder by folder"),
       @ApiResponse(responseCode = "400", description = "An invalid request, a folder that is not the caller's or cannot be shared one by one, a share no longer on the server or of another mailbox, or a server that grants a whole mailbox at once (emailConnector.delegation.*)"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation, or no connected mailbox"),
       @ApiResponse(responseCode = "404", description = "No such delegation of the caller's mailbox"),
       @ApiResponse(responseCode = "502", description = "The mail server does not support ACLs, could not be asked, or no longer records the share (emailConnector.delegation.*)") })
   public FolderAccessUpdate setDelegationFolders(HttpServletRequest request,
@@ -658,7 +718,7 @@ public class UserEmailSettingRest {
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (MailboxAclException e) {
@@ -682,7 +742,7 @@ public class UserEmailSettingRest {
              description = "ON_BEHALF lets the grantee send mail showing the caller as the author and the grantee as the sender; AS lets them send mail showing the caller alone; NONE withdraws the consent. Recorded on the share, with its date; nothing is sent and no ACL letter is written. A consent needs the shape declared by the administrator for the caller's connector and the share still on the caller's INBOX; a withdrawal is always recorded. Only for a share on offer or in use that eXo made. Owner only: a delegation that is not the caller's own is answered 404.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "An unknown mode (emailConnector.sendMode.invalid), a shape switched off or not declared (emailConnector.sendMode.disabled, .unsupported), or a share that cannot carry it (emailConnector.delegation.notChangeable)"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation, or no connected mailbox"),
       @ApiResponse(responseCode = "404", description = "No such delegation of the caller's mailbox"),
       @ApiResponse(responseCode = "502", description = "The mail server does not support sharing or could not be asked (emailConnector.delegation.*)") })
   public EmailDelegation setDelegationSendMode(HttpServletRequest request,
@@ -696,7 +756,7 @@ public class UserEmailSettingRest {
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (MailboxAclException e) {
@@ -756,7 +816,7 @@ public class UserEmailSettingRest {
              description = "Records the answer (DECLINED). The ACL on the server is NOT removed: only the owner removes it, and eXo never acts as the owner on the grantee's behalf. The caller can accept later; the server decides then.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "The invitation is not pending (emailConnector.delegation.notPending)"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "No such delegation of the caller's") })
   public EmailDelegation declineDelegation(HttpServletRequest request,
                                            @Parameter(description = "The delegation id", required = true)
@@ -785,7 +845,7 @@ public class UserEmailSettingRest {
              description = "An eXo-granted share goes back to DECLINED, a server-discovered one to AVAILABLE; the caller's registered folders of the mailbox are dropped. The ACL on the server is NOT removed.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "The share is not accepted (emailConnector.delegation.notAccepted)"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "No such delegation of the caller's") })
   public EmailDelegation leaveDelegation(HttpServletRequest request,
                                          @Parameter(description = "The delegation id", required = true)
@@ -814,7 +874,7 @@ public class UserEmailSettingRest {
              method = "PUT",
              description = "badgeIncluded: whether the shared INBOX counts in the caller's unread badge (off by default). notifyNewMail: whether new mail there notifies the caller (off by default; only while the caller uses that mailbox, since a share not in use is not synced). searchIncluded: whether the unified search returns this shared mailbox's mail, labelled with its owner (on by default). A missing field leaves the toggle as it is.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "No such delegation of the caller's") })
   public EmailDelegation updateDelegationPreferences(HttpServletRequest request,
                                                      @Parameter(description = "The delegation id", required = true)
