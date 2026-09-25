@@ -30,6 +30,7 @@ import org.springframework.stereotype.Component;
 
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
+import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
 import org.exoplatform.emailConnector.service.rules.sieve.ManageSieveException.Kind;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
@@ -52,6 +53,20 @@ import org.exoplatform.services.connector.credentials.ConnectorCredentialsExcept
  */
 @Component
 public class ManageSieveConnector {
+
+  /** Where one attempt's login and password come from. */
+  @FunctionalInterface
+  private interface CredentialsSource {
+
+    /**
+     * Produces the material of one attempt.
+     *
+     * @return the login and password, never null
+     * @throws ManageSieveException {@link Kind#NO_CREDENTIALS} when there is none
+     * @throws ConnectorCredentialsException when the provider cannot produce any
+     */
+    PasswordAuthentication get() throws ManageSieveException, ConnectorCredentialsException;
+  }
 
   /** Resolves the credentials of every mail conversation of this add-on. */
   private final EmailCredentialsResolver emailCredentialsResolver;
@@ -111,8 +126,54 @@ public class ManageSieveConnector {
   public ManageSieveClient open(EmailConnector connector,
                                 String username) throws ManageSieveException, ConnectorCredentialsException {
     ManageSieveEndpoint endpoint = ManageSieveEndpoint.forConnector(connector);
+    return open(endpoint, connector, username, () -> credentials(connector, username, endpoint));
+  }
+
+  /**
+   * Opens a conversation as the session's caller on the ManageSieve server of their
+   * preset, over TLS, authenticated with the session's own mail credential material
+   * ({@link MailboxAclSession#mailCredentials()}, the IMAP channel of the credentials
+   * contract) -- the path the server-rule engines take, so the conversation acts as the
+   * caller and nobody else. The caller closes it.
+   *
+   * @param session the caller's own session
+   * @return the authenticated client
+   * @throws ManageSieveException when the server is unreachable, refuses TLS, or refuses
+   *           the credentials; {@link Kind#NO_CREDENTIALS} when the session resolves none
+   * @throws ConnectorCredentialsException never on this path: the session reports a
+   *           provider failure as a {@code MailboxAclException}
+   */
+  public ManageSieveClient open(MailboxAclSession session) throws ManageSieveException, ConnectorCredentialsException {
+    EmailConnector connector = session.connector();
+    ManageSieveEndpoint endpoint = ManageSieveEndpoint.forConnector(connector);
+    return open(endpoint, connector, session.username(), () -> {
+      PasswordAuthentication credentials = session.mailCredentials();
+      if (credentials == null || credentials.getUserName() == null || credentials.getPassword() == null) {
+        throw new ManageSieveException(Kind.NO_CREDENTIALS, "The credentials provider produced no login and password");
+      }
+      return credentials;
+    });
+  }
+
+  /**
+   * Opens with the contract's refusal rule: a refused credential is reported to the
+   * provider once, and only a provider that produces its material itself gets one more
+   * attempt, on fresh material.
+   *
+   * @param endpoint where the server listens
+   * @param connector the preset
+   * @param username the eXo user
+   * @param source where each attempt's material comes from
+   * @return the authenticated client
+   * @throws ManageSieveException when any step fails
+   * @throws ConnectorCredentialsException when no material can be produced
+   */
+  private ManageSieveClient open(ManageSieveEndpoint endpoint,
+                                 EmailConnector connector,
+                                 String username,
+                                 CredentialsSource source) throws ManageSieveException, ConnectorCredentialsException {
     try {
-      return authenticated(endpoint, connector, username);
+      return authenticated(endpoint, source);
     } catch (ManageSieveException e) {
       if (e.getKind() != Kind.AUTHENTICATION) {
         throw e;
@@ -124,7 +185,7 @@ public class ManageSieveConnector {
       if (!emailCredentialsResolver.retriesAfterRefusal(connector.getAuthProviderName())) {
         throw e;
       }
-      return authenticated(endpoint, connector, username);
+      return authenticated(endpoint, source);
     }
   }
 
@@ -133,16 +194,14 @@ public class ManageSieveConnector {
    * opened when there is nothing to authenticate with.
    *
    * @param endpoint where the server listens
-   * @param connector the preset
-   * @param username the eXo user
+   * @param source where the material comes from
    * @return the authenticated client
    * @throws ManageSieveException when any step fails
    * @throws ConnectorCredentialsException when no material can be produced
    */
   private ManageSieveClient authenticated(ManageSieveEndpoint endpoint,
-                                          EmailConnector connector,
-                                          String username) throws ManageSieveException, ConnectorCredentialsException {
-    PasswordAuthentication credentials = credentials(connector, username, endpoint);
+                                          CredentialsSource source) throws ManageSieveException, ConnectorCredentialsException {
+    PasswordAuthentication credentials = source.get();
     ManageSieveClient client = ManageSieveClient.connect(endpoint.host(),
                                                          endpoint.port(),
                                                          tlsSocketFactory(),
