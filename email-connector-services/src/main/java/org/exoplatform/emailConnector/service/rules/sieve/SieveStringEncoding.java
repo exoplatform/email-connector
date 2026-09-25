@@ -28,6 +28,13 @@ package org.exoplatform.emailConnector.service.rules.sieve;
  * user typed stays text and is never decoded. It is chosen whenever the server
  * advertises {@code encoded-character}; the script then requires that extension when a
  * string actually needed it.
+ * <p>
+ * <b>Constraint</b>: {@code ${unicode:24}} protects a {@code $} only while the script does
+ * not require {@code variables}. Under that extension the decoded {@code ${…}} is expanded
+ * as a variable reference afterwards (observed on Pigeonhole 0.5.21), so a typed
+ * {@code ${x}} would match the variable's value. eXo's script never requires it, and
+ * {@link ExoSieveScript#toScript(SieveStringEncoding, boolean)} refuses to generate one
+ * that does.
  */
 public enum SieveStringEncoding {
 
@@ -42,6 +49,12 @@ public enum SieveStringEncoding {
 
   /** The extension {@link #ENCODED_CHARACTER} needs. */
   public static final String EXTENSION = "encoded-character";
+
+  /**
+   * The extension under which {@link #ENCODED_CHARACTER} no longer protects a {@code $}:
+   * eXo's script never requires it.
+   */
+  public static final String VARIABLES_EXTENSION = "variables";
 
   /**
    * The strategy for a server: encoded characters when it advertises them, RFC escaping

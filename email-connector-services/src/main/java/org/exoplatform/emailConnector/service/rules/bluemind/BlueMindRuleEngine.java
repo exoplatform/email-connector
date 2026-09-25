@@ -16,8 +16,8 @@
  */
 package org.exoplatform.emailConnector.service.rules.bluemind;
 
-import static org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport.SUPPORTED_ELEMENT;
-import static org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport.unsupported;
+import static org.exoplatform.emailConnector.model.ServerRuleElementSupport.SUPPORTED_ELEMENT;
+import static org.exoplatform.emailConnector.model.ServerRuleElementSupport.unsupported;
 
 import java.time.DateTimeException;
 import java.time.Instant;
@@ -35,14 +35,14 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
-import org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport;
-import org.exoplatform.emailConnector.model.ServerRuleCapabilities.VocabularySource;
+import org.exoplatform.emailConnector.model.ServerRuleElementSupport;
 import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.VacationSetting;
 import org.exoplatform.emailConnector.model.VacationState;
@@ -52,9 +52,9 @@ import org.exoplatform.emailConnector.service.bluemind.BlueMindEndpoint;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindForwarding;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindMailboxTransport;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindSession;
+import org.exoplatform.emailConnector.service.bluemind.BlueMindTransportException.Kind;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindTransportException;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindVacation;
-import org.exoplatform.emailConnector.service.bluemind.BlueMindTransportException.Kind;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngine;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.log.ExoLogger;
@@ -189,14 +189,14 @@ public class BlueMindRuleEngine implements ServerRuleEngine {
   @Override
   public ServerRuleCapabilities probe(MailboxAclSession session) throws ServerRuleUnavailableException {
     if (transport == null) {
-      return ServerRuleCapabilities.unsupported(TRANSPORT_MISSING, VocabularySource.FIXED);
+      return ServerRuleCapabilities.unsupported(TRANSPORT_MISSING, ServerRuleVocabularySource.FIXED);
     }
     try {
       call(session, transport::getVacation);
       return capabilities();
     } catch (ServerRuleUnavailableException e) {
       if (ServerRuleUnavailableException.SERVER_UNSUPPORTED.equals(e.getMessage())) {
-        return ServerRuleCapabilities.unsupported(ServerRuleUnavailableException.SERVER_UNSUPPORTED, VocabularySource.FIXED);
+        return ServerRuleCapabilities.unsupported(ServerRuleUnavailableException.SERVER_UNSUPPORTED, ServerRuleVocabularySource.FIXED);
       }
       throw e;
     }
@@ -353,7 +353,7 @@ public class BlueMindRuleEngine implements ServerRuleEngine {
    * @return the capabilities
    */
   static ServerRuleCapabilities capabilities() {
-    Map<String, ElementSupport> elements = new LinkedHashMap<>();
+    Map<String, ServerRuleElementSupport> elements = new LinkedHashMap<>();
     for (String element : ServerRuleCapabilities.ALL_ELEMENTS) {
       elements.put(element, unsupported(ServerRuleUnsupportedException.RULES_UNSUPPORTED));
     }
@@ -363,7 +363,7 @@ public class BlueMindRuleEngine implements ServerRuleEngine {
     elements.put(ServerRuleCapabilities.FORWARDING_READ, SUPPORTED_ELEMENT);
     elements.put(ServerRuleCapabilities.FORWARDING_WRITE, unsupported(NOT_IN_PHASE_1));
     elements.put(ServerRuleCapabilities.READS_FOREIGN_VACATION, SUPPORTED_ELEMENT);
-    return new ServerRuleCapabilities(true, null, false, false, VocabularySource.FIXED, elements);
+    return new ServerRuleCapabilities(true, null, false, false, ServerRuleVocabularySource.FIXED, elements);
   }
 
   /**
