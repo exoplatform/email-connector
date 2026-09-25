@@ -285,10 +285,35 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.purge.label') }}
       </span>
     </v-list-item>
+    <!-- "Create a filter from this mail" (EXO-90654): the filters drawer opens on the
+         rule this mail suggests. Never on a row of a mailbox somebody shared with the
+         user: rules run on the user's own mailbox, and a rule made from someone else's
+         mail would not mean what the click meant. -->
+    <v-list-item
+      v-if="canCreateFilter"
+      class="ps-2 pe-3 height-auto"
+      @click.stop="createFilter">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="icon-default-color mx-auto"
+          size="16">
+          fa-filter
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.filters.createFromMail') }}
+      </span>
+    </v-list-item>
   </v-list>
 </template>
 
 <script>
+import { OPEN_FILTERS_DRAWER_EVENT, ruleFromMail } from '../../../email-connector-user-setting/js/EmailConnectorFilters.js';
+import { canCreateFilterFrom } from '../../js/EmailConnectorMailFilters.js';
+
 export default {
   props: {
     email: {
@@ -305,6 +330,15 @@ export default {
     },
   },
   computed: {
+    /**
+     * Whether "Create a filter from this mail" belongs on this row: a received mail of
+     * the user's own mailbox, never a draft, never a shared mailbox's row (EXO-90654).
+     *
+     * @returns {Boolean} true when offered
+     */
+    canCreateFilter() {
+      return canCreateFilterFrom(this.email);
+    },
     /**
      * All message ids the action applies to: the whole thread as listed in this row's
      * own folder, or the lone email. The single definition shared with the reader's
@@ -495,6 +529,14 @@ export default {
     },
   },
   methods: {
+    /**
+     * Opens the filters drawer on the rule this mail suggests (EXO-90654).
+     *
+     * @returns {void}
+     */
+    createFilter() {
+      this.$root.$emit(OPEN_FILTERS_DRAWER_EVENT, { prefill: ruleFromMail(this.email) });
+    },
     /**
      * Starts a selection on this row's conversation, exactly as ticking its checkbox
      * does: one select-email per message of the acting folder, naming the draft's local
