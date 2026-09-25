@@ -86,7 +86,7 @@ class RestRefusalStatusTest {
    * of its handlers that reach a refusing service.
    */
   private static final Map<Class<?>, Integer>               FLOORS = Map.of(EmailBoxRest.class, 48,
-                                                                            UserEmailSettingRest.class, 12,
+                                                                            UserEmailSettingRest.class, 16,
                                                                             EmailConnectorRest.class, 18,
                                                                             EmailContactRest.class, 1);
 
