@@ -381,7 +381,7 @@ public class UserEmailSettingRestTest {
 
   /**
    * Inviting hands the grantee and the preset to the service under the caller's name;
-   * the service's refusals map to 400 (a message code), 401, and 502 (the mail server
+   * the service's refusals map to 400 (a message code), 403, and 502 (the mail server
    * would not).
    */
   @Test
@@ -418,7 +418,7 @@ public class UserEmailSettingRestTest {
     mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations").with(testSimpleUser())
                                                                   .content(asJsonString(new DelegationInviteRequest("dave", DelegationPreset.READER)))
                                                                   .contentType(MediaType.APPLICATION_JSON))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
   }
 
   /**
@@ -540,7 +540,7 @@ public class UserEmailSettingRestTest {
     assertSendModeAnswer(8L, 400, EmailDelegationService.NOT_CHANGEABLE_MESSAGE);
     assertSendModeAnswer(9L, 502, MailboxAclException.UNREACHABLE);
     assertSendModeAnswer(10L, 404, null);
-    assertSendModeAnswer(11L, 401, null);
+    assertSendModeAnswer(11L, 403, null);
 
     DelegationGrantee bob = DelegationGrantee.of(MailboxAce.ofLetters("bob@acme.com", MailboxRights.of("lrswite")), "bob", consented)
                                              .withConsentContext("Bob Martin", true);
@@ -657,7 +657,7 @@ public class UserEmailSettingRestTest {
 
   /**
    * The remaining refusals of the delegation verbs map to the add-on's statuses: no
-   * connected mailbox is 401, a server that would not answer is 502 with its code, a row
+   * connected mailbox is 403, a server that would not answer is 502 with its code, a row
    * that is not the caller's is 404, a verb out of its state is 400 with its code.
    */
   @Test
@@ -666,17 +666,17 @@ public class UserEmailSettingRestTest {
                                                                               new MailboxAclException(MailboxAclException.UNREACHABLE,
                                                                                                       "timeout"));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/granted").with(testSimpleUser()))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/granted").with(testSimpleUser()))
            .andExpect(status().isBadGateway())
            .andExpect(status().reason(MailboxAclException.UNREACHABLE));
 
     doThrow(new IllegalAccessException("not connected")).when(emailDelegationService).revoke(SIMPLE_USER, 8L);
-    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/delegations/8").with(testSimpleUser())).andExpect(status().isUnauthorized());
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/delegations/8").with(testSimpleUser())).andExpect(status().isForbidden());
 
     when(emailDelegationService.accept(SIMPLE_USER, 9L)).thenThrow(new IllegalAccessException("not connected"));
     mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/9/accept").with(testSimpleUser()))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
 
     when(emailDelegationService.accept(SIMPLE_USER, 10L)).thenThrow(new MailboxAclException(MailboxAclException.UNREACHABLE, "timeout"));
     mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/10/accept").with(testSimpleUser()))
@@ -793,13 +793,13 @@ public class UserEmailSettingRestTest {
     verify(userEmailSettingService).connectThroughProvider(1L, SIMPLE_USER);
   }
 
-  /** A user who may not connect this connector gets a 401, as the endpoint documents. */
+  /** A user who may not connect this connector gets a 403, as the endpoint documents. */
   @Test
   @SneakyThrows
-  void connectThroughProviderAnswers401WhenTheUserMayNotConnect() {
+  void connectThroughProviderAnswers403WhenTheUserMayNotConnect() {
     doThrow(new IllegalAccessException("not allowed")).when(userEmailSettingService).connectThroughProvider(1L, SIMPLE_USER);
     mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/connect?emailConnectorId=1").with(testSimpleUser()))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
   }
 
   /** A provider that expects the user to type something is a 400: the browser shows the form. */
