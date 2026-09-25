@@ -20,7 +20,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        which opens the settings' own drawer, mounted at this app's root. Read from the
        dates-only summary eXo caches, so opening the mailbox costs no connection to the
        mail server until that summary is stale. Never
-       in someone else's mailbox: the parent shows it on the user's own only. -->
+       in someone else's mailbox: the parent shows it on the user's own only.
+       Given a shared mailbox (EXO-90651), it says the owner's absence instead -- "Alice
+       is away until 15 Oct" -- from the owner's cached dates, never her text, with no
+       action: a delegate can neither end nor edit the owner's reply. The user's own
+       reply is never said there. -->
   <div
     v-if="shown"
     :class="{ white: sticky }"
@@ -41,23 +45,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           fa-plane-departure
         </v-icon>
         <span class="text--primary flex-grow-1 me-2">{{ message }}</span>
-        <v-btn
-          :loading="ending"
-          class="px-1"
-          color="primary"
-          text
-          small
-          @click="endNow">
-          {{ $t('emailConnector.mailBox.absence.band.endNow') }}
-        </v-btn>
-        <v-btn
-          class="px-1"
-          color="primary"
-          text
-          small
-          @click="$root.$emit(OPEN_ABSENCE_DRAWER_EVENT)">
-          {{ $t('emailConnector.mailBox.absence.band.edit') }}
-        </v-btn>
+        <template v-if="!sharedMailbox">
+          <v-btn
+            :loading="ending"
+            class="px-1"
+            color="primary"
+            text
+            small
+            @click="endNow">
+            {{ $t('emailConnector.mailBox.absence.band.endNow') }}
+          </v-btn>
+          <v-btn
+            class="px-1"
+            color="primary"
+            text
+            small
+            @click="$root.$emit(OPEN_ABSENCE_DRAWER_EVENT)">
+            {{ $t('emailConnector.mailBox.absence.band.edit') }}
+          </v-btn>
+        </template>
       </div>
     </v-alert>
   </div>
@@ -69,11 +75,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 import { ABSENCE_UPDATED_EVENT, OPEN_ABSENCE_DRAWER_EVENT, notifyAbsenceUpdated } from '../../../email-connector-user-setting/js/EmailConnectorAbsenceMixin.js';
 
 /**
- * Today in the user's own day, yyyy-MM-dd.
+ * Today, yyyy-MM-dd: in the zone the reply's days are in when known -- an owner's days,
+ * seen by a delegate elsewhere, change at her midnight -- else in the user's own day.
  *
+ * @param {String} [timeZone] the IANA zone of the reply's days
  * @returns {String} the ISO day
  */
-function today() {
+function today(timeZone) {
+  if (timeZone) {
+    try {
+      // Built from the parts, so no locale's date pattern decides the shape.
+      const parts = {};
+      new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })
+        .formatToParts(new Date())
+        .forEach(part => parts[part.type] = part.value);
+      return `${parts.year}-${parts.month}-${parts.day}`;
+    } catch (e) {
+      // An unknown zone: the user's own day.
+    }
+  }
   const date = new Date();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
@@ -82,6 +102,9 @@ export default {
   props: {
     // Pinned to the top of the scrolling list it sits in.
     sticky: { type: Boolean, default: false },
+    // The switcher entry of the shared mailbox the user is in: the band then says its
+    // owner's absence, read through that share; none for the user's own mailbox.
+    sharedMailbox: { type: Object, default: null },
   },
   data: () => ({
     STICKY_STYLE: { position: 'sticky', top: 0, zIndex: 3 },
@@ -91,12 +114,21 @@ export default {
   }),
   computed: {
     /**
+     * The share the band reads the owner's dates through, or null in the user's own
+     * mailbox.
+     *
+     * @returns {Number} the delegation id, or null
+     */
+    delegationId() {
+      return this.sharedMailbox?.delegationId || null;
+    },
+    /**
      * Whether the band shows: eXo's own reply is on and its last day has not passed.
      *
      * @returns {Boolean} true when shown
      */
     shown() {
-      return !!this.status?.enabled && (!this.status.end || this.status.end >= today());
+      return !!this.status?.enabled && (!this.status.end || this.status.end >= today(this.status.timeZone));
     },
     /**
      * "Automatic reply on until 15 Oct", or "from 1 Oct" while it has not started.
@@ -105,7 +137,10 @@ export default {
      */
     message() {
       const status = this.status || {};
-      if (status.start && status.start > today()) {
+      if (this.sharedMailbox) {
+        return this.ownerMessage(status);
+      }
+      if (status.start && status.start > today(status.timeZone)) {
         return status.end
           ? this.$t('emailConnector.mailBox.absence.band.scheduled', { 0: this.formatDay(status.start), 1: this.formatDay(status.end) })
           : this.$t('emailConnector.mailBox.absence.band.scheduledOpen', { 0: this.formatDay(status.start) });
@@ -113,6 +148,18 @@ export default {
       return status.end
         ? this.$t('emailConnector.mailBox.absence.band.onUntil', { 0: this.formatDay(status.end) })
         : this.$t('emailConnector.mailBox.absence.band.on');
+    },
+  },
+  watch: {
+    /**
+     * Another mailbox chosen in the switcher: the previous one's dates go at once, and
+     * the new one's are read.
+     *
+     * @returns {void}
+     */
+    delegationId() {
+      this.status = null;
+      this.read();
     },
   },
   created() {
@@ -131,9 +178,44 @@ export default {
      * @returns {void}
      */
     read() {
-      this.$emailConnectorCommonService.getAbsenceStatus()
-        .then(status => this.status = status)
-        .catch(() => this.status = null);
+      const delegationId = this.delegationId;
+      this.$emailConnectorCommonService.getAbsenceStatus(delegationId)
+        .then(status => {
+          // An answer for a mailbox the user has left since is dropped.
+          if (delegationId === this.delegationId) {
+            this.status = status;
+          }
+        })
+        .catch(() => {
+          if (delegationId === this.delegationId) {
+            this.status = null;
+          }
+        });
+    },
+    /**
+     * "Alice is away until 15 Oct", "from 1 Oct to 15 Oct" while it has not started, and
+     * the day eXo last checked it when that is older than the server's freshness bound --
+     * a delegate cannot check it again, and that check may have found the server
+     * unreachable.
+     *
+     * @param {Object} status the owner's dates
+     * @returns {String} the localized sentence
+     */
+    ownerMessage(status) {
+      const owner = this.sharedMailbox.ownerFullName || this.sharedMailbox.ownerMailbox || '';
+      let sentence;
+      if (status.start && status.start > today(status.timeZone)) {
+        sentence = status.end
+          ? this.$t('emailConnector.mailBox.absence.band.owner.scheduled', { 0: owner, 1: this.formatDay(status.start), 2: this.formatDay(status.end) })
+          : this.$t('emailConnector.mailBox.absence.band.owner.scheduledOpen', { 0: owner, 1: this.formatDay(status.start) });
+      } else {
+        sentence = status.end
+          ? this.$t('emailConnector.mailBox.absence.band.owner.awayUntil', { 0: owner, 1: this.formatDay(status.end) })
+          : this.$t('emailConnector.mailBox.absence.band.owner.away', { 0: owner });
+      }
+      return status.stale && status.lastServerReadDate
+        ? this.$t('emailConnector.mailBox.absence.band.owner.checked', { 0: sentence, 1: this.formatInstant(status.lastServerReadDate) })
+        : sentence;
     },
     /**
      * Switches the reply off on the mail server, keeping its text for next time.
@@ -161,6 +243,15 @@ export default {
     formatDay(day) {
       const [year, month, date] = day.split('-').map(Number);
       return new Date(year, month - 1, date).toLocaleDateString(eXo.env.portal.language, { day: 'numeric', month: 'short' });
+    },
+    /**
+     * An instant's day as the user reads it.
+     *
+     * @param {Number} millis epoch milliseconds
+     * @returns {String} the localized day
+     */
+    formatInstant(millis) {
+      return new Date(millis).toLocaleDateString(eXo.env.portal.language, { day: 'numeric', month: 'short' });
     },
   },
 };
