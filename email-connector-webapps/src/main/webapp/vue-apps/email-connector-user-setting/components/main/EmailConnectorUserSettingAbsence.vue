@@ -66,7 +66,7 @@ export default {
         return this.error || this.$t('UserSettings.emailConnector.absence.description');
       }
       if (!this.supported) {
-        return this.$t('UserSettings.emailConnector.absence.row.unsupported');
+        return this.unsupportedMessage;
       }
       const vacation = this.absence.vacation;
       if (!vacation?.enabled || this.absence.vacationState === 'ELSEWHERE') {
