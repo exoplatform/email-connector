@@ -199,7 +199,9 @@ export default {
     },
     /**
      * Said when the owner's mail server refused a mail in her name since she set the
-     * consent: writing in her name does not work until she sets it again.
+     * consent, and in which shape (EXO-90626): as her, or in her name at all. Whether
+     * writing on her behalf still works is the composer's to say, which knows what the
+     * server is declared to accept; this row does not.
      *
      * @returns {String} the sentence, or empty
      */
@@ -208,7 +210,10 @@ export default {
         return '';
       }
       const language = window.eXo?.env?.portal?.language || 'en';
-      return this.$t('UserSettings.emailConnector.sharedWithMe.sendMode.refused', {
+      const key = this.delegation.sendRefusedMode === 'AS' && this.delegation.sendMode === 'AS'
+        ? 'UserSettings.emailConnector.sharedWithMe.sendMode.refused.AS'
+        : 'UserSettings.emailConnector.sharedWithMe.sendMode.refused';
+      return this.$t(key, {
         0: new Date(this.delegation.sendRefusedDate).toLocaleDateString(language),
       });
     },

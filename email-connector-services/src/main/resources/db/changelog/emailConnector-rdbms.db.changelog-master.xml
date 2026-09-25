@@ -1828,4 +1828,22 @@
       <dropColumn tableName="EMAIL_BOX" columnName="DRAFT_SEND_MODE"/>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-90">
+    <comment>
+      EMAIL_DELEGATION.SEND_REFUSED_MODE (EXO-90626): beside SEND_REFUSED_DATE (1.0.0-88),
+      the shape the owner's mail server refused a mail in the owner's name in -- ON_BEHALF
+      or AS -- so a refusal of writing as the owner blocks that shape only, and writing
+      on her behalf, which the server may well accept, stays usable. A refusal on behalf
+      blocks both, the cumulative scale of the consent. Null with a date is a refusal
+      recorded before this changeset, which named no shape: read as every shape refused,
+      as it was then; the owner's next consent clears both columns. Written with the
+      date, cleared with it. Nullable, no default, no index. Rolled back explicitly.
+    </comment>
+    <addColumn tableName="EMAIL_DELEGATION">
+      <column name="SEND_REFUSED_MODE" type="VARCHAR(16)"/>
+    </addColumn>
+    <rollback>
+      <dropColumn tableName="EMAIL_DELEGATION" columnName="SEND_REFUSED_MODE"/>
+    </rollback>
+  </changeSet>
 </databaseChangeLog>
