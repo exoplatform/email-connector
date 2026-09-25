@@ -292,6 +292,7 @@ public class EmailDelegationDAOTest {
       Long id = persist(GRANTEE, OWNER, status.toLowerCase() + "@acme.com", 7L, status);
       EmailDelegationEntity refused = emailDelegationDAO.findById(id).orElseThrow();
       refused.setSendRefusedDate(new Date(1_000L));
+      refused.setSendRefusedMode("AS");
       emailDelegationDAO.saveAndFlush(refused);
       entityManager.clear();
 
@@ -305,6 +306,7 @@ public class EmailDelegationDAOTest {
       assertEquals("ON_BEHALF", read.getSendMode());
       assertEquals(3_000L, read.getSendModeDate().getTime());
       assertNull(read.getSendRefusedDate(), "a consent set again clears the last refusal");
+      assertNull(read.getSendRefusedMode(), "and the shape it refused");
       assertEquals(status, read.getStatus(), "the status is not written");
       assertEquals("lrs", read.getRights(), "nor the letters");
       assertEquals(4_000L, read.getUpdatedDate().getTime());
@@ -341,21 +343,57 @@ public class EmailDelegationDAOTest {
     }
     entityManager.clear();
 
-    assertEquals(0, emailDelegationDAO.markSendRefused(id, OWNER, new Date(1_000L), new Date(5_000L), live), "the owner is not the sender");
-    assertEquals(0, emailDelegationDAO.markSendRefused(id, GRANTEE, new Date(1_001L), new Date(5_000L), live), "a consent set since");
-    assertEquals(0, emailDelegationDAO.markSendRefused(withoutConsent, GRANTEE, new Date(1_000L), new Date(5_000L), live), "no consent");
-    assertEquals(0, emailDelegationDAO.markSendRefused(ended, GRANTEE, new Date(1_000L), new Date(5_000L), live), "an ended share");
-    assertEquals(1, emailDelegationDAO.markSendRefused(id, GRANTEE, new Date(1_000L), new Date(5_000L), live));
+    assertEquals(0, emailDelegationDAO.markSendRefused(id, OWNER, new Date(1_000L), "AS", new Date(5_000L), live), "the owner is not the sender");
+    assertEquals(0, emailDelegationDAO.markSendRefused(id, GRANTEE, new Date(1_001L), "AS", new Date(5_000L), live), "a consent set since");
+    assertEquals(0, emailDelegationDAO.markSendRefused(withoutConsent, GRANTEE, new Date(1_000L), "AS", new Date(5_000L), live), "no consent");
+    assertEquals(0, emailDelegationDAO.markSendRefused(ended, GRANTEE, new Date(1_000L), "AS", new Date(5_000L), live), "an ended share");
+    assertEquals(1, emailDelegationDAO.markSendRefused(id, GRANTEE, new Date(1_000L), "AS", new Date(5_000L), live));
     entityManager.clear();
 
     EmailDelegationEntity read = emailDelegationDAO.findById(id).orElseThrow();
     assertEquals(5_000L, read.getSendRefusedDate().getTime());
+    assertEquals("AS", read.getSendRefusedMode(), "the shape refused is recorded with the date");
     assertEquals(5_000L, read.getUpdatedDate().getTime());
     assertEquals("AS", read.getSendMode(), "the consent stays: the owner sets it again to clear the refusal");
     assertEquals(1_000L, read.getSendModeDate().getTime());
     assertEquals("ACCEPTED", read.getStatus());
     assertEquals("lrs", read.getRights());
     assertNull(emailDelegationDAO.findById(ended).orElseThrow().getSendRefusedDate());
+  }
+
+  /**
+   * EXO-90626 -- the shape recorded with a refusal, executed on the engine: a later
+   * refusal never narrows what stands refused. As the owner, then on her behalf, leaves
+   * on her behalf refused (both blocked); on her behalf, then as the owner, keeps on her
+   * behalf; a refusal recorded before the shape was (a date and no shape: every shape)
+   * stays shapeless; as the owner twice stays as the owner. The date is the latest each
+   * time.
+   */
+  @Test
+  void aLaterRefusalNeverNarrowsWhatStandsRefused() {
+    List<String> live = List.of("PENDING", "ACCEPTED");
+    Object[][] cases = { { null, null, "AS", "AS" }, { "AS", new Date(2_000L), "ON_BEHALF", "ON_BEHALF" },
+        { "ON_BEHALF", new Date(2_000L), "AS", "ON_BEHALF" }, { null, new Date(2_000L), "AS", null },
+        { "AS", new Date(2_000L), "AS", "AS" }, { "AS", null, "ON_BEHALF", "ON_BEHALF" } };
+    int index = 0;
+    for (Object[] testCase : cases) {
+      Long id = persist(GRANTEE, OWNER, "case" + index++ + "@acme.com", 7L, "ACCEPTED");
+      EmailDelegationEntity entity = emailDelegationDAO.findById(id).orElseThrow();
+      entity.setSendMode("AS");
+      entity.setSendModeDate(new Date(1_000L));
+      entity.setSendRefusedMode((String) testCase[0]);
+      entity.setSendRefusedDate((Date) testCase[1]);
+      emailDelegationDAO.saveAndFlush(entity);
+      entityManager.clear();
+
+      assertEquals(1, emailDelegationDAO.markSendRefused(id, GRANTEE, new Date(1_000L), (String) testCase[2], new Date(5_000L), live));
+      entityManager.clear();
+
+      EmailDelegationEntity read = emailDelegationDAO.findById(id).orElseThrow();
+      String standing = testCase[0] + (testCase[1] == null ? " (no date)" : "");
+      assertEquals(testCase[3], read.getSendRefusedMode(), standing + " then " + testCase[2]);
+      assertEquals(5_000L, read.getSendRefusedDate().getTime(), standing + " then " + testCase[2] + ": the latest date");
+    }
   }
 
   /**
@@ -374,6 +412,7 @@ public class EmailDelegationDAOTest {
       entity.setSendMode("AS");
       entity.setSendModeDate(new Date(1_000L));
       entity.setSendRefusedDate(new Date(2_000L));
+      entity.setSendRefusedMode("AS");
       emailDelegationDAO.saveAndFlush(entity);
     }
     entityManager.clear();
@@ -387,7 +426,9 @@ public class EmailDelegationDAOTest {
     assertNull(cleared.getSendMode());
     assertNull(cleared.getSendModeDate());
     assertNull(cleared.getSendRefusedDate());
+    assertNull(cleared.getSendRefusedMode());
     assertEquals("AS", emailDelegationDAO.findById(inUse).orElseThrow().getSendMode());
+    assertEquals("AS", emailDelegationDAO.findById(inUse).orElseThrow().getSendRefusedMode(), "a live share keeps its refusal");
   }
 
   /**
