@@ -672,7 +672,7 @@ function searchMail(criteria) {
     if (resp?.ok) {
       return resp.json();
     } else {
-      // 401 is the ordinary answer for a user with no mailbox connected — still a
+      // 403 is the ordinary answer for a user with no mailbox connected — still a
       // failure here, and the caller decides how quietly to take it.
       throw new Error('Error when searching the mailbox');
     }

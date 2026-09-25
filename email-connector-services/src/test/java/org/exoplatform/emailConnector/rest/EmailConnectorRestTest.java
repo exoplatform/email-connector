@@ -450,7 +450,7 @@ public class EmailConnectorRestTest {
   /**
    * EXO-90551 -- the administration switch of the copy into a shared mailbox owner's
    * Sent: read and written by an administrator, the value reaching the service, and a
-   * refusal of the service is a 401.
+   * refusal of the service is a 403.
    */
   @Test
   void sharedMailboxSentCopySwitch() throws Exception {
@@ -462,7 +462,7 @@ public class EmailConnectorRestTest {
     verify(emailConnectorService).saveSharedMailboxSentCopyEnabled(true, ADMIN_USER);
     doThrow(new IllegalAccessException("not an administrator")).when(emailConnectorService).saveSharedMailboxSentCopyEnabled(false, ADMIN_USER);
     mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/shared-mailbox-sent-copy?enabled=false").with(testAdminUser()))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
   }
 
   @Test

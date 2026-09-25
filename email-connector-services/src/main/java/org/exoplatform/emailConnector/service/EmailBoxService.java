@@ -677,7 +677,7 @@ public class EmailBoxService {
   /**
    * A move whose source and destination are in two different mailboxes -- one of them a
    * mailbox somebody else shared with the caller. A message code rather than a sentence:
-   * unlike the refusals above (which are log-and-401 wording), the interface translates
+   * unlike the refusals above (which are log-and-403 wording), the interface translates
    * this one, and it is a 400 because the request is malformed rather than forbidden.
    */
   static final String             CROSS_MAILBOX_MESSAGE                                       =

@@ -23,7 +23,7 @@ import org.exoplatform.emailConnector.model.SendMode;
  * not cover (EXO-90583): none given, or "on my behalf" given and "as me" asked.
  * <p>
  * An {@link IllegalAccessException} on purpose, like {@link MailboxRightMissingException}:
- * it travels the add-on's refusal path, which the REST layer answers with <b>401</b>, and
+ * it travels the add-on's refusal path, which the REST layer answers with <b>403</b>, and
  * adds what a bare refusal loses -- which shape was missing -- as a message code the
  * composer translates, so it can fall back to the sender's own name and say why.
  */
