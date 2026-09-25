@@ -21,7 +21,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        is stated, not editable. Its Save and Cancel are the drawer's footer, which calls
        submit() and reads the can-save event. Laid out like the platform's drawer forms:
        a plain label above each field, the switch at the end of its label's row, the two
-       optional days as two equal date pickers side by side, empty meaning no bound. -->
+       optional days as two equal date pickers side by side, empty meaning no bound.
+       The pickers keep the date-picker's default attach, as the task drawer's and the
+       work experience's do, so their calendar mounts inside the drawer instead of
+       behind it; the last day's opens leftwards to stay within it. -->
   <v-form
     v-model="valid"
     @submit.prevent="submit">
@@ -50,7 +53,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :left="$vuetify.rtl"
           :placeholder="$t('UserSettings.emailConnector.absence.form.start.none')"
           :aria-label="$t('UserSettings.emailConnector.absence.form.start')"
-          :attach="false"
           return-iso>
           <template #footer>
             <v-btn
@@ -76,7 +78,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :min-value="start"
           :placeholder="$t('UserSettings.emailConnector.absence.form.end.none')"
           :aria-label="$t('UserSettings.emailConnector.absence.form.end')"
-          :attach="false"
           :left="!$vuetify.rtl"
           return-iso>
           <template #footer>
@@ -98,13 +99,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <div class="mt-4 mb-2">
       {{ $t('UserSettings.emailConnector.absence.form.subject') }}
     </div>
+    <!-- The extended-textarea class gives the subject's counter the same place and
+         icon as the message's, the platform's counter convention. -->
     <v-text-field
       v-model="subject"
       :rules="[required, oneLine]"
       :counter="MAX_SUBJECT"
       :maxlength="MAX_SUBJECT"
       :aria-label="$t('UserSettings.emailConnector.absence.form.subject')"
-      class="border-box-sizing width-auto pt-0"
+      class="extended-textarea border-box-sizing width-auto pt-0"
       type="text"
       outlined
       dense />
