@@ -40,7 +40,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
-import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
+import org.exoplatform.emailConnector.service.rules.sieve.ManageSieveException.Kind;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 
 /**
@@ -49,7 +49,7 @@ import org.exoplatform.services.connector.credentials.ConnectorCredentialsChanne
  * contract's refusal rule.
  */
 @ExtendWith(MockitoExtension.class)
-class ManageSieveConnectorTest {
+public class ManageSieveConnectorTest {
 
   private static final long        CONNECTOR_ID = 77L;
 
@@ -72,7 +72,7 @@ class ManageSieveConnectorTest {
    * @throws Exception when it cannot start
    */
   @BeforeEach
-  void setUp() throws Exception {
+  public void setUp() throws Exception {
     server = new FakeManageSieveServer();
     System.setProperty(ManageSieveEndpoint.HOST_PROPERTY + "." + CONNECTOR_ID, "localhost");
     System.setProperty(ManageSieveEndpoint.PORT_PROPERTY + "." + CONNECTOR_ID, String.valueOf(server.getPort()));
@@ -88,7 +88,7 @@ class ManageSieveConnectorTest {
    * Stops the server and clears the properties.
    */
   @AfterEach
-  void tearDown() {
+  public void tearDown() {
     server.close();
     System.clearProperty(ManageSieveEndpoint.HOST_PROPERTY + "." + CONNECTOR_ID);
     System.clearProperty(ManageSieveEndpoint.PORT_PROPERTY + "." + CONNECTOR_ID);
@@ -100,7 +100,7 @@ class ManageSieveConnectorTest {
    * @throws Exception on failure
    */
   @Test
-  void testAuthenticatesWithTheImapChannelMaterial() throws Exception {
+  public void testAuthenticatesWithTheImapChannelMaterial() throws Exception {
     when(resolver.authenticator(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP))
                                                                                                     .thenReturn(authenticator(FakeManageSieveServer.PASSWORD));
     ManageSieveClient client = connector.open(preset, USERNAME);
@@ -117,12 +117,12 @@ class ManageSieveConnectorTest {
    * @throws Exception on failure
    */
   @Test
-  void testARefusedTypedPasswordIsNotRetried() throws Exception {
+  public void testARefusedTypedPasswordIsNotRetried() throws Exception {
     when(resolver.authenticator(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP))
                                                                                                     .thenReturn(authenticator("stale"));
     when(resolver.retriesAfterRefusal(PROVIDER)).thenReturn(false);
     ManageSieveException e = assertThrows(ManageSieveException.class, () -> connector.open(preset, USERNAME));
-    assertEquals(ManageSieveErrorKind.AUTHENTICATION, e.getKind());
+    assertEquals(Kind.AUTHENTICATION, e.getKind());
     assertEquals(1, server.getAuthentications());
     verify(resolver).invalidate(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP);
   }
@@ -134,7 +134,7 @@ class ManageSieveConnectorTest {
    * @throws Exception on failure
    */
   @Test
-  void testAProducedCredentialIsRetriedOnceOnFreshMaterial() throws Exception {
+  public void testAProducedCredentialIsRetriedOnceOnFreshMaterial() throws Exception {
     when(resolver.authenticator(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP))
                                                                                                     .thenReturn(authenticator("stale-session"),
                                                                                                                 authenticator(FakeManageSieveServer.PASSWORD));
@@ -152,10 +152,10 @@ class ManageSieveConnectorTest {
    * @throws Exception on failure
    */
   @Test
-  void testNoMaterialOpensNoConnectionAndInvalidatesNothing() throws Exception {
+  public void testNoMaterialOpensNoConnectionAndInvalidatesNothing() throws Exception {
     when(resolver.authenticator(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP)).thenReturn(null);
     ManageSieveException e = assertThrows(ManageSieveException.class, () -> connector.open(preset, USERNAME));
-    assertEquals(ManageSieveErrorKind.NO_CREDENTIALS, e.getKind());
+    assertEquals(Kind.NO_CREDENTIALS, e.getKind());
     assertEquals(List.of(), server.getCommands());
     verify(resolver, never()).invalidate(anyLong(), anyString(), anyString(), any());
   }
@@ -167,12 +167,12 @@ class ManageSieveConnectorTest {
    * @throws Exception on failure
    */
   @Test
-  void testTryLaterIsNotARefusedCredential() throws Exception {
+  public void testTryLaterIsNotARefusedCredential() throws Exception {
     when(resolver.authenticator(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP))
                                                                                                     .thenReturn(authenticator(FakeManageSieveServer.PASSWORD));
     server.refuse("AUTHENTICATE", "NO (TRYLATER) \"Backend busy\"");
     ManageSieveException e = assertThrows(ManageSieveException.class, () -> connector.open(preset, USERNAME));
-    assertEquals(ManageSieveErrorKind.UNAVAILABLE, e.getKind());
+    assertEquals(Kind.UNAVAILABLE, e.getKind());
     assertEquals("TRYLATER", e.getResponseCode());
     verify(resolver, never()).invalidate(anyLong(), anyString(), anyString(), any());
     assertEquals(1, server.getCommands("AUTHENTICATE").size());
@@ -182,7 +182,7 @@ class ManageSieveConnectorTest {
    * The endpoint: per-preset property, else global, else the IMAP host and 4190.
    */
   @Test
-  void testEndpointResolution() {
+  public void testEndpointResolution() {
     assertEquals(new ManageSieveEndpoint("localhost", server.getPort()), ManageSieveEndpoint.forConnector(preset));
     EmailConnector other = new EmailConnector();
     other.setId(78L);

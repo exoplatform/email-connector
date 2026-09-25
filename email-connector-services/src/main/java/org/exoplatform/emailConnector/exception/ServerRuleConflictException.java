@@ -28,9 +28,8 @@ public class ServerRuleConflictException extends Exception {
   private static final long  serialVersionUID  = 1L;
 
   /**
-   * Another script is active and eXo cannot run next to it without replacing it: the
-   * server cannot include it (no RFC 6609 {@code include}), it cannot be read, or it
-   * includes eXo's own scripts in a way a wrapper cannot keep.
+   * Another script is active and the server cannot include it (no RFC 6609
+   * {@code include}): publishing would replace it.
    */
   public static final String SERVER_CONFLICT   = "emailConnector.absence.serverConflict";
 
@@ -60,8 +59,7 @@ public class ServerRuleConflictException extends Exception {
   /**
    * The script the conflict is about, to name it to the user.
    *
-   * @return the name as the server stores it, made printable and capped by the policy
-   *         that refused
+   * @return the name as the server stores it
    */
   public String getScriptName() {
     return scriptName;

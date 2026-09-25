@@ -31,17 +31,13 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 
 import javax.mail.PasswordAuthentication;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 
-import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
+import org.exoplatform.emailConnector.service.rules.sieve.ManageSieveException.Kind;
 
 /**
  * The subset of ManageSieve (RFC 5804) eXo needs to publish its own Sieve script: one
@@ -55,28 +51,13 @@ import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
  * as if they came through the tunnel.
  * <p>
  * Every read is bounded: a socket timeout on every read and a deadline on every
- * operation (the TCP connect, the TLS handshake and the capabilities around it, or one
- * command to its final line). At the deadline a watchdog closes the TCP socket under the
- * TLS layer, so a server trickling bytes cannot hold the caller's thread, not even inside
- * the handshake the JDK reads on its own, and neither can one that stops reading what the
- * client writes. Each operation's deadline also falls within the conversation's,
- * {@value #DEFAULT_CONVERSATION_TIMEOUT_MILLIS} ms after {@code connect} began, and no
- * operation starts after it: however many commands a caller runs, each one ends by then,
- * even against a server that answers each just before its own deadline. A cap on each
- * literal, quoted string and atom, on the tokens of a line, the lines of a response and
- * the octets of a whole response keeps it from exhausting memory either. The server's
- * own text reaches an exception message only on one line and truncated.
+ * operation (greeting to capabilities, or one command to its final line), so a server
+ * trickling bytes cannot hold the caller's thread; and a cap on each literal, quoted
+ * string and atom, on the tokens of a line, the lines of a response and the octets of a
+ * whole response, so it cannot exhaust memory either. The server's own text reaches an
+ * exception message only on one line and truncated.
  * <p>
- * A connection that has timed out, or outlived the conversation's deadline, is closed
- * through its TCP socket as well: closing the TLS layer would send a {@code close_notify}
- * and, on TLS 1.3, wait up to one more read timeout for the server's answer, past the
- * deadline. A connection in good standing is closed through the TLS layer, so the server
- * gets its {@code close_notify}.
- * <p>
- * Not thread-safe: one instance is one conversation, owned by one caller. The watchdog's
- * thread only closes the TCP socket, and only while the operation it was armed for is in
- * flight: an operation whose socket it closed fails as timed out, even when the answer had
- * arrived, and a watchdog that fires once its operation has ended closes nothing.
+ * Not thread-safe: one instance is one conversation, owned by one caller.
  */
 public final class ManageSieveClient implements AutoCloseable {
 
@@ -91,12 +72,6 @@ public final class ManageSieveClient implements AutoCloseable {
 
   /** How long one operation may take in all, however the server paces its bytes. */
   public static final int     DEFAULT_OPERATION_TIMEOUT_MILLIS = 60000;
-
-  /**
-   * How long one conversation may take in all, from the start of {@code connect} to its
-   * last command: the login and a whole publish run on the caller's thread within it.
-   */
-  public static final int     DEFAULT_CONVERSATION_TIMEOUT_MILLIS = 120000;
 
   /** The largest literal the client accepts from the server; Sieve scripts are kilobytes. */
   static final int            MAX_LITERAL_OCTETS             = 1024 * 1024;
@@ -128,36 +103,13 @@ public final class ManageSieveClient implements AutoCloseable {
   /** The only SASL mechanism the client speaks. */
   static final String         SASL_PLAIN                     = "PLAIN";
 
-  /** The command listing the account's scripts. */
-  private static final String CMD_LISTSCRIPTS                = "LISTSCRIPTS";
-
   private static final byte[] CRLF                           = { '\r', '\n' };
-
-  /**
-   * Closes the socket of an operation that outlives its deadline. One daemon thread for
-   * every client: a task only closes a TCP socket, which never waits on the TLS layer, and
-   * a cancelled one leaves the queue.
-   */
-  private static final ScheduledThreadPoolExecutor DEADLINE_WATCHDOG = deadlineWatchdog();
 
   /** The host the client connected to, also the name the certificate must match. */
   private final String        host;
 
   /** The port the client connected to. */
   private final int           port;
-
-  /** The executor that runs each operation's watchdog, {@link #DEADLINE_WATCHDOG} outside tests. */
-  private final ScheduledExecutorService watchdog;
-
-  /**
-   * The TCP socket of the conversation, which the TLS layer runs over after STARTTLS. The
-   * watchdog closes this one: closing the TLS socket would first wait for a write blocked
-   * on a server that stopped reading.
-   */
-  private final Socket        plain                          = new Socket();
-
-  /** Makes the watchdog's close and the end of the operation it was armed for exclusive. */
-  private final Object        operationLock                  = new Object();
 
   /** The current socket: the clear one until STARTTLS, the TLS one after. */
   private Socket              socket;
@@ -180,42 +132,18 @@ public final class ManageSieveClient implements AutoCloseable {
   /** When the current operation must be over, from {@link System#nanoTime()}. */
   private long                deadlineNanos;
 
-  /** When the conversation must be over, from {@link System#nanoTime()}: no operation ends after it. */
-  private long                conversationDeadlineNanos;
-
   /** The octets read so far in the current response. */
   private long                responseOctets;
-
-  /** How many operations the conversation has started, the last one's number. */
-  private long                operations;
-
-  /** The number of the operation in flight, 0 between operations; guarded by {@link #operationLock}. */
-  private long                currentOperation;
-
-  /** The watchdog task of the current operation, null between operations. */
-  private ScheduledFuture<?>  deadlineWatch;
-
-  /** Whether the watchdog closed the socket because an operation outlived its deadline. */
-  private volatile boolean    expired;
-
-  /**
-   * Whether a read has timed out: the JDK's TLS socket stays open after one, and closing
-   * it would wait for the server's {@code close_notify}.
-   */
-  private volatile boolean    readTimedOut;
 
   /**
    * A client bound to an endpoint, not connected yet.
    *
    * @param host the server host
    * @param port the server port
-   * @param watchdog the executor that runs each operation's watchdog
    */
-  private ManageSieveClient(String host, int port, ScheduledExecutorService watchdog) {
+  private ManageSieveClient(String host, int port) {
     this.host = host;
     this.port = port;
-    this.watchdog = watchdog;
-    this.conversationDeadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(DEFAULT_CONVERSATION_TIMEOUT_MILLIS);
   }
 
   /**
@@ -228,11 +156,10 @@ public final class ManageSieveClient implements AutoCloseable {
    * @param connectTimeoutMillis the TCP connect timeout
    * @param readTimeoutMillis the timeout of every read
    * @return the connected client, over TLS
-   * @throws ManageSieveException {@link ManageSieveErrorKind#UNAVAILABLE} when the server
-   *           cannot be reached or the TLS handshake fails,
-   *           {@link ManageSieveErrorKind#TLS_REQUIRED} when it does not offer
-   *           {@code STARTTLS}, {@link ManageSieveErrorKind#PROTOCOL} when its answers
-   *           are malformed
+   * @throws ManageSieveException {@link Kind#UNAVAILABLE} when the server cannot be
+   *           reached or the TLS handshake fails, {@link Kind#TLS_REQUIRED} when it does
+   *           not offer {@code STARTTLS}, {@link Kind#PROTOCOL} when its answers are
+   *           malformed
    */
   public static ManageSieveClient connect(String host,
                                           int port,
@@ -262,13 +189,21 @@ public final class ManageSieveClient implements AutoCloseable {
                                           int connectTimeoutMillis,
                                           int readTimeoutMillis,
                                           int operationTimeoutMillis) throws ManageSieveException {
-    return connect(host,
-                   port,
-                   tlsSocketFactory,
-                   connectTimeoutMillis,
-                   readTimeoutMillis,
-                   operationTimeoutMillis,
-                   DEADLINE_WATCHDOG);
+    if (host == null || host.isBlank()) {
+      throw new IllegalArgumentException("A ManageSieve host is required");
+    }
+    if (tlsSocketFactory == null) {
+      throw new IllegalArgumentException("A TLS socket factory is required");
+    }
+    ManageSieveClient client = new ManageSieveClient(host, port);
+    client.operationTimeoutMillis = operationTimeoutMillis;
+    try {
+      client.open(tlsSocketFactory, connectTimeoutMillis, readTimeoutMillis);
+      return client;
+    } catch (ManageSieveException | RuntimeException e) {
+      client.close();
+      throw e;
+    }
   }
 
   /**
@@ -290,18 +225,17 @@ public final class ManageSieveClient implements AutoCloseable {
    *
    * @param credentials the login, and the password or the session id a provider
    *          presents as one
-   * @throws ManageSieveException {@link ManageSieveErrorKind#UNSUPPORTED_MECHANISM} when
-   *           the server does not offer {@code PLAIN} after TLS,
-   *           {@link ManageSieveErrorKind#NO_CREDENTIALS} when there are none,
-   *           {@link ManageSieveErrorKind#AUTHENTICATION} when it refuses them
+   * @throws ManageSieveException {@link Kind#UNSUPPORTED_MECHANISM} when the server does
+   *           not offer {@code PLAIN} after TLS, {@link Kind#AUTHENTICATION} when it
+   *           refuses the credentials or there are none
    */
   public void authenticatePlain(PasswordAuthentication credentials) throws ManageSieveException {
     if (!capabilities.supportsSasl(SASL_PLAIN)) {
-      throw new ManageSieveException(ManageSieveErrorKind.UNSUPPORTED_MECHANISM,
+      throw new ManageSieveException(Kind.UNSUPPORTED_MECHANISM,
                                      "The ManageSieve server does not offer SASL PLAIN after STARTTLS");
     }
     if (credentials == null || credentials.getUserName() == null || credentials.getPassword() == null) {
-      throw new ManageSieveException(ManageSieveErrorKind.NO_CREDENTIALS, "No credentials to authenticate with");
+      throw new ManageSieveException(Kind.NO_CREDENTIALS, "No credentials to authenticate with");
     }
     byte[] loginBytes = credentials.getUserName().getBytes(StandardCharsets.UTF_8);
     byte[] passwordBytes = credentials.getPassword().getBytes(StandardCharsets.UTF_8);
@@ -309,16 +243,16 @@ public final class ManageSieveClient implements AutoCloseable {
     System.arraycopy(loginBytes, 0, message, 1, loginBytes.length);
     System.arraycopy(passwordBytes, 0, message, loginBytes.length + 2, passwordBytes.length);
     String initialResponse = Base64.getEncoder().encodeToString(message);
-    ManageSieveResponse response = command("AUTHENTICATE", "AUTHENTICATE " + string(SASL_PLAIN) + " " + string(initialResponse));
-    if (response.status() == ManageSieveStatus.NO && "TRYLATER".equals(response.code())) {
-      throw new ManageSieveException(ManageSieveErrorKind.UNAVAILABLE,
-                                     response.code(),
+    Response response = command("AUTHENTICATE", "AUTHENTICATE " + string("PLAIN") + " " + string(initialResponse));
+    if (response.status == Status.NO && "TRYLATER".equals(response.code)) {
+      throw new ManageSieveException(Kind.UNAVAILABLE,
+                                     response.code,
                                      "The ManageSieve server asked to authenticate later",
                                      null);
     }
-    if (response.status() == ManageSieveStatus.NO) {
-      throw new ManageSieveException(ManageSieveErrorKind.AUTHENTICATION,
-                                     response.code(),
+    if (response.status == Status.NO) {
+      throw new ManageSieveException(Kind.AUTHENTICATION,
+                                     response.code,
                                      "The ManageSieve server refused the credentials",
                                      null);
     }
@@ -332,16 +266,16 @@ public final class ManageSieveClient implements AutoCloseable {
    * @throws ManageSieveException when the server refuses or breaks the protocol
    */
   public List<SieveScriptInfo> listScripts() throws ManageSieveException {
-    ManageSieveResponse response = command(CMD_LISTSCRIPTS, CMD_LISTSCRIPTS);
-    requireOk(response, CMD_LISTSCRIPTS);
+    Response response = command("LISTSCRIPTS", "LISTSCRIPTS");
+    requireOk(response, "LISTSCRIPTS");
     List<SieveScriptInfo> scripts = new ArrayList<>();
-    for (List<ManageSieveToken> line : response.lines()) {
-      if (line.isEmpty() || line.get(0).type() != ManageSieveTokenType.STRING) {
-        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "Malformed " + CMD_LISTSCRIPTS + " line");
+    for (List<Token> line : response.lines) {
+      if (line.isEmpty() || line.get(0).type != TokenType.STRING) {
+        throw new ManageSieveException(Kind.PROTOCOL, "Malformed LISTSCRIPTS line");
       }
-      boolean active = line.size() > 1 && line.get(1).type() == ManageSieveTokenType.ATOM
-          && "ACTIVE".equalsIgnoreCase(line.get(1).value());
-      scripts.add(new SieveScriptInfo(line.get(0).value(), active));
+      boolean active = line.size() > 1 && line.get(1).type == TokenType.ATOM
+          && "ACTIVE".equalsIgnoreCase(line.get(1).value);
+      scripts.add(new SieveScriptInfo(line.get(0).value, active));
     }
     return scripts;
   }
@@ -351,17 +285,17 @@ public final class ManageSieveClient implements AutoCloseable {
    *
    * @param name the script name
    * @return the script text
-   * @throws ManageSieveException {@link ManageSieveErrorKind#REFUSED} with
-   *           {@code NONEXISTENT} when the script does not exist
+   * @throws ManageSieveException {@link Kind#REFUSED} with {@code NONEXISTENT} when the
+   *           script does not exist
    */
   public String getScript(String name) throws ManageSieveException {
-    ManageSieveResponse response = command("GETSCRIPT", "GETSCRIPT " + string(name));
+    Response response = command("GETSCRIPT", "GETSCRIPT " + string(name));
     requireOk(response, "GETSCRIPT");
-    if (response.lines().size() != 1 || response.lines().get(0).size() != 1
-        || response.lines().get(0).get(0).type() != ManageSieveTokenType.STRING) {
-      throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "Malformed GETSCRIPT answer");
+    if (response.lines.size() != 1 || response.lines.get(0).size() != 1
+        || response.lines.get(0).get(0).type != TokenType.STRING) {
+      throw new ManageSieveException(Kind.PROTOCOL, "Malformed GETSCRIPT answer");
     }
-    return response.lines().get(0).get(0).value();
+    return response.lines.get(0).get(0).value;
   }
 
   /**
@@ -370,8 +304,8 @@ public final class ManageSieveClient implements AutoCloseable {
    *
    * @param name the script name
    * @param content the script text
-   * @throws ManageSieveException {@link ManageSieveErrorKind#REFUSED} when the server
-   *           refuses it (a compile error, a quota)
+   * @throws ManageSieveException {@link Kind#REFUSED} when the server refuses it (a
+   *           compile error, a quota)
    */
   public void putScript(String name, String content) throws ManageSieveException {
     requireOk(command("PUTSCRIPT", "PUTSCRIPT " + string(name) + " " + literal(content)), "PUTSCRIPT");
@@ -384,8 +318,7 @@ public final class ManageSieveClient implements AutoCloseable {
    * @param content the script text
    * @return true when the server checked it, false when it offers no
    *         {@code CHECKSCRIPT} and nothing was sent
-   * @throws ManageSieveException {@link ManageSieveErrorKind#REFUSED} when the script
-   *           does not compile
+   * @throws ManageSieveException {@link Kind#REFUSED} when the script does not compile
    */
   public boolean checkScript(String content) throws ManageSieveException {
     if (!capabilities.supportsCheckScript()) {
@@ -417,13 +350,11 @@ public final class ManageSieveClient implements AutoCloseable {
 
   /**
    * Ends the conversation politely, then closes the connection whatever the server
-   * answered. {@code LOGOUT} is an operation like any command: its deadline falls within
-   * the conversation's, and once that has passed nothing is sent.
+   * answered.
    */
   public void logout() {
     try {
       if (socket != null && !socket.isClosed()) {
-        startOperation();
         write("LOGOUT");
         readResponse();
       }
@@ -435,64 +366,17 @@ public final class ManageSieveClient implements AutoCloseable {
   }
 
   /**
-   * Closes the connection without a {@code LOGOUT}. A connection whose read has timed out,
-   * or whose conversation's deadline has passed, is closed through its TCP socket: the TLS
-   * socket would wait up to one more read timeout for the server's {@code close_notify},
-   * and the end of the conversation stays within its deadline. Any other connection is
-   * closed through the TLS socket, which sends the {@code close_notify}.
+   * Closes the connection without a {@code LOGOUT}.
    */
   @Override
   public void close() {
-    endOperation();
-    closeSocket();
-  }
-
-  /**
-   * Connects as {@link #connect(String, int, SSLSocketFactory, int, int, int)} does, each
-   * operation's watchdog run by the given executor: a test passes one it drives.
-   *
-   * @param host the server host, also the name its certificate must carry
-   * @param port the server port
-   * @param tlsSocketFactory the factory that layers TLS over the connected socket
-   * @param connectTimeoutMillis the TCP connect timeout
-   * @param readTimeoutMillis the timeout of every read
-   * @param operationTimeoutMillis the time budget of every operation, the connection
-   *          sequence included
-   * @param watchdog the executor that runs each operation's watchdog
-   * @return the connected client, over TLS
-   * @throws ManageSieveException as {@link #connect(String, int, SSLSocketFactory, int, int)}
-   */
-  static ManageSieveClient connect(String host,
-                                   int port,
-                                   SSLSocketFactory tlsSocketFactory,
-                                   int connectTimeoutMillis,
-                                   int readTimeoutMillis,
-                                   int operationTimeoutMillis,
-                                   ScheduledExecutorService watchdog) throws ManageSieveException {
-    if (host == null || host.isBlank()) {
-      throw new IllegalArgumentException("A ManageSieve host is required");
+    if (socket != null) {
+      try {
+        socket.close();
+      } catch (IOException e) {
+        // Nothing left to release.
+      }
     }
-    if (tlsSocketFactory == null) {
-      throw new IllegalArgumentException("A TLS socket factory is required");
-    }
-    ManageSieveClient client = new ManageSieveClient(host, port, watchdog);
-    client.operationTimeoutMillis = operationTimeoutMillis;
-    try {
-      client.open(tlsSocketFactory, connectTimeoutMillis, readTimeoutMillis);
-      return client;
-    } catch (ManageSieveException | RuntimeException e) {
-      client.close();
-      throw e;
-    }
-  }
-
-  /**
-   * Moves the conversation's deadline to a time from now; a test shortens it with this.
-   *
-   * @param millis the time left to the conversation, in milliseconds
-   */
-  void endConversationWithin(long millis) {
-    conversationDeadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
   }
 
   /**
@@ -506,90 +390,39 @@ public final class ManageSieveClient implements AutoCloseable {
   private void open(SSLSocketFactory tlsSocketFactory,
                     int connectTimeoutMillis,
                     int readTimeoutMillis) throws ManageSieveException {
-    socket = plain;
+    startOperation();
     try {
-      startOperation();
+      Socket plain = new Socket();
+      socket = plain;
       plain.connect(new InetSocketAddress(host, port), connectTimeoutMillis);
       plain.setSoTimeout(readTimeoutMillis);
       bindStreams();
-      ManageSieveResponse greeting = readResponse();
+      Response greeting = readResponse();
       requireOk(greeting, "greeting");
       ManageSieveCapabilities clearText = capabilitiesOf(greeting);
       if (!clearText.starttls()) {
-        throw new ManageSieveException(ManageSieveErrorKind.TLS_REQUIRED,
+        throw new ManageSieveException(Kind.TLS_REQUIRED,
                                        "The ManageSieve server does not offer STARTTLS; eXo never talks to it in clear");
       }
       write("STARTTLS");
       requireOk(readResponse(), "STARTTLS");
       if (pushedBack >= 0 || in.available() > 0) {
-        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL,
-                                       "The ManageSieve server sent data ahead of the TLS handshake");
+        throw new ManageSieveException(Kind.PROTOCOL, "The ManageSieve server sent data ahead of the TLS handshake");
       }
-      startTls(tlsSocketFactory, readTimeoutMillis);
-      bindStreams();
-      ManageSieveResponse afterTls = readResponse();
-      requireOk(afterTls, "capabilities after STARTTLS");
-      capabilities = capabilitiesOf(afterTls);
-      endInTime();
-    } catch (IOException e) {
-      throw unavailable("connect", e);
-    } finally {
-      endOperation();
-    }
-  }
-
-  /**
-   * Layers TLS over the connected socket and runs the handshake, the certificate and the
-   * host name both verified. The handshake reads through the JDK, not through
-   * {@link #read()}: only the watchdog bounds it.
-   *
-   * @param tlsSocketFactory the TLS layer
-   * @param readTimeoutMillis the read timeout
-   * @throws IOException when the handshake fails, or the watchdog closed the socket
-   */
-  private void startTls(SSLSocketFactory tlsSocketFactory, int readTimeoutMillis) throws IOException {
-    SSLSocket tls = (SSLSocket) tlsSocketFactory.createSocket(plain, host, port, true);
-    socket = tls;
-    try {
+      SSLSocket tls = (SSLSocket) tlsSocketFactory.createSocket(plain, host, port, true);
       SSLParameters parameters = tls.getSSLParameters();
       parameters.setEndpointIdentificationAlgorithm("HTTPS");
       tls.setSSLParameters(parameters);
       tls.setSoTimeout(readTimeoutMillis);
+      socket = tls;
       tls.startHandshake();
-    } catch (IOException | RuntimeException e) {
-      closeAfterFailure(tls, e);
-      throw e;
-    }
-  }
-
-  /**
-   * Closes a socket whose setup failed, keeping a failure to close as suppressed by the
-   * setup failure.
-   *
-   * @param failedSocket the socket to release
-   * @param failure the failure that interrupted its setup
-   */
-  private static void closeAfterFailure(Socket failedSocket, Exception failure) {
-    try {
-      failedSocket.close();
+      bindStreams();
+      Response afterTls = readResponse();
+      requireOk(afterTls, "capabilities after STARTTLS");
+      capabilities = capabilitiesOf(afterTls);
     } catch (IOException e) {
-      failure.addSuppressed(e);
+      throw unavailable("connect", e);
     }
-  }
-
-  /**
-   * The watchdog's executor: one daemon thread, cancelled tasks removed at once.
-   *
-   * @return the executor
-   */
-  private static ScheduledThreadPoolExecutor deadlineWatchdog() {
-    ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, task -> {
-      Thread thread = new Thread(task, "managesieve-deadline");
-      thread.setDaemon(true);
-      return thread;
-    });
-    executor.setRemoveOnCancelPolicy(true);
-    return executor;
   }
 
   /**
@@ -610,15 +443,15 @@ public final class ManageSieveClient implements AutoCloseable {
    * @return the capabilities
    * @throws ManageSieveException when a line holds something else than strings
    */
-  private static ManageSieveCapabilities capabilitiesOf(ManageSieveResponse response) throws ManageSieveException {
+  private static ManageSieveCapabilities capabilitiesOf(Response response) throws ManageSieveException {
     List<List<String>> lines = new ArrayList<>();
-    for (List<ManageSieveToken> line : response.lines()) {
+    for (List<Token> line : response.lines) {
       List<String> values = new ArrayList<>();
-      for (ManageSieveToken token : line) {
-        if (token.type() != ManageSieveTokenType.STRING) {
-          throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "Malformed capability line");
+      for (Token token : line) {
+        if (token.type != TokenType.STRING) {
+          throw new ManageSieveException(Kind.PROTOCOL, "Malformed capability line");
         }
-        values.add(token.value());
+        values.add(token.value);
       }
       lines.add(values);
     }
@@ -631,20 +464,15 @@ public final class ManageSieveClient implements AutoCloseable {
    * @param name the command name, the only part of it that may appear in an error
    * @param line the command line, possibly ending with a literal
    * @return the response
-   * @throws ManageSieveException {@link ManageSieveErrorKind#UNAVAILABLE} on an I/O error
-   *           or a timeout
+   * @throws ManageSieveException {@link Kind#UNAVAILABLE} on an I/O error or a timeout
    */
-  private ManageSieveResponse command(String name, String line) throws ManageSieveException {
+  private Response command(String name, String line) throws ManageSieveException {
+    startOperation();
     try {
-      startOperation();
       write(line);
-      ManageSieveResponse response = readResponse();
-      endInTime();
-      return response;
+      return readResponse();
     } catch (IOException e) {
       throw unavailable(name, e);
-    } finally {
-      endOperation();
     }
   }
 
@@ -653,126 +481,38 @@ public final class ManageSieveClient implements AutoCloseable {
    *
    * @param response the response
    * @param name the command name
-   * @throws ManageSieveException {@link ManageSieveErrorKind#REFUSED} on {@code NO},
-   *           {@link ManageSieveErrorKind#PROTOCOL} on {@code BYE}
+   * @throws ManageSieveException {@link Kind#REFUSED} on {@code NO},
+   *           {@link Kind#PROTOCOL} on {@code BYE}
    */
-  private void requireOk(ManageSieveResponse response, String name) throws ManageSieveException {
-    if (response.status() == ManageSieveStatus.OK) {
+  private void requireOk(Response response, String name) throws ManageSieveException {
+    if (response.status == Status.OK) {
       return;
     }
-    String detail = response.message() == null ? "" : ": " + printable(response.message());
-    if (response.status() == ManageSieveStatus.BYE) {
+    String detail = response.message == null ? "" : ": " + printable(response.message);
+    if (response.status == Status.BYE) {
       close();
-      throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL,
-                                     response.code(),
-                                     "The ManageSieve server closed the connection on " + name + detail,
-                                     null);
+      throw new ManageSieveException(Kind.PROTOCOL, response.code, "The ManageSieve server closed the connection on " + name
+          + detail, null);
     }
-    throw new ManageSieveException(ManageSieveErrorKind.REFUSED,
-                                   response.code(),
-                                   "The ManageSieve server refused " + name + detail,
-                                   null);
+    throw new ManageSieveException(Kind.REFUSED, response.code, "The ManageSieve server refused " + name + detail, null);
   }
 
   /**
-   * Starts the clock of one operation, its budget capped by what is left of the
-   * conversation's, and arms the watchdog that closes the socket when it runs out.
-   *
-   * @throws SocketTimeoutException when the conversation's deadline has passed: the
-   *           operation sends nothing
+   * Starts the clock of one operation.
    */
-  private void startOperation() throws SocketTimeoutException {
-    endOperation();
-    long now = System.nanoTime();
-    long budgetNanos = Math.min(TimeUnit.MILLISECONDS.toNanos(operationTimeoutMillis), conversationDeadlineNanos - now);
-    if (budgetNanos <= 0) {
-      throw new SocketTimeoutException("ManageSieve conversation deadline exceeded");
-    }
-    long number = ++operations;
-    synchronized (operationLock) {
-      currentOperation = number;
-    }
-    deadlineNanos = now + budgetNanos;
-    deadlineWatch = watchdog.schedule(() -> expire(number), budgetNanos, TimeUnit.NANOSECONDS);
+  private void startOperation() {
+    deadlineNanos = System.nanoTime() + operationTimeoutMillis * 1_000_000L;
   }
 
   /**
-   * Ends the current operation, and fails it when the watchdog closed the socket before
-   * its end: its answer may have arrived, but the connection did not outlive the
-   * deadline, and the next command would fail on it.
-   *
-   * @throws SocketTimeoutException when the watchdog closed the socket
-   */
-  private void endInTime() throws SocketTimeoutException {
-    if (endOperation()) {
-      throw new SocketTimeoutException("ManageSieve operation deadline exceeded");
-    }
-  }
-
-  /**
-   * Disarms the watchdog of the operation that just ended, then ends it: from then on its
-   * watchdog closes nothing, even one already running.
-   *
-   * @return true when the watchdog has closed the socket
-   */
-  private boolean endOperation() {
-    if (deadlineWatch != null) {
-      deadlineWatch.cancel(false);
-      deadlineWatch = null;
-    }
-    synchronized (operationLock) {
-      currentOperation = 0;
-      return expired;
-    }
-  }
-
-  /**
-   * Run by the watchdog of one operation: when that operation is still in flight, it
-   * outlived its deadline, and closing the TCP socket fails its blocked read, write or
-   * handshake without waiting on the TLS layer.
-   *
-   * @param number the operation's number
-   */
-  private void expire(long number) {
-    synchronized (operationLock) {
-      if (number != currentOperation) {
-        return;
-      }
-      expired = true;
-      try {
-        plain.close();
-      } catch (IOException e) {
-        // Nothing left to release.
-      }
-    }
-  }
-
-  /**
-   * Closes the current socket, from the caller's thread: the TCP socket under the TLS
-   * layer when the connection has timed out or the conversation's deadline has passed,
-   * the TLS socket otherwise.
-   */
-  private void closeSocket() {
-    if (socket != null) {
-      boolean late = expired || readTimedOut || System.nanoTime() - conversationDeadlineNanos > 0;
-      try {
-        (late ? plain : socket).close();
-      } catch (IOException e) {
-        // Nothing left to release.
-      }
-    }
-  }
-
-  /**
-   * The server's text made safe for a log line or a user-facing name: control, line
-   * separator, paragraph separator and format characters (the bidirectional overrides
-   * among them) replaced by spaces, truncated.
+   * The server's text made safe for a log line: control characters replaced by spaces,
+   * truncated.
    *
    * @param text the server's text
    * @return one line of at most {@value #MAX_MESSAGE_CHARS} characters
    */
   static String printable(String text) {
-    String line = text.replaceAll("[\\p{Cc}\\p{Zl}\\p{Zp}\\p{Cf}]", " ");
+    String line = text.replaceAll("\\p{Cntrl}", " ");
     return line.length() > MAX_MESSAGE_CHARS ? line.substring(0, MAX_MESSAGE_CHARS) + "…" : line;
   }
 
@@ -785,10 +525,8 @@ public final class ManageSieveClient implements AutoCloseable {
    */
   private ManageSieveException unavailable(String name, IOException e) {
     close();
-    String reason = expired || e instanceof SocketTimeoutException ? " timed out" : " failed";
-    return new ManageSieveException(ManageSieveErrorKind.UNAVAILABLE,
-                                    "ManageSieve " + name + reason + " on " + host + ":" + port,
-                                    e);
+    String reason = e instanceof SocketTimeoutException ? " timed out" : " failed";
+    return new ManageSieveException(Kind.UNAVAILABLE, "ManageSieve " + name + reason + " on " + host + ":" + port, e);
   }
 
   /**
@@ -848,20 +586,20 @@ public final class ManageSieveClient implements AutoCloseable {
    * @throws IOException when the socket fails
    * @throws ManageSieveException when the response is malformed or too large
    */
-  private ManageSieveResponse readResponse() throws IOException, ManageSieveException {
+  private Response readResponse() throws IOException, ManageSieveException {
     responseOctets = 0;
-    List<List<ManageSieveToken>> lines = new ArrayList<>();
+    List<List<Token>> lines = new ArrayList<>();
     while (true) {
-      List<ManageSieveToken> line = readLine();
-      if (!line.isEmpty() && line.get(0).type() == ManageSieveTokenType.ATOM) {
-        ManageSieveStatus status = statusOf(line.get(0).value());
+      List<Token> line = readLine();
+      if (!line.isEmpty() && line.get(0).type == TokenType.ATOM) {
+        Status status = statusOf(line.get(0).value);
         if (status != null) {
           return finalLine(status, line, lines);
         }
       }
       lines.add(line);
       if (lines.size() > MAX_RESPONSE_LINES) {
-        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "The ManageSieve response is too long");
+        throw new ManageSieveException(Kind.PROTOCOL, "The ManageSieve response is too long");
       }
     }
   }
@@ -875,28 +613,25 @@ public final class ManageSieveClient implements AutoCloseable {
    * @return the response
    * @throws ManageSieveException when the line is malformed
    */
-  private static ManageSieveResponse finalLine(ManageSieveStatus status,
-                                               List<ManageSieveToken> line,
-                                               List<List<ManageSieveToken>> lines) throws ManageSieveException {
+  private static Response finalLine(Status status, List<Token> line, List<List<Token>> lines) throws ManageSieveException {
     int index = 1;
     String code = null;
-    if (index < line.size() && line.get(index).type() == ManageSieveTokenType.LPAREN) {
+    if (index < line.size() && line.get(index).type == TokenType.LPAREN) {
       index++;
-      if (index >= line.size() || line.get(index).type() != ManageSieveTokenType.ATOM) {
-        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "Malformed ManageSieve response code");
+      if (index >= line.size() || line.get(index).type != TokenType.ATOM) {
+        throw new ManageSieveException(Kind.PROTOCOL, "Malformed ManageSieve response code");
       }
-      code = printable(line.get(index).value()).toUpperCase(Locale.ROOT);
-      while (index < line.size() && line.get(index).type() != ManageSieveTokenType.RPAREN) {
+      code = line.get(index).value.toUpperCase(Locale.ROOT);
+      while (index < line.size() && line.get(index).type != TokenType.RPAREN) {
         index++;
       }
       if (index >= line.size()) {
-        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "Unterminated ManageSieve response code");
+        throw new ManageSieveException(Kind.PROTOCOL, "Unterminated ManageSieve response code");
       }
       index++;
     }
-    String message = index < line.size() && line.get(index).type() == ManageSieveTokenType.STRING ? line.get(index).value()
-                                                                                                 : null;
-    return new ManageSieveResponse(status, code, message, lines);
+    String message = index < line.size() && line.get(index).type == TokenType.STRING ? line.get(index).value : null;
+    return new Response(status, code, message, lines);
   }
 
   /**
@@ -905,11 +640,11 @@ public final class ManageSieveClient implements AutoCloseable {
    * @param atom the atom
    * @return the status, or null when the atom is not one
    */
-  private static ManageSieveStatus statusOf(String atom) {
+  private static Status statusOf(String atom) {
     return switch (atom.toUpperCase(Locale.ROOT)) {
-    case "OK" -> ManageSieveStatus.OK;
-    case "NO" -> ManageSieveStatus.NO;
-    case "BYE" -> ManageSieveStatus.BYE;
+    case "OK" -> Status.OK;
+    case "NO" -> Status.NO;
+    case "BYE" -> Status.BYE;
     default -> null;
     };
   }
@@ -921,8 +656,8 @@ public final class ManageSieveClient implements AutoCloseable {
    * @throws IOException when the socket fails
    * @throws ManageSieveException when a token is malformed or too large
    */
-  private List<ManageSieveToken> readLine() throws IOException, ManageSieveException {
-    List<ManageSieveToken> tokens = new ArrayList<>();
+  private List<Token> readLine() throws IOException, ManageSieveException {
+    List<Token> tokens = new ArrayList<>();
     while (true) {
       int c = read();
       if (c == ' ') {
@@ -930,37 +665,28 @@ public final class ManageSieveClient implements AutoCloseable {
       }
       if (c == '\r') {
         if (read() != '\n') {
-          throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "Bare CR in a ManageSieve response");
+          throw new ManageSieveException(Kind.PROTOCOL, "Bare CR in a ManageSieve response");
         }
         return tokens;
       }
       if (c == '\n') {
         return tokens;
       }
-      tokens.add(readToken(c));
+      if (c == '"') {
+        tokens.add(new Token(TokenType.STRING, readQuoted()));
+      } else if (c == '{') {
+        tokens.add(new Token(TokenType.STRING, readLiteral()));
+      } else if (c == '(') {
+        tokens.add(new Token(TokenType.LPAREN, "("));
+      } else if (c == ')') {
+        tokens.add(new Token(TokenType.RPAREN, ")"));
+      } else {
+        tokens.add(new Token(TokenType.ATOM, readAtom(c)));
+      }
       if (tokens.size() > MAX_TOKENS_PER_LINE) {
-        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "The ManageSieve response line is too long");
+        throw new ManageSieveException(Kind.PROTOCOL, "The ManageSieve response line is too long");
       }
     }
-  }
-
-  /**
-   * Reads the token its first character opens: a quoted string, a literal, a
-   * parenthesis or an atom.
-   *
-   * @param c the token's first character, already read
-   * @return the token
-   * @throws IOException when the socket fails
-   * @throws ManageSieveException when the token is malformed or too large
-   */
-  private ManageSieveToken readToken(int c) throws IOException, ManageSieveException {
-    return switch (c) {
-    case '"' -> new ManageSieveToken(ManageSieveTokenType.STRING, readQuoted());
-    case '{' -> new ManageSieveToken(ManageSieveTokenType.STRING, readLiteral());
-    case '(' -> new ManageSieveToken(ManageSieveTokenType.LPAREN, "(");
-    case ')' -> new ManageSieveToken(ManageSieveTokenType.RPAREN, ")");
-    default -> new ManageSieveToken(ManageSieveTokenType.ATOM, readAtom(c));
-    };
   }
 
   /**
@@ -981,11 +707,11 @@ public final class ManageSieveClient implements AutoCloseable {
         c = read();
       }
       if (c == '\r' || c == '\n') {
-        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "Line break in a ManageSieve quoted string");
+        throw new ManageSieveException(Kind.PROTOCOL, "Line break in a ManageSieve quoted string");
       }
       value.write(c);
       if (value.size() > MAX_SERVER_QUOTED_OCTETS) {
-        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "ManageSieve quoted string too long");
+        throw new ManageSieveException(Kind.PROTOCOL, "ManageSieve quoted string too long");
       }
     }
   }
@@ -1006,8 +732,7 @@ public final class ManageSieveClient implements AutoCloseable {
       count = count * 10 + (c - '0');
       digits++;
       if (count > MAX_LITERAL_OCTETS) {
-        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL,
-                                       "ManageSieve literal larger than " + MAX_LITERAL_OCTETS + " octets");
+        throw new ManageSieveException(Kind.PROTOCOL, "ManageSieve literal larger than " + MAX_LITERAL_OCTETS + " octets");
       }
       c = read();
     }
@@ -1015,11 +740,10 @@ public final class ManageSieveClient implements AutoCloseable {
       c = read();
     }
     if (digits == 0 || c != '}' || read() != '\r' || read() != '\n') {
-      throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "Malformed ManageSieve literal");
+      throw new ManageSieveException(Kind.PROTOCOL, "Malformed ManageSieve literal");
     }
     if (responseOctets + count > MAX_RESPONSE_OCTETS) {
-      throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL,
-                                     "ManageSieve response larger than " + MAX_RESPONSE_OCTETS + " octets");
+      throw new ManageSieveException(Kind.PROTOCOL, "ManageSieve response larger than " + MAX_RESPONSE_OCTETS + " octets");
     }
     byte[] octets = new byte[(int) count];
     int offset = 0;
@@ -1028,14 +752,8 @@ public final class ManageSieveClient implements AutoCloseable {
       pushedBack = -1;
     }
     while (offset < count) {
-      int read;
-      try {
-        checkDeadline();
-        read = in.read(octets, offset, (int) count - offset);
-      } catch (SocketTimeoutException e) {
-        readTimedOut = true;
-        throw e;
-      }
+      checkDeadline();
+      int read = in.read(octets, offset, (int) count - offset);
       if (read < 0) {
         throw new EOFException("ManageSieve connection closed inside a literal");
       }
@@ -1060,7 +778,7 @@ public final class ManageSieveClient implements AutoCloseable {
     while (c != ' ' && c != '\r' && c != '\n' && c != '(' && c != ')' && c != '"' && c != '{') {
       atom.append((char) c);
       if (atom.length() > MAX_ATOM_OCTETS) {
-        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "ManageSieve atom too long");
+        throw new ManageSieveException(Kind.PROTOCOL, "ManageSieve atom too long");
       }
       c = read();
     }
@@ -1082,20 +800,13 @@ public final class ManageSieveClient implements AutoCloseable {
       pushedBack = -1;
       return c;
     }
-    int c;
-    try {
-      checkDeadline();
-      c = in.read();
-    } catch (SocketTimeoutException e) {
-      readTimedOut = true;
-      throw e;
-    }
+    checkDeadline();
+    int c = in.read();
     if (c < 0) {
       throw new EOFException("ManageSieve connection closed by the server");
     }
     if (++responseOctets > MAX_RESPONSE_OCTETS) {
-      throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL,
-                                     "ManageSieve response larger than " + MAX_RESPONSE_OCTETS + " octets");
+      throw new ManageSieveException(Kind.PROTOCOL, "ManageSieve response larger than " + MAX_RESPONSE_OCTETS + " octets");
     }
     return c;
   }
@@ -1109,5 +820,35 @@ public final class ManageSieveClient implements AutoCloseable {
     if (System.nanoTime() - deadlineNanos > 0) {
       throw new SocketTimeoutException("ManageSieve operation deadline exceeded");
     }
+  }
+
+  /** The final status of a response. */
+  private enum Status {
+    OK, NO, BYE
+  }
+
+  /** What a response token is. */
+  private enum TokenType {
+    ATOM, STRING, LPAREN, RPAREN
+  }
+
+  /**
+   * One token of a response line.
+   *
+   * @param type what the token is
+   * @param value its text, a quoted string or literal unescaped
+   */
+  private record Token(TokenType type, String value) {
+  }
+
+  /**
+   * One response.
+   *
+   * @param status the final status
+   * @param code the response code, upper-case, or null
+   * @param message the human-readable text, or null
+   * @param lines the data lines before the final one
+   */
+  private record Response(Status status, String code, String message, List<List<Token>> lines) {
   }
 }
