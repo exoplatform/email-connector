@@ -339,12 +339,14 @@ function absenceError(resp, fallback) {
 /**
  * The caller's automatic reply section, read live from their mail server: what the
  * engine can do, the reply the server holds, and its state (OWN, ELSEWHERE, MODIFIED,
- * INACTIVE or NONE).
+ * INACTIVE or NONE). The browser's time zone is sent, so a reply the server stores as
+ * instants (BlueMind) is answered in the user's own days.
  *
  * @returns {Promise<object>} {capabilities, engine, vacation, vacationState, foreignScriptName, vacationDays}
  */
 export function getAbsence() {
-  return fetch('/email-connector/rest/user-email-setting/absence', {
+  const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return fetch(`/email-connector/rest/user-email-setting/absence${timeZone ? `?timeZone=${encodeURIComponent(timeZone)}` : ''}`, {
     credentials: 'include',
     cache: 'no-store',
     method: 'GET'

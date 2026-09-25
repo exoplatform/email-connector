@@ -37,7 +37,10 @@ import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.VacationSetting;
 import org.exoplatform.emailConnector.model.VacationState;
+import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
+import org.exoplatform.emailConnector.service.bluemind.BlueMindMailboxTransport;
+import org.exoplatform.emailConnector.service.rules.bluemind.BlueMindRuleEngine;
 
 /**
  * The engine a preset uses is the property's, per preset first, {@code none} by default;
@@ -52,6 +55,9 @@ public class ServerRuleEngineRegistryTest {
 
   private final NoopRuleEngine     noop         = new NoopRuleEngine();
 
+  private final BlueMindRuleEngine bluemind     = new BlueMindRuleEngine(mock(BlueMindMailboxTransport.class),
+                                                                         mock(EmailCredentialsResolver.class));
+
   private ServerRuleEngineRegistry registry;
 
   /**
@@ -61,7 +67,7 @@ public class ServerRuleEngineRegistryTest {
   public void setUp() {
     when(sieve.getName()).thenReturn("sieve");
     registry = new ServerRuleEngineRegistry();
-    ReflectionTestUtils.setField(registry, "engines", List.of(sieve, noop));
+    ReflectionTestUtils.setField(registry, "engines", List.of(sieve, bluemind, noop));
   }
 
   /**
@@ -104,11 +110,21 @@ public class ServerRuleEngineRegistryTest {
   }
 
   /**
+   * {@code bluemind} selects the BlueMind engine, per preset, whatever the global one.
+   */
+  @Test
+  public void testBlueMindIsSelectedByName() {
+    System.setProperty(ServerRuleEngineRegistry.ENGINE_PROPERTY, "sieve");
+    System.setProperty(ServerRuleEngineRegistry.ENGINE_PROPERTY_PREFIX + CONNECTOR_ID, "bluemind");
+    assertSame(bluemind, registry.engineFor(preset()));
+  }
+
+  /**
    * A name no engine has falls back to the no-op engine, never to another engine.
    */
   @Test
   public void testAnUnknownNameFallsBackToNone() {
-    System.setProperty(ServerRuleEngineRegistry.ENGINE_PROPERTY, "bluemind");
+    System.setProperty(ServerRuleEngineRegistry.ENGINE_PROPERTY, "exchange");
     assertSame(noop, registry.engineFor(preset()));
   }
 
