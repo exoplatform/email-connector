@@ -16,12 +16,44 @@
  */
 package org.exoplatform.emailConnector.model;
 
+import java.util.List;
+
 /**
- * A reference to an eXo-side rule whose server-side hop a reconciliation must keep
- * published. Declared with the rules verbs of the engine SPI; the server-rules eXip
- * completes it.
+ * The server half of an eXo rule that must also run at delivery: the server rule that
+ * sets the rule's keyword on the mails its conditions match, so that eXo's own rule
+ * picks them up at the next sync. A reconciliation keeps exactly these on the server.
  *
- * @param ref the eXo rule's reference
+ * @param ref the server rule's reference, chosen by the eXo rule, e.g.
+ *          {@code hop-<filterId>}
+ * @param name the rule's name
+ * @param matchAll true when every condition must hold
+ * @param conditions the conditions, a copy of the eXo rule's
+ * @param keyword the keyword to set, {@value ServerRule#TAG_PREFIX}{@code <id>}
+ * @param stop whether the rules after it are skipped for a matched mail
  */
-public record HopRef(String ref) {
+public record HopRef(String ref, String name, boolean matchAll, List<ServerRule.Condition> conditions, String keyword, boolean stop) {
+
+  /** The prefix every hop's reference begins with. */
+  public static final String REF_PREFIX = "hop-";
+
+  /**
+   * The server rule this hop is published as: its conditions, and one action, the
+   * keyword.
+   *
+   * @return the rule, enabled
+   * @throws IllegalArgumentException when the reference is not a hop's
+   */
+  public ServerRule toRule() {
+    if (ref == null || !ref.startsWith(REF_PREFIX)) {
+      // The user's rules are numbered; a hop is named apart, so neither overwrites the other.
+      throw new IllegalArgumentException(ServerRule.INVALID);
+    }
+    return new ServerRule(ref,
+                          name,
+                          true,
+                          matchAll,
+                          conditions,
+                          List.of(new ServerRule.Action(ServerRule.TAG, null, null, keyword)),
+                          stop);
+  }
 }
