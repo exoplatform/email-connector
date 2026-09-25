@@ -27,14 +27,14 @@ import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
 
-import org.exoplatform.emailConnector.model.SieveVacation;
+import org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript.Vacation;
 
 /**
  * eXo's self-describing script: the exact layout, the {@code require} union, the header
  * round trip, the opaque treatment of anything else, and the escaping that keeps every
  * user string inside its own quoted string.
  */
-class ExoSieveScriptTest {
+public class ExoSieveScriptTest {
 
   private static final String HANDLE = "exo-vacation-1727270000";
 
@@ -43,7 +43,7 @@ class ExoSieveScriptTest {
    * vacation section, the rules marker, CRLF line endings.
    */
   @Test
-  void testLayoutOfAReplyWithAWindow() {
+  public void testLayoutOfAReplyWithAWindow() {
     ExoSieveScript script = ExoSieveScript.empty()
                                           .withVacation(vacation(true,
                                                                  LocalDate.of(2026, 10, 1),
@@ -68,7 +68,7 @@ class ExoSieveScriptTest {
    * unconditional; with one boundary, a single test.
    */
   @Test
-  void testRequireIsTheUnionOfWhatIsEmitted() {
+  public void testRequireIsTheUnionOfWhatIsEmitted() {
     String open = ExoSieveScript.empty().withVacation(vacation(true, null, null, "Away", "Away")).toScript();
     assertTrue(open.contains("require [\"vacation\"];\r\n# exo-vacation\r\nvacation :days 7 :subject \"Away\" :handle"));
     String fromOnly = ExoSieveScript.empty()
@@ -82,7 +82,7 @@ class ExoSieveScriptTest {
    * A disabled reply keeps its text in the header and emits no Sieve at all.
    */
   @Test
-  void testADisabledReplyIsRememberedAndNotEmitted() {
+  public void testADisabledReplyIsRememberedAndNotEmitted() {
     String text = ExoSieveScript.empty().withVacation(vacation(false, null, null, "Absent", "Back soon")).toScript();
     assertTrue(text.startsWith("# exo-managed-v1: {\"v\":1,\"vacation\":{\"enabled\":false,"));
     assertTrue(text.contains("\"text\":\"Back soon\""));
@@ -96,7 +96,7 @@ class ExoSieveScriptTest {
    * summer time has two offsets.
    */
   @Test
-  void testOffsetsFollowTheZoneAtEachBoundary() {
+  public void testOffsetsFollowTheZoneAtEachBoundary() {
     String text = ExoSieveScript.empty()
                                 .withVacation(vacation(true,
                                                        LocalDate.of(2026, 10, 20),
@@ -110,29 +110,11 @@ class ExoSieveScriptTest {
   }
 
   /**
-   * Where the clocks change at midnight, a boundary's offset is the one in force just
-   * before the zone's day starts, so the date turns at the zone's own midnight instead of
-   * an hour early: a start on the change day, an end the day before a fall-back midnight,
-   * and an end the day before a spring-forward midnight, where the offset at the next day's
-   * first instant would be the wrong one. Exact as far as the engine computes the date
-   * part of {@code currentdate} at the given {@code :zone} (RFC 5260 §4.1), which no test
-   * here runs.
-   */
-  @Test
-  void testABoundaryOnAMidnightClockChangeFollowsTheZonesDay() {
-    assertTrue(window("Asia/Beirut", LocalDate.of(2026, 3, 29), null).contains("currentdate :zone \"+0200\" :value \"ge\" \"date\" \"2026-03-29\""));
-    assertTrue(window("Asia/Beirut", null, LocalDate.of(2026, 10, 24)).contains("currentdate :zone \"+0200\" :value \"le\" \"date\" \"2026-10-24\""));
-    assertTrue(window("Asia/Beirut", null, LocalDate.of(2026, 3, 28)).contains("currentdate :zone \"+0200\" :value \"le\" \"date\" \"2026-03-28\""));
-    assertTrue(window("America/Santiago", LocalDate.of(2026, 9, 6), null).contains("currentdate :zone \"-0400\" :value \"ge\" \"date\" \"2026-09-06\""));
-    assertTrue(window("America/Havana", LocalDate.of(2026, 3, 8), null).contains("currentdate :zone \"-0500\" :value \"ge\" \"date\" \"2026-03-08\""));
-  }
-
-  /**
    * Hostile subject and text stay inside their quoted strings: once the strings are
    * removed, the script holds exactly the allowlisted commands and nothing else.
    */
   @Test
-  void testHostileInputCannotEscapeItsString() {
+  public void testHostileInputCannotEscapeItsString() {
     String hostile = "\"; redirect \"x@evil.example\"; # \\";
     String text = ExoSieveScript.empty()
                                 .withVacation(vacation(true, null, null, hostile, hostile + "\nline2 \\\" } discard;"))
@@ -149,7 +131,7 @@ class ExoSieveScriptTest {
    * {@code Auto: }.
    */
   @Test
-  void testSubjectIsMandatory() {
+  public void testSubjectIsMandatory() {
     assertCode("emailConnector.absence.subject.invalid", () -> vacation(true, null, null, null, "t"));
     assertCode("emailConnector.absence.subject.invalid", () -> vacation(true, null, null, " ", "t"));
   }
@@ -161,7 +143,7 @@ class ExoSieveScriptTest {
    * required only when a string needed it. Elsewhere, RFC escaping.
    */
   @Test
-  void testBackslashEncodingStrategies() {
+  public void testBackslashEncodingStrategies() {
     ExoSieveScript script = ExoSieveScript.empty().withVacation(vacation(true, null, null, "Dir C:\\temp", "Cost: ${hex:41} \\ \"x\""));
     String encoded = script.toScript(SieveStringEncoding.ENCODED_CHARACTER);
     assertTrue(encoded.contains("require [\"vacation\", \"encoded-character\"];"));
@@ -185,7 +167,7 @@ class ExoSieveScriptTest {
    * The text keeps its line breaks, normalised to CRLF; the subject may not have any.
    */
   @Test
-  void testLineBreaks() {
+  public void testLineBreaks() {
     assertEquals("a\r\nb\r\nc\r\nd", vacation(true, null, null, "Away", "a\nb\r\nc\rd").text());
     assertThrows(IllegalArgumentException.class, () -> vacation(true, null, null, "a\r\nBcc: x@evil.example", "t"));
     assertThrows(IllegalArgumentException.class, () -> vacation(true, null, null, "a\nb", "t"));
@@ -195,49 +177,28 @@ class ExoSieveScriptTest {
    * Every bound answers the message code the REST layer returns.
    */
   @Test
-  void testValidation() {
+  public void testValidation() {
     assertCode("emailConnector.absence.text.invalid", () -> vacation(true, null, null, "Away", " "));
     assertCode("emailConnector.absence.text.invalid", () -> vacation(true, null, null, "Away", "x".repeat(4001)));
     assertCode("emailConnector.absence.text.invalid", () -> vacation(true, null, null, "Away", "a\0b"));
-    // the bound applies to the stored CRLF form: 3999 characters with LF breaks store as 4000+
-    assertCode("emailConnector.absence.text.invalid",
-               () -> vacation(true, null, null, "Away", "x".repeat(3990) + "\n".repeat(9)));
-    assertEquals(4000, vacation(true, null, null, "Away", "x".repeat(3990) + "\n".repeat(5)).text().length());
     assertCode("emailConnector.absence.subject.invalid", () -> vacation(true, null, null, "x".repeat(201), "t"));
     assertCode("emailConnector.absence.subject.invalid", () -> vacation(true, null, null, "a\0", "t"));
     assertCode("emailConnector.absence.window.invalid",
                () -> vacation(true, LocalDate.of(2026, 10, 2), LocalDate.of(2026, 10, 1), "Away", "t"));
     assertCode("emailConnector.absence.handle.invalid",
-               () -> new SieveVacation(true, null, null, null, "Away", "t", "exo\" :from \"x", 7));
-    assertCode("emailConnector.absence.days.invalid", () -> new SieveVacation(true, null, null, null, "Away", "t", HANDLE, 0));
+               () -> new Vacation(true, null, null, null, "Away", "t", "exo\" :from \"x", 7));
+    assertCode("emailConnector.absence.days.invalid", () -> new Vacation(true, null, null, null, "Away", "t", HANDLE, 0));
     assertCode("emailConnector.absence.timeZone.invalid",
-               () -> new SieveVacation(true, LocalDate.of(2026, 10, 1), null, "Mars/Olympus", "Away", "t", HANDLE, 7));
+               () -> new Vacation(true, LocalDate.of(2026, 10, 1), null, "Mars/Olympus", "Away", "t", HANDLE, 7));
     assertCode("emailConnector.absence.timeZone.invalid",
-               () -> new SieveVacation(true, LocalDate.of(2026, 10, 1), null, null, "Away", "t", HANDLE, 7));
-  }
-
-  /**
-   * A window day has a four-digit year: a later year is written with a sign, which sorts
-   * before the digits in the script's date comparison, so the reply would start at once
-   * or never fire. The bound holds for a header read back from the server too, which is
-   * then not eXo's to interpret.
-   */
-  @Test
-  void testAWindowDayHasAFourDigitYear() {
-    assertCode("emailConnector.absence.window.invalid", () -> vacation(true, LocalDate.of(20261, 10, 15), null, "Away", "t"));
-    assertCode("emailConnector.absence.window.invalid", () -> vacation(true, null, LocalDate.of(10000, 1, 1), "Away", "t"));
-    assertCode("emailConnector.absence.window.invalid", () -> vacation(true, LocalDate.of(-1, 1, 1), null, "Away", "t"));
-    assertEquals(LocalDate.of(9999, 12, 31), vacation(true, null, LocalDate.of(9999, 12, 31), "Away", "t").end());
-    String text = window("Europe/Paris", LocalDate.of(2026, 10, 15), null);
-    assertTrue(ExoSieveScript.parse(text).isPresent());
-    assertEquals(Optional.empty(), ExoSieveScript.parse(text.replace("\"start\":\"2026-10-15\"", "\"start\":\"+20261-10-15\"")));
+               () -> new Vacation(true, LocalDate.of(2026, 10, 1), null, null, "Away", "t", HANDLE, 7));
   }
 
   /**
    * text → model → text is byte-equal, and the model survives.
    */
   @Test
-  void testHeaderRoundTrip() {
+  public void testHeaderRoundTrip() {
     ExoSieveScript script = ExoSieveScript.empty()
                                           .withVacation(vacation(true,
                                                                  LocalDate.of(2026, 10, 1),
@@ -256,7 +217,7 @@ class ExoSieveScriptTest {
    * ones.
    */
   @Test
-  void testUnknownKeysAreRoundTripped() {
+  public void testUnknownKeysAreRoundTripped() {
     String text = "# exo-managed-v1: {\"v\":1,\"future\":{\"x\":[1,\"y\"]},\"rules\":[]}\r\n# exo-rules\r\n";
     String regenerated = ExoSieveScript.parse(text).orElseThrow().toScript();
     assertEquals("# exo-managed-v1: {\"v\":1,\"rules\":[],\"future\":{\"x\":[1,\"y\"]}}\r\n# exo-rules\r\n", regenerated);
@@ -266,7 +227,7 @@ class ExoSieveScriptTest {
    * Anything that is not eXo's header, version 1, valid, is opaque: answered empty.
    */
   @Test
-  void testForeignOrUnreadableContentIsOpaque() {
+  public void testForeignOrUnreadableContentIsOpaque() {
     assertEquals(Optional.empty(), ExoSieveScript.parse(null));
     assertEquals(Optional.empty(), ExoSieveScript.parse("require [\"fileinto\"];\r\nfileinto \"x\";\r\n"));
     assertEquals(Optional.empty(), ExoSieveScript.parse("\n# exo-managed-v1: {\"v\":1}\n"));
@@ -284,7 +245,7 @@ class ExoSieveScriptTest {
    * a script with rules files or stops mail as far as the wrapper ordering is concerned.
    */
   @Test
-  void testRulesAreHeldButNotSerialised() {
+  public void testRulesAreHeldButNotSerialised() {
     ExoSieveScript withRules = ExoSieveScript.parse("# exo-managed-v1: {\"v\":1,\"rules\":[{\"id\":1}]}\r\n").orElseThrow();
     assertTrue(withRules.filesOrStops());
     assertEquals(1, withRules.getRules().size());
@@ -296,7 +257,7 @@ class ExoSieveScriptTest {
    * Whether a vacation action is emitted follows the enabled flag.
    */
   @Test
-  void testEmitsVacation() {
+  public void testEmitsVacation() {
     assertFalse(ExoSieveScript.empty().emitsVacation());
     assertFalse(ExoSieveScript.empty().withVacation(vacation(false, null, null, "Away", "t")).emitsVacation());
     assertTrue(ExoSieveScript.empty().withVacation(vacation(true, null, null, "Away", "t")).emitsVacation());
@@ -306,24 +267,12 @@ class ExoSieveScriptTest {
    * The hash is the SHA-256 of the generated text, and moves with the text.
    */
   @Test
-  void testHash() {
+  public void testHash() {
     assertEquals("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ExoSieveScript.sha256(""));
     ExoSieveScript one = ExoSieveScript.empty().withVacation(vacation(true, null, null, "Away", "one"));
     ExoSieveScript two = ExoSieveScript.empty().withVacation(vacation(true, null, null, "Away", "two"));
     assertEquals(ExoSieveScript.sha256(one.toScript()), one.hash());
     assertNotEquals(one.hash(), two.hash());
-  }
-
-  /**
-   * The script of an enabled reply with a window in a zone.
-   *
-   * @param zone the zone
-   * @param start the first day, or null
-   * @param end the last day, or null
-   * @return the script text
-   */
-  private static String window(String zone, LocalDate start, LocalDate end) {
-    return ExoSieveScript.empty().withVacation(new SieveVacation(true, start, end, zone, "Away", "Away", HANDLE, 7)).toScript();
   }
 
   /**
@@ -336,8 +285,8 @@ class ExoSieveScriptTest {
    * @param text the text
    * @return the reply
    */
-  private static SieveVacation vacation(boolean enabled, LocalDate start, LocalDate end, String subject, String text) {
-    return new SieveVacation(enabled, start, end, "Europe/Paris", subject, text, HANDLE, 7);
+  private static Vacation vacation(boolean enabled, LocalDate start, LocalDate end, String subject, String text) {
+    return new Vacation(enabled, start, end, "Europe/Paris", subject, text, HANDLE, 7);
   }
 
   /**

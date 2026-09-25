@@ -25,25 +25,24 @@ import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
-import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
-import org.exoplatform.emailConnector.model.ServerRuleElementSupport;
+import org.exoplatform.emailConnector.model.ServerRuleCapabilities.VocabularySource;
 
 /**
  * Capabilities derived from the lines a server re-issues after STARTTLS.
  */
-class SieveCapabilityDerivationTest {
+public class SieveCapabilityDerivationTest {
 
   /**
    * Stalwart v0.11.8's line supports the reply, its window and every server rule
    * element Sieve can express; attachments, HTML and forwarding writes are not offered.
    */
   @Test
-  void testStalwartLine() {
+  public void testStalwartLine() {
     ServerRuleCapabilities capabilities = SieveCapabilityDerivation.derive(caps("PLAIN OAUTHBEARER",
                                                                                 FakeManageSieveServer.STALWART_SIEVE));
     assertTrue(capabilities.supported());
-    assertEquals(ServerRuleVocabularySource.DYNAMIC, capabilities.vocabularySource());
+    assertEquals(VocabularySource.DYNAMIC, capabilities.vocabularySource());
     assertFalse(capabilities.readsForeignRules());
     for (String element : List.of(ServerRuleCapabilities.VACATION,
                                   ServerRuleCapabilities.VACATION_DATE_WINDOW,
@@ -61,14 +60,14 @@ class SieveCapabilityDerivationTest {
                                   ServerRuleCapabilities.ATTACHMENT_NAME)) {
       assertFalse(capabilities.isSupported(element), element);
     }
-    assertEquals(ServerRuleCapabilities.ALL_ELEMENTS.size(), capabilities.elements().size());
+    assertEquals(ServerRuleCapabilities.ELEMENTS.size(), capabilities.elements().size());
   }
 
   /**
    * Each element follows its own extension, and says which one is missing.
    */
   @Test
-  void testElementsFollowTheirExtension() {
+  public void testElementsFollowTheirExtension() {
     ServerRuleCapabilities capabilities = SieveCapabilityDerivation.derive(caps("PLAIN", "vacation date fileinto"));
     assertTrue(capabilities.isSupported(ServerRuleCapabilities.VACATION));
     assertFalse(capabilities.isSupported(ServerRuleCapabilities.VACATION_DATE_WINDOW));
@@ -86,7 +85,7 @@ class SieveCapabilityDerivationTest {
    * Without PLAIN after TLS nothing is supported.
    */
   @Test
-  void testNoPlainNothingSupported() {
+  public void testNoPlainNothingSupported() {
     ServerRuleCapabilities capabilities = SieveCapabilityDerivation.derive(caps("OAUTHBEARER",
                                                                                 FakeManageSieveServer.STALWART_SIEVE));
     assertFalse(capabilities.supported());
@@ -100,16 +99,16 @@ class SieveCapabilityDerivationTest {
    * account-level conflict flag is set by the probe without touching the rest.
    */
   @Test
-  void testSharedRecordHelpers() {
+  public void testSharedRecordHelpers() {
     ServerRuleCapabilities none = ServerRuleCapabilities.unsupported("emailConnector.rules.unsupported.noEngine",
-                                                                     ServerRuleVocabularySource.NONE);
-    assertEquals(ServerRuleCapabilities.ALL_ELEMENTS, List.copyOf(none.elements().keySet()));
-    assertTrue(none.elements().values().stream().noneMatch(ServerRuleElementSupport::supported));
+                                                                     VocabularySource.NONE);
+    assertEquals(ServerRuleCapabilities.ELEMENTS, List.copyOf(none.elements().keySet()));
+    assertTrue(none.elements().values().stream().noneMatch(ServerRuleCapabilities.ElementSupport::supported));
     ServerRuleCapabilities stalwart = SieveCapabilityDerivation.derive(caps("PLAIN", FakeManageSieveServer.STALWART_SIEVE));
     ServerRuleCapabilities conflicting = stalwart.withPublishConflict(true);
     assertTrue(conflicting.publishConflict());
     assertEquals(stalwart.elements(), conflicting.elements());
-    assertFalse(new ServerRuleCapabilities(false, "x", false, false, ServerRuleVocabularySource.DYNAMIC, stalwart.elements())
+    assertFalse(new ServerRuleCapabilities(false, "x", false, false, VocabularySource.DYNAMIC, stalwart.elements())
                                                                                                                   .isSupported(ServerRuleCapabilities.VACATION));
     assertFalse(stalwart.isSupported("unknownElement"));
   }
@@ -118,7 +117,7 @@ class SieveCapabilityDerivationTest {
    * The capability lines are parsed case-insensitively into mechanisms and extensions.
    */
   @Test
-  void testCapabilityLinesParse() {
+  public void testCapabilityLinesParse() {
     ManageSieveCapabilities capabilities = ManageSieveCapabilities.fromLines(List.of(List.of("IMPLEMENTATION", "Stalwart"),
                                                                                      List.of("sasl", "plain OAuthBearer"),
                                                                                      List.of("SIEVE", "Vacation  Date"),

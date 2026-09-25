@@ -34,8 +34,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 
 import javax.mail.PasswordAuthentication;
 import javax.net.ssl.KeyManagerFactory;
@@ -90,9 +88,6 @@ public final class FakeManageSieveServer implements AutoCloseable {
       + "include index mailbox mailboxid mboxmetadata mime reject regex relational replace servermetadata "
       + "spamtest spamtestplus special-use subaddress vacation vacation-seconds variables virustest";
 
-  /** The receive buffer of a server that stops reading, in octets. */
-  private static final int     STALLED_RECEIVE_BUFFER = 4096;
-
   private final ServerSocket   serverSocket;
 
   private final SSLContext     tls;
@@ -128,13 +123,6 @@ public final class FakeManageSieveServer implements AutoCloseable {
   private volatile String      rawGetScriptAnswer;
 
   private volatile long        trickleMillis;
-
-  private volatile long        handshakeTrickleMillis;
-
-  private volatile boolean     stopReadingAfterAuthentication;
-
-  /** Released when the server stops, ending every paced wait at once. */
-  private final CountDownLatch stopped           = new CountDownLatch(1);
 
   private int                  authentications;
 
@@ -320,32 +308,6 @@ public final class FakeManageSieveServer implements AutoCloseable {
   }
 
   /**
-   * Makes the server answer {@code STARTTLS} with OK, wait for the first octet of the
-   * client's ClientHello, then, instead of a TLS handshake, send the header of a 16 KiB
-   * handshake record followed by its body one octet per interval, forever: each of the
-   * client's handshake reads succeeds, the record never completes.
-   *
-   * @param intervalMillis the pause between two octets
-   * @return this server
-   */
-  public FakeManageSieveServer trickleHandshake(long intervalMillis) {
-    this.handshakeTrickleMillis = intervalMillis;
-    return this;
-  }
-
-  /**
-   * Makes the server stop reading once it has accepted the credentials, its receive
-   * buffer cut to a few kilobytes: a large enough write from the client then blocks, as
-   * against a server that stalled.
-   *
-   * @return this server
-   */
-  public FakeManageSieveServer stopReadingAfterAuthentication() {
-    this.stopReadingAfterAuthentication = true;
-    return this;
-  }
-
-  /**
    * Makes a command answer a fixed line instead of executing.
    *
    * @param command the command, e.g. {@code CHECKSCRIPT}
@@ -425,7 +387,6 @@ public final class FakeManageSieveServer implements AutoCloseable {
    */
   @Override
   public void close() {
-    stopped.countDown();
     try {
       serverSocket.close();
     } catch (IOException e) {
@@ -449,9 +410,6 @@ public final class FakeManageSieveServer implements AutoCloseable {
     while (!serverSocket.isClosed()) {
       try {
         Socket socket = serverSocket.accept();
-        if (stopReadingAfterAuthentication) {
-          socket.setReceiveBufferSize(STALLED_RECEIVE_BUFFER);
-        }
         synchronized (connections) {
           connections.add(socket);
         }
@@ -465,109 +423,83 @@ public final class FakeManageSieveServer implements AutoCloseable {
   }
 
   /**
-   * Serves one connection, closing it whichever way the conversation ends.
+   * Serves one connection.
    *
    * @param plain the accepted socket
    */
   private void serve(Socket plain) {
-    try (Connection connection = new Connection(plain)) {
-      converse(connection);
+    Socket socket = plain;
+    try {
+      if (silent) {
+        plain.getInputStream().read();
+        return;
+      }
+      InputStream in = new BufferedInputStream(socket.getInputStream());
+      OutputStream out = socket.getOutputStream();
+      boolean secure = false;
+      boolean authenticated = false;
+      send(out, capabilities(false) + "OK \"Fake ManageSieve ready\"\r\n");
+      while (true) {
+        List<String> args = readCommand(in);
+        if (args.isEmpty()) {
+          continue;
+        }
+        String verb = args.get(0).toUpperCase(Locale.ROOT);
+        record(verb, args);
+        if ("GETSCRIPT".equals(verb) && trickleMillis > 0) {
+          send(out, "{1000000}\r\n");
+          while (true) {
+            send(out, "x");
+            Thread.sleep(trickleMillis);
+          }
+        }
+        String refusal = refusal(verb);
+        if (refusal != null) {
+          send(out, refusal + "\r\n");
+          continue;
+        }
+        switch (verb) {
+        case "STARTTLS" -> {
+          if (secure || !offerStarttls) {
+            send(out, "NO \"STARTTLS not available\"\r\n");
+            continue;
+          }
+          send(out, "OK \"Begin TLS negotiation now\"\r\n" + (injectAfterStarttls ? "OK \"injected\"\r\n" : ""));
+          SSLSocket upgraded = (SSLSocket) tls.getSocketFactory().createSocket(plain, null, plain.getPort(), false);
+          upgraded.setUseClientMode(false);
+          upgraded.startHandshake();
+          socket = upgraded;
+          synchronized (connections) {
+            connections.add(upgraded);
+          }
+          in = new BufferedInputStream(socket.getInputStream());
+          out = socket.getOutputStream();
+          secure = true;
+          if (reissueAfterTls) {
+            send(out, capabilities(true) + "OK \"TLS negotiation successful\"\r\n");
+          }
+        }
+        case "CAPABILITY" -> send(out, capabilities(secure) + "OK\r\n");
+        case "AUTHENTICATE" -> {
+          authenticated = secure && authenticate(args);
+          send(out, authenticated ? "OK \"Authenticated\"\r\n" : "NO \"Authentication failed\"\r\n");
+        }
+        case "LOGOUT" -> {
+          send(out, "OK \"Bye\"\r\n");
+          return;
+        }
+        default -> send(out, authenticated ? execute(verb, args) : "NO \"Authenticate first\"\r\n");
+        }
+      }
     } catch (IOException e) {
       // The client closed the connection or broke the protocol.
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-    }
-  }
-
-  /**
-   * Holds the conversation of one connection, upgrading it to TLS on {@code STARTTLS}.
-   *
-   * @param connection the connection, whose current socket changes on the upgrade
-   * @throws IOException when the client closes the connection or breaks the protocol
-   * @throws InterruptedException when a trickled answer is interrupted
-   */
-  private void converse(Connection connection) throws IOException, InterruptedException {
-    Socket plain = connection.plain;
-    if (silent) {
-      plain.getInputStream().read();
-      return;
-    }
-    InputStream in = new BufferedInputStream(plain.getInputStream());
-    OutputStream out = plain.getOutputStream();
-    boolean secure = false;
-    boolean authenticated = false;
-    send(out, capabilities(false) + "OK \"Fake ManageSieve ready\"\r\n");
-    while (true) {
-      List<String> args = readCommand(in);
-      if (args.isEmpty()) {
-        continue;
-      }
-      String verb = args.get(0).toUpperCase(Locale.ROOT);
-      recordCommand(verb, args);
-      if ("GETSCRIPT".equals(verb) && trickleMillis > 0) {
-        send(out, "{1000000}\r\n");
-        while (true) {
-          send(out, "x");
-          if (stopped.await(trickleMillis, TimeUnit.MILLISECONDS)) {
-            return;
-          }
-        }
-      }
-      String refusal = refusal(verb);
-      if (refusal != null) {
-        send(out, refusal + "\r\n");
-        continue;
-      }
-      switch (verb) {
-      case "STARTTLS" -> {
-        if (secure || !offerStarttls) {
-          send(out, "NO \"STARTTLS not available\"\r\n");
-          continue;
-        }
-        send(out, "OK \"Begin TLS negotiation now\"\r\n" + (injectAfterStarttls ? "OK \"injected\"\r\n" : ""));
-        if (handshakeTrickleMillis > 0) {
-          // The client sends its ClientHello only once it has checked that nothing came
-          // after the OK: a record header sent before it would meet that check instead.
-          if (in.read() < 0) {
-            return;
-          }
-          out.write(new byte[] { 0x16, 0x03, 0x03, 0x40, 0x00 });
-          while (true) {
-            out.write(0);
-            out.flush();
-            if (stopped.await(handshakeTrickleMillis, TimeUnit.MILLISECONDS)) {
-              return;
-            }
-          }
-        }
-        SSLSocket upgraded = (SSLSocket) tls.getSocketFactory().createSocket(plain, null, plain.getPort(), false);
-        upgraded.setUseClientMode(false);
-        connection.current = upgraded;
-        upgraded.startHandshake();
-        synchronized (connections) {
-          connections.add(upgraded);
-        }
-        in = new BufferedInputStream(upgraded.getInputStream());
-        out = upgraded.getOutputStream();
-        secure = true;
-        if (reissueAfterTls) {
-          send(out, capabilities(true) + "OK \"TLS negotiation successful\"\r\n");
-        }
-      }
-      case "CAPABILITY" -> send(out, capabilities(secure) + "OK\r\n");
-      case "AUTHENTICATE" -> {
-        authenticated = secure && authenticate(args);
-        send(out, authenticated ? "OK \"Authenticated\"\r\n" : "NO \"Authentication failed\"\r\n");
-        if (authenticated && stopReadingAfterAuthentication) {
-          stopped.await();
-          return;
-        }
-      }
-      case "LOGOUT" -> {
-        send(out, "OK \"Bye\"\r\n");
-        return;
-      }
-      default -> send(out, authenticated ? execute(verb, args) : "NO \"Authenticate first\"\r\n");
+    } finally {
+      try {
+        socket.close();
+      } catch (IOException e) {
+        // Closing anyway.
       }
     }
   }
@@ -661,7 +593,7 @@ public final class FakeManageSieveServer implements AutoCloseable {
    * @param verb the verb
    * @param args the arguments, verb included
    */
-  private synchronized void recordCommand(String verb, List<String> args) {
+  private synchronized void record(String verb, List<String> args) {
     if ("AUTHENTICATE".equals(verb)) {
       commands.add("AUTHENTICATE " + (args.size() > 1 ? args.get(1) : "") + " <redacted>");
     } else {
@@ -804,42 +736,5 @@ public final class FakeManageSieveServer implements AutoCloseable {
       store.load(in, KEYSTORE_PASSWORD.toCharArray());
     }
     return store;
-  }
-
-  /**
-   * One accepted connection: the clear socket and, after {@code STARTTLS}, the TLS socket
-   * layered on it without owning it.
-   */
-  private static final class Connection implements AutoCloseable {
-
-    /** The accepted clear socket. */
-    private final Socket plain;
-
-    /** The socket the conversation currently talks over. */
-    private Socket       current;
-
-    /**
-     * Wraps an accepted socket.
-     *
-     * @param plain the accepted clear socket
-     */
-    private Connection(Socket plain) {
-      this.plain = plain;
-      this.current = plain;
-    }
-
-    /**
-     * Closes the TLS layer, when there is one, then the clear socket under it.
-     *
-     * @throws IOException when a socket cannot be closed
-     */
-    @Override
-    public void close() throws IOException {
-      try (Socket clear = plain) {
-        if (current != clear) {
-          current.close();
-        }
-      }
-    }
   }
 }
