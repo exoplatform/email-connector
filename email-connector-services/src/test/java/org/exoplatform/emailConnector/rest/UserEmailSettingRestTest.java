@@ -334,7 +334,7 @@ public class UserEmailSettingRestTest {
 
   /**
    * Inviting hands the grantee and the preset to the service under the caller's name;
-   * the service's refusals map to 400 (a message code), 401, and 502 (the mail server
+   * the service's refusals map to 400 (a message code), 403, and 502 (the mail server
    * would not).
    */
   @Test
@@ -371,7 +371,7 @@ public class UserEmailSettingRestTest {
     mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations").with(testSimpleUser())
                                                                   .content(asJsonString(new DelegationInviteRequest("dave", DelegationPreset.READER)))
                                                                   .contentType(MediaType.APPLICATION_JSON))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
   }
 
   /**
@@ -493,7 +493,7 @@ public class UserEmailSettingRestTest {
     assertSendModeAnswer(8L, 400, EmailDelegationService.NOT_CHANGEABLE_MESSAGE);
     assertSendModeAnswer(9L, 502, MailboxAclException.UNREACHABLE);
     assertSendModeAnswer(10L, 404, null);
-    assertSendModeAnswer(11L, 401, null);
+    assertSendModeAnswer(11L, 403, null);
 
     DelegationGrantee bob = DelegationGrantee.of(MailboxAce.ofLetters("bob@acme.com", MailboxRights.of("lrswite")), "bob", consented)
                                              .withConsentContext("Bob Martin", true);
