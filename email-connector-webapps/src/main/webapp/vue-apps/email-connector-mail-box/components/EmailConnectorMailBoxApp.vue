@@ -56,6 +56,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <!-- The settings' automatic reply drawer, reused whole, opened by the mailbox band's
          Edit (EXO-90642); registered by the user-setting bundle, like the drawers above. -->
     <email-connector-user-setting-absence-drawer />
+    <!-- The settings' filters drawer, reused whole, opened by a mail's "Create a filter
+         from this mail" with the rule the mail suggests (EXO-90654); registered by the
+         user-setting bundle, like the drawers above. -->
+    <email-connector-user-setting-filters-drawer />
     <email-connector-mail-box-move-to-folder-drawer />
     <email-connector-mail-box-drawer-attachments-drawer />
     <email-connector-mail-box-drawer-list-item-action-menu-drawer />
