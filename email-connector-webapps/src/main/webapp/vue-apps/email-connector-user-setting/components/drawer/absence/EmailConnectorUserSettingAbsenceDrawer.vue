@@ -19,17 +19,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        by the root event OPEN_ABSENCE_DRAWER_EVENT from the Settings row and from the
        mailbox band, since both apps mount it at their root. It reads the server on every
        opening -- eXo keeps no copy of the text -- and holds the whole form, the state the
-       server is in with its one action, and Save / Cancel in the footer. -->
+       server is in with its one action, and Save / Cancel in the footer. The content is
+       not bound to the drawer's visibility, so it stays on screen while the drawer slides
+       out after a save; open() resets it for the next opening. -->
   <exo-drawer
     id="userSettingAbsenceDrawer"
     ref="absenceDrawer"
     v-model="drawer"
-    right
-    @closed="reset">
+    right>
     <template #title>
       <span>{{ $t('UserSettings.emailConnector.absence.title') }}</span>
     </template>
-    <template v-if="drawer" #content>
+    <template #content>
       <div class="pa-4">
         <v-progress-linear
           v-if="loading && !absence"
@@ -38,11 +39,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           class="mb-4" />
         <div
           v-else-if="!absence"
-          class="text-body-2 error--text"
+          class="error--text"
           role="alert">
           {{ error || $t('UserSettings.emailConnector.absence.error') }}
         </div>
-        <div v-else-if="!supported" class="text-body-2">
+        <div v-else-if="!supported" class="text-subtitle">
           {{ $t('UserSettings.emailConnector.absence.row.unsupported') }}
         </div>
         <template v-else>
@@ -149,7 +150,9 @@ export default {
   },
   methods: {
     /**
-     * Opens the drawer on the reply as the server holds it right now.
+     * Opens the drawer on the reply as the server holds it right now; what the previous
+     * opening left (a refusal, a typed value kept for Re-publish) is forgotten here rather
+     * than on closing, so the drawer never empties while it slides out.
      *
      * @returns {void}
      */
@@ -157,6 +160,7 @@ export default {
       this.absence = null;
       this.error = null;
       this.lastValue = null;
+      this.saving = false;
       this.canSave = false;
       this.formKey++;
       this.drawer = true;
@@ -169,16 +173,6 @@ export default {
      */
     close() {
       this.drawer = false;
-    },
-    /**
-     * Forgets the last opening once the drawer is closed.
-     *
-     * @returns {void}
-     */
-    reset() {
-      this.error = null;
-      this.lastValue = null;
-      this.saving = false;
     },
     /**
      * The footer's Save: the form hands its value back through its save event.
