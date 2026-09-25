@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -29,6 +30,7 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Clock;
@@ -57,6 +59,8 @@ import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.model.AbsenceSettings;
 import org.exoplatform.emailConnector.model.AbsenceStatus;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.ForwardingSetting;
+import org.exoplatform.emailConnector.model.ForwardingState;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -145,6 +149,7 @@ public class EmailAbsenceServiceTest {
     System.clearProperty(EmailAbsenceService.ENABLED_PROPERTY);
     System.clearProperty(EmailAbsenceService.DAYS_PROPERTY);
     System.clearProperty(EmailAbsenceService.TTL_PROPERTY);
+    System.clearProperty(EmailAbsenceService.FORWARDING_DISPLAY_PROPERTY);
   }
 
   /**
@@ -417,6 +422,105 @@ public class EmailAbsenceServiceTest {
   }
 
   /**
+   * The section carries the mailbox's forward as the engine reads it, with the
+   * connector's webmail to manage it; reading the section writes nothing on the server.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheForwardIsShownReadOnly() throws Exception {
+    session.connector().setWebmailUrl("https://webmail.example.org/");
+    when(engine.probe(session)).thenReturn(supportedWithForwarding());
+    when(engine.readVacation(eq(session), any())).thenReturn(ServerVacation.none());
+    when(engine.readForwarding(session)).thenReturn(ForwardingSetting.mayForwardByScript("roundcube"));
+    ForwardingSetting forwarding = service.getAbsence(USERNAME, null).getForwarding();
+    assertEquals(ForwardingState.MAY_FORWARD_BY_SCRIPT, forwarding.state());
+    assertEquals("roundcube", forwarding.scriptName());
+    assertEquals("https://webmail.example.org/", forwarding.manageUrl());
+    verify(engine).probe(session);
+    verify(engine).readVacation(eq(session), any());
+    verify(engine).readForwarding(session);
+    verify(engine).getName();
+    verifyNoMoreInteractions(engine);
+  }
+
+  /**
+   * A view that does not show the forward asks for the section without it: the forward
+   * is not read.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheForwardIsReadOnlyWhenAskedFor() throws Exception {
+    when(engine.probe(session)).thenReturn(supportedWithForwarding());
+    when(engine.readVacation(eq(session), any())).thenReturn(ServerVacation.none());
+    assertNull(service.getAbsence(USERNAME, null, null, false).getForwarding());
+    verify(engine, never()).readForwarding(any());
+  }
+
+  /**
+   * The display switched off reads nothing and shows nothing; switched on again, the
+   * forward is read.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheDisplayKillSwitchReadsNothing() throws Exception {
+    when(engine.probe(session)).thenReturn(supportedWithForwarding());
+    when(engine.readVacation(eq(session), any())).thenReturn(ServerVacation.none());
+    System.setProperty(EmailAbsenceService.FORWARDING_DISPLAY_PROPERTY, "false");
+    assertNull(service.getAbsence(USERNAME, null).getForwarding());
+    verify(engine, never()).readForwarding(any());
+    System.setProperty(EmailAbsenceService.FORWARDING_DISPLAY_PROPERTY, "true");
+    when(engine.readForwarding(session)).thenReturn(ForwardingSetting.none());
+    assertEquals(ForwardingState.NONE, service.getAbsence(USERNAME, null).getForwarding().state());
+    verify(engine).readForwarding(session);
+  }
+
+  /**
+   * A forward is only ever about the caller's own mailbox: from a share the section is
+   * refused before any forward is read.
+   */
+  @Test
+  public void testASharedMailboxReadsNoForward() {
+    assertEquals(EmailAbsenceService.OWN_MAILBOX_ONLY,
+                 assertThrows(IllegalAccessException.class, () -> service.getAbsence(USERNAME, 12L, null)).getMessage());
+    verifyNoInteractions(engine, emailDelegationService);
+  }
+
+  /**
+   * An engine that cannot read a forward is not asked; a forward that cannot be read is
+   * unknown, and the section is still served.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testAnUnreadableForwardIsUnknown() throws Exception {
+    when(engine.probe(session)).thenReturn(supported());
+    when(engine.readVacation(eq(session), any())).thenReturn(ServerVacation.none());
+    assertEquals(ForwardingState.UNKNOWN, service.getAbsence(USERNAME, null).getForwarding().state());
+    verify(engine, never()).readForwarding(any());
+    when(engine.probe(session)).thenReturn(supportedWithForwarding());
+    when(engine.readForwarding(session)).thenThrow(new ServerRuleUnavailableException(ServerRuleUnavailableException.SERVER_UNREACHABLE));
+    AbsenceSettings absence = service.getAbsence(USERNAME, null);
+    assertEquals(ForwardingState.UNKNOWN, absence.getForwarding().state());
+    assertEquals(VacationState.NONE, absence.getVacationState());
+  }
+
+  /**
+   * Only an http or https webmail is offered as the place to manage a forward.
+   */
+  @Test
+  public void testOnlyAWebAddressIsOffered() {
+    EmailConnector connector = new EmailConnector();
+    assertNull(EmailAbsenceService.webmailUrl(connector));
+    connector.setWebmailUrl("javascript:alert(1)");
+    assertNull(EmailAbsenceService.webmailUrl(connector));
+    connector.setWebmailUrl(" HTTP://mail.example.org ");
+    assertEquals("HTTP://mail.example.org", EmailAbsenceService.webmailUrl(connector));
+  }
+
+  /**
    * The capability answer for a server that holds replies.
    *
    * @return the capabilities
@@ -428,6 +532,23 @@ public class EmailAbsenceServiceTest {
                                       false,
                                       ServerRuleCapabilities.VocabularySource.DYNAMIC,
                                       Map.of(ServerRuleCapabilities.VACATION, ServerRuleCapabilities.ElementSupport.SUPPORTED));
+  }
+
+  /**
+   * The capability answer for a server that holds replies and reads a forward.
+   *
+   * @return the capabilities
+   */
+  private static ServerRuleCapabilities supportedWithForwarding() {
+    return new ServerRuleCapabilities(true,
+                                      null,
+                                      false,
+                                      false,
+                                      ServerRuleCapabilities.VocabularySource.DYNAMIC,
+                                      Map.of(ServerRuleCapabilities.VACATION,
+                                             ServerRuleCapabilities.ElementSupport.SUPPORTED,
+                                             ServerRuleCapabilities.FORWARDING_READ,
+                                             ServerRuleCapabilities.ElementSupport.SUPPORTED));
   }
 
   /**

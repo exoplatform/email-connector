@@ -893,13 +893,15 @@ public class UserEmailSettingRest {
   }
 
   /**
-   * The caller's automatic reply section, read live from their mail server.
+   * The caller's automatic reply section, read live from their mail server, with the
+   * mailbox's forward shown read-only.
    *
    * @param request the HTTP request, carrying the authenticated user
    * @param delegationId the share the request is made from; any value is refused, the
    *          automatic reply being a setting of the caller's own mailbox only
    * @param timeZone the caller's IANA zone, as the browser reports it; the days of a
    *          reply the server stores as instants are answered in it
+   * @param forwarding whether to read the mailbox's forward
    * @return the section
    */
   @GetMapping("/absence")
@@ -910,7 +912,11 @@ public class UserEmailSettingRest {
           + "(vacation, without any copy kept in eXo), and its state -- OWN, ELSEWHERE (another client's active script may send "
           + "its own reply; foreignScriptName names it), MODIFIED (eXo's script changed outside eXo), INACTIVE (the server no "
           + "longer runs eXo's script) or NONE. On BlueMind the server holds one reply per mailbox, whoever set it: it is "
-          + "answered OWN, its days in timeZone. Own mailbox only: with delegationId the answer is 403.")
+          + "answered OWN, its days in timeZone. forwarding says, read-only, whether the mailbox forwards mail: "
+          + "SERVER_FORWARD with its destinations and keepCopy (BlueMind), MAY_FORWARD_BY_SCRIPT naming another client's "
+          + "script that holds a redirect (Sieve; destinations are never read out of it), NONE, or UNKNOWN; manageUrl is the "
+          + "connector's webmail. eXo never writes a forward. forwarding is null, and nothing read, when "
+          + "email.connector.forwarding.display.enabled is false or the request says forwarding=false. Own mailbox only: with delegationId the answer is 403.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.absence.ownMailboxOnly), or the connector may not be used"),
       @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected"),
@@ -922,9 +928,13 @@ public class UserEmailSettingRest {
                                     @Parameter(description = "The caller's IANA time zone; the days of a reply the mail server "
                                         + "stores as instants (BlueMind) are answered in it")
                                     @RequestParam(name = "timeZone", required = false)
-                                    String timeZone) {
+                                    String timeZone,
+                                    @Parameter(description = "Whether to read the mailbox's forward; false answers forwarding "
+                                        + "null without asking the mail server for it")
+                                    @RequestParam(name = "forwarding", required = false, defaultValue = "true")
+                                    boolean forwarding) {
     try {
-      return emailAbsenceService.getAbsence(request.getRemoteUser(), delegationId, timeZone);
+      return emailAbsenceService.getAbsence(request.getRemoteUser(), delegationId, timeZone, forwarding);
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
