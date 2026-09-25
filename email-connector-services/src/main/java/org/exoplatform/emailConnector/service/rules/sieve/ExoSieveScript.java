@@ -19,7 +19,9 @@ package org.exoplatform.emailConnector.service.rules.sieve;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.DateTimeException;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -28,6 +30,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -35,8 +38,6 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.JsonNodeFactory;
 import tools.jackson.databind.node.ObjectNode;
-
-import org.exoplatform.emailConnector.model.SieveVacation;
 
 /**
  * eXo's own Sieve script, {@value #SCRIPT_NAME}: a self-describing model carried in the
@@ -105,7 +106,7 @@ public final class ExoSieveScript {
   private static final JsonMapper   JSON              = JsonMapper.builder().build();
 
   /** The automatic reply, or null when the script has none. */
-  private final SieveVacation       vacation;
+  private final Vacation            vacation;
 
   /** The rules, as the filters eXip writes them; kept opaque here. */
   private final ArrayNode           rules;
@@ -120,7 +121,7 @@ public final class ExoSieveScript {
    * @param rules the rules, possibly null for none
    * @param otherKeys the unknown top-level keys, possibly null
    */
-  private ExoSieveScript(SieveVacation vacation, ArrayNode rules, Map<String, JsonNode> otherKeys) {
+  private ExoSieveScript(Vacation vacation, ArrayNode rules, Map<String, JsonNode> otherKeys) {
     this.vacation = vacation;
     this.rules = rules == null ? JsonNodeFactory.instance.arrayNode() : rules.deepCopy();
     this.otherKeys = otherKeys == null ? Map.of() : new LinkedHashMap<>(otherKeys);
@@ -141,7 +142,7 @@ public final class ExoSieveScript {
    * @param newVacation the automatic reply, null to remove it from the model
    * @return the new script
    */
-  public ExoSieveScript withVacation(SieveVacation newVacation) {
+  public ExoSieveScript withVacation(Vacation newVacation) {
     return new ExoSieveScript(newVacation, rules, otherKeys);
   }
 
@@ -150,7 +151,7 @@ public final class ExoSieveScript {
    *
    * @return the reply, or empty
    */
-  public Optional<SieveVacation> getVacation() {
+  public Optional<Vacation> getVacation() {
     return Optional.ofNullable(vacation);
   }
 
@@ -199,13 +200,18 @@ public final class ExoSieveScript {
     if (text == null || !text.startsWith(HEADER_PREFIX)) {
       return Optional.empty();
     }
+    int end = text.indexOf('\n');
+    String json = text.substring(HEADER_PREFIX.length(), end < 0 ? text.length() : end);
+    if (json.endsWith("\r")) {
+      json = json.substring(0, json.length() - 1);
+    }
     try {
-      JsonNode root = JSON.readTree(headerJsonOf(text));
+      JsonNode root = JSON.readTree(json);
       if (!(root instanceof ObjectNode header) || !header.path(KEY_VERSION).isInt()
           || header.path(KEY_VERSION).intValue() != HEADER_VERSION) {
         return Optional.empty();
       }
-      SieveVacation vacation = null;
+      Vacation vacation = null;
       ArrayNode rules = null;
       Map<String, JsonNode> other = new LinkedHashMap<>();
       for (Map.Entry<String, JsonNode> entry : header.properties()) {
@@ -213,7 +219,7 @@ public final class ExoSieveScript {
         case KEY_VERSION -> {
           // Already checked.
         }
-        case KEY_VACATION -> vacation = entry.getValue().isNull() ? null : SieveVacation.fromJson(entry.getValue());
+        case KEY_VACATION -> vacation = entry.getValue().isNull() ? null : Vacation.fromJson(entry.getValue());
         case KEY_RULES -> {
           if (!(entry.getValue() instanceof ArrayNode array)) {
             return Optional.empty();
@@ -227,19 +233,6 @@ public final class ExoSieveScript {
     } catch (JacksonException | IllegalArgumentException e) {
       return Optional.empty();
     }
-  }
-
-  /**
-   * The JSON the header line carries: the first line past {@link #HEADER_PREFIX}, its
-   * line break left out.
-   *
-   * @param text the script text, starting with {@link #HEADER_PREFIX}
-   * @return the header JSON, unparsed
-   */
-  private static String headerJsonOf(String text) {
-    int end = text.indexOf('\n');
-    String json = text.substring(HEADER_PREFIX.length(), end < 0 ? text.length() : end);
-    return json.endsWith("\r") ? json.substring(0, json.length() - 1) : json;
   }
 
   /**
@@ -270,8 +263,7 @@ public final class ExoSieveScript {
     script.append(HEADER_PREFIX).append(headerJson()).append(EOL);
     List<String> require = new ArrayList<>();
     if (emitsVacation()) {
-      // The Sieve extension carries the same name as the header key.
-      require.add(KEY_VACATION);
+      require.add("vacation");
       if (vacation.start() != null || vacation.end() != null) {
         require.add("date");
         require.add("relational");
@@ -372,12 +364,12 @@ public final class ExoSieveScript {
     List<String> tests = new ArrayList<>();
     ZoneId zone = vacation.zoneId();
     if (vacation.start() != null) {
-      ZoneOffset offset = midnightOffset(vacation.start(), zone);
+      ZoneOffset offset = vacation.start().atStartOfDay(zone).getOffset();
       tests.add("currentdate :zone " + quote(offset(offset)) + " :value \"ge\" \"date\" "
           + quote(vacation.start().toString()));
     }
     if (vacation.end() != null) {
-      ZoneOffset offset = midnightOffset(vacation.end().plusDays(1), zone);
+      ZoneOffset offset = vacation.end().atTime(LocalTime.MAX).atZone(zone).getOffset();
       tests.add("currentdate :zone " + quote(offset(offset)) + " :value \"le\" \"date\" "
           + quote(vacation.end().toString()));
     }
@@ -395,26 +387,6 @@ public final class ExoSieveScript {
       script.append("         ").append(tests.get(1)).append(") {").append(EOL);
     }
     script.append("  ").append(action).append(EOL).append('}').append(EOL);
-  }
-
-  /**
-   * The fixed offset whose date turns to {@code day} at the very instant the zone starts
-   * that day: {@code day}'s midnight minus that instant, which is the offset in force just
-   * before the zone's day starts. On an ordinary day it is the zone's offset. Where the
-   * clocks go forward at midnight it is the offset before the change: on 2026-03-29 in
-   * Asia/Beirut, +02:00, where the offset of the day's first hour, +03:00, would start the
-   * date an hour early. Where they go back at midnight the day starts at the second
-   * midnight, so it is the offset after the change: on 2026-10-25 there, +02:00. A
-   * window's start uses its first day, its end the day after its last one.
-   *
-   * @param day the day whose start the date must follow
-   * @param zone the zone the day is in
-   * @return the offset
-   */
-  static ZoneOffset midnightOffset(LocalDate day, ZoneId zone) {
-    long zoneStart = day.atStartOfDay(zone).toEpochSecond();
-    long midnight = day.atStartOfDay().toEpochSecond(ZoneOffset.UTC);
-    return ZoneOffset.ofTotalSeconds(Math.toIntExact(midnight - zoneStart));
   }
 
   /**
@@ -449,5 +421,171 @@ public final class ExoSieveScript {
   @Override
   public int hashCode() {
     return headerJson().hashCode();
+  }
+
+  /**
+   * The automatic reply eXo writes, validated so that nothing the user typed can escape
+   * its quoted string or add a header to the reply.
+   * <p>
+   * Bounds: the subject is one line of at most {@value #MAX_SUBJECT_LENGTH} characters,
+   * the text at most {@value #MAX_TEXT_LENGTH}, no NUL anywhere; the handle is a token
+   * of letters, digits, dots, underscores and dashes; the window's days are the user's
+   * own calendar days in {@code zone}, one UTC offset computed per boundary so a window
+   * across a DST change stays exact.
+   *
+   * @param enabled whether the reply is on; a disabled reply keeps its text in the header
+   *          and emits no Sieve
+   * @param start the first day, or null for "from now"
+   * @param end the last day, inclusive, or null for "until switched off"
+   * @param zone the IANA zone the days are in, required with a window
+   * @param subject the reply's subject, required: the server's default adds a prefix
+   * @param text the reply's text, plain
+   * @param handle the RFC 5230 {@code :handle}, stable across text edits, new per
+   *          activation
+   * @param days the minimum days between two replies to one sender
+   */
+  public record Vacation(boolean enabled,
+                         LocalDate start,
+                         LocalDate end,
+                         String zone,
+                         String subject,
+                         String text,
+                         String handle,
+                         int days) {
+
+    /** The longest subject accepted. */
+    public static final int      MAX_SUBJECT_LENGTH = 200;
+
+    /** The longest text accepted. */
+    public static final int      MAX_TEXT_LENGTH    = 4000;
+
+    /** The largest {@code :days} accepted. */
+    public static final int      MAX_DAYS           = 365;
+
+    private static final Pattern HANDLE             = Pattern.compile("[A-Za-z0-9._-]{1,64}");
+
+    /**
+     * Validates the reply and normalises the text's line breaks to CRLF.
+     *
+     * @param enabled whether the reply is on
+     * @param start the first day
+     * @param end the last day
+     * @param zone the zone
+     * @param subject the subject
+     * @param text the text
+     * @param handle the handle
+     * @param days the interval
+     * @throws IllegalArgumentException with a message code when a value is invalid
+     */
+    public Vacation {
+      if (text == null || text.isBlank() || text.length() > MAX_TEXT_LENGTH || text.indexOf('\0') >= 0) {
+        throw new IllegalArgumentException("emailConnector.absence.text.invalid");
+      }
+      text = text.replace("\r\n", "\n").replace('\r', '\n').replace("\n", EOL);
+      if (subject == null || subject.isBlank() || subject.length() > MAX_SUBJECT_LENGTH || subject.indexOf('\r') >= 0
+          || subject.indexOf('\n') >= 0 || subject.indexOf('\0') >= 0) {
+        throw new IllegalArgumentException("emailConnector.absence.subject.invalid");
+      }
+      if (handle == null || !HANDLE.matcher(handle).matches()) {
+        throw new IllegalArgumentException("emailConnector.absence.handle.invalid");
+      }
+      if (days < 1 || days > MAX_DAYS) {
+        throw new IllegalArgumentException("emailConnector.absence.days.invalid");
+      }
+      if (start != null && end != null && start.isAfter(end)) {
+        throw new IllegalArgumentException("emailConnector.absence.window.invalid");
+      }
+      if (zone != null || start != null || end != null) {
+        try {
+          ZoneId.of(zone == null ? "" : zone);
+        } catch (DateTimeException e) {
+          throw new IllegalArgumentException("emailConnector.absence.timeZone.invalid", e);
+        }
+      }
+    }
+
+    /**
+     * The zone the window's days are in.
+     *
+     * @return the zone, UTC when the reply has none
+     */
+    public ZoneId zoneId() {
+      return zone == null ? ZoneOffset.UTC : ZoneId.of(zone);
+    }
+
+    /**
+     * The reply as header JSON, nulls omitted.
+     *
+     * @return the JSON object
+     */
+    ObjectNode toJson() {
+      ObjectNode node = JsonNodeFactory.instance.objectNode();
+      node.put("enabled", enabled);
+      if (start != null) {
+        node.put("start", start.toString());
+      }
+      if (end != null) {
+        node.put("end", end.toString());
+      }
+      if (zone != null) {
+        node.put("zone", zone);
+      }
+      if (subject != null) {
+        node.put("subject", subject);
+      }
+      node.put("text", text);
+      node.put("handle", handle);
+      node.put("days", days);
+      return node;
+    }
+
+    /**
+     * Reads a reply from header JSON, validating it like any other.
+     *
+     * @param node the JSON object
+     * @return the reply
+     * @throws IllegalArgumentException when a field is missing or invalid
+     */
+    static Vacation fromJson(JsonNode node) {
+      if (!node.isObject() || !node.path("enabled").isBoolean() || !node.path("days").isInt()) {
+        throw new IllegalArgumentException("emailConnector.absence.header.invalid");
+      }
+      try {
+        return new Vacation(node.path("enabled").booleanValue(),
+                            date(node, "start"),
+                            date(node, "end"),
+                            string(node, "zone"),
+                            string(node, "subject"),
+                            string(node, "text"),
+                            string(node, "handle"),
+                            node.path("days").intValue());
+      } catch (DateTimeException e) {
+        throw new IllegalArgumentException("emailConnector.absence.header.invalid", e);
+      }
+    }
+
+    /**
+     * A string field, null when absent.
+     *
+     * @param node the object
+     * @param field the field
+     * @return the value or null
+     */
+    private static String string(JsonNode node, String field) {
+      JsonNode value = node.get(field);
+      return value == null || value.isNull() ? null : value.asString();
+    }
+
+    /**
+     * A date field, null when absent.
+     *
+     * @param node the object
+     * @param field the field
+     * @return the value or null
+     */
+    private static LocalDate date(JsonNode node, String field) {
+      String value = string(node, field);
+      return value == null ? null : LocalDate.parse(value);
+    }
   }
 }
