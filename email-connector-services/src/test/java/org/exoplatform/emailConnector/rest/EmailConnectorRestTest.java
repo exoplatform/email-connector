@@ -21,6 +21,9 @@ package org.exoplatform.emailConnector.rest;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
@@ -34,10 +37,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.io.InputStream;
+import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -152,6 +157,19 @@ public class EmailConnectorRestTest {
   void deleteEmailConnector() throws Exception {
     ResultActions response = mockMvc.perform(delete(EMAIL_CONNECTOR_PATH + "/1").with(testAdminUser()));
     response.andExpect(status().isOk());
+  }
+
+  @Test
+  void getProviderConfig() throws Exception {
+    ResultActions response = mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/1/provider-config").with(testAdminUser()));
+    response.andExpect(status().isOk());
+  }
+
+  /** A technical account is administration-only, like every other write on this path. */
+  @Test
+  void getProviderConfigIsRefusedToASimpleUser() throws Exception {
+    ResultActions response = mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/1/provider-config").with(testSimpleUser()));
+    response.andExpect(status().isForbidden());
   }
 
   @Test
@@ -339,11 +357,67 @@ public class EmailConnectorRestTest {
                               false,
                               true,
                               "testUploadId",
-                              "", null, null);
+                              "", null, null, null);
   }
 
   @SneakyThrows
   private String asJsonString(final Object obj) {
     return OBJECT_MAPPER.writeValueAsString(obj);
+  }
+
+  /**
+   * The provider configuration must survive the wire, and nothing else tests that: the
+   * service tests hand the object straight to the service, so a field Jackson cannot
+   * bind - a wrong name, a Map it does not deserialise - would leave every one of them
+   * green while the drawer's values never reached the server at all.
+   */
+  @Test
+  void createRelaysTheProviderConfigurationFromTheJsonBody() throws Exception {
+    EmailConnector posted = emailConnector();
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+
+    mockMvc.perform(post(EMAIL_CONNECTOR_PATH).with(testAdminUser())
+                                              .content(asJsonString(posted))
+                                              .contentType(MediaType.APPLICATION_JSON)
+                                              .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+
+    ArgumentCaptor<EmailConnector> captor = ArgumentCaptor.forClass(EmailConnector.class);
+    verify(emailConnectorService).createEmailConnector(captor.capture(), anyString());
+    assertEquals(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"), captor.getValue().getProviderConfig());
+    assertEquals("bluemind-sudo", captor.getValue().getAuthProviderName());
+  }
+
+  /** The same on the update path, which carries its own body. */
+  @Test
+  void updateRelaysTheProviderConfigurationFromTheJsonBody() throws Exception {
+    EmailConnector posted = emailConnector();
+    posted.setId(7L);
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc"));
+
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH).with(testAdminUser())
+                                             .content(asJsonString(posted))
+                                             .contentType(MediaType.APPLICATION_JSON)
+                                             .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+
+    ArgumentCaptor<EmailConnector> captor = ArgumentCaptor.forClass(EmailConnector.class);
+    verify(emailConnectorService).updateEmailConnector(captor.capture(), anyString());
+    assertEquals(Map.of("technicalLogin", "svc"), captor.getValue().getProviderConfig());
+  }
+
+  /**
+   * And the read-back endpoint serialises what the service hands it - the values an
+   * administration screen may see, secrets excluded by the service itself.
+   */
+  @Test
+  void providerConfigIsSerialisedBackToTheCaller() throws Exception {
+    when(emailConnectorService.getProviderConfig(eq(1L), anyString())).thenReturn(Map.of("technicalLogin", "svc"));
+
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/1/provider-config").with(testAdminUser()))
+           .andExpect(status().isOk())
+           .andExpect(content().json("{\"technicalLogin\":\"svc\"}"));
   }
 }

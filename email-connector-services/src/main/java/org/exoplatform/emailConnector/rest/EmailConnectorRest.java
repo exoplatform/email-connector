@@ -21,6 +21,8 @@ import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.InputStreamResource;
+import java.util.Map;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -453,6 +455,25 @@ public class EmailConnectorRest {
     }
   }
 
+  @GetMapping(path = "/{emailConnectorId}/provider-config")
+  @Secured("administrators")
+  @Operation(summary = "Retrieves the provider configuration of an email connector", method = "GET", description = "This will return the stored provider configuration of an email connector, without any secret value")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public Map<String, String> getProviderConfig(HttpServletRequest request,
+                                               @Parameter(description = "Email connector technical id", required = true)
+                                               @PathVariable("emailConnectorId")
+                                               Long emailConnectorId) {
+    try {
+      return emailConnectorService.getProviderConfig(emailConnectorId, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
   @DeleteMapping(path = "/{emailConnectorId}")
   @Secured("administrators")
   @Operation(summary = "Deletes an existing email connector identified by its id", method = "DELETE", description = "This will delete an existing email connector identified by its id")
@@ -469,6 +490,27 @@ public class EmailConnectorRest {
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
+  }
+
+  /**
+   * Whether each declared provider asks its user for anything, keyed by provider
+   * name — what a browser needs to decide whether its connect button shows a form
+   * or connects outright.
+   * <p>
+   * Open to every authenticated user, unlike the connector list above and unlike
+   * the provider registry: this answers about the connectors offered to the caller,
+   * not about how the instance is configured.
+   *
+   * @return one entry per declared provider name, true when the user must supply
+   *         something
+   */
+  @GetMapping("/connection-requirements")
+  @Secured("users")
+  @Operation(summary = "Tells which declared providers ask the user for credentials", method = "GET",
+      description = "One entry per provider name the declared connectors use. A provider answering false connects in one click.")
+  @ApiResponses(@ApiResponse(responseCode = "200", description = "Request fulfilled"))
+  public Map<String, Boolean> connectionRequirements() {
+    return emailConnectorService.connectionRequirements();
   }
 
   @GetMapping()
