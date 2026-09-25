@@ -36,6 +36,7 @@ import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
+import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities.VocabularySource;
 import org.exoplatform.emailConnector.model.ServerVacation;
@@ -219,6 +220,66 @@ public class SieveRuleEngine implements ServerRuleEngine {
       throw unavailable(e);
     } finally {
       client.logout();
+    }
+  }
+
+  /**
+   * Whether the caller's mail may be forwarded, as far as ManageSieve lets eXo see: the
+   * script another client manages that runs at delivery, and the personal scripts it
+   * includes (one level), are scanned for the {@code redirect} token. A hit, or a script
+   * that cannot be read far enough, answers "a forward may be configured by this script";
+   * its destinations are never read out of it. eXo's own script is not scanned: its
+   * generator emits no {@code redirect} in this phase. Only {@code LISTSCRIPTS} and
+   * {@code GETSCRIPT} are issued -- nothing is written.
+   *
+   * @param session the caller's own session
+   * @return {@link ForwardingSetting#mayForwardByScript(String)} naming the script, or
+   *         {@link ForwardingSetting#none()}
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   */
+  @Override
+  public ForwardingSetting readForwarding(MailboxAclSession session) throws ServerRuleUnavailableException {
+    ManageSieveClient client = open(session);
+    try {
+      List<SieveScriptInfo> scripts = client.listScripts();
+      String foreign = runningForeignScript(client, scripts);
+      if (foreign != null && policy.mayCarryRedirect(client, scripts, foreign)) {
+        return ForwardingSetting.mayForwardByScript(foreign);
+      }
+      return ForwardingSetting.none();
+    } catch (ManageSieveException e) {
+      throw unavailable(e);
+    } finally {
+      client.logout();
+    }
+  }
+
+  /**
+   * The script another client manages that the server runs at delivery: the active
+   * script when it is not eXo's, the script eXo's wrapper includes next to eXo's, or the
+   * wrapper itself once it no longer reads as the one eXo generated.
+   *
+   * @param client the client
+   * @param scripts the account's scripts
+   * @return its name, empty for a script without one; null when only eXo's script runs,
+   *         or nothing does
+   * @throws ManageSieveException when the wrapper cannot be read
+   */
+  static String runningForeignScript(ManageSieveClient client, List<SieveScriptInfo> scripts) throws ManageSieveException {
+    String active = SieveScriptPolicy.activeScript(scripts);
+    if (active == null || SCRIPT_NAME.equals(active)) {
+      return null;
+    }
+    if (!WRAPPER_NAME.equals(active)) {
+      return active;
+    }
+    try {
+      String wrapped = SieveScriptPolicy.wrappedScript(client.getScript(WRAPPER_NAME));
+      // A wrapper including a script that is gone fails at delivery: nothing runs.
+      return SieveScriptPolicy.exists(scripts, wrapped) ? wrapped : null;
+    } catch (ServerRuleConflictException e) {
+      // No longer eXo's wrapper: whatever it holds now is scanned as another client's.
+      return WRAPPER_NAME;
     }
   }
 
