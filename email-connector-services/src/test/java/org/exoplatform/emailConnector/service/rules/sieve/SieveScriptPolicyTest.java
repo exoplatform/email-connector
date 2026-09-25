@@ -32,6 +32,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
+import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript.Vacation;
 import org.exoplatform.emailConnector.service.rules.sieve.ManageSieveException.Kind;
 import org.exoplatform.emailConnector.service.rules.sieve.SieveScriptPolicy.PolicyCase;
@@ -96,7 +97,7 @@ class SieveScriptPolicyTest {
     assertEquals(PolicyCase.NO_ACTIVE_SCRIPT, outcome.policyCase());
     assertEquals(SCRIPT_NAME, server.getActive());
     assertEquals(script.toScript(), server.getScripts().get(SCRIPT_NAME));
-    assertEquals(script.hash(), outcome.scriptHash());
+    assertEquals(ExoSieveScript.sha256(script.toScript()), outcome.scriptHash());
     assertEquals("keep;", server.getScripts().get("old"));
     assertEquals(List.of("CHECKSCRIPT", "PUTSCRIPT", "SETACTIVE " + SCRIPT_NAME), verbs("CHECKSCRIPT", "PUTSCRIPT", "SETACTIVE"));
   }
@@ -358,7 +359,7 @@ class SieveScriptPolicyTest {
     PublishOutcome outcome = publish(replyOn());
     assertEquals(PolicyCase.WRAPPER_REMOVED, outcome.policyCase());
     assertEquals(SCRIPT_NAME, server.getActive());
-    assertEquals(replyOn().hash(), outcome.scriptHash());
+    assertEquals(ExoSieveScript.sha256(replyOn().toScript()), outcome.scriptHash());
   }
 
   /**
@@ -402,20 +403,20 @@ class SieveScriptPolicyTest {
   }
 
   /**
-   * The ordering rule: eXo first while its script files and stops nothing, theirs first
-   * once it holds rules; the wrapper text follows it.
+   * The ordering rule: eXo first while its script files and stops nothing -- a reply, a
+   * rule that only flags, a disabled filing rule -- theirs first once an enabled rule
+   * files or stops; the wrapper text follows it.
    */
   @Test
   void testWrapperOrderingRule() {
     assertTrue(SieveScriptPolicy.exoFirst(replyOn()));
-    ExoSieveScript withRules = ExoSieveScript.parse("# exo-managed-v1: {\"v\":1,\"rules\":[{\"id\":1}]}").orElseThrow();
-    assertFalse(SieveScriptPolicy.exoFirst(withRules));
-    assertEquals("""
-        # exo-managed-wrapper-v1\r
-        require ["include"];\r
-        include :personal "a\\"b";\r
-        include :personal "exo-rules";\r
-        """, SieveScriptPolicy.wrapper("a\"b", false));
+    assertTrue(SieveScriptPolicy.exoFirst(replyOn().withRules(List.of(ExoSieveScriptTest.listsRead()))));
+    ServerRule filing = ExoSieveScriptTest.acmeInvoices();
+    ServerRule disabled = new ServerRule("1", "Off", false, true, filing.conditions(), filing.actions(), true);
+    assertTrue(SieveScriptPolicy.exoFirst(replyOn().withRules(List.of(disabled))));
+    assertFalse(SieveScriptPolicy.exoFirst(replyOn().withRules(List.of(filing))));
+    assertEquals("# exo-managed-wrapper-v1\r\nrequire [\"include\"];\r\ninclude :personal \"a\\\"b\";\r\n"
+        + "include :personal \"exo-rules\";\r\n", SieveScriptPolicy.wrapper("a\"b", false));
   }
 
   /**
