@@ -29,6 +29,15 @@ public class NotificationConstants {
   /** A scheduled mail was not sent, or could not be confirmed sent (EXO-90434). */
   public static final String SCHEDULED_EMAIL_FAILED_NOTIFICATION_PLUGIN = "ScheduledEmailFailedNotificationPlugin";
 
+  /** One of the user's own mail filters matched new mail (EXO-90654). */
+  public static final String EMAIL_FILTER_NOTIFICATION_PLUGIN = "EmailFilterNotificationPlugin";
+
+  /** The mail filter's name, as its notification carries it. */
+  public static final String FILTER_NAME                    = "FILTER_NAME";
+
+  /** How many mails the filter matched in one pass. */
+  public static final String FILTER_COUNT                   = "FILTER_COUNT";
+
   /** The scheduled mail's subject, as the notification carries it. */
   public static final String SUBJECT                        = "SUBJECT";
 

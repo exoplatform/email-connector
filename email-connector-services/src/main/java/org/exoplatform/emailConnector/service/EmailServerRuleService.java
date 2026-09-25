@@ -36,7 +36,9 @@ import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailFolder;
+import org.exoplatform.emailConnector.model.HopRef;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.ReconcileReport;
 import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerRuleSet;
@@ -306,6 +308,55 @@ public class EmailServerRuleService {
       recordWrite(username, written);
       LOG.info("Server rules re-published by user {} on connector {}", username, session.connector().getId());
       return settings(username, null, engine, written);
+    }
+  }
+
+  /**
+   * Makes the caller's mail server hold exactly the given hops -- the server halves of
+   * the caller's eXo rules that also run at delivery -- and records the script's hash
+   * like every other write. The hops are built by eXo from its own rules, never taken
+   * from a request, so they are the one place a keyword is written.
+   *
+   * @param username the caller, from the request's session
+   * @param hops every hop the caller's eXo rules need
+   * @param republish true to overwrite eXo's script although it changed outside eXo
+   * @param consent true when the caller agreed, in this request, that eXo manages rules
+   *          on their mail server
+   * @param publishing true when this write adds or changes a hop, which needs the
+   *          consent; a write that only removes one does not
+   * @return what was written, and the rules afterwards
+   * @throws ObjectNotFoundException when the feature is off, or no mailbox is connected
+   * @throws IllegalAccessException when the caller may not use their connector
+   * @throws IllegalArgumentException {@value #CONSENT_REQUIRED} without the consent
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when another client's script is in the way, or
+   *           eXo's script changed outside eXo; nothing was written
+   * @throws ServerRuleUnsupportedException when this connector cannot hold a hop
+   */
+  public ReconcileReport reconcileHops(String username,
+                                       List<HopRef> hops,
+                                       boolean republish,
+                                       boolean consent,
+                                       boolean publishing) throws ObjectNotFoundException,
+                                                           IllegalAccessException,
+                                                           ServerRuleUnavailableException,
+                                                           ServerRuleConflictException,
+                                                           ServerRuleUnsupportedException {
+    ServerRuleEngine engine = engineOf(username, null);
+    if (publishing) {
+      requireConsent(username, consent);
+    }
+    try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
+      ReconcileReport report = engine.reconcile(session, hops == null ? List.of() : hops, republish ? null : storedHash(username));
+      recordWrite(username, report.rules());
+      if (report.changed()) {
+        LOG.info("Server hops of user {} reconciled on connector {}: published {}, removed {}",
+                 username,
+                 session.connector().getId(),
+                 report.published(),
+                 report.removed());
+      }
+      return report;
     }
   }
 
