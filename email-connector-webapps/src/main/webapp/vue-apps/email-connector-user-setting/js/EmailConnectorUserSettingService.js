@@ -595,3 +595,95 @@ export function updateDelegationPreferences(id, preferences) {
       });
   });
 }
+
+/**
+ * Turns a refused request of the filters into an Error carrying the server's message
+ * code as its message and, for a 409, the name of the script the conflict is about as
+ * `scriptName`, with the answer's status as `status`.
+ *
+ * @param {Response} resp - the refused answer
+ * @param {string} fallback - the message when the answer carries no code
+ * @returns {Promise<never>} rejected with the error
+ */
+function filtersError(resp, fallback) {
+  return resp.json()
+    .catch(() => ({}))
+    .then(body => {
+      const error = new Error(body?.message || fallback);
+      error.status = resp?.status;
+      error.scriptName = body?.scriptName;
+      throw error;
+    });
+}
+
+/**
+ * The server group of the user's filters, read live from their mail server: what the
+ * engine can do, the rules eXo manages there in the order the server applies them, their
+ * state (OWN, INACTIVE, MODIFIED or NONE), another client's script the server also runs,
+ * and whether the user already agreed that eXo manages rules on their server.
+ *
+ * @returns {Promise<object>} {capabilities, engine, rules, state, foreignScriptName, consented}
+ */
+export function getServerFilters() {
+  return fetch('/email-connector/rest/email-box/filters/server', {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => (resp?.ok ? resp.json() : filtersError(resp, 'Error when reading the filters')));
+}
+
+/**
+ * Creates, or replaces, one filter the mail server runs at delivery.
+ *
+ * @param {object} rule - {name, enabled, matchAll, conditions, actions, stop}; a move names its folder by key
+ * @param {string} [ref] - the filter to replace; none to create one
+ * @param {object} [options] - {consent, republish}
+ * @returns {Promise<object>} the group after the write, capabilities not re-read
+ */
+export function saveServerFilter(rule, ref, options) {
+  const params = new URLSearchParams();
+  if (options?.consent) {
+    params.set('consent', 'true');
+  }
+  if (options?.republish) {
+    params.set('republish', 'true');
+  }
+  const query = params.toString();
+  const path = ref ? `/server/${encodeURIComponent(ref)}` : '/server';
+  return fetch(`/email-connector/rest/email-box/filters${path}${query ? `?${query}` : ''}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: ref ? 'PUT' : 'POST',
+    body: JSON.stringify(rule)
+  }).then(resp => (resp?.ok ? resp.json() : filtersError(resp, 'Error when saving the filter')));
+}
+
+/**
+ * Deletes one filter the mail server runs at delivery.
+ *
+ * @param {string} ref - the filter
+ * @param {boolean} [republish] - overwrite eXo's script although it changed outside eXo
+ * @returns {Promise<object>} the group after the write, capabilities not re-read
+ */
+export function deleteServerFilter(ref, republish) {
+  return fetch(`/email-connector/rest/email-box/filters/server/${encodeURIComponent(ref)}${republish ? '?republish=true' : ''}`, {
+    credentials: 'include',
+    method: 'DELETE'
+  }).then(resp => (resp?.ok ? resp.json() : filtersError(resp, 'Error when deleting the filter')));
+}
+
+/**
+ * Writes the filters eXo manages again and makes the server run them: Re-activate, or,
+ * with republish, Re-publish over an edit made outside eXo.
+ *
+ * @param {boolean} [republish] - overwrite eXo's script although it changed outside eXo
+ * @returns {Promise<object>} the group after the write, capabilities not re-read
+ */
+export function publishServerFilters(republish) {
+  return fetch(`/email-connector/rest/email-box/filters/server/publish${republish ? '?republish=true' : ''}`, {
+    credentials: 'include',
+    method: 'POST'
+  }).then(resp => (resp?.ok ? resp.json() : filtersError(resp, 'Error when publishing the filters')));
+}

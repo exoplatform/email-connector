@@ -61,6 +61,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
            summary and opens a drawer mounted at the app's root -- so it can move in this
            list with no other change. -->
       <email-connector-user-setting-absence />
+      <!-- Mail filters (EXO-90652): the rules the mail server runs at delivery, next to
+           the automatic reply, the other thing the server does with incoming mail. -->
+      <email-connector-user-setting-filters />
       <!-- Mailbox delegation (EXO-90503, EXO-90559): one row for both sides of it, over
            one drawer with a tab each; after the automatic reply, because it is the only
            row here about somebody else's mail. -->
