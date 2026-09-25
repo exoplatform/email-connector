@@ -89,7 +89,7 @@ class RestRefusalStatusTest {
                                                                             UserEmailSettingRest.class, 16,
                                                                             EmailConnectorRest.class, 18,
                                                                             EmailContactRest.class, 1,
-                                                                            EmailFilterRest.class, 6);
+                                                                            EmailFilterRest.class, 18);
 
   /**
    * A plain refusal -- no connected mailbox, not an administrator, not the owner --
