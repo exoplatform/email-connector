@@ -170,4 +170,10 @@ public class EmailDelegationEntity {
   // changeset 1.0.0-88.
   @Column(name = "SEND_REFUSED_DATE")
   private Date    sendRefusedDate;
+
+  // The shape that refusal was in (EXO-90626): ON_BEHALF or AS; null with a date for a
+  // refusal recorded before the shape was, read as every shape refused. Written and
+  // cleared with the date. Added by changeset 1.0.0-90.
+  @Column(name = "SEND_REFUSED_MODE")
+  private String  sendRefusedMode;
 }

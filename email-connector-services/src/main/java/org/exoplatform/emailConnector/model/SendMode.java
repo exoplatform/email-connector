@@ -200,26 +200,47 @@ public enum SendMode {
 
   /**
    * The shapes a delegate can write in now: the owner's consent, narrowed to what the
-   * connector declares, and nothing at all once the server refused a mail in the owner's
-   * name since the owner last set it. Never wider than the consent: an {@code ON_BEHALF}
-   * consent on a connector declaring {@code as} stays on behalf. The one formula the
-   * delegate's list and the send guard share.
+   * connector declares, less the shapes the owner's mail server refused since the owner
+   * last set it ({@link #refusedByServer}). Never wider than the consent: an
+   * {@code ON_BEHALF} consent on a connector declaring {@code as} stays on behalf. The one
+   * formula the delegate's list and the send guard share.
    *
    * @param granted the owner's consent, null for none
    * @param refusedDate when the server last refused one, null for never
+   * @param refusedMode the shape it refused, null when the refusal named none
    * @param declared the connector's declared shapes
    * @return the usable shapes, most transparent first, possibly empty
    */
-  public static List<SendMode> usable(SendMode granted, Date refusedDate, Set<SendMode> declared) {
+  public static List<SendMode> usable(SendMode granted, Date refusedDate, SendMode refusedMode, Set<SendMode> declared) {
     List<SendMode> usable = new ArrayList<>();
-    if (granted == null || granted == NONE || refusedDate != null || declared == null) {
+    if (granted == null || granted == NONE || declared == null) {
       return usable;
     }
     for (SendMode mode : List.of(ON_BEHALF, AS)) {
-      if (granted.allows(mode) && declared.contains(mode)) {
+      if (granted.allows(mode) && declared.contains(mode) && !refusedByServer(mode, refusedDate, refusedMode)) {
         usable.add(mode);
       }
     }
     return usable;
+  }
+
+  /**
+   * Whether the owner's mail server's last refusal blocks a shape (EXO-90626): a refusal
+   * as the owner blocks writing as her only, since a server that refuses the owner's
+   * address from the delegate may well accept it beside the delegate's own; a refusal on
+   * her behalf blocks both, the scale the consent itself follows ({@link #allows}). A
+   * refusal that named no shape -- recorded before the shape was -- blocks both, as every
+   * refusal did then: an unknown reading never widens what a delegate may do.
+   *
+   * @param requested the shape a mail would go out under
+   * @param refusedDate when the server last refused one, null for never
+   * @param refusedMode the shape it refused, null when the refusal named none
+   * @return true when that shape may not be used until the owner sets the consent again
+   */
+  public static boolean refusedByServer(SendMode requested, Date refusedDate, SendMode refusedMode) {
+    if (refusedDate == null) {
+      return false;
+    }
+    return refusedMode != AS || requested == AS;
   }
 }
