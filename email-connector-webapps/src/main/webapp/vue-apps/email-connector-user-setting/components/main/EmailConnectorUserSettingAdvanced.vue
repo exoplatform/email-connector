@@ -56,6 +56,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
            not an action taken on mail. -->
       <email-connector-user-setting-folders />
       <email-connector-user-setting-read-receipts />
+      <!-- The automatic reply (EXO-90642): a setting of the user's own mailbox, run by
+           the mail server. Each of these two rows is self-contained -- it reads its own
+           summary and opens a drawer mounted at the app's root -- so it can move in this
+           list with no other change. -->
+      <email-connector-user-setting-absence />
+      <!-- Mailbox delegation (EXO-90503, EXO-90559): one row for both sides of it, over
+           one drawer with a tab each; after the automatic reply, because it is the only
+           row here about somebody else's mail. -->
+      <email-connector-user-setting-sharing />
       <v-divider class="mx-4 mt-4" />
       <v-list-item class="mt-2">
         <v-list-item-content>
