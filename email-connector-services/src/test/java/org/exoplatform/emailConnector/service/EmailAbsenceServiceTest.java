@@ -39,6 +39,7 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,13 +55,17 @@ import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.model.AbsenceSettings;
 import org.exoplatform.emailConnector.model.AbsenceStatus;
+import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.ForwardingState;
+import org.exoplatform.emailConnector.model.OwnerAbsenceStatus;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -83,6 +88,10 @@ public class EmailAbsenceServiceTest {
   private static final String      USERNAME     = "alice";
 
   private static final long        CONNECTOR_ID = 5L;
+
+  private static final String      OWNER        = "bob";
+
+  private static final long        SHARE_ID     = 12L;
 
   private static final long        NOW          = 1_790_000_000_000L;
 
@@ -109,6 +118,9 @@ public class EmailAbsenceServiceTest {
 
   private final Map<String, String> settings = new HashMap<>();
 
+  /** Every other user's settings, by username then key. */
+  private final Map<String, Map<String, String>> otherSettings = new HashMap<>();
+
   private MailboxAclSession        session;
 
   /**
@@ -132,11 +144,12 @@ public class EmailAbsenceServiceTest {
     lenient().when(emailDelegationService.openOwnSession(USERNAME)).thenReturn(session);
     lenient().when(engine.getName()).thenReturn("sieve");
     lenient().when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenAnswer(invocation -> {
-      String value = settings.get(invocation.getArgument(2, String.class));
+      String value = store(invocation.getArgument(0, Context.class)).get(invocation.getArgument(2, String.class));
       return value == null ? null : SettingValue.create(value);
     });
     lenient().doAnswer(invocation -> {
-      settings.put(invocation.getArgument(2, String.class), invocation.getArgument(3, SettingValue.class).getValue().toString());
+      store(invocation.getArgument(0, Context.class)).put(invocation.getArgument(2, String.class),
+                                                          invocation.getArgument(3, SettingValue.class).getValue().toString());
       return null;
     }).when(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
   }
@@ -562,6 +575,167 @@ public class EmailAbsenceServiceTest {
     VacationSetting reply = reply(enabled);
     reply.setSource(VacationSetting.Source.EXO);
     return new ServerVacation(VacationState.OWN, reply, null, hash);
+  }
+
+  /**
+   * The settings of the user a context names: the caller's in {@link #settings}, anyone
+   * else's apart, so a read of the wrong user's summary shows.
+   *
+   * @param context the user context
+   * @return that user's settings
+   */
+  private Map<String, String> store(Context context) {
+    return USERNAME.equals(context.getId()) ? settings : otherSettings.computeIfAbsent(context.getId(), id -> new HashMap<>());
+  }
+
+  /**
+   * One of the caller's shares, of the owner {@value #OWNER}'s mailbox.
+   *
+   * @param status the share's status
+   * @return the share
+   * @throws Exception on failure
+   */
+  private EmailDelegation share(DelegationStatus status) throws Exception {
+    EmailDelegation share = new EmailDelegation();
+    share.setId(SHARE_ID);
+    share.setGranteeId(USERNAME);
+    share.setOwnerId(OWNER);
+    share.setStatus(status);
+    lenient().when(emailDelegationService.requireOwnShare(USERNAME, SHARE_ID)).thenReturn(share);
+    return share;
+  }
+
+  /**
+   * A delegate reads the owner's dates through an accepted share of hers: the owner's
+   * cached summary, not the caller's own, field by field, with no server asked and no
+   * session opened for anyone.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testADelegateSeesTheOwnersDates() throws Exception {
+    share(DelegationStatus.ACCEPTED);
+    settings.put(EmailAbsenceService.ABSENCE_SETTING_KEY,
+                 JsonUtils.toJsonString(new AbsenceStatus(false, null, null, null, null, NOW - 1, NOW - 1)));
+    otherSettings.put(OWNER,
+                      new HashMap<>(Map.of(EmailAbsenceService.ABSENCE_SETTING_KEY,
+                                           JsonUtils.toJsonString(new AbsenceStatus(true,
+                                                                                    "2026-10-01",
+                                                                                    "2026-10-15",
+                                                                                    "Europe/Paris",
+                                                                                    "SERVER",
+                                                                                    NOW - 5000,
+                                                                                    NOW - 1000)))));
+    OwnerAbsenceStatus owners = service.getOwnerAbsenceForDelegate(USERNAME, SHARE_ID);
+    assertEquals(new OwnerAbsenceStatus(true, "2026-10-01", "2026-10-15", "Europe/Paris", NOW - 5000, NOW - 1000, false), owners);
+    verifyNoInteractions(engine, serverRuleEngineRegistry);
+    verify(emailDelegationService, never()).openOwnSession(anyString());
+    verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+  }
+
+  /**
+   * What a delegate is answered carries the dates and nothing else: no subject, no text,
+   * no source -- whatever the owner's stored summary holds beside them.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testADelegateGetsDatesOnly() throws Exception {
+    share(DelegationStatus.ACCEPTED);
+    otherSettings.put(OWNER,
+                      new HashMap<>(Map.of(EmailAbsenceService.ABSENCE_SETTING_KEY,
+                                           "{\"enabled\":true,\"start\":\"2026-10-01\",\"source\":\"EXO\","
+                                               + "\"subject\":\"Secret subject\",\"text\":\"Secret text\","
+                                               + "\"lastServerReadDate\":" + NOW + "}")));
+    OwnerAbsenceStatus owners = service.getOwnerAbsenceForDelegate(USERNAME, SHARE_ID);
+    assertTrue(owners.isEnabled());
+    assertEquals("2026-10-01", owners.getStart());
+    String json = JsonUtils.toJsonString(owners);
+    assertFalse(json.contains("Secret"), json);
+    assertFalse(json.contains("source"), json);
+    assertFalse(json.contains("EXO"), json);
+    assertEquals(Set.of("enabled", "start", "end", "timeZone", "updatedDate", "lastServerReadDate", "stale"),
+                 JsonUtils.fromJsonString(json, Map.class).keySet());
+  }
+
+  /**
+   * The owner's summary older than the TTL is answered as it is, marked stale with the
+   * date it was read, and never refreshed as the owner; an owner with no summary, or a
+   * share of a mailbox nobody in eXo owns, is answered off.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testAStaleOrMissingOwnerSummary() throws Exception {
+    EmailDelegation share = share(DelegationStatus.ACCEPTED);
+    otherSettings.put(OWNER,
+                      new HashMap<>(Map.of(EmailAbsenceService.ABSENCE_SETTING_KEY,
+                                           JsonUtils.toJsonString(new AbsenceStatus(true,
+                                                                                    null,
+                                                                                    "2026-10-15",
+                                                                                    "Europe/Paris",
+                                                                                    "EXO",
+                                                                                    NOW - 5000,
+                                                                                    NOW - 901_000)))));
+    OwnerAbsenceStatus stale = service.getOwnerAbsenceForDelegate(USERNAME, SHARE_ID);
+    assertTrue(stale.isEnabled());
+    assertTrue(stale.isStale());
+    assertEquals(NOW - 901_000, stale.getLastServerReadDate());
+    verifyNoInteractions(engine, serverRuleEngineRegistry);
+    verify(emailDelegationService, never()).openOwnSession(anyString());
+
+    otherSettings.clear();
+    assertEquals(new OwnerAbsenceStatus(), service.getOwnerAbsenceForDelegate(USERNAME, SHARE_ID));
+    share.setOwnerId(null);
+    assertEquals(new OwnerAbsenceStatus(), service.getOwnerAbsenceForDelegate(USERNAME, SHARE_ID));
+  }
+
+  /**
+   * The share guard: somebody else's share or an unknown id is "not found" (the lookup is
+   * by the caller as grantee), a pending or never-subscribed share is refused, an ended one is gone, and a
+   * caller who may not use mail any more is refused -- none of them reading anyone's
+   * summary; the feature off is "not found" before anything.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheDelegateShareGuard() throws Exception {
+    otherSettings.put(OWNER,
+                      new HashMap<>(Map.of(EmailAbsenceService.ABSENCE_SETTING_KEY,
+                                           JsonUtils.toJsonString(new AbsenceStatus(true, null, null, null, null, NOW, NOW)))));
+    when(emailDelegationService.requireOwnShare(USERNAME, 99L)).thenThrow(new ObjectNotFoundException("not yours"));
+    assertThrows(ObjectNotFoundException.class, () -> service.getOwnerAbsenceForDelegate(USERNAME, 99L));
+
+    EmailDelegation share = share(DelegationStatus.PENDING);
+    for (DelegationStatus notAccepted : new DelegationStatus[] { DelegationStatus.PENDING, DelegationStatus.AVAILABLE }) {
+      share.setStatus(notAccepted);
+      assertEquals(EmailAbsenceService.SHARE_NOT_ACCEPTED,
+                   assertThrows(IllegalAccessException.class,
+                                () -> service.getOwnerAbsenceForDelegate(USERNAME, SHARE_ID)).getMessage());
+    }
+    for (DelegationStatus ended : new DelegationStatus[] { DelegationStatus.REVOKED, DelegationStatus.DECLINED }) {
+      share.setStatus(ended);
+      assertEquals(DelegationRevokedException.REVOKED,
+                   assertThrows(DelegationRevokedException.class,
+                                () -> service.getOwnerAbsenceForDelegate(USERNAME, SHARE_ID)).getMessage());
+    }
+    share.setStatus(DelegationStatus.GONE);
+    assertEquals(DelegationRevokedException.GONE,
+                 assertThrows(DelegationRevokedException.class,
+                              () -> service.getOwnerAbsenceForDelegate(USERNAME, SHARE_ID)).getMessage());
+
+    share.setStatus(DelegationStatus.ACCEPTED);
+    when(userEmailSettingService.canConnect(CONNECTOR_ID, USERNAME)).thenReturn(false);
+    assertEquals(EmailAbsenceService.NOT_ALLOWED,
+                 assertThrows(IllegalAccessException.class, () -> service.getOwnerAbsenceForDelegate(USERNAME, SHARE_ID)).getMessage());
+    // The caller's mail access is checked before the share: an ended share says so too.
+    share.setStatus(DelegationStatus.REVOKED);
+    assertEquals(EmailAbsenceService.NOT_ALLOWED,
+                 assertThrows(IllegalAccessException.class, () -> service.getOwnerAbsenceForDelegate(USERNAME, SHARE_ID)).getMessage());
+    verify(settingService, never()).get(any(Context.class), any(Scope.class), anyString());
+
+    System.setProperty(EmailAbsenceService.ENABLED_PROPERTY, "false");
+    assertThrows(ObjectNotFoundException.class, () -> service.getOwnerAbsenceForDelegate(USERNAME, SHARE_ID));
   }
 
   /**
