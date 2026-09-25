@@ -33,6 +33,7 @@ import EmailConnectorContactsChoiceStep from './components/drawer/common/EmailCo
 import EmailConnectorUserSettingSharing from './components/main/EmailConnectorUserSettingSharing.vue';
 import EmailConnectorUserSettingAbsence from './components/main/EmailConnectorUserSettingAbsence.vue';
 import EmailConnectorUserSettingAbsenceForm from './components/main/EmailConnectorUserSettingAbsenceForm.vue';
+import EmailConnectorUserSettingAbsenceDrawer from './components/drawer/absence/EmailConnectorUserSettingAbsenceDrawer.vue';
 import EmailConnectorUserSettingMailboxSharingDrawer from './components/sharing/EmailConnectorUserSettingMailboxSharingDrawer.vue';
 import EmailConnectorUserSettingSharingInviteDrawer from './components/sharing/EmailConnectorUserSettingSharingInviteDrawer.vue';
 import EmailConnectorUserSettingFolderAccessDrawer from './components/sharing/EmailConnectorUserSettingFolderAccessDrawer.vue';
@@ -57,6 +58,7 @@ const components = {
   'email-connector-user-setting-sharing': EmailConnectorUserSettingSharing,
   'email-connector-user-setting-absence': EmailConnectorUserSettingAbsence,
   'email-connector-user-setting-absence-form': EmailConnectorUserSettingAbsenceForm,
+  'email-connector-user-setting-absence-drawer': EmailConnectorUserSettingAbsenceDrawer,
   'email-connector-user-setting-mailbox-sharing-drawer': EmailConnectorUserSettingMailboxSharingDrawer,
   'email-connector-user-setting-sharing-invite-drawer': EmailConnectorUserSettingSharingInviteDrawer,
   'email-connector-user-setting-folder-access-drawer': EmailConnectorUserSettingFolderAccessDrawer,
