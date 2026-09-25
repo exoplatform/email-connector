@@ -93,9 +93,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </date-picker>
       </div>
     </div>
-    <div class="text-subtitle">
-      {{ $t('UserSettings.emailConnector.absence.form.zone', { 0: timeZone }) }}
-    </div>
     <div class="mt-4 mb-2">
       {{ $t('UserSettings.emailConnector.absence.form.subject') }}
     </div>
@@ -163,7 +160,6 @@ export default {
     end: null,
     subject: '',
     text: '',
-    timeZone: new Intl.DateTimeFormat().resolvedOptions().timeZone,
   }),
   computed: {
     /**
