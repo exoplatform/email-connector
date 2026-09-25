@@ -297,7 +297,9 @@ export default {
     },
     /**
      * What stands in the way of a consent: the mail server refused a mail in the owner's
-     * name since she set it, or no longer is declared to accept that shape.
+     * name since she set it -- as her only, which leaves on her behalf usable
+     * (EXO-90626), or on her behalf, which blocks both -- or no longer is declared to
+     * accept that shape.
      *
      * @returns {String} the sentence, or empty
      */
@@ -308,7 +310,13 @@ export default {
       const refused = this.grantee.delegation.sendRefusedDate;
       if (refused) {
         const language = window.eXo?.env?.portal?.language || 'en';
-        return this.$t('UserSettings.emailConnector.sharing.sendMode.refused', { 0: new Date(refused).toLocaleDateString(language) });
+        // "They can still write on your behalf" only while the server is declared to
+        // accept it, the administrator's switch included.
+        const key = this.grantee.delegation.sendRefusedMode === 'AS' && this.currentSendMode === 'AS'
+            && this.sendModes.includes('ON_BEHALF')
+          ? 'UserSettings.emailConnector.sharing.sendMode.refused.AS'
+          : 'UserSettings.emailConnector.sharing.sendMode.refused';
+        return this.$t(key, { 0: new Date(refused).toLocaleDateString(language) });
       }
       return this.sendModes.includes(this.currentSendMode) ? '' : this.$t('UserSettings.emailConnector.sharing.sendMode.unavailable');
     },
