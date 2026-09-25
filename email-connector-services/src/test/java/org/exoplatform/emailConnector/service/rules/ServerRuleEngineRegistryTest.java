@@ -159,11 +159,14 @@ public class ServerRuleEngineRegistryTest {
                  assertThrows(ServerRuleUnsupportedException.class, () -> noop.listRules(session)).getMessage());
     assertEquals(ServerRuleUnsupportedException.RULES_UNSUPPORTED,
                  assertThrows(ServerRuleUnsupportedException.class,
-                              () -> noop.saveRule(session, new ServerRule("r", "n", true))).getMessage());
+                              () -> noop.saveRule(session, new ServerRule("r", "n", true, true, List.of(), List.of(), false), null))
+                                  .getMessage());
     assertEquals(ServerRuleUnsupportedException.RULES_UNSUPPORTED,
-                 assertThrows(ServerRuleUnsupportedException.class, () -> noop.deleteRule(session, "r")).getMessage());
+                 assertThrows(ServerRuleUnsupportedException.class, () -> noop.deleteRule(session, "r", null)).getMessage());
     assertEquals(ServerRuleUnsupportedException.RULES_UNSUPPORTED,
-                 assertThrows(ServerRuleUnsupportedException.class, () -> noop.reconcile(session, List.of())).getMessage());
+                 assertThrows(ServerRuleUnsupportedException.class, () -> noop.publishRules(session, null)).getMessage());
+    assertEquals(ServerRuleUnsupportedException.RULES_UNSUPPORTED,
+                 assertThrows(ServerRuleUnsupportedException.class, () -> noop.reconcile(session, List.of(), null)).getMessage());
   }
 
   /**
