@@ -184,6 +184,14 @@ public class EmailConnectorUtils {
   // is honestly unable to promise anything came of it.
   public static final String   THREAD_AI_SUMMARY_REQUESTED = "exo.email.threadAiSummaryRequested";
 
+  // A REQUEST, as THREAD_AI_SUMMARY_REQUESTED is (EXO-90654): the owner's mail filters
+  // queued matches for an assistant. Source = the owner's username, data = the ids of
+  // the EMAIL_FILTER_MATCH rows now PENDING. A deployment with no assistant glue leaves
+  // them pending, which the mail's Automations panel says, and the rule's other actions
+  // wait with them: they run when the glue reports the assistant done, through
+  // EmailFilterService.applyPostActions.
+  public static final String   FILTER_AGENT_REQUESTED      = "exo.email.filterAgentRequested";
+
   public static final String   EMAIL_FEATURE           = "email";
 
   private static final int     DEFAULT_AVATAR_WIDTH    = 350;
