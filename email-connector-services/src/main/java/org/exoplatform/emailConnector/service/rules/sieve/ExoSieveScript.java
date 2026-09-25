@@ -478,10 +478,13 @@ public final class ExoSieveScript {
      * @throws IllegalArgumentException with a message code when a value is invalid
      */
     public Vacation {
-      if (text == null || text.isBlank() || text.length() > MAX_TEXT_LENGTH || text.indexOf('\0') >= 0) {
+      if (text == null || text.isBlank() || text.indexOf('\0') >= 0) {
         throw new IllegalArgumentException("emailConnector.absence.text.invalid");
       }
-      text = text.replace("\r\n", "\n").replace('\r', '\n').replace("\n", EOL);
+      text = storedText(text);
+      if (text.length() > MAX_TEXT_LENGTH) {
+        throw new IllegalArgumentException("emailConnector.absence.text.invalid");
+      }
       if (subject == null || subject.isBlank() || subject.length() > MAX_SUBJECT_LENGTH || subject.indexOf('\r') >= 0
           || subject.indexOf('\n') >= 0 || subject.indexOf('\0') >= 0) {
         throw new IllegalArgumentException("emailConnector.absence.subject.invalid");
@@ -502,6 +505,17 @@ public final class ExoSieveScript {
           throw new IllegalArgumentException("emailConnector.absence.timeZone.invalid", e);
         }
       }
+    }
+
+    /**
+     * A text as the header stores it: every line break CRLF. The length bound applies to
+     * this form, so what is accepted on the way in is also read back from the header.
+     *
+     * @param text the text, any line breaks
+     * @return the text with CRLF line breaks
+     */
+    public static String storedText(String text) {
+      return text.replace("\r\n", "\n").replace('\r', '\n').replace("\n", EOL);
     }
 
     /**
