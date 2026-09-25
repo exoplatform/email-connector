@@ -753,11 +753,15 @@ public class UserEmailSettingRestTest {
   @Test
   void absenceReadAndWrite() throws Exception {
     AbsenceSettings settings = new AbsenceSettings(null, "sieve", null, VacationState.NONE, null, 7);
-    when(emailAbsenceService.getAbsence(SIMPLE_USER, null)).thenReturn(settings);
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, null, null)).thenReturn(settings);
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.engine").value("sieve"))
            .andExpect(jsonPath("$.vacationState").value("NONE"));
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, null, "Europe/Paris")).thenReturn(settings);
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence?timeZone=Europe/Paris").with(testSimpleUser()))
+           .andExpect(status().isOk());
+    verify(emailAbsenceService).getAbsence(SIMPLE_USER, null, "Europe/Paris");
 
     when(emailAbsenceService.setVacation(eq(SIMPLE_USER), eq(null), any(), eq(true))).thenReturn(settings);
     mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation?republish=true").with(testSimpleUser())
@@ -789,7 +793,7 @@ public class UserEmailSettingRestTest {
   @Test
   void absenceFromASharedMailboxIsForbidden() throws Exception {
     IllegalAccessException refusal = new IllegalAccessException(EmailAbsenceService.OWN_MAILBOX_ONLY);
-    when(emailAbsenceService.getAbsence(SIMPLE_USER, 12L)).thenThrow(refusal);
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, 12L, null)).thenThrow(refusal);
     when(emailAbsenceService.getStatus(SIMPLE_USER, 12L)).thenThrow(refusal);
     when(emailAbsenceService.setVacation(eq(SIMPLE_USER), eq(12L), any(), eq(false))).thenThrow(refusal);
     doThrow(refusal).when(emailAbsenceService).disableVacation(SIMPLE_USER, 12L);
@@ -864,7 +868,7 @@ public class UserEmailSettingRestTest {
            .andExpect(status().isConflict())
            .andExpect(jsonPath("$.message").value(ServerRuleConflictException.MODIFIED_OUTSIDE))
            .andExpect(jsonPath("$.scriptName").value("exo-rules"));
-    when(emailAbsenceService.getAbsence(SIMPLE_USER, null)).thenThrow(new ServerRuleUnavailableException(ServerRuleUnavailableException.SERVER_UNREACHABLE));
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, null, null)).thenThrow(new ServerRuleUnavailableException(ServerRuleUnavailableException.SERVER_UNREACHABLE));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence").with(testSimpleUser()))
            .andExpect(status().isBadGateway())
            .andExpect(status().reason(ServerRuleUnavailableException.SERVER_UNREACHABLE));

@@ -898,6 +898,8 @@ public class UserEmailSettingRest {
    * @param request the HTTP request, carrying the authenticated user
    * @param delegationId the share the request is made from; any value is refused, the
    *          automatic reply being a setting of the caller's own mailbox only
+   * @param timeZone the caller's IANA zone, as the browser reports it; the days of a
+   *          reply the server stores as instants are answered in it
    * @return the section
    */
   @GetMapping("/absence")
@@ -907,7 +909,8 @@ public class UserEmailSettingRest {
           + "(email.connector.rulesEngine[.<connectorId>]): what the engine can do (capabilities), the reply the server holds "
           + "(vacation, without any copy kept in eXo), and its state -- OWN, ELSEWHERE (another client's active script may send "
           + "its own reply; foreignScriptName names it), MODIFIED (eXo's script changed outside eXo), INACTIVE (the server no "
-          + "longer runs eXo's script) or NONE. Own mailbox only: with delegationId the answer is 403.")
+          + "longer runs eXo's script) or NONE. On BlueMind the server holds one reply per mailbox, whoever set it: it is "
+          + "answered OWN, its days in timeZone. Own mailbox only: with delegationId the answer is 403.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.absence.ownMailboxOnly), or the connector may not be used"),
       @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected"),
@@ -915,9 +918,13 @@ public class UserEmailSettingRest {
   public AbsenceSettings getAbsence(HttpServletRequest request,
                                     @Parameter(description = "The share the request is made from; refused")
                                     @RequestParam(name = "delegationId", required = false)
-                                    Long delegationId) {
+                                    Long delegationId,
+                                    @Parameter(description = "The caller's IANA time zone; the days of a reply the mail server "
+                                        + "stores as instants (BlueMind) are answered in it")
+                                    @RequestParam(name = "timeZone", required = false)
+                                    String timeZone) {
     try {
-      return emailAbsenceService.getAbsence(request.getRemoteUser(), delegationId);
+      return emailAbsenceService.getAbsence(request.getRemoteUser(), delegationId, timeZone);
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {

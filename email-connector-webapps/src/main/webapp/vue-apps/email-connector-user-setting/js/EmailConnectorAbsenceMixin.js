@@ -53,6 +53,18 @@ export default {
   }),
   computed: {
     /**
+     * Why the reply cannot be managed from eXo, in words: "not available yet" when the
+     * mail server's engine is there but eXo has no client for it yet (BlueMind until its
+     * client library is published), else "set it in your webmail".
+     *
+     * @returns {String} the localized line
+     */
+    unsupportedMessage() {
+      return this.absence?.capabilities?.reasonCode === 'emailConnector.rules.bluemind.transportMissing'
+        ? this.$t('UserSettings.emailConnector.absence.row.notYetAvailable')
+        : this.$t('UserSettings.emailConnector.absence.row.unsupported');
+    },
+    /**
      * Whether the engine of the user's connector can hold a reply.
      *
      * @returns {Boolean} true when the probe answered the reply supported
