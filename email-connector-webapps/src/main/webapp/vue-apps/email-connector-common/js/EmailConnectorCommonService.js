@@ -315,3 +315,88 @@ export function saveReadReceiptSettings(settings) {
     }
   });
 }
+
+/**
+ * Turns a refused absence request into an Error carrying the server's message code
+ * ("emailConnector.absence.*") as its message, and, for a 409, the name of the script
+ * the conflict is about as `scriptName`, so the screen can say why in the user's words.
+ *
+ * @param {Response} resp - the refused answer
+ * @param {string} fallback - the message when the answer carries no code
+ * @returns {Promise<never>} rejected with the error
+ */
+function absenceError(resp, fallback) {
+  return resp.json()
+    .catch(() => ({}))
+    .then(body => {
+      const error = new Error(body?.message || fallback);
+      error.status = resp?.status;
+      error.scriptName = body?.scriptName;
+      throw error;
+    });
+}
+
+/**
+ * The caller's automatic reply section, read live from their mail server: what the
+ * engine can do, the reply the server holds, and its state (OWN, ELSEWHERE, MODIFIED,
+ * INACTIVE or NONE).
+ *
+ * @returns {Promise<object>} {capabilities, engine, vacation, vacationState, foreignScriptName, vacationDays}
+ */
+export function getAbsence() {
+  return fetch('/email-connector/rest/user-email-setting/absence', {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when reading the automatic reply')));
+}
+
+/**
+ * Writes the caller's automatic reply on their mail server.
+ *
+ * @param {object} vacation - {enabled, start, end, subject, text}; the browser's time zone is added
+ * @param {boolean} republish - overwrite eXo's own script although it changed outside eXo
+ * @returns {Promise<object>} the section after the write, capabilities not re-read
+ */
+export function saveVacation(vacation, republish) {
+  return fetch(`/email-connector/rest/user-email-setting/absence/vacation${republish ? '?republish=true' : ''}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({
+      enabled: !!vacation?.enabled,
+      start: vacation?.start || null,
+      end: vacation?.end || null,
+      subject: vacation?.subject || '',
+      text: vacation?.text || '',
+      timeZone: new Intl.DateTimeFormat().resolvedOptions().timeZone,
+    })
+  }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when saving the automatic reply')));
+}
+
+/**
+ * Switches the caller's automatic reply off; its text stays on the server.
+ *
+ * @returns {Promise<void>} resolved once switched off
+ */
+export function disableVacation() {
+  return fetch('/email-connector/rest/user-email-setting/absence/vacation', {
+    credentials: 'include',
+    method: 'DELETE'
+  }).then(resp => (resp?.ok ? null : absenceError(resp, 'Error when switching the automatic reply off')));
+}
+
+/**
+ * The dates-only summary of the caller's automatic reply, for the mailbox band.
+ *
+ * @returns {Promise<object>} {enabled, start, end, timeZone, source, updatedDate}
+ */
+export function getAbsenceStatus() {
+  return fetch('/email-connector/rest/user-email-setting/absence/status', {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when reading the automatic reply status')));
+}
