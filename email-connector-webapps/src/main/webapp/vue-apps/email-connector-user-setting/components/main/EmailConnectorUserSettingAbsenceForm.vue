@@ -18,10 +18,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <!-- The automatic reply's form: on/off, an optional first and last day in the user's
        own time zone, a one-line subject and a plain-text message. What the mail server
        decides on its own (once per sender per N days, never to lists or automated mail)
-       is stated, not editable. -->
+       is stated, not editable. Its Save and Cancel are the drawer's footer, which calls
+       submit() and reads the can-save event. A plain block layout, each hint under the
+       field it qualifies with its own margin, so the message's counter never sits on
+       the hint below it. -->
   <v-form
     v-model="valid"
-    class="d-flex flex-column"
     @submit.prevent="submit">
     <v-switch
       v-model="enabled"
@@ -75,13 +77,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :rules="[required, withinLimit]"
       :counter="MAX_TEXT"
       :counter-value="storedLength"
+      class="mt-2"
       rows="5"
       outlined
       auto-grow />
-    <div class="caption text-sub-title">
+    <div class="caption text-sub-title mt-2">
       {{ $t('UserSettings.emailConnector.absence.form.rules', { 0: days }) }}
     </div>
-    <div class="caption text-sub-title">
+    <div class="caption text-sub-title mt-1">
       {{ $t('UserSettings.emailConnector.absence.form.ownMailbox') }}
     </div>
     <div
@@ -89,15 +92,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       class="caption error--text mt-2"
       role="alert">
       {{ error }}
-    </div>
-    <div class="d-flex justify-end mt-3">
-      <v-btn
-        :disabled="!valid || !windowValid"
-        :loading="saving"
-        class="btn btn-primary"
-        type="submit">
-        {{ $t('UserSettings.emailConnector.absence.form.save') }}
-      </v-btn>
     </div>
   </v-form>
 </template>
@@ -121,7 +115,6 @@ export default {
     capabilities: { type: Object, default: null },
     // Days between two replies to one sender.
     days: { type: Number, default: 7 },
-    saving: { type: Boolean, default: false },
     error: { type: String, default: null },
   },
   data: () => ({
@@ -153,6 +146,28 @@ export default {
      */
     windowValid() {
       return !(this.hasStart && this.hasEnd && this.start && this.end && this.end < this.start);
+    },
+    /**
+     * Whether the value may be saved: every field valid and the window a window.
+     *
+     * @returns {Boolean} true when it may be saved
+     */
+    canSave() {
+      return this.valid && this.windowValid;
+    },
+  },
+  watch: {
+    /**
+     * Tells the drawer whether its Save button may be used.
+     *
+     * @param {Boolean} value whether the value may be saved
+     * @returns {void}
+     */
+    canSave: {
+      immediate: true,
+      handler(value) {
+        this.$emit('can-save', value);
+      },
     },
   },
   created() {
@@ -215,11 +230,14 @@ export default {
       return !/[\r\n]/.test(value || '') || this.$t('UserSettings.emailConnector.absence.form.oneLine');
     },
     /**
-     * Hands the value to the section, which writes it.
+     * Hands the value to the drawer, which writes it; nothing when it may not be saved.
      *
      * @returns {void}
      */
     submit() {
+      if (!this.canSave) {
+        return;
+      }
       this.$emit('save', {
         enabled: this.enabled,
         start: this.hasStart ? this.start : null,
