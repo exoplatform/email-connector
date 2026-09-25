@@ -140,7 +140,7 @@ public class SieveScriptPolicy {
    */
   public PublishOutcome publish(ManageSieveClient client,
                                 ExoSieveScript script) throws ManageSieveException, ServerRuleConflictException {
-    String text = script.toScript(SieveStringEncoding.forCapabilities(client.getCapabilities()));
+    String text = script.toScript(client.getCapabilities());
     String hash = ExoSieveScript.sha256(text);
     boolean exoFirst = exoFirst(script);
     List<SieveScriptInfo> scripts = client.listScripts();
@@ -385,7 +385,7 @@ public class SieveScriptPolicy {
    * @throws ManageSieveException when the server refuses a command or fails
    */
   public String store(ManageSieveClient client, ExoSieveScript script) throws ManageSieveException {
-    String text = script.toScript(SieveStringEncoding.forCapabilities(client.getCapabilities()));
+    String text = script.toScript(client.getCapabilities());
     client.checkScript(text);
     put(client, SCRIPT_NAME, text);
     return ExoSieveScript.sha256(text);

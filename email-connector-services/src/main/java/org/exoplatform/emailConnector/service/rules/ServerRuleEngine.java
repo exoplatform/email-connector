@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service.rules;
 import java.time.ZoneId;
 import java.util.List;
 
+import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
@@ -26,6 +27,7 @@ import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.HopRef;
 import org.exoplatform.emailConnector.model.ReconcileReport;
 import org.exoplatform.emailConnector.model.ServerRule;
+import org.exoplatform.emailConnector.model.ServerRuleSet;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.VacationSetting;
@@ -43,9 +45,8 @@ import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
  * <p>
  * What the server can do is answered by {@link #probe}, decided from what the server
  * answers after the engine's own secure handshake, never from an IMAP capability. The
- * rules verbs are declared here from the first consumer on, and answer
- * {@link ServerRuleUnsupportedException} until the server-rules eXip implements them;
- * an engine never throws {@link UnsupportedOperationException}.
+ * rules verbs answer {@link ServerRuleUnsupportedException} for an engine that does not
+ * implement them; an engine never throws {@link UnsupportedOperationException}.
  */
 public interface ServerRuleEngine {
 
@@ -137,62 +138,115 @@ public interface ServerRuleEngine {
   }
 
   /**
-   * The caller's server rules, in the order the server applies them.
+   * The server rules eXo manages for the caller, in the order the server applies them,
+   * with where they stand. An engine that cannot read rules another client wrote answers
+   * eXo's own only, and names the script those live in.
    *
    * @param session the caller's own session
-   * @return the rules
+   * @return the rules; {@link ServerRuleSet#none()} when eXo manages none
    * @throws ServerRuleUnavailableException when the server cannot be used
-   * @throws ServerRuleUnsupportedException until an engine implements server rules
+   * @throws ServerRuleUnsupportedException when this engine does not implement server
+   *           rules
    */
-  default List<ServerRule> listRules(MailboxAclSession session) throws ServerRuleUnavailableException,
+  default ServerRuleSet listRules(MailboxAclSession session) throws ServerRuleUnavailableException,
+                                                             ServerRuleUnsupportedException {
+    throw new ServerRuleUnsupportedException(ServerRuleUnsupportedException.RULES_UNSUPPORTED);
+  }
+
+  /**
+   * Creates or replaces one of the caller's server rules, and publishes. A rule without
+   * a reference is appended under a new one; a rule with a reference replaces the rule
+   * holding it, in place. Hops are not written here: {@link #reconcile} owns them.
+   * Whatever else the
+   * server holds for the caller -- the automatic reply, the other rules, another
+   * client's scripts -- is kept as it is.
+   *
+   * @param session the caller's own session
+   * @param rule the rule, its folders resolved, validated again by the engine
+   * @param expectedScriptHash the SHA-256 of eXo's script as eXo last wrote it; when not
+   *          null and the server holds something else, nothing is written. Null to
+   *          overwrite eXo's own script whatever it holds ("Re-publish")
+   * @return the rules as the server holds them after the write
+   * @throws ObjectNotFoundException when the reference names no rule of eXo's
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when another client's active state is in the way,
+   *           or eXo's script changed outside eXo; nothing was written
+   * @throws ServerRuleUnsupportedException when this engine or server cannot express the
+   *           rule
+   */
+  default ServerRuleSet saveRule(MailboxAclSession session,
+                                 ServerRule rule,
+                                 String expectedScriptHash) throws ObjectNotFoundException,
+                                                            ServerRuleUnavailableException,
+                                                            ServerRuleConflictException,
+                                                            ServerRuleUnsupportedException {
+    throw new ServerRuleUnsupportedException(ServerRuleUnsupportedException.RULES_UNSUPPORTED);
+  }
+
+  /**
+   * Deletes one of the caller's server rules, and publishes.
+   *
+   * @param session the caller's own session
+   * @param ref the rule's reference
+   * @param expectedScriptHash as for {@link #saveRule}
+   * @return the rules as the server holds them after the write
+   * @throws ObjectNotFoundException when no rule of eXo's holds the reference
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when another client's active state is in the way,
+   *           or eXo's script changed outside eXo; nothing was written
+   * @throws ServerRuleUnsupportedException when this engine does not implement server
+   *           rules
+   */
+  default ServerRuleSet deleteRule(MailboxAclSession session,
+                                   String ref,
+                                   String expectedScriptHash) throws ObjectNotFoundException,
+                                                              ServerRuleUnavailableException,
+                                                              ServerRuleConflictException,
+                                                              ServerRuleUnsupportedException {
+    throw new ServerRuleUnsupportedException(ServerRuleUnsupportedException.RULES_UNSUPPORTED);
+  }
+
+  /**
+   * Writes eXo's rules as the server holds them, unchanged, and makes the server run
+   * them: "Re-activate" after another client activated its own script, or "Re-publish"
+   * after eXo's script was edited outside eXo (with a null hash).
+   *
+   * @param session the caller's own session
+   * @param expectedScriptHash as for {@link #saveRule}
+   * @return the rules as the server holds them after the write
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when another client's active state is in the way,
+   *           or eXo's script changed outside eXo; nothing was written
+   * @throws ServerRuleUnsupportedException when this engine does not implement server
+   *           rules
+   */
+  default ServerRuleSet publishRules(MailboxAclSession session,
+                                     String expectedScriptHash) throws ServerRuleUnavailableException,
+                                                                ServerRuleConflictException,
                                                                 ServerRuleUnsupportedException {
     throw new ServerRuleUnsupportedException(ServerRuleUnsupportedException.RULES_UNSUPPORTED);
   }
 
   /**
-   * Creates or replaces one of the caller's server rules.
-   *
-   * @param session the caller's own session
-   * @param rule the rule
-   * @return the rule as saved
-   * @throws ServerRuleUnavailableException when the server cannot be used
-   * @throws ServerRuleConflictException when another client's active state is in the way
-   * @throws ServerRuleUnsupportedException until an engine implements server rules
-   */
-  default ServerRule saveRule(MailboxAclSession session, ServerRule rule) throws ServerRuleUnavailableException,
-                                                                          ServerRuleConflictException,
-                                                                          ServerRuleUnsupportedException {
-    throw new ServerRuleUnsupportedException(ServerRuleUnsupportedException.RULES_UNSUPPORTED);
-  }
-
-  /**
-   * Deletes one of the caller's server rules.
-   *
-   * @param session the caller's own session
-   * @param ref the rule's reference
-   * @throws ServerRuleUnavailableException when the server cannot be used
-   * @throws ServerRuleConflictException when another client's active state is in the way
-   * @throws ServerRuleUnsupportedException until an engine implements server rules
-   */
-  default void deleteRule(MailboxAclSession session, String ref) throws ServerRuleUnavailableException,
-                                                                 ServerRuleConflictException,
-                                                                 ServerRuleUnsupportedException {
-    throw new ServerRuleUnsupportedException(ServerRuleUnsupportedException.RULES_UNSUPPORTED);
-  }
-
-  /**
-   * Makes the server hold exactly the hops eXo's own rules need.
+   * Makes the server hold exactly the hops eXo's own rules need: a hop missing or
+   * different is published, a hop no eXo rule needs any more is removed, every other
+   * rule is kept as it is. Nothing is written when nothing differs.
    *
    * @param session the caller's own session
    * @param hops the hops to keep
-   * @return what was done
+   * @param expectedScriptHash as for {@link #saveRule}
+   * @return what was done, and the rules afterwards
    * @throws ServerRuleUnavailableException when the server cannot be used
-   * @throws ServerRuleConflictException when another client's active state is in the way
-   * @throws ServerRuleUnsupportedException until an engine implements server rules
+   * @throws ServerRuleConflictException when another client's active state is in the way,
+   *           or eXo's script changed outside eXo; nothing was written
+   * @throws ServerRuleUnsupportedException when this engine or server cannot express a
+   *           hop
    */
-  default ReconcileReport reconcile(MailboxAclSession session, List<HopRef> hops) throws ServerRuleUnavailableException,
-                                                                                  ServerRuleConflictException,
-                                                                                  ServerRuleUnsupportedException {
+  default ReconcileReport reconcile(MailboxAclSession session,
+                                    List<HopRef> hops,
+                                    String expectedScriptHash) throws ServerRuleUnavailableException,
+                                                               ServerRuleConflictException,
+                                                               ServerRuleUnsupportedException {
     throw new ServerRuleUnsupportedException(ServerRuleUnsupportedException.RULES_UNSUPPORTED);
   }
 }

@@ -23,10 +23,14 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
 
+import org.exoplatform.emailConnector.model.ServerRule;
+import org.exoplatform.emailConnector.model.ServerRule.Action;
+import org.exoplatform.emailConnector.model.ServerRule.Condition;
 import org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript.Vacation;
 
 /**
@@ -241,16 +245,173 @@ public class ExoSieveScriptTest {
   }
 
   /**
-   * Rules are held but never serialised here: the filters eXip owns their generator, and
-   * a script with rules files or stops mail as far as the wrapper ordering is concerned.
+   * The reply and two rules in one script, byte for byte: the {@code require} line is the
+   * union of both sections in its fixed order, the vacation section comes first, then the
+   * rules marker and each enabled rule -- flags, then the filing, then {@code stop}.
    */
   @Test
-  public void testRulesAreHeldButNotSerialised() {
-    ExoSieveScript withRules = ExoSieveScript.parse("# exo-managed-v1: {\"v\":1,\"rules\":[{\"id\":1}]}\r\n").orElseThrow();
-    assertTrue(withRules.filesOrStops());
-    assertEquals(1, withRules.getRules().size());
-    assertThrows(IllegalStateException.class, withRules::toScript);
+  public void testLayoutOfAReplyAndTwoRules() {
+    ExoSieveScript script = ExoSieveScript.empty()
+                                          .withVacation(vacation(true,
+                                                                 LocalDate.of(2026, 10, 1),
+                                                                 LocalDate.of(2026, 10, 15),
+                                                                 "Absent",
+                                                                 "Back soon"))
+                                          .withRules(List.of(acmeInvoices(), listsRead()));
+    String expected = "# exo-managed-v1: {\"v\":1,\"vacation\":{\"enabled\":true,\"start\":\"2026-10-01\","
+        + "\"end\":\"2026-10-15\",\"zone\":\"Europe/Paris\",\"subject\":\"Absent\",\"text\":\"Back soon\","
+        + "\"handle\":\"" + HANDLE + "\",\"days\":7},\"rules\":["
+        + "{\"id\":\"1\",\"name\":\"Acme invoices\",\"enabled\":true,\"match\":\"ALL\",\"conditions\":["
+        + "{\"field\":\"FROM\",\"operator\":\"MATCHES_DOMAIN\",\"value\":\"acme.com\"},"
+        + "{\"field\":\"SUBJECT\",\"operator\":\"CONTAINS\",\"value\":\"invoice\"}],"
+        + "\"actions\":[{\"type\":\"STAR\"},{\"type\":\"MOVE_TO_FOLDER\",\"folderKey\":\"CUSTOM:12\",\"folder\":\"Accounting\"}],"
+        + "\"stop\":true},"
+        + "{\"id\":\"2\",\"name\":\"Lists read\",\"enabled\":true,\"match\":\"ALL\",\"conditions\":["
+        + "{\"field\":\"IS_LIST\",\"operator\":\"IS_TRUE\"}],\"actions\":[{\"type\":\"MARK_READ\"}],\"stop\":false}]}\r\n"
+        + "require [\"vacation\", \"date\", \"relational\", \"fileinto\", \"imap4flags\"];\r\n"
+        + "# exo-vacation\r\n"
+        + "if allof(currentdate :zone \"+0200\" :value \"ge\" \"date\" \"2026-10-01\",\r\n"
+        + "         currentdate :zone \"+0200\" :value \"le\" \"date\" \"2026-10-15\") {\r\n"
+        + "  vacation :days 7 :subject \"Absent\" :handle \"" + HANDLE + "\" \"Back soon\";\r\n"
+        + "}\r\n"
+        + "# exo-rules\r\n"
+        + "# exo-rule 1\r\n"
+        + "if allof(anyof(address :domain :is \"from\" \"acme.com\", address :domain :matches \"from\" \"*.acme.com\"), "
+        + "header :contains \"subject\" \"invoice\") {\r\n"
+        + "  addflag \"\\\\Flagged\";\r\n"
+        + "  fileinto \"Accounting\";\r\n"
+        + "  stop;\r\n"
+        + "}\r\n"
+        + "# exo-rule 2\r\n"
+        + "if anyof(exists \"list-id\", exists \"list-post\", exists \"list-unsubscribe\") {\r\n"
+        + "  addflag \"\\\\Seen\";\r\n"
+        + "}\r\n";
+    assertEquals(expected, script.toScript());
+  }
+
+  /**
+   * Rules only: {@code fileinto} and {@code imap4flags} alone are required, the vacation
+   * section is absent, the rules marker stays where it is.
+   */
+  @Test
+  public void testRulesWithoutAReply() {
+    String text = ExoSieveScript.empty().withRules(List.of(acmeInvoices())).toScript();
+    String body = text.substring(text.indexOf("\r\n") + 2);
+    assertTrue(body.startsWith("require [\"fileinto\", \"imap4flags\"];\r\n# exo-rules\r\n# exo-rule 1\r\n"), body);
+    assertFalse(body.contains(ExoSieveScript.VACATION_MARKER));
+    String flagsOnly = ExoSieveScript.empty().withRules(List.of(listsRead())).toScript();
+    assertTrue(flagsOnly.contains("require [\"imap4flags\"];\r\n"));
+  }
+
+  /**
+   * A disabled rule stays in the header and emits nothing: no block, no extension.
+   */
+  @Test
+  public void testADisabledRuleIsRememberedAndNotEmitted() {
+    ServerRule disabled = new ServerRule("1", "Off", false, true, acmeInvoices().conditions(), acmeInvoices().actions(), true);
+    ExoSieveScript script = ExoSieveScript.empty().withRules(List.of(disabled));
+    String text = script.toScript();
+    assertTrue(text.contains("\"name\":\"Off\",\"enabled\":false"));
+    assertFalse(text.contains("require"));
+    assertFalse(text.contains("fileinto \""));
+    assertTrue(text.endsWith("\r\n# exo-rules\r\n"));
+    assertFalse(script.emitsRules());
+    assertFalse(script.filesOrStops());
+  }
+
+  /**
+   * Whether the script files or stops follows what its enabled rules do: a rule that only
+   * flags neither files nor stops, a filing action or a {@code stop} does; the reply
+   * never does.
+   */
+  @Test
+  public void testFilesOrStopsFollowsTheRules() {
     assertFalse(ExoSieveScript.empty().withVacation(vacation(true, null, null, "Away", "t")).filesOrStops());
+    assertFalse(ExoSieveScript.empty().withRules(List.of(listsRead())).filesOrStops());
+    assertTrue(ExoSieveScript.empty().withRules(List.of(listsRead(), acmeInvoices())).filesOrStops());
+    ServerRule stopOnly = new ServerRule("3", "Stop", true, true, listsRead().conditions(), listsRead().actions(), true);
+    assertTrue(ExoSieveScript.empty().withRules(List.of(stopOnly)).filesOrStops());
+  }
+
+  /**
+   * text → model → text is byte-equal with rules and a reply, and the reply's write keeps
+   * the rules as they were.
+   */
+  @Test
+  public void testRulesRoundTripAndSurviveAReplyEdit() {
+    ExoSieveScript script = ExoSieveScript.empty()
+                                          .withVacation(vacation(true, null, null, "Away", "t"))
+                                          .withRules(List.of(acmeInvoices(), listsRead()));
+    String text = script.toScript(SieveStringEncoding.ENCODED_CHARACTER);
+    ExoSieveScript parsed = ExoSieveScript.parse(text).orElseThrow();
+    assertEquals(script, parsed);
+    assertEquals(text, parsed.toScript(SieveStringEncoding.ENCODED_CHARACTER));
+    String edited = parsed.withVacation(vacation(false, null, null, "Away", "t")).toScript(SieveStringEncoding.ENCODED_CHARACTER);
+    String rulesBefore = text.substring(text.indexOf(ExoSieveScript.RULES_MARKER));
+    assertEquals(rulesBefore, edited.substring(edited.indexOf(ExoSieveScript.RULES_MARKER)));
+  }
+
+  /**
+   * A rules entry eXo would not write makes the header unreadable as eXo's: answered
+   * empty, never interpreted.
+   */
+  @Test
+  public void testAnInvalidRuleMakesTheHeaderOpaque() {
+    String prefix = "# exo-managed-v1: {\"v\":1,\"rules\":[";
+    assertEquals(Optional.empty(), ExoSieveScript.parse(prefix + "{\"id\":1}]}\r\n"));
+    String valid = "{\"id\":\"1\",\"name\":\"n\",\"enabled\":true,\"match\":\"ALL\",\"conditions\":[{\"field\":\"IS_LIST\","
+        + "\"operator\":\"IS_TRUE\"}],\"actions\":[%s],\"stop\":false}";
+    assertTrue(ExoSieveScript.parse(prefix + String.format(valid, "{\"type\":\"STAR\"}") + "]}\r\n").isPresent());
+    for (String action : List.of("{\"type\":\"REDIRECT\",\"folder\":\"x@evil.example\"}",
+                                 "{\"type\":\"MOVE_TO_FOLDER\",\"folder\":\"a\\nb\"}",
+                                 "{\"type\":\"TAG\",\"keyword\":\"\\\\Deleted\"}",
+                                 "{\"type\":\"STAR\"},{\"type\":\"STAR\"}")) {
+      assertEquals(Optional.empty(), ExoSieveScript.parse(prefix + String.format(valid, action) + "]}\r\n"), action);
+    }
+    String twice = String.format(valid, "{\"type\":\"STAR\"}");
+    assertEquals(Optional.empty(), ExoSieveScript.parse(prefix + twice + "," + twice + "]}\r\n"));
+  }
+
+  /**
+   * Every rule the model holds has its own reference.
+   */
+  @Test
+  public void testWithRulesNeedsUniqueReferences() {
+    assertThrows(IllegalArgumentException.class, () -> ExoSieveScript.empty().withRules(List.of(acmeInvoices().withRef(null))));
+    assertThrows(IllegalArgumentException.class,
+                 () -> ExoSieveScript.empty().withRules(List.of(acmeInvoices(), listsRead().withRef("1"))));
+  }
+
+  /**
+   * Mail from acme.com about an invoice: starred, filed into Accounting, the rules after it
+   * skipped.
+   *
+   * @return the rule, reference 1
+   */
+  static ServerRule acmeInvoices() {
+    return new ServerRule("1",
+                          "Acme invoices",
+                          true,
+                          true,
+                          List.of(new Condition("FROM", "MATCHES_DOMAIN", null, "acme.com"),
+                                  new Condition("SUBJECT", "CONTAINS", null, "invoice")),
+                          List.of(new Action("STAR", null, null, null), new Action("MOVE_TO_FOLDER", "CUSTOM:12", "Accounting", null)),
+                          true);
+  }
+
+  /**
+   * Mail from a list: marked read.
+   *
+   * @return the rule, reference 2
+   */
+  static ServerRule listsRead() {
+    return new ServerRule("2",
+                          "Lists read",
+                          true,
+                          true,
+                          List.of(new Condition("IS_LIST", "IS_TRUE", null, null)),
+                          List.of(new Action("MARK_READ", null, null, null)),
+                          false);
   }
 
   /**
@@ -271,8 +432,7 @@ public class ExoSieveScriptTest {
     assertEquals("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ExoSieveScript.sha256(""));
     ExoSieveScript one = ExoSieveScript.empty().withVacation(vacation(true, null, null, "Away", "one"));
     ExoSieveScript two = ExoSieveScript.empty().withVacation(vacation(true, null, null, "Away", "two"));
-    assertEquals(ExoSieveScript.sha256(one.toScript()), one.hash());
-    assertNotEquals(one.hash(), two.hash());
+    assertNotEquals(ExoSieveScript.sha256(one.toScript()), ExoSieveScript.sha256(two.toScript()));
   }
 
   /**

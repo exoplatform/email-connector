@@ -22,9 +22,12 @@ import static org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript.
 import java.security.cert.CertificateException;
 import java.time.Clock;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -32,12 +35,18 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.ForwardingSetting;
+import org.exoplatform.emailConnector.model.HopRef;
+import org.exoplatform.emailConnector.model.ReconcileReport;
+import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
+import org.exoplatform.emailConnector.model.ServerRuleSet;
+import org.exoplatform.emailConnector.model.ServerRulesState;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities.VocabularySource;
 import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.VacationSetting;
@@ -52,8 +61,10 @@ import org.exoplatform.services.log.Log;
 /**
  * The server-rule engine of a Sieve server (Stalwart, Dovecot/Pigeonhole), over
  * ManageSieve: the automatic reply is the vacation section of eXo's own script
- * {@value ExoSieveScript#SCRIPT_NAME}, read back from its self-describing header and
- * published through the one-active-script policy.
+ * {@value ExoSieveScript#SCRIPT_NAME}, the server rules its rules section; both are read
+ * back from its self-describing header and published through the one-active-script
+ * policy. Writing one section regenerates the other from the header, unchanged, so the
+ * reply and the rules live side by side and neither write loses the other.
  * <p>
  * One authenticated conversation per verb, as the caller, with the IMAP channel's
  * material the session resolves. What the server holds is read, never assumed: the
@@ -77,6 +88,9 @@ public class SieveRuleEngine implements ServerRuleEngine {
 
   /** The prefix of every {@code :handle} eXo writes. */
   static final String              HANDLE_PREFIX = "exo-vacation-";
+
+  /** The code of a rule eXo's script does not hold. */
+  public static final String       RULE_NOT_FOUND = "emailConnector.rules.notFound";
 
   private final ManageSieveConnector manageSieveConnector;
 
@@ -178,8 +192,7 @@ public class SieveRuleEngine implements ServerRuleEngine {
    * @return what the server holds after the write
    * @throws ServerRuleUnavailableException when the server cannot be used
    * @throws ServerRuleConflictException when the policy refuses, or eXo's script changed
-   *           outside eXo or holds rules this engine cannot write back; nothing was
-   *           written
+   *           outside eXo; nothing was written
    * @throws ServerRuleUnsupportedException when the server lacks {@code vacation}, or the
    *           date extensions a window needs
    */
@@ -202,10 +215,8 @@ public class SieveRuleEngine implements ServerRuleEngine {
         if (expectedScriptHash != null && !expectedScriptHash.equals(ExoSieveScript.sha256(text))) {
           throw new ServerRuleConflictException(ServerRuleConflictException.MODIFIED_OUTSIDE, SCRIPT_NAME);
         }
-        if (parsed.isPresent() && !parsed.get().getRules().isEmpty()) {
-          // Written back without its rules generator, the rules would be lost.
-          throw new ServerRuleConflictException(ServerRuleConflictException.MODIFIED_OUTSIDE, SCRIPT_NAME);
-        }
+        // The rules the header holds are regenerated as they are: the reply's write
+        // keeps them, byte for byte.
         base = parsed.orElse(base);
       }
       ExoSieveScript script = base.withVacation(toVacation(vacation, days, base.getVacation().orElse(null)));
@@ -221,6 +232,360 @@ public class SieveRuleEngine implements ServerRuleEngine {
     } finally {
       client.logout();
     }
+  }
+
+  /**
+   * The rules of eXo's script, and where they stand: running as eXo wrote them, stored
+   * but not run (another client activated its own script), or a script eXo cannot read
+   * as its own.
+   *
+   * @param session the caller's own session
+   * @return the rules
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   */
+  @Override
+  public ServerRuleSet listRules(MailboxAclSession session) throws ServerRuleUnavailableException {
+    ManageSieveClient client = open(session);
+    try {
+      return readRules(client);
+    } catch (ManageSieveException e) {
+      throw unavailable(e);
+    } finally {
+      client.logout();
+    }
+  }
+
+  /**
+   * Creates or replaces one rule in eXo's script, keeps everything else the script holds,
+   * and publishes.
+   *
+   * @param session the caller's own session
+   * @param rule the rule, folders resolved
+   * @param expectedScriptHash the hash of eXo's script as eXo last wrote it, or null to
+   *          overwrite it whatever it holds
+   * @return the rules after the write
+   * @throws ObjectNotFoundException when the rule names a reference eXo's script does
+   *           not hold
+   * @throws IllegalArgumentException when the rule, or the rule it replaces, is a hop
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when the policy refuses, or eXo's script changed
+   *           outside eXo; nothing was written
+   * @throws ServerRuleUnsupportedException when the server lacks an extension the rule
+   *           needs
+   */
+  @Override
+  public ServerRuleSet saveRule(MailboxAclSession session,
+                                ServerRule rule,
+                                String expectedScriptHash) throws ObjectNotFoundException,
+                                                           ServerRuleUnavailableException,
+                                                           ServerRuleConflictException,
+                                                           ServerRuleUnsupportedException {
+    ServerRule validated = rule.validated();
+    ManageSieveClient client = open(session);
+    try {
+      requireSupported(client, validated);
+      List<SieveScriptInfo> scripts = client.listScripts();
+      ExoSieveScript base = current(client, scripts, expectedScriptHash);
+      List<ServerRule> rules = new ArrayList<>(base.getRules());
+      String ref = validated.ref() == null ? nextRef(rules) : validated.ref();
+      int index = indexOf(rules, ref);
+      if (index < 0 && validated.ref() != null) {
+        throw new ObjectNotFoundException(RULE_NOT_FOUND);
+      }
+      if (validated.isHop() || index >= 0 && rules.get(index).isHop()) {
+        // Hops are the server half of eXo's own rules: written by reconciliation only.
+        throw new IllegalArgumentException(ServerRule.INVALID_ACTION);
+      }
+      if (index < 0) {
+        rules.add(validated.withRef(ref));
+      } else {
+        rules.set(index, validated.withRef(ref));
+      }
+      writeRules(client, scripts, base.withRules(rules));
+      return readRules(client);
+    } catch (ManageSieveException e) {
+      throw unavailable(e);
+    } finally {
+      client.logout();
+    }
+  }
+
+  /**
+   * Removes one rule from eXo's script, keeps everything else, and publishes.
+   *
+   * @param session the caller's own session
+   * @param ref the rule's reference
+   * @param expectedScriptHash as for {@link #saveRule}
+   * @return the rules after the write
+   * @throws ObjectNotFoundException when eXo's script holds no such rule
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when the policy refuses, or eXo's script changed
+   *           outside eXo; nothing was written
+   */
+  @Override
+  public ServerRuleSet deleteRule(MailboxAclSession session,
+                                  String ref,
+                                  String expectedScriptHash) throws ObjectNotFoundException,
+                                                             ServerRuleUnavailableException,
+                                                             ServerRuleConflictException {
+    ManageSieveClient client = open(session);
+    try {
+      List<SieveScriptInfo> scripts = client.listScripts();
+      ExoSieveScript base = current(client, scripts, expectedScriptHash);
+      List<ServerRule> rules = new ArrayList<>(base.getRules());
+      int index = indexOf(rules, ref);
+      if (index < 0) {
+        throw new ObjectNotFoundException(RULE_NOT_FOUND);
+      }
+      rules.remove(index);
+      writeRules(client, scripts, base.withRules(rules));
+      return readRules(client);
+    } catch (ManageSieveException e) {
+      throw unavailable(e);
+    } finally {
+      client.logout();
+    }
+  }
+
+  /**
+   * Writes eXo's script as its header holds it, and makes the server run it.
+   *
+   * @param session the caller's own session
+   * @param expectedScriptHash as for {@link #saveRule}
+   * @return the rules after the write
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when the policy refuses, or eXo's script changed
+   *           outside eXo; nothing was written
+   */
+  @Override
+  public ServerRuleSet publishRules(MailboxAclSession session,
+                                    String expectedScriptHash) throws ServerRuleUnavailableException,
+                                                               ServerRuleConflictException {
+    ManageSieveClient client = open(session);
+    try {
+      List<SieveScriptInfo> scripts = client.listScripts();
+      ExoSieveScript base = current(client, scripts, expectedScriptHash);
+      policy.publish(client, base);
+      return readRules(client);
+    } catch (ManageSieveException e) {
+      throw unavailable(e);
+    } finally {
+      client.logout();
+    }
+  }
+
+  /**
+   * Makes eXo's script hold exactly the given hops: each missing or different one is
+   * written, each hop no longer given is removed, every other rule is kept in its place.
+   * Nothing is written when nothing differs.
+   *
+   * @param session the caller's own session
+   * @param hops the hops eXo's rules need
+   * @param expectedScriptHash as for {@link #saveRule}
+   * @return what was done, and the rules afterwards
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when the policy refuses, or eXo's script changed
+   *           outside eXo; nothing was written
+   * @throws ServerRuleUnsupportedException when the server lacks {@code imap4flags}
+   */
+  @Override
+  public ReconcileReport reconcile(MailboxAclSession session,
+                                   List<HopRef> hops,
+                                   String expectedScriptHash) throws ServerRuleUnavailableException,
+                                                              ServerRuleConflictException,
+                                                              ServerRuleUnsupportedException {
+    Map<String, ServerRule> wanted = new LinkedHashMap<>();
+    for (HopRef hop : hops == null ? List.<HopRef> of() : hops) {
+      ServerRule rule = hop.toRule().validated();
+      if (rule.ref() == null) {
+        throw new IllegalArgumentException(ServerRule.INVALID);
+      }
+      wanted.put(rule.ref(), rule);
+    }
+    ManageSieveClient client = open(session);
+    try {
+      for (ServerRule rule : wanted.values()) {
+        requireSupported(client, rule);
+      }
+      List<SieveScriptInfo> scripts = client.listScripts();
+      ExoSieveScript base = current(client, scripts, expectedScriptHash);
+      List<ServerRule> rules = new ArrayList<>();
+      List<String> published = new ArrayList<>();
+      List<String> removed = new ArrayList<>();
+      for (ServerRule existing : base.getRules()) {
+        ServerRule hop = wanted.remove(existing.ref());
+        if (hop != null && !existing.isHop()) {
+          // A user's rule under a hop's name: never replaced by a reconciliation.
+          throw new IllegalArgumentException(ServerRule.INVALID);
+        }
+        if (hop != null) {
+          rules.add(hop);
+          if (!hop.equals(existing)) {
+            published.add(hop.ref());
+          }
+        } else if (existing.isHop()) {
+          removed.add(existing.ref());
+        } else {
+          rules.add(existing);
+        }
+      }
+      for (ServerRule hop : wanted.values()) {
+        rules.add(hop);
+        published.add(hop.ref());
+      }
+      if (!published.isEmpty() || !removed.isEmpty()) {
+        writeRules(client, scripts, base.withRules(rules));
+      }
+      return new ReconcileReport(published, removed, readRules(client));
+    } catch (ManageSieveException e) {
+      throw unavailable(e);
+    } finally {
+      client.logout();
+    }
+  }
+
+  /**
+   * eXo's script as the server holds it, after the "changed outside eXo" check: its model,
+   * or an empty one when there is none yet. A script whose header eXo cannot read is never
+   * written over from the rules, even on "Re-publish": what it held -- the automatic reply
+   * included -- could not be written back, and an empty script would erase it.
+   *
+   * @param client the client
+   * @param scripts the account's scripts
+   * @param expectedScriptHash the hash eXo last wrote, or null to skip the check
+   * @return the model to write from
+   * @throws ManageSieveException when the script cannot be read
+   * @throws ServerRuleConflictException when eXo's script is not what eXo last wrote, or
+   *           cannot be read as eXo's
+   */
+  private ExoSieveScript current(ManageSieveClient client,
+                                 List<SieveScriptInfo> scripts,
+                                 String expectedScriptHash) throws ManageSieveException, ServerRuleConflictException {
+    if (!SieveScriptPolicy.exists(scripts, SCRIPT_NAME)) {
+      return ExoSieveScript.empty();
+    }
+    String text = client.getScript(SCRIPT_NAME);
+    Optional<ExoSieveScript> parsed = ExoSieveScript.parse(text);
+    if (parsed.isEmpty() || expectedScriptHash != null && !expectedScriptHash.equals(ExoSieveScript.sha256(text))) {
+      throw new ServerRuleConflictException(ServerRuleConflictException.MODIFIED_OUTSIDE, SCRIPT_NAME);
+    }
+    return parsed.orElse(ExoSieveScript.empty());
+  }
+
+  /**
+   * Writes a script whose rules changed: published -- stored, and made to run through the
+   * policy -- when it runs something or eXo's script is the one the server runs; stored
+   * only otherwise, so that saving a disabled rule never activates anything.
+   *
+   * @param client the client
+   * @param scripts the account's scripts, as read before the write
+   * @param script the script to write
+   * @throws ManageSieveException when a command fails
+   * @throws ServerRuleConflictException when the policy refuses; nothing was written
+   */
+  private void writeRules(ManageSieveClient client,
+                          List<SieveScriptInfo> scripts,
+                          ExoSieveScript script) throws ManageSieveException, ServerRuleConflictException {
+    String active = SieveScriptPolicy.activeScript(scripts);
+    if (script.emitsRules() || script.emitsVacation() || SieveScriptPolicy.isOwn(active)) {
+      policy.publish(client, script);
+    } else {
+      policy.store(client, script);
+    }
+  }
+
+  /**
+   * The rules as {@code LISTSCRIPTS} and eXo's header say, on an open conversation.
+   *
+   * @param client the client
+   * @return the rules and where they stand
+   * @throws ManageSieveException when a command fails
+   */
+  ServerRuleSet readRules(ManageSieveClient client) throws ManageSieveException {
+    List<SieveScriptInfo> scripts = client.listScripts();
+    String active = SieveScriptPolicy.activeScript(scripts);
+    boolean hasExo = SieveScriptPolicy.exists(scripts, SCRIPT_NAME);
+    if (!hasExo) {
+      return new ServerRuleSet(List.of(), ServerRulesState.NONE, SieveScriptPolicy.isOwn(active) ? null : active, null);
+    }
+    String text = client.getScript(SCRIPT_NAME);
+    String hash = ExoSieveScript.sha256(text);
+    Optional<ExoSieveScript> exo = ExoSieveScript.parse(text);
+    List<ServerRule> rules = exo.map(ExoSieveScript::getRules).orElse(List.of());
+    if (exo.isEmpty()) {
+      return new ServerRuleSet(rules, ServerRulesState.UNREADABLE, null, hash);
+    }
+    if (SCRIPT_NAME.equals(active)) {
+      return new ServerRuleSet(rules, ServerRulesState.OWN, null, hash);
+    }
+    if (WRAPPER_NAME.equals(active)) {
+      try {
+        String wrapped = SieveScriptPolicy.wrappedScript(client.getScript(WRAPPER_NAME));
+        if (SieveScriptPolicy.exists(scripts, wrapped)) {
+          return new ServerRuleSet(rules, ServerRulesState.OWN, wrapped, hash);
+        }
+        // The wrapper includes a script that is gone: it fails at delivery, nothing runs.
+        return new ServerRuleSet(rules, ServerRulesState.INACTIVE, null, hash);
+      } catch (ServerRuleConflictException e) {
+        return new ServerRuleSet(rules, ServerRulesState.MODIFIED, WRAPPER_NAME, hash);
+      }
+    }
+    return new ServerRuleSet(rules, ServerRulesState.INACTIVE, active, hash);
+  }
+
+  /**
+   * Refuses a rule this server cannot run: a condition or an action whose extension it
+   * does not advertise.
+   *
+   * @param client the client
+   * @param rule the rule, validated
+   * @throws ServerRuleUnsupportedException with the element's reason when it cannot
+   */
+  private static void requireSupported(ManageSieveClient client, ServerRule rule) throws ServerRuleUnsupportedException {
+    ServerRuleCapabilities capabilities = SieveCapabilityDerivation.derive(client.getCapabilities());
+    List<String> elements = new ArrayList<>();
+    rule.conditions().forEach(condition -> elements.add(condition.field()));
+    rule.actions().forEach(action -> elements.add(action.type()));
+    for (String element : elements) {
+      if (!capabilities.isSupported(element)) {
+        ServerRuleCapabilities.ElementSupport support = capabilities.elements().get(element);
+        String reason = support == null || support.reasonKey() == null ? capabilities.reasonCode() : support.reasonKey();
+        throw new ServerRuleUnsupportedException(reason == null ? ServerRuleUnsupportedException.RULES_UNSUPPORTED : reason);
+      }
+    }
+  }
+
+  /**
+   * The next free numeric reference: one more than the largest numeric one in use.
+   *
+   * @param rules the rules
+   * @return the reference
+   */
+  static String nextRef(List<ServerRule> rules) {
+    long max = 0;
+    for (ServerRule rule : rules) {
+      String ref = rule.ref();
+      if (ref != null && ref.matches("[0-9]{1,15}")) {
+        max = Math.max(max, Long.parseLong(ref));
+      }
+    }
+    return String.valueOf(max + 1);
+  }
+
+  /**
+   * Where a reference is in the list.
+   *
+   * @param rules the rules
+   * @param ref the reference
+   * @return the index, or -1
+   */
+  private static int indexOf(List<ServerRule> rules, String ref) {
+    for (int i = 0; i < rules.size(); i++) {
+      if (rules.get(i).ref().equals(ref)) {
+        return i;
+      }
+    }
+    return -1;
   }
 
   /**

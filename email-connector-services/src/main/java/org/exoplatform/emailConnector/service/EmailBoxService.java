@@ -4322,6 +4322,34 @@ public class EmailBoxService {
   }
 
   /**
+   * The name on the mail server of one of the user's own built-in folders, as the sync
+   * last resolved it: where a server rule files a mail it archives, moves to Junk or
+   * moves to Trash. Read from the sync memory; no connection is opened, so a mailbox
+   * that never synced that folder answers null rather than a guess.
+   *
+   * @param username the mailbox owner
+   * @param folderKey {@link MailFolder#ARCHIVE}, {@link MailFolder#JUNK} or
+   *          {@link MailFolder#TRASH}
+   * @return the folder's full name on the server, or null when the sync has not resolved
+   *         one
+   * @throws IllegalArgumentException {@code emailConnector.folder.unknown} for any other
+   *           key
+   */
+  public String getRememberedFolderName(String username, String folderKey) {
+    if (folderKey == null) {
+      throw new IllegalArgumentException(EmailFolderService.UNKNOWN_FOLDER_MESSAGE);
+    }
+    MailboxSyncState syncState = loadMailboxSyncState(username);
+    String name = switch (folderKey) {
+    case MailFolder.ARCHIVE -> syncState.getArchiveFolderName();
+    case MailFolder.JUNK -> syncState.getJunkFolderName();
+    case MailFolder.TRASH -> syncState.getTrashFolderName();
+    default -> throw new IllegalArgumentException(EmailFolderService.UNKNOWN_FOLDER_MESSAGE);
+    };
+    return StringUtils.trimToNull(name);
+  }
+
+  /**
    * Admits the folder an undo puts messages back into: any folder a move may take
    * messages OUT of ({@link #canMoveOutOf}), which is wider than the folders it may
    * file INTO -- Sent is a place a message can be moved from and so must be a place it

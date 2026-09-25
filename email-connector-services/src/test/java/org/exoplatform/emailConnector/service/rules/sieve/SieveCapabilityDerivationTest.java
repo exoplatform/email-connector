@@ -47,8 +47,18 @@ public class SieveCapabilityDerivationTest {
     for (String element : List.of(ServerRuleCapabilities.VACATION,
                                   ServerRuleCapabilities.VACATION_DATE_WINDOW,
                                   ServerRuleCapabilities.FORWARDING_READ,
-                                  ServerRuleCapabilities.BODY,
                                   ServerRuleCapabilities.MOVE_TO_FOLDER,
+                                  ServerRuleCapabilities.MARK_JUNK,
+                                  ServerRuleCapabilities.DELETE,
+                                  ServerRuleCapabilities.MARK_READ,
+                                  ServerRuleCapabilities.STAR,
+                                  ServerRuleCapabilities.TO,
+                                  ServerRuleCapabilities.CC,
+                                  ServerRuleCapabilities.ANY_RECIPIENT,
+                                  ServerRuleCapabilities.SUBJECT,
+                                  ServerRuleCapabilities.HEADER,
+                                  ServerRuleCapabilities.MESSAGE_SIZE,
+                                  ServerRuleCapabilities.IS_AUTOMATED,
                                   ServerRuleCapabilities.TAG,
                                   ServerRuleCapabilities.FROM,
                                   ServerRuleCapabilities.IS_LIST)) {
@@ -57,9 +67,14 @@ public class SieveCapabilityDerivationTest {
     for (String element : List.of(ServerRuleCapabilities.VACATION_HTML,
                                   ServerRuleCapabilities.FORWARDING_WRITE,
                                   ServerRuleCapabilities.READS_FOREIGN_VACATION,
-                                  ServerRuleCapabilities.ATTACHMENT_NAME)) {
+                                  ServerRuleCapabilities.ATTACHMENT_NAME,
+                                  ServerRuleCapabilities.BODY,
+                                  ServerRuleCapabilities.SUBJECT_OR_BODY)) {
       assertFalse(capabilities.isSupported(element), element);
     }
+    // body is advertised, yet the rules generator writes no body test in this phase.
+    assertEquals("emailConnector.rules.unsupported.notInPhase1",
+                 capabilities.elements().get(ServerRuleCapabilities.BODY).reasonKey());
     assertEquals(ServerRuleCapabilities.ELEMENTS.size(), capabilities.elements().size());
   }
 
