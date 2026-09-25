@@ -687,3 +687,166 @@ export function publishServerFilters(republish) {
     method: 'POST'
   }).then(resp => (resp?.ok ? resp.json() : filtersError(resp, 'Error when publishing the filters')));
 }
+
+/**
+ * The query string of the eXo group's writes: consent and republish when set.
+ *
+ * @param {object} [options] - {consent, republish, withAgent, action, limit}
+ * @returns {string} the query, with its leading "?", or empty
+ */
+function filterQuery(options) {
+  const params = new URLSearchParams();
+  Object.entries(options || {}).forEach(([key, value]) => {
+    if (typeof value !== 'undefined' && value !== null && value !== false && value !== '') {
+      params.set(key, String(value));
+    }
+  });
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
+/**
+ * Sends a request of the eXo group and reads its answer; a refusal becomes the Error
+ * filtersError makes of it.
+ *
+ * @param {string} path - the path under /email-box/filters, from its first "/"
+ * @param {string} method - the HTTP method
+ * @param {object} body - the JSON body, null for none
+ * @param {string} fallback - the message when the refusal carries no code
+ * @returns {Promise<object>} the answer, or null when it has no body
+ */
+function filterRequest(path, method, body, fallback) {
+  return fetch(`/email-connector/rest/email-box/filters${path}`, {
+    headers: body === null ? {} : { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    cache: 'no-store',
+    method,
+    ...(body === null ? {} : { body: JSON.stringify(body) }),
+  }).then(resp => {
+    if (!resp?.ok) {
+      return filtersError(resp, fallback);
+    }
+    return resp.status === 204 ? null : resp.json().catch(() => null);
+  });
+}
+
+/**
+ * The eXo group of the user's filters: the rules eXo runs after each sync of their own
+ * inbox, in the order they run. Never reads the mail server.
+ *
+ * @returns {Promise<object[]>} the rules
+ */
+export function getExoFilters() {
+  return filterRequest('', 'GET', null, 'Error when reading the filters');
+}
+
+/**
+ * Creates, or replaces, one rule eXo runs after each sync. A rule of kind HOP also runs
+ * at delivery: its server half is written first, and nothing is stored when the server
+ * refuses (409 {message, scriptName}, 502).
+ *
+ * @param {object} filter - {name, enabled, kind, matchAll, conditions, actions, stopProcessing}
+ * @param {number} [id] - the rule to replace; none to create one
+ * @param {object} [options] - {consent, republish}
+ * @returns {Promise<object>} the rule as stored
+ */
+export function saveExoFilter(filter, id, options) {
+  const query = filterQuery({ consent: options?.consent, republish: options?.republish });
+  return filterRequest(id ? `/${id}${query}` : query, id ? 'PUT' : 'POST', filter, 'Error when saving the filter');
+}
+
+/**
+ * Deletes one rule eXo runs after each sync, and its server half first when it has one.
+ *
+ * @param {number} id - the rule
+ * @param {boolean} [republish] - overwrite eXo's script although it changed outside eXo
+ * @returns {Promise<void>} resolved once deleted
+ */
+export function deleteExoFilter(id, republish) {
+  return filterRequest(`/${id}${filterQuery({ republish })}`, 'DELETE', null, 'Error when deleting the filter');
+}
+
+/**
+ * Orders the rules eXo runs after each sync.
+ *
+ * @param {number[]} ids - every rule's id, once, in the new order
+ * @returns {Promise<object[]>} the rules, in their new order
+ */
+export function reorderExoFilters(ids) {
+  return filterRequest('/order', 'PUT', ids, 'Error when ordering the filters');
+}
+
+/**
+ * What a rule would match among the mail eXo keeps of the user's inbox.
+ *
+ * @param {object} draft - {kind (EXO, HOP or SERVER), matchAll, conditions}
+ * @returns {Promise<object>} {total, scanned, sample, notPreviewable, approximate}
+ */
+export function previewFilter(draft) {
+  return filterRequest('/preview', 'POST', draft, 'Error when previewing the filter');
+}
+
+/**
+ * Runs a rule once over the mail already in the user's inbox.
+ *
+ * @param {number} id - the rule
+ * @param {boolean} [withAgent] - queue its assistant on the newest matches too
+ * @returns {Promise<object>} {scanned, matched, alreadyHandled, queued, notApplicable}
+ */
+export function applyExoFilter(id, withAgent) {
+  return filterRequest(`/${id}/apply${filterQuery({ withAgent })}`, 'POST', null, 'Error when applying the filter');
+}
+
+/**
+ * Publishes a rule's server half again, after it was removed or changed on the server.
+ *
+ * @param {number} id - the rule
+ * @param {object} [options] - {consent, republish}
+ * @returns {Promise<object>} the rule
+ */
+export function republishExoFilter(id, options) {
+  const query = filterQuery({ consent: options?.consent, republish: options?.republish });
+  return filterRequest(`/${id}/republish${query}`, 'POST', null, 'Error when publishing the filter');
+}
+
+/**
+ * What a rule did lately.
+ *
+ * @param {number} id - the rule
+ * @param {number} [limit] - how many, at most 100
+ * @returns {Promise<object[]>} the matches, newest first
+ */
+export function getExoFilterLog(id, limit) {
+  return filterRequest(`/${id}/log${filterQuery({ limit })}`, 'GET', null, 'Error when reading the log');
+}
+
+/**
+ * What the user's rules did to one of their mails: its Automations panel.
+ *
+ * @param {number} emailId - the cached mail's id
+ * @returns {Promise<object[]>} the matches, newest first
+ */
+export function getMailAutomations(emailId) {
+  return filterRequest(`/mail/${emailId}`, 'GET', null, 'Error when reading the automations');
+}
+
+/**
+ * Undoes what a rule did to a mail: one action, or every one.
+ *
+ * @param {number} matchId - the match
+ * @param {string} [action] - the action type; every one when absent
+ * @returns {Promise<object>} the match after the undo
+ */
+export function undoAutomation(matchId, action) {
+  return filterRequest(`/matches/${matchId}/undo${filterQuery({ action })}`, 'POST', null, 'Error when undoing');
+}
+
+/**
+ * Runs a rule's assistant again on a mail.
+ *
+ * @param {number} matchId - the match
+ * @returns {Promise<object>} the match, queued
+ */
+export function retryAutomation(matchId) {
+  return filterRequest(`/matches/${matchId}/retry`, 'POST', null, 'Error when running the assistant again');
+}
