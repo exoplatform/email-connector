@@ -1484,6 +1484,212 @@
     <rollback/>
   </changeSet>
 
+  <changeSet author="email-connector" id="1.0.0-70" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The mail filters' sequence (EXO-90654), on the vendors that have sequences, created
+      before its table for the reason 1.0.0-43 records. Ids 70 to 75 were reserved for
+      the mail-filters work while 76 onwards went to mailbox delegation; never
+      renumbered once any database ran them.
+    </comment>
+    <createSequence sequenceName="SEQ_EMAIL_FILTER_ID" startValue="1"/>
+    <rollback>
+      <dropSequence sequenceName="SEQ_EMAIL_FILTER_ID"/>
+    </rollback>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-71">
+    <comment>
+      The rules eXo runs itself, after each sync of the user's own inbox (EXO-90654). The
+      rules the mail server runs at delivery are NOT here: the server is their only
+      source of truth, read live. One row is one rule, read and written whole, which is
+      why CONDITIONS and ACTIONS are JSON rather than tables.
+      KIND is EXO (conditions evaluated by eXo) or HOP (the eXo half of a rule that also
+      runs at delivery: the server sets TAG_KEYWORD on the mails it matches, eXo picks
+      them up by that keyword and checks CONDITIONS again, since anyone who may flag the
+      mailbox's mail could set the keyword too). SERVER_RULE_REF names the server half,
+      hop-ID. MAILBOX_SCOPE is OWN: a rule runs on the owner's own inbox only; the
+      column is there so that rules on a shared inbox need no migration later.
+      LAST_ERROR is the reason a rule was switched off by the sync (a rule it could not
+      read). MATCH_COUNT and LAST_MATCH_DATE count eXo's own matches. ACTIVE_SINCE is
+      when the rule was created or last switched back on: the sync runs it on mail
+      received since, never on the older mail a reset or a reconnection caches again;
+      a rename, an edit or a reorder does not move it.
+      IDX_EMAIL_FILTER_USER serves the ordered listing. UK_EMAIL_FILTER_TAG is unique on
+      the keyword alone: the keyword carries the row's id, so it is unique across users
+      by construction, and a key on (USER_ID, TAG_KEYWORD) would refuse a second rule
+      without a keyword on Oracle, which compares a key holding a null on its other
+      columns. Rolled back explicitly, indexes then table.
+    </comment>
+    <createTable tableName="EMAIL_FILTER">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_EMAIL_FILTER"/>
+      </column>
+      <column name="USER_ID" type="VARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="MAILBOX_SCOPE" type="VARCHAR(20)" defaultValue="OWN">
+        <constraints nullable="false"/>
+      </column>
+      <column name="NAME" type="VARCHAR(200)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="ENABLED" type="BOOLEAN" defaultValueBoolean="true">
+        <constraints nullable="false"/>
+      </column>
+      <column name="POSITION" type="INT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="KIND" type="VARCHAR(10)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="MATCH_MODE" type="VARCHAR(10)"/>
+      <column name="CONDITIONS" type="CLOB"/>
+      <column name="TAG_KEYWORD" type="VARCHAR(64)"/>
+      <column name="SERVER_RULE_REF" type="VARCHAR(200)"/>
+      <column name="ACTIONS" type="CLOB">
+        <constraints nullable="false"/>
+      </column>
+      <column name="STOP_PROCESSING" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+      <column name="AGENT_NAME_ID" type="VARCHAR(200)"/>
+      <column name="MATCH_COUNT" type="BIGINT" defaultValueNumeric="0">
+        <constraints nullable="false"/>
+      </column>
+      <column name="LAST_MATCH_DATE" type="TIMESTAMP"/>
+      <column name="LAST_ERROR" type="VARCHAR(1000)"/>
+      <column name="ACTIVE_SINCE" type="TIMESTAMP"/>
+      <column name="CREATED_DATE" type="TIMESTAMP">
+        <constraints nullable="false"/>
+      </column>
+      <column name="UPDATED_DATE" type="TIMESTAMP">
+        <constraints nullable="false"/>
+      </column>
+    </createTable>
+    <createIndex tableName="EMAIL_FILTER" indexName="IDX_EMAIL_FILTER_USER">
+      <column name="USER_ID"/>
+      <column name="POSITION"/>
+    </createIndex>
+    <createIndex tableName="EMAIL_FILTER" indexName="UK_EMAIL_FILTER_TAG" unique="true">
+      <column name="TAG_KEYWORD"/>
+    </createIndex>
+    <rollback>
+      <dropIndex tableName="EMAIL_FILTER" indexName="UK_EMAIL_FILTER_TAG"/>
+      <dropIndex tableName="EMAIL_FILTER" indexName="IDX_EMAIL_FILTER_USER"/>
+      <dropTable tableName="EMAIL_FILTER"/>
+    </rollback>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-72" dbms="mysql">
+    <comment>
+      The table options every table of this file gets on MySQL (InnoDB, utf8mb4, the
+      accent-insensitive 0900 collation), applied to EMAIL_FILTER as literal SQL for the
+      checksum reason 1.0.0-53 gives, then a binary collation on USER_ID and on the
+      keyword: a rule is its owner's, and two user names or two keywords that differ by
+      case or accent must never collate onto one another. The rollback is explicit and
+      empty on purpose, as 1.0.0-59's is: sql has no automatic rollback, and the table
+      goes with 1.0.0-71's.
+    </comment>
+    <sql>ALTER TABLE EMAIL_FILTER ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci</sql>
+    <sql>ALTER TABLE EMAIL_FILTER MODIFY USER_ID VARCHAR(250) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL</sql>
+    <sql>ALTER TABLE EMAIL_FILTER MODIFY TAG_KEYWORD VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NULL</sql>
+    <rollback/>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-73" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The filter matches' sequence (EXO-90654), created before its table for the reason
+      1.0.0-43 records.
+    </comment>
+    <createSequence sequenceName="SEQ_EMAIL_FILTER_MATCH_ID" startValue="1"/>
+    <rollback>
+      <dropSequence sequenceName="SEQ_EMAIL_FILTER_MATCH_ID"/>
+    </rollback>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-74">
+    <comment>
+      One row per eXo rule and mail it matched (EXO-90654): the log, the data an undo
+      needs, the assistant's work item and the at-most-once key. What the server does at
+      delivery is never here: the server does not report it.
+      MAIL_HEADER_ID is the message's Message-ID, stable across a cache reset where the
+      UID is not; MAIL_HEADER_HASH is its SHA-256 in lower-case hex, the column the keys
+      use, for the reason 1.0.0-68 gives (a Message-ID is case-sensitive and up to 998
+      characters, which neither MySQL's collation nor its key length honour).
+      MAIL_REMOTE_ID and FOLDER are where the mail was when it matched. ACTIONS_APPLIED is
+      JSON: what was done, and what undoing it needs. AGENT_STATUS is NONE, PENDING,
+      RUNNING, DONE, FAILED, SKIPPED_CAP or SKIPPED_DISABLED.
+      UK_EMAIL_FILTER_MATCH is the at-most-once decision: the INSERT of a second match of
+      one rule on one mail is refused. IDX_EMAIL_FILTER_MATCH_AGENT serves the queue's
+      pending read, IDX_EMAIL_FILTER_MATCH_MAIL the panel of one mail. No foreign key to
+      EMAIL_FILTER or EMAIL_BOX: the log outlives both. Rolled back explicitly, indexes
+      then table.
+    </comment>
+    <createTable tableName="EMAIL_FILTER_MATCH">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_EMAIL_FILTER_MATCH"/>
+      </column>
+      <column name="USER_ID" type="VARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="FILTER_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="MAIL_HEADER_ID" type="VARCHAR(998)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="MAIL_HEADER_HASH" type="VARCHAR(64)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="MAIL_REMOTE_ID" type="BIGINT"/>
+      <column name="FOLDER" type="VARCHAR(250)"/>
+      <column name="SUBJECT" type="VARCHAR(500)"/>
+      <column name="MATCHED_DATE" type="TIMESTAMP">
+        <constraints nullable="false"/>
+      </column>
+      <column name="ACTIONS_APPLIED" type="CLOB"/>
+      <column name="AGENT_STATUS" type="VARCHAR(20)" defaultValue="NONE">
+        <constraints nullable="false"/>
+      </column>
+      <column name="AGENT_NAME_ID" type="VARCHAR(200)"/>
+      <column name="AGENT_CONVERSATION_ID" type="VARCHAR(64)"/>
+      <column name="AGENT_OUTPUT" type="CLOB"/>
+      <column name="AGENT_DATE" type="TIMESTAMP"/>
+      <column name="AGENT_ATTEMPTS" type="INT" defaultValueNumeric="0">
+        <constraints nullable="false"/>
+      </column>
+      <column name="LAST_ERROR" type="VARCHAR(1000)"/>
+      <column name="CREATED_DATE" type="TIMESTAMP">
+        <constraints nullable="false"/>
+      </column>
+    </createTable>
+    <createIndex tableName="EMAIL_FILTER_MATCH" indexName="UK_EMAIL_FILTER_MATCH" unique="true">
+      <column name="USER_ID"/>
+      <column name="FILTER_ID"/>
+      <column name="MAIL_HEADER_HASH"/>
+    </createIndex>
+    <createIndex tableName="EMAIL_FILTER_MATCH" indexName="IDX_EMAIL_FILTER_MATCH_AGENT">
+      <column name="USER_ID"/>
+      <column name="AGENT_STATUS"/>
+    </createIndex>
+    <createIndex tableName="EMAIL_FILTER_MATCH" indexName="IDX_EMAIL_FILTER_MATCH_MAIL">
+      <column name="USER_ID"/>
+      <column name="MAIL_HEADER_HASH"/>
+    </createIndex>
+    <rollback>
+      <dropIndex tableName="EMAIL_FILTER_MATCH" indexName="IDX_EMAIL_FILTER_MATCH_MAIL"/>
+      <dropIndex tableName="EMAIL_FILTER_MATCH" indexName="IDX_EMAIL_FILTER_MATCH_AGENT"/>
+      <dropIndex tableName="EMAIL_FILTER_MATCH" indexName="UK_EMAIL_FILTER_MATCH"/>
+      <dropTable tableName="EMAIL_FILTER_MATCH"/>
+    </rollback>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-75" dbms="mysql">
+    <comment>
+      The table options of 1.0.0-72, applied to EMAIL_FILTER_MATCH, with the binary
+      collation on USER_ID for the same reason. MAIL_HEADER_HASH is lower-case hex by
+      construction and needs none. Rolled back with 1.0.0-74's table, explicitly empty.
+    </comment>
+    <sql>ALTER TABLE EMAIL_FILTER_MATCH ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci</sql>
+    <sql>ALTER TABLE EMAIL_FILTER_MATCH MODIFY USER_ID VARCHAR(250) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL</sql>
+    <rollback/>
+  </changeSet>
+
   <changeSet author="email-connector" id="1.0.0-76" dbms="oracle,postgresql,hsqldb">
     <comment>
       The mailbox-delegation table's sequence (EXO-90457), on the vendors that have
