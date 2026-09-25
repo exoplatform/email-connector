@@ -139,6 +139,15 @@ public final class FakeBlueMindTransport implements BlueMindMailboxTransport {
   }
 
   /**
+   * Replaces the forward the account holds.
+   *
+   * @param newForwarding the forward
+   */
+  public void setForwarding(BlueMindForwarding newForwarding) {
+    this.forwarding = newForwarding;
+  }
+
+  /**
    * The forward the account holds.
    *
    * @return the forward
