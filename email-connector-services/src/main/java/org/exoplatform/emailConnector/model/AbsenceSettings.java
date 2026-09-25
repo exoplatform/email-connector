@@ -32,7 +32,10 @@ public class AbsenceSettings {
   /** What this connector's engine can do; greys out the form per element. */
   private ServerRuleCapabilities capabilities;
 
-  /** The engine name the connector is configured with: {@code sieve} or {@code none}. */
+  /**
+   * The engine name the connector is configured with: {@code sieve}, {@code bluemind} or
+   * {@code none}.
+   */
   private String                 engine;
 
   /** The reply eXo can show, possibly null. */

@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.service.rules;
 
+import java.time.ZoneId;
 import java.util.List;
 
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
@@ -75,6 +76,22 @@ public interface ServerRuleEngine {
    *           request
    */
   ServerVacation readVacation(MailboxAclSession session) throws ServerRuleUnavailableException;
+
+  /**
+   * Reads the caller's automatic reply as the server holds it, its days stated in the
+   * given zone. An engine whose server stores the reply's window as instants (BlueMind)
+   * needs the zone to answer calendar days; one that stores the days and their zone
+   * itself (Sieve, in eXo's header) ignores it.
+   *
+   * @param session the caller's own session
+   * @param zone the zone to state the days in, the caller's own; null when unknown
+   * @return what the server holds; {@link ServerVacation#none()} when nothing
+   * @throws ServerRuleUnavailableException when the server cannot be used for this
+   *           request
+   */
+  default ServerVacation readVacation(MailboxAclSession session, ZoneId zone) throws ServerRuleUnavailableException {
+    return readVacation(session);
+  }
 
   /**
    * Writes the caller's automatic reply. A reply switched off keeps its text on the
