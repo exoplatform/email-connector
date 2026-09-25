@@ -19,77 +19,121 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        own time zone, a one-line subject and a plain-text message. What the mail server
        decides on its own (once per sender per N days, never to lists or automated mail)
        is stated, not editable. Its Save and Cancel are the drawer's footer, which calls
-       submit() and reads the can-save event. A plain block layout, each hint under the
-       field it qualifies with its own margin, so the message's counter never sits on
-       the hint below it. -->
+       submit() and reads the can-save event. Laid out like the platform's drawer forms:
+       a plain label above each field, the switch at the end of its label's row, the two
+       optional days as two equal date pickers side by side, empty meaning no bound. -->
   <v-form
     v-model="valid"
     @submit.prevent="submit">
-    <v-switch
-      v-model="enabled"
-      :label="$t('UserSettings.emailConnector.absence.form.enabled')"
-      class="mt-0"
-      hide-details />
-    <div class="d-flex flex-wrap align-center mt-3">
-      <v-checkbox
-        v-model="hasStart"
-        :label="$t('UserSettings.emailConnector.absence.form.start')"
-        :disabled="!windowSupported"
-        class="mt-0 me-3"
+    <div class="d-flex align-center justify-space-between full-width mb-2">
+      <div id="emailAbsenceEnabledLabel">
+        {{ $t('UserSettings.emailConnector.absence.form.enabled') }}
+      </div>
+      <v-switch
+        v-model="enabled"
+        aria-labelledby="emailAbsenceEnabledLabel"
+        :ripple="false"
+        class="ma-0 width-fit-content"
         hide-details />
-      <date-picker
-        v-if="hasStart"
-        v-model="start"
-        :attach="false"
-        :aria-label="$t('UserSettings.emailConnector.absence.form.start')"
-        class="flex-grow-0 me-6"
-        return-iso />
-      <v-checkbox
-        v-model="hasEnd"
-        :label="$t('UserSettings.emailConnector.absence.form.end')"
-        :disabled="!windowSupported"
-        class="mt-0 me-3"
-        hide-details />
-      <date-picker
-        v-if="hasEnd"
-        v-model="end"
-        :attach="false"
-        :min-value="hasStart ? start : null"
-        :aria-label="$t('UserSettings.emailConnector.absence.form.end')"
-        class="flex-grow-0"
-        return-iso />
     </div>
-    <div v-if="hasStart || hasEnd" class="caption text-sub-title mt-1">
+    <div class="d-flex mt-4">
+      <div class="col-6 pa-0 pe-2">
+        <div class="mb-2">
+          {{ $t('UserSettings.emailConnector.absence.form.start') }}
+        </div>
+        <date-picker
+          ref="startPicker"
+          v-model="start"
+          :default-value="false"
+          :disabled="!windowSupported"
+          :max-value="end"
+          :left="$vuetify.rtl"
+          :placeholder="$t('UserSettings.emailConnector.absence.form.start.none')"
+          :aria-label="$t('UserSettings.emailConnector.absence.form.start')"
+          :attach="false"
+          return-iso>
+          <template #footer>
+            <v-btn
+              class="ms-auto"
+              color="primary"
+              small
+              text
+              @click="clearDay('start')">
+              {{ $t('UserSettings.emailConnector.absence.form.day.clear') }}
+            </v-btn>
+          </template>
+        </date-picker>
+      </div>
+      <div class="col-6 pa-0 ps-2">
+        <div class="mb-2">
+          {{ $t('UserSettings.emailConnector.absence.form.end') }}
+        </div>
+        <date-picker
+          ref="endPicker"
+          v-model="end"
+          :default-value="false"
+          :disabled="!windowSupported"
+          :min-value="start"
+          :placeholder="$t('UserSettings.emailConnector.absence.form.end.none')"
+          :aria-label="$t('UserSettings.emailConnector.absence.form.end')"
+          :attach="false"
+          :left="!$vuetify.rtl"
+          return-iso>
+          <template #footer>
+            <v-btn
+              class="ms-auto"
+              color="primary"
+              small
+              text
+              @click="clearDay('end')">
+              {{ $t('UserSettings.emailConnector.absence.form.day.clear') }}
+            </v-btn>
+          </template>
+        </date-picker>
+      </div>
+    </div>
+    <div class="text-subtitle">
       {{ $t('UserSettings.emailConnector.absence.form.zone', { 0: timeZone }) }}
+    </div>
+    <div class="mt-4 mb-2">
+      {{ $t('UserSettings.emailConnector.absence.form.subject') }}
     </div>
     <v-text-field
       v-model="subject"
-      :label="$t('UserSettings.emailConnector.absence.form.subject')"
       :rules="[required, oneLine]"
       :counter="MAX_SUBJECT"
       :maxlength="MAX_SUBJECT"
-      class="mt-4"
+      :aria-label="$t('UserSettings.emailConnector.absence.form.subject')"
+      class="border-box-sizing width-auto pt-0"
+      type="text"
       outlined
       dense />
+    <div class="mt-4 mb-2">
+      {{ $t('UserSettings.emailConnector.absence.form.text') }}
+    </div>
+    <!-- The platform's extended-textarea look (its class, a plain v-textarea with a
+         counter under it), not the component itself: its counter and its rule count
+         characters, while the mail server's limit counts each line break twice. -->
     <v-textarea
       v-model="text"
-      :label="$t('UserSettings.emailConnector.absence.form.text')"
       :rules="[required, withinLimit]"
       :counter="MAX_TEXT"
       :counter-value="storedLength"
-      class="mt-2"
-      rows="5"
-      outlined
+      :placeholder="$t('UserSettings.emailConnector.absence.form.text.placeholder')"
+      :aria-label="$t('UserSettings.emailConnector.absence.form.text')"
+      :rows="5"
+      :row-height="24"
+      class="extended-textarea pt-0"
       auto-grow />
-    <div class="caption text-sub-title mt-2">
+    <div class="text-subtitle mt-4">
       {{ $t('UserSettings.emailConnector.absence.form.rules', { 0: days }) }}
     </div>
-    <div class="caption text-sub-title mt-1">
+    <div class="text-subtitle mt-2">
       {{ $t('UserSettings.emailConnector.absence.form.ownMailbox') }}
     </div>
     <div
       v-if="error"
-      class="caption error--text mt-2"
+      class="error--text mt-4"
       role="alert">
       {{ error }}
     </div>
@@ -97,16 +141,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-/**
- * A day as the date-picker speaks it: yyyy-MM-dd in the user's own day.
- *
- * @param {Date} date the date
- * @returns {String} the ISO day
- */
-function isoDay(date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
-
 export default {
   props: {
     // The reply the server holds, or null.
@@ -122,8 +156,6 @@ export default {
     MAX_TEXT: 4000,
     valid: false,
     enabled: true,
-    hasStart: false,
-    hasEnd: false,
     start: null,
     end: null,
     subject: '',
@@ -145,7 +177,7 @@ export default {
      * @returns {Boolean} true when valid
      */
     windowValid() {
-      return !(this.hasStart && this.hasEnd && this.start && this.end && this.end < this.start);
+      return !(this.start && this.end && this.end < this.start);
     },
     /**
      * Whether the value may be saved: every field valid and the window a window.
@@ -175,21 +207,33 @@ export default {
   },
   methods: {
     /**
-     * Shows the reply the server holds, or a new one starting today for a week.
+     * Shows the reply the server holds, or a new one running from now until switched
+     * off: an empty day is no bound.
      *
      * @returns {void}
      */
     fill() {
       const vacation = this.vacation;
-      const today = new Date();
-      const inAWeek = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 7);
       this.enabled = vacation ? !!vacation.enabled : true;
-      this.hasStart = !!vacation?.start;
-      this.hasEnd = !!vacation?.end;
-      this.start = vacation?.start || isoDay(today);
-      this.end = vacation?.end || isoDay(inAWeek);
+      this.start = vacation?.start || null;
+      this.end = vacation?.end || null;
       this.subject = vacation?.subject || this.$t('UserSettings.emailConnector.absence.form.subject.default');
       this.text = vacation?.text || '';
+    },
+    /**
+     * Empties one of the two days and closes its calendar, as the task drawer's "None"
+     * does: an empty first day starts the reply now, an empty last day keeps it until it
+     * is switched off.
+     *
+     * @param {String} day start or end
+     * @returns {void}
+     */
+    clearDay(day) {
+      this[day] = null;
+      const picker = this.$refs[`${day}Picker`];
+      if (picker) {
+        picker.menu = false;
+      }
     },
     /**
      * A required value.
@@ -240,8 +284,8 @@ export default {
       }
       this.$emit('save', {
         enabled: this.enabled,
-        start: this.hasStart ? this.start : null,
-        end: this.hasEnd ? this.end : null,
+        start: this.start || null,
+        end: this.end || null,
         subject: this.subject,
         text: this.text,
       });
