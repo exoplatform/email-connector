@@ -93,13 +93,27 @@ public class EmailContactRest {
   @Autowired
   private EmailContactVCardService       emailContactVCardService;
 
+  /**
+   * Lists the user's contacts. One alphabetical page of the caller's own contact store,
+   * with the letter-index map the A-Z rail runs on and the filtered total.
+   *
+   * @param request the caller's request, for the acting user
+   * @param source source filter, repeatable: collected, manual, addressBook; omitted for
+   * every source
+   * @param query free text matched against names and addresses
+   * @param favorites when true, only the contacts the caller starred are returned -
+   * intersected with the source filter, not replacing it
+   * @param offset row offset, a multiple of limit
+   * @param limit page size
+   * @return the email contact page
+   */
   @GetMapping
   @Secured("users")
   @Operation(summary = "Lists the user's contacts", method = "GET",
              description = "One alphabetical page of the caller's own contact store, with the letter-index map the A-Z rail runs on and the filtered total. 'All' (no source) is the local store: collected + manual + address book - colleagues are the platform's own user directory, queried by the client directly.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Unknown source filter"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public EmailContactPage getContacts(HttpServletRequest request,
                                       @Parameter(description = "Source filter, repeatable: collected, manual, addressBook; omitted for every source")
                                       @RequestParam(value = "source", required = false)
@@ -123,12 +137,24 @@ public class EmailContactRest {
     }
   }
 
+  /**
+   * Searches the caller's contacts for the unified search. The 'My contacts' section of
+   * the platform's unified search: the caller's own contacts matching the term, excluding
+   * anyone who is also a platform user - colleagues are the People section's to answer.
+   *
+   * @param request the caller's request, for the acting user
+   * @param query what was typed in the search bar
+   * @param favorites when true, only the contacts the caller starred
+   * @param limit how many hits to answer; 0 takes the server's default, and the server
+   * caps it either way
+   * @return the answer, as List&lt;EmailContact&gt;
+   */
   @GetMapping("/search")
   @Secured("users")
   @Operation(summary = "Searches the caller's contacts for the unified search", method = "GET",
              description = "The 'My contacts' section of the platform's unified search: the caller's own contacts matching the term, excluding anyone who is also a platform user - colleagues are the People section's to answer. Fetched by the search page with the viewer's own session, so results are per-user by construction; phone numbers are not returned. The favorites parameter narrows to the contacts the caller starred, which is how the search page's Favorites filter reaches this connector.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public List<EmailContact> searchContacts(HttpServletRequest request,
                                            @Parameter(description = "What was typed in the search bar")
                                            @RequestParam(value = "q", required = false)
@@ -142,12 +168,23 @@ public class EmailContactRest {
     return emailContactService.searchContacts(request.getRemoteUser(), query, favorites, limit);
   }
 
+  /**
+   * Suggests recipients for the compose field. One ranked, de-duplicated recipient list
+   * merging the caller's own contact store with the platform's people directory, so a
+   * recipient field is useful before the store has collected anybody.
+   *
+   * @param request the caller's request, for the acting user
+   * @param query what the user typed; blank answers their top contacts
+   * @param limit how many suggestions to answer; 0 takes the server's default, and the
+   * server caps it either way
+   * @return the answer, as List&lt;EmailContactSuggestion&gt;
+   */
   @GetMapping("/suggest")
   @Secured("users")
   @Operation(summary = "Suggests recipients for the compose field", method = "GET",
              description = "One ranked, de-duplicated recipient list merging the caller's own contact store with the platform's people directory, so a recipient field is useful before the store has collected anybody. Ranking: the store first, ordered by usefulness (most-corresponded-with, then most recent, then alphabetical), then the directory-only matches. De-duplication is by normalized address and the store wins, the platform profile supplying the live name and avatar. A blank term answers the top of the store - capped by the same limit - and does not query the directory at all.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public List<EmailContactSuggestion> suggestRecipients(HttpServletRequest request,
                                                         @Parameter(description = "What the user typed; blank answers their top contacts")
                                                         @RequestParam(value = "q", required = false)
@@ -158,12 +195,20 @@ public class EmailContactRest {
     return emailContactService.suggestRecipients(request.getRemoteUser(), query, limit);
   }
 
+  /**
+   * Gets one contact. One contact of the caller's own store, enriched with the platform
+   * profile (avatar, profile link) when the address belongs to a colleague.
+   *
+   * @param request the caller's request, for the acting user
+   * @param id contact id
+   * @return the email contact
+   */
   @GetMapping("/{id}")
   @Secured("users")
   @Operation(summary = "Gets one contact", method = "GET",
              description = "One contact of the caller's own store, enriched with the platform profile (avatar, profile link) when the address belongs to a colleague. Somebody else's contact is answered 404, never 403.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public EmailContact getContact(HttpServletRequest request,
                                  @Parameter(description = "Contact id", required = true)
@@ -176,12 +221,20 @@ public class EmailContactRest {
     return contact;
   }
 
+  /**
+   * Gets the contact reachable at an address. The caller's own contact for this address,
+   * matched on any of its addresses rather than only the one it is filed under.
+   *
+   * @param request the caller's request, for the acting user
+   * @param email the address to look up
+   * @return the email contact
+   */
   @GetMapping("/by-address")
   @Secured("users")
   @Operation(summary = "Gets the contact reachable at an address", method = "GET",
              description = "The caller's own contact for this address, matched on any of its addresses rather than only the one it is filed under. Answers 404 when the caller has nobody there, which is also how the mailbox knows to offer creating them.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public EmailContact getContactByAddress(HttpServletRequest request,
                                           @Parameter(description = "The address to look up", required = true)
@@ -194,12 +247,21 @@ public class EmailContactRest {
     return contact;
   }
 
+  /**
+   * Gets the caller's contact for a platform user. The caller's own contact row for this
+   * colleague, however it got there: by the directory link first, then by the profile's
+   * address (a collected or manual row holding the same person).
+   *
+   * @param request the caller's request, for the acting user
+   * @param username the platform username to look up
+   * @return the email contact
+   */
   @GetMapping("/by-user")
   @Secured("users")
   @Operation(summary = "Gets the caller's contact for a platform user", method = "GET",
              description = "The caller's own contact row for this colleague, however it got there: by the directory link first, then by the profile's address (a collected or manual row holding the same person). Answers 404 when the caller has no row - which is also how the profile action knows to offer adding them.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public EmailContact getContactByUser(HttpServletRequest request,
                                        @Parameter(description = "The platform username to look up", required = true)
@@ -212,13 +274,22 @@ public class EmailContactRest {
     return contact;
   }
 
+  /**
+   * Imports a platform colleague into the caller's contacts. The 'Add to my contacts'
+   * action on a people profile: creates a directory-linked contact whose name, avatar and
+   * address resolve live from the colleague's profile.
+   *
+   * @param request the caller's request, for the acting user
+   * @param username the platform username to import
+   * @return the email contact
+   */
   @PostMapping("/directory")
   @Secured("users")
   @Operation(summary = "Imports a platform colleague into the caller's contacts", method = "POST",
              description = "The 'Add to my contacts' action on a people profile: creates a directory-linked contact whose name, avatar and address resolve live from the colleague's profile. A previously removed link is revived. A visible row already linking or carrying this person answers 409, unmutated - /by-user is where the client finds that row. An unknown or deleted identity answers 404; asking to import yourself answers 400.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Self-import, or a blank username"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "Unknown or deleted platform user"),
       @ApiResponse(responseCode = "409", description = "A visible contact already holds this person"), })
   public EmailContact importDirectoryContact(HttpServletRequest request,
@@ -238,12 +309,20 @@ public class EmailContactRest {
     }
   }
 
+  /**
+   * Gets a contact photo. Streams the picture the caller set on one of their own
+   * contacts.
+   *
+   * @param request the caller's request, for the acting user
+   * @param id contact id
+   * @return the answer, as ResponseEntity&lt;InputStreamResource&gt;
+   */
   @GetMapping("/{id}/photo")
   @Secured("users")
   @Operation(summary = "Gets a contact photo", method = "GET",
              description = "Streams the picture the caller set on one of their own contacts. Answers 404 for a contact that does not exist, belongs to somebody else, or simply has no photo - a photo URL is never a way to probe another user's store. The URL answered in the contact's avatarUrl carries a version parameter, so responses are cached privately.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public ResponseEntity<InputStreamResource> getContactPhoto(HttpServletRequest request,
                                                              @Parameter(description = "Contact id", required = true)
@@ -260,13 +339,20 @@ public class EmailContactRest {
                          .body(new InputStreamResource(new ByteArrayInputStream(photo.getAsByte())));
   }
 
+  /**
+   * Creates a manual contact. Adds a contact by hand.
+   *
+   * @param request the caller's request, for the acting user
+   * @param contact the contact to create
+   * @return the email contact
+   */
   @PostMapping
   @Secured("users")
   @Operation(summary = "Creates a manual contact", method = "POST",
              description = "Adds a contact by hand. If the address belongs to a previously removed (suppressed) collected contact, that row is revived and updated from this body - the caller sees a normal create, never a conflict about a row it cannot see. A visible row with the same address answers 409, and so does one holding any of the body's secondaryEmails - the contact is filed under every address the body lists. A 'photoUploadId' on the body gives the new contact its picture in the same round-trip. This is the contact FORM's endpoint - one contact, deliberately, with a person watching - so a contact created here is also published to the caller's CardDAV address book when they turned the automatic push on (off by default, and never for imports or collected contacts). A push that cannot happen is queued or simply skipped; it never fails the create.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Unusable email address"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "409", description = "A visible contact already carries this address"), })
   public EmailContact createContact(HttpServletRequest request,
                                     @Parameter(description = "The contact to create", required = true)
@@ -286,13 +372,22 @@ public class EmailContactRest {
     }
   }
 
+  /**
+   * Updates a contact. Edits a manual or collected contact (a collected one keeps its
+   * source; collection never overwrites a name a user set).
+   *
+   * @param request the caller's request, for the acting user
+   * @param id contact id
+   * @param contact the fields to apply
+   * @return the email contact
+   */
   @PutMapping("/{id}")
   @Secured("users")
   @Operation(summary = "Updates a contact", method = "PUT",
              description = "Edits a manual or collected contact (a collected one keeps its source; collection never overwrites a name a user set). CardDAV rows are read-only in this version, and directory-linked ones always are. Changing any address re-checks uniqueness. 'secondaryEmails' is three-state like the photo: absent keeps the stored other addresses (a changed primary is then demoted into them, not dropped), a present list is the authoritative set. The photo travels in the same body as 'photoUploadId': absent leaves the stored photo alone, an empty string removes it, an upload id sets or replaces it.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Unusable email address, a read-only CardDAV or directory row, or a photo on a row whose picture is not editable"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "The new address collides with another contact"), })
   public EmailContact updateContact(HttpServletRequest request,
@@ -315,12 +410,19 @@ public class EmailContactRest {
     }
   }
 
+  /**
+   * Deletes or suppresses a contact. A manual contact is deleted for real.
+   *
+   * @param request the caller's request, for the acting user
+   * @param id contact id
+   * @return the answer, as Map&lt;String, Object&gt;
+   */
   @DeleteMapping("/{id}")
   @Secured("users")
   @Operation(summary = "Deletes or suppresses a contact", method = "DELETE",
              description = "A manual contact is deleted for real. A collected (or CardDAV) contact is suppressed instead - hidden everywhere and never re-collected - because a hard delete would only resurrect on the next mail from that person. The response says which happened, so the client can offer the undo toast after a suppression.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public Map<String, Object> deleteContact(HttpServletRequest request,
                                            @Parameter(description = "Contact id", required = true)
@@ -336,13 +438,20 @@ public class EmailContactRest {
     return response;
   }
 
+  /**
+   * Pulls the caller's CardDAV address book into their contacts. Runs the address-book
+   * sync for the caller.
+   *
+   * @param request the caller's request, for the acting user
+   * @param full re-read the whole address book rather than only what changed
+   */
   @PostMapping("/carddav/sync")
   @Secured("users")
   @Operation(summary = "Pulls the caller's CardDAV address book into their contacts",
              method = "POST",
              description = "Runs the address-book sync for the caller. Most runs cost one request: an unchanged collection version means nothing changed. Pass full=true to forget the last version and re-read everything.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public void syncAddressBook(HttpServletRequest request,
                               @Parameter(description = "Re-read the whole address book rather than only what changed")
                               @RequestParam(value = "full", required = false, defaultValue = "false")
@@ -354,6 +463,16 @@ public class EmailContactRest {
     emailContactCardDavSyncService.syncAddressBook(username, true);
   }
 
+  /**
+   * Publishes one of the caller's contacts to their CardDAV address book. Creates the
+   * contact as a new entry in the caller's own address book - creates only, never
+   * overwrites: the card is stored under If-None-Match:*, so an entry already at that URL
+   * makes the server refuse (answered 409) rather than anything be replaced.
+   *
+   * @param request the caller's request, for the acting user
+   * @param id contact id
+   * @return the answer, as ResponseEntity&lt;Object&gt;
+   */
   @PostMapping("/{id}/publish")
   @Secured("users")
   @Operation(summary = "Publishes one of the caller's contacts to their CardDAV address book", method = "POST",
@@ -361,7 +480,7 @@ public class EmailContactRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "202", description = "The server could not be reached, so the publish was queued: it will be retried automatically after the next successful address-book sync. The contact stays local and visible meanwhile - accepted, not done, and not an error"),
       @ApiResponse(responseCode = "400", description = "Publishing disabled, a non-publishable source, no bound address book, or a book never discovered - the message code says which"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "The contact is already an address-book row, or the server refused to create over an existing entry"),
       @ApiResponse(responseCode = "502", description = "The address book server could not be reached, or answered an error"), })
@@ -396,13 +515,22 @@ public class EmailContactRest {
     }
   }
 
+  /**
+   * Edits one of the caller's address-book contacts by pushing the edit to the CardDAV
+   * server. The write-through edit of a CardDAV row, which the plain PUT /{id} refuses.
+   *
+   * @param request the caller's request, for the acting user
+   * @param id contact id
+   * @param contact the fields to apply
+   * @return the email contact
+   */
   @PutMapping("/{id}/card")
   @Secured("users")
   @Operation(summary = "Edits one of the caller's address-book contacts by pushing the edit to the CardDAV server", method = "PUT",
              description = "The write-through edit of a CardDAV row, which the plain PUT /{id} refuses. The entry's card is fetched from the server at save time, the edit is merged into that raw card (only the form's own fields, everything else on the card preserved), and the card is stored back under If-Match with the etag that fetch answered - so a change somebody else made in the meantime is never overwritten: it answers 409, the server's card becomes the local row again, and the caller's edit is theirs to retry. The contact is kept locally only once the server accepted the write. Same body contract as PUT /{id}; somebody else's contact answers 404, never 403.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Writing disabled, not an address-book contact, an unusable address or birthday, no bound address book, or a book never discovered - the message code says which"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "The entry changed on the server first (the local row now shows that change), the entry is gone, the row has no server entry, or an address collides with another contact"),
       @ApiResponse(responseCode = "502", description = "The address book server could not be reached, answered an error, or holds a card too broken to edit safely"), })
@@ -429,24 +557,41 @@ public class EmailContactRest {
     }
   }
 
+  /**
+   * Whether the caller can publish contacts to their address book. Answers from stored
+   * state only, no server round trip: true when the admin allows publishing, an address
+   * book is bound, and discovery has succeeded at least once.
+   *
+   * @param request the caller's request, for the acting user
+   * @return the answer, as Map&lt;String, Object&gt;
+   */
   @GetMapping("/carddav/publishable")
   @Secured("users")
   @Operation(summary = "Whether the caller can publish contacts to their address book", method = "GET",
              description = "Answers from stored state only, no server round trip: true when the admin allows publishing, an address book is bound, and discovery has succeeded at least once. What the contact card consults before showing its publish action. Holds no secret.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public Map<String, Object> isPublishAvailable(HttpServletRequest request) {
     Map<String, Object> response = new HashMap<>();
     response.put("available", emailContactCardDavSyncService.isPublishAvailable(request.getRemoteUser()));
     return response;
   }
 
+  /**
+   * Whether one contact is worth offering to publish. What the contact form asks after
+   * saving an edit, to decide whether to add 'Also add them to your address book?' to the
+   * confirmation.
+   *
+   * @param request the caller's request, for the acting user
+   * @param id contact id
+   * @return the answer, as Map&lt;String, Object&gt;
+   */
   @GetMapping("/{id}/publish-offer")
   @Secured("users")
   @Operation(summary = "Whether one contact is worth offering to publish", method = "GET",
              description = "What the contact form asks after saving an edit, to decide whether to add 'Also add them to your address book?' to the confirmation. True when publishing works for the caller at all, this contact is one the publish endpoint would accept (a visible manual or collected row - an address-book row is already there, a directory colleague is never publishable), and no publish of it is already on its way. A contact whose queued publish was PARKED is still offered: re-asking is how a parked entry gets retried. Answers from stored state only, no server round trip, and holds no secret - a contact that is not the caller's simply answers false, never 404, so it cannot be probed.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public Map<String, Object> isPublishOffered(HttpServletRequest request,
                                               @Parameter(description = "Contact id", required = true)
                                               @PathVariable("id")
@@ -456,33 +601,59 @@ public class EmailContactRest {
     return response;
   }
 
+  /**
+   * How the caller's last address-book sync went. Answers the stored sync state: status,
+   * consecutive failures and when the last run started.
+   *
+   * @param request the caller's request, for the acting user
+   * @return the contact sync state
+   */
   @GetMapping("/carddav/status")
   @Secured("users")
   @Operation(summary = "How the caller's last address-book sync went", method = "GET",
              description = "Answers the stored sync state: status, consecutive failures and when the last run started. Holds no secret.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public ContactSyncState getAddressBookSyncStatus(HttpServletRequest request) {
     return emailContactCardDavSyncService.getSyncState(request.getRemoteUser());
   }
 
+  /**
+   * The caller's pending address-book publishes. The publishes the address book has not
+   * taken yet: entries still waiting for the next successful sync, and entries parked
+   * after repeated failures with why.
+   *
+   * @param request the caller's request, for the acting user
+   * @return the contact publish queue
+   */
   @GetMapping("/carddav/publish-queue")
   @Secured("users")
   @Operation(summary = "The caller's pending address-book publishes", method = "GET",
              description = "The publishes the address book has not taken yet: entries still waiting for the next successful sync, and entries parked after repeated failures with why. Only contact ids and bookkeeping - the contacts themselves stay in the store, visible and retryable. Holds no secret. What the settings screen turns into 'N contacts waiting to publish'.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public ContactPublishQueue getPublishQueue(HttpServletRequest request) {
     return emailContactCardDavSyncService.getPublishQueue(request.getRemoteUser());
   }
 
+  /**
+   * Queues a reviewed selection of the caller's contacts to publish to their address
+   * book. The bulk half of the write-back, fed by the review checklist: the selected
+   * contacts are queued and published automatically after the next successful
+   * address-book sync - no card is written by this call itself, so it works even before
+   * the new account's book has ever been reached.
+   *
+   * @param request the caller's request, for the acting user
+   * @param contactIds the reviewed contact ids to publish
+   * @return the contact publish queue
+   */
   @PostMapping("/carddav/publish-queue")
   @Secured("users")
   @Operation(summary = "Queues a reviewed selection of the caller's contacts to publish to their address book", method = "POST",
              description = "The bulk half of the write-back, fed by the review checklist: the selected contacts are queued and published automatically after the next successful address-book sync - no card is written by this call itself, so it works even before the new account's book has ever been reached. Manual contacts only, re-checked server-side: collected and directory contacts are never offered by the checklist and are refused here too - the human's explicit tick is the provenance this rides on. All-or-nothing: any refusal leaves the queue untouched, so what was reviewed is exactly what happens. A selected contact already in the address book is skipped as already satisfied.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled; the stored queue is answered"),
       @ApiResponse(responseCode = "400", description = "Publishing disabled, an id that is not one of the caller's visible contacts, or a non-manual contact in the selection - the message code says which; nothing was queued"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "409", description = "The whole selection cannot fit in the queue; nothing was queued"), })
   public ContactPublishQueue queuePublishes(HttpServletRequest request,
                                             @Parameter(description = "The reviewed contact ids to publish", required = true)
@@ -497,13 +668,23 @@ public class EmailContactRest {
     }
   }
 
+  /**
+   * Exports the caller's contact store, whole or by selection, as a .vcf file. Streams
+   * the caller's own contacts - suppressed rows excluded - as one vCard 3.0 file, the
+   * dialect Gmail, Outlook and iCloud all accept.
+   *
+   * @param request the caller's request, for the acting user
+   * @param response the response
+   * @param ids the contacts to export; the whole store when absent
+   * @throws IOException when it cannot be answered
+   */
   @GetMapping(value = "/export", produces = "text/vcard")
   @Secured("users")
   @Operation(summary = "Exports the caller's contact store, whole or by selection, as a .vcf file", method = "GET",
              description = "Streams the caller's own contacts - suppressed rows excluded - as one vCard 3.0 file, the dialect Gmail, Outlook and iCloud all accept. Without ids that is the WHOLE store, never a filtered view; with ids it is exactly those contacts, in the order given, which is what the drawer's selection exports. An id that is not one of the caller's visible contacts is skipped silently - a selection is never a way to probe another store. Directory-linked colleagues leave with their live-resolved name; CardDAV rows keep their server UID.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "More ids than one export may name; nothing was written"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public void exportContacts(HttpServletRequest request,
                              HttpServletResponse response,
                              @Parameter(description = "The contacts to export; the whole store when absent")
@@ -527,12 +708,23 @@ public class EmailContactRest {
     }
   }
 
+  /**
+   * Downloads the caller's whole contact store as a .vcf backup, THEN empties the store.
+   * The provider-switch 'download a backup, then start fresh' choice, as one operation
+   * whose ordering is the contract: the response body IS the backup - every visible
+   * contact, same file as /export - and the store is emptied only after the last byte was
+   * written and flushed without error.
+   *
+   * @param request the caller's request, for the acting user
+   * @param response the response
+   * @throws IOException when it cannot be answered
+   */
   @PostMapping(value = "/export-then-start-fresh", produces = "text/vcard")
   @Secured("users")
   @Operation(summary = "Downloads the caller's whole contact store as a .vcf backup, THEN empties the store", method = "POST",
              description = "The provider-switch 'download a backup, then start fresh' choice, as one operation whose ordering is the contract: the response body IS the backup - every visible contact, same file as /export - and the store is emptied only after the last byte was written and flushed without error. A failed or abandoned download deletes nothing. THERE IS NO UNDO past a delivered download: the .vcf in the user's hands is the recovery path, re-importable through /import. A POST on purpose - a destructive download must never be reachable by a prefetchable GET.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The backup was delivered and the store emptied"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public void exportContactsThenStartFresh(HttpServletRequest request, HttpServletResponse response) throws IOException {
     response.setContentType("text/vcard");
     response.setCharacterEncoding("UTF-8");
@@ -542,13 +734,22 @@ public class EmailContactRest {
     emailContactVCardService.exportContactsThenStartFresh(request.getRemoteUser(), response.getWriter());
   }
 
+  /**
+   * Imports an uploaded .vcf file into the caller's contacts. Starts importing a vCard
+   * file previously pushed to the upload service, and answers immediately - the run
+   * happens in the background and /import/status is where it reports.
+   *
+   * @param request the caller's request, for the acting user
+   * @param uploadId the upload id the file was pushed under
+   * @return the contact import state
+   */
   @PostMapping("/import")
   @Secured("users")
   @Operation(summary = "Imports an uploaded .vcf file into the caller's contacts", method = "POST",
              description = "Starts importing a vCard file previously pushed to the upload service, and answers immediately - the run happens in the background and /import/status is where it reports. Import skips and reports, never merges and never revives: a card whose any address is already known (including a removed contact's tombstone) is left alone, so re-importing the same file is a no-op. Imported contacts are manual rows.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Missing upload, or a file over the size cap"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "409", description = "An import of this user is already running"), })
   public ContactImportState importContacts(HttpServletRequest request,
                                            @Parameter(description = "The upload id the file was pushed under", required = true)
@@ -563,23 +764,40 @@ public class EmailContactRest {
     }
   }
 
+  /**
+   * How the caller's vCard import is going, or went. Answers the stored import state:
+   * status, the four counters (imported, already known, no address, unreadable) and, when
+   * something cut the run short, its message code.
+   *
+   * @param request the caller's request, for the acting user
+   * @return the contact import state
+   */
   @GetMapping("/import/status")
   @Secured("users")
   @Operation(summary = "How the caller's vCard import is going, or went", method = "GET",
              description = "Answers the stored import state: status, the four counters (imported, already known, no address, unreadable) and, when something cut the run short, its message code. A null status says no import ever ran. Holds no secret.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public ContactImportState getImportStatus(HttpServletRequest request) {
     return emailContactVCardService.getImportState(request.getRemoteUser());
   }
 
+  /**
+   * Reads the first card of an uploaded .vcf as a would-be contact, storing nothing.
+   * Parses a vCard file previously pushed to the upload service and answers the contact
+   * its FIRST readable card would become - fields only, nothing persisted, no photo.
+   *
+   * @param request the caller's request, for the acting user
+   * @param uploadId the upload id the file was pushed under
+   * @return the email contact
+   */
   @PostMapping("/parse")
   @Secured("users")
   @Operation(summary = "Reads the first card of an uploaded .vcf as a would-be contact, storing nothing", method = "POST",
              description = "Parses a vCard file previously pushed to the upload service and answers the contact its FIRST readable card would become - fields only, nothing persisted, no photo. This is the prefill of the add-contact form: the caller shows the fields, the user confirms, and only the confirming save creates anything. The upload is consumed either way.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Missing upload, a file over the size cap, or no readable card in it"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
   public EmailContact parseFirstCard(HttpServletRequest request,
                                      @Parameter(description = "The upload id the file was pushed under", required = true)
                                      @RequestParam("uploadId")
@@ -591,12 +809,20 @@ public class EmailContactRest {
     }
   }
 
+  /**
+   * One contact as vCard text. The vCard of one of the caller's own contacts.
+   *
+   * @param request the caller's request, for the acting user
+   * @param id contact id
+   * @param photo whether the stored picture travels; the QR path leaves it out
+   * @return the string
+   */
   @GetMapping(value = "/{id}/vcard", produces = "text/vcard")
   @Secured("users")
   @Operation(summary = "One contact as vCard text", method = "GET",
              description = "The vCard of one of the caller's own contacts. Without the photo parameter it is text-only - what the contact card's QR code encodes, where an embedded picture is far past what a scannable QR can hold. With photo=true the stored picture comes along - the shape the contact travels in as a mail attachment - though only a picture this store owns: a directory colleague's platform avatar is never handed out. Neither shape carries a UID. Somebody else's contact is answered 404, never 403.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public String getContactVCard(HttpServletRequest request,
                                 @Parameter(description = "Contact id", required = true)
@@ -612,13 +838,24 @@ public class EmailContactRest {
     return vcard;
   }
 
+  /**
+   * Reads the first vCard of a mail attachment as a contact-form prefill. Parses a .vcf
+   * attachment of one of the caller's own received mails and answers its FIRST card as an
+   * unpersisted contact - what the 'Add to contacts' action opens the create form with.
+   *
+   * @param request the caller's request, for the acting user
+   * @param mailRemoteId the IMAP UID of the mail within its folder
+   * @param attachmentId the attachment's MIME part path within the mail
+   * @param folder the folder
+   * @return the email contact
+   */
   @GetMapping("/from-attachment")
   @Secured("users")
   @Operation(summary = "Reads the first vCard of a mail attachment as a contact-form prefill", method = "GET",
              description = "Parses a .vcf attachment of one of the caller's own received mails and answers its FIRST card as an unpersisted contact - what the 'Add to contacts' action opens the create form with. First card only, on purpose: an emailed contact is one person, and a multi-card file belongs to the contacts import. Nothing is stored by this call, and the card's embedded photo is left behind - the form owns the picture flow. An attachment over the size cap or holding no readable card answers 400 with the message code; an attachment the caller does not have answers 404, never 403.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Over the size cap, or no readable vCard"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation, or no connected mailbox"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public EmailContact getContactFromAttachment(HttpServletRequest request,
                                                @Parameter(description = "The IMAP UID of the mail within its folder", required = true)
@@ -643,7 +880,7 @@ public class EmailContactRest {
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {
       // The mailbox folds "not yours", "not there" and "unreachable" into this
       // one exception. From the caller's seat every one of them reads the same
@@ -654,12 +891,20 @@ public class EmailContactRest {
     }
   }
 
+  /**
+   * Restores a suppressed contact. Un-suppresses a contact - the undo of deleting a
+   * collected one, wired to the toast shown right after.
+   *
+   * @param request the caller's request, for the acting user
+   * @param id contact id
+   * @return the email contact
+   */
   @PostMapping("/{id}/restore")
   @Secured("users")
   @Operation(summary = "Restores a suppressed contact", method = "POST",
              description = "Un-suppresses a contact - the undo of deleting a collected one, wired to the toast shown right after.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public EmailContact restoreContact(HttpServletRequest request,
                                      @Parameter(description = "Contact id", required = true)
