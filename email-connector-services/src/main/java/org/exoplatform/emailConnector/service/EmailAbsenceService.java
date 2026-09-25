@@ -21,6 +21,7 @@ import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -38,6 +39,7 @@ import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.AbsenceSettings;
 import org.exoplatform.emailConnector.model.AbsenceStatus;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -73,7 +75,12 @@ import io.meeds.social.util.JsonUtils;
  * answers "not found" everywhere), {@code email.connector.absence.vacation.days}
  * (default 7, the minimum interval between two replies to one sender, on a Sieve
  * server; BlueMind applies its own), {@code email.connector.absence.status.ttlSeconds}
- * (default 900).
+ * (default 900), {@code email.connector.forwarding.display.enabled} (default true; false
+ * neither reads nor shows a forward).
+ * <p>
+ * <b>A forward is only ever read.</b> The section shows whether the caller's own mailbox
+ * forwards mail, as the server holds it, with where to manage it; no verb of this service
+ * writes a forward, and a forward that cannot be read never fails the section.
  */
 @Service
 public class EmailAbsenceService {
@@ -82,6 +89,12 @@ public class EmailAbsenceService {
 
   /** Whether the feature is on for the deployment. */
   public static final String       ENABLED_PROPERTY    = "email.connector.absence.enabled";
+
+  /**
+   * Whether an existing forward of the mailbox is read and shown, read-only; false reads
+   * and shows nothing.
+   */
+  public static final String       FORWARDING_DISPLAY_PROPERTY = "email.connector.forwarding.display.enabled";
 
   /** The minimum days between two replies to one sender. */
   public static final String       DAYS_PROPERTY       = "email.connector.absence.vacation.days";
@@ -195,7 +208,7 @@ public class EmailAbsenceService {
    * @param timeZone the caller's IANA zone, as the browser reports it; an engine that
    *          stores the window as instants answers its days in it. When blank or unknown,
    *          the zone of the last reply eXo wrote, else UTC
-   * @return the section
+   * @return the section, with the mailbox's forward, read only, unless the display is off
    * @throws ObjectNotFoundException when the feature is off, or the caller has no
    *           connected mailbox
    * @throws IllegalAccessException when the request comes from someone else's mailbox, or
@@ -207,14 +220,99 @@ public class EmailAbsenceService {
                                     String timeZone) throws ObjectNotFoundException,
                                                        IllegalAccessException,
                                                        ServerRuleUnavailableException {
+    return getAbsence(username, delegationId, timeZone, true);
+  }
+
+  /**
+   * The caller's automatic reply section, read live from the server, with or without the
+   * mailbox's forward: a view that does not show the forward (the reply's drawer) spares
+   * the server its read.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from, or null for the caller's
+   *          own mailbox; any value is refused
+   * @param timeZone the caller's IANA zone, as the browser reports it
+   * @param withForwarding whether to read the forward; false answers it null, unread
+   * @return the section
+   * @throws ObjectNotFoundException when the feature is off, or the caller has no
+   *           connected mailbox
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   */
+  public AbsenceSettings getAbsence(String username,
+                                    Long delegationId,
+                                    String timeZone,
+                                    boolean withForwarding) throws ObjectNotFoundException,
+                                                            IllegalAccessException,
+                                                            ServerRuleUnavailableException {
     ServerRuleEngine engine = engineOf(username, delegationId);
     try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
       ServerRuleCapabilities capabilities = engine.probe(session);
       ServerVacation vacation = capabilities.isSupported(ServerRuleCapabilities.VACATION)
           ? refresh(username, engine, session, zoneHint(timeZone, username))
           : noReply(username);
-      return settings(capabilities, engine, vacation);
+      AbsenceSettings settings = settings(capabilities, engine, vacation);
+      if (withForwarding) {
+        settings.setForwarding(forwarding(engine, session, capabilities));
+      }
+      return settings;
     }
+  }
+
+  /**
+   * The forward of the caller's own mailbox, read only, with the webmail that manages it:
+   * nothing is read when the deployment switched the display off, and nothing asked of
+   * an engine that cannot read a forward. A failed read is answered "unknown" rather than
+   * failing the section, whose reply was read already.
+   *
+   * @param engine the engine
+   * @param session the caller's own session
+   * @param capabilities the probe's answer
+   * @return the forward, {@link ForwardingSetting#unknown()} when it cannot be read, null
+   *         when the display is off
+   */
+  private ForwardingSetting forwarding(ServerRuleEngine engine, MailboxAclSession session, ServerRuleCapabilities capabilities) {
+    if (!forwardingDisplayed()) {
+      return null;
+    }
+    ForwardingSetting forwarding = null;
+    if (capabilities.isSupported(ServerRuleCapabilities.FORWARDING_READ)) {
+      try {
+        forwarding = engine.readForwarding(session);
+      } catch (ServerRuleUnavailableException e) {
+        LOG.debug("The forward of user {} could not be read: {}", session.username(), e.getMessage());
+      }
+    }
+    if (forwarding == null) {
+      forwarding = ForwardingSetting.unknown();
+    }
+    return forwarding.withManageUrl(webmailUrl(session.connector()));
+  }
+
+  /**
+   * Whether the forwarding display is on for the deployment.
+   *
+   * @return the property's value, true by default
+   */
+  static boolean forwardingDisplayed() {
+    return Boolean.parseBoolean(System.getProperty(FORWARDING_DISPLAY_PROPERTY, "true").trim());
+  }
+
+  /**
+   * The connector's webmail, where the user manages a forward; only an {@code http} or
+   * {@code https} address the administrator configured.
+   *
+   * @param connector the connector
+   * @return the address, or null
+   */
+  static String webmailUrl(EmailConnector connector) {
+    String url = connector == null ? null : StringUtils.trimToNull(connector.getWebmailUrl());
+    if (url == null) {
+      return null;
+    }
+    String lower = url.toLowerCase(Locale.ROOT);
+    return lower.startsWith("https://") || lower.startsWith("http://") ? url : null;
   }
 
   /**
@@ -540,7 +638,7 @@ public class EmailAbsenceService {
    * @param capabilities the probe's answer, or null when not re-read
    * @param engine the engine
    * @param vacation what the server holds
-   * @return the section
+   * @return the section, without a forward
    */
   private AbsenceSettings settings(ServerRuleCapabilities capabilities, ServerRuleEngine engine, ServerVacation vacation) {
     return new AbsenceSettings(capabilities,
@@ -548,7 +646,8 @@ public class EmailAbsenceService {
                                vacation.vacation(),
                                vacation.state(),
                                vacation.foreignScriptName(),
-                               days());
+                               days(),
+                               null);
   }
 
   /**
