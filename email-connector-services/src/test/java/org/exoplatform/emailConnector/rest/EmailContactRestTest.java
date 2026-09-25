@@ -327,11 +327,11 @@ public class EmailContactRestTest {
   }
 
   @Test
-  void getFromAttachmentWithoutAMailboxAnswersUnauthorized() throws Exception {
+  void getFromAttachmentWithoutAMailboxAnswersForbidden() throws Exception {
     when(emailContactVCardService.getAttachmentContact(anyString(), anyLong(), anyString(), anyString()))
         .thenThrow(new IllegalAccessException("no mailbox"));
     mockMvc.perform(get(CONTACTS_PATH + "/from-attachment?mailRemoteId=7&attachmentId=2").with(testSimpleUser()))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
   }
 
   @Test
