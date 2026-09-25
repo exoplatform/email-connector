@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.model;
 
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -51,9 +52,15 @@ import java.util.Map;
  *          and an administrator has not switched the copy off -- what the composer's
  *          notice says and what its "Copy {owner}" box defaults from (PO decision Q-3)
  * @param sendModes the shapes the delegate can write mail in the owner's name in now
- *          (EXO-90582): the owner's consent narrowed to what the connector declares, and
- *          none once the server refused one since the owner last set it -- the list the
- *          From picker offers. Most transparent first; empty for none, never null
+ *          (EXO-90582): the owner's consent narrowed to what the connector declares,
+ *          less the shapes the server refused since the owner last set it (EXO-90626) --
+ *          the list the From picker offers. Most transparent first; empty for none, never
+ *          null
+ * @param sendRefusedDate when the owner's mail server last refused a mail in her name
+ *          from the delegate, since she last set the consent; null for never
+ * @param sendRefusedMode the shape that refusal blocks from (EXO-90626): {@code AS} when
+ *          only writing as the owner is refused and on her behalf still works,
+ *          {@code ON_BEHALF} when both are; null with no refusal
  */
 public record SharedMailboxEntry(Long delegationId,
                                  String ownerId,
@@ -67,7 +74,9 @@ public record SharedMailboxEntry(Long delegationId,
                                  List<SharedMailboxFolder> folders,
                                  boolean inboxOnly,
                                  boolean sentCopy,
-                                 List<SendMode> sendModes) {
+                                 List<SendMode> sendModes,
+                                 Date sendRefusedDate,
+                                 SendMode sendRefusedMode) {
 
   /**
    * Normalises the usable shapes to an unmodifiable list, never null.
@@ -85,6 +94,8 @@ public record SharedMailboxEntry(Long delegationId,
    * @param inboxOnly whether only the INBOX is shared
    * @param sentCopy whether a mail sent from here is filed in the owner's Sent
    * @param sendModes the shapes the delegate can write in the owner's name in now
+   * @param sendRefusedDate when the owner's mail server last refused one, null for never
+   * @param sendRefusedMode the shape that refusal blocks from, null with no refusal
    */
   public SharedMailboxEntry {
     sendModes = sendModes == null ? List.of() : List.copyOf(sendModes);
@@ -132,5 +143,53 @@ public record SharedMailboxEntry(Long delegationId,
          inboxOnly,
          sentCopy,
          List.of());
+  }
+
+  /**
+   * An entry whose owner's mail server refused nothing since the consent was set -- every
+   * caller written before EXO-90626.
+   *
+   * @param delegationId the delegation id
+   * @param ownerId the owner's eXo username
+   * @param ownerFullName the owner's display name
+   * @param ownerMailbox the owner's mailbox address
+   * @param preset the preset the rights read as
+   * @param rights the letters the server last granted the delegate
+   * @param affordances the controls those letters unlock
+   * @param folderKey the key the shared INBOX is listed under
+   * @param unreadCount the unread count of that INBOX
+   * @param folders the shared mailbox's other folders
+   * @param inboxOnly whether only the INBOX is shared
+   * @param sentCopy whether a mail sent from here is filed in the owner's Sent
+   * @param sendModes the shapes the delegate can write in the owner's name in now
+   */
+  public SharedMailboxEntry(Long delegationId,
+                            String ownerId,
+                            String ownerFullName,
+                            String ownerMailbox,
+                            DelegationPreset preset,
+                            String rights,
+                            Map<String, Boolean> affordances,
+                            String folderKey,
+                            int unreadCount,
+                            List<SharedMailboxFolder> folders,
+                            boolean inboxOnly,
+                            boolean sentCopy,
+                            List<SendMode> sendModes) {
+    this(delegationId,
+         ownerId,
+         ownerFullName,
+         ownerMailbox,
+         preset,
+         rights,
+         affordances,
+         folderKey,
+         unreadCount,
+         folders,
+         inboxOnly,
+         sentCopy,
+         sendModes,
+         null,
+         null);
   }
 }
