@@ -141,6 +141,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <div class="caption text-sub-title mt-4">
       {{ $t('UserSettings.emailConnector.filters.form.atDelivery') }}
     </div>
+    <div class="caption text-sub-title mt-2">
+      {{ $t('UserSettings.emailConnector.filters.form.publishes') }}
+    </div>
   </v-form>
 </template>
 
