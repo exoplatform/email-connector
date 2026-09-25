@@ -28,11 +28,10 @@ import javax.net.ssl.SSLSocketFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
-import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
-import org.exoplatform.emailConnector.service.rules.sieve.ManageSieveException.Kind;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 
@@ -63,7 +62,7 @@ public class ManageSieveConnector {
      * Produces the material of one attempt.
      *
      * @return the login and password, never null
-     * @throws ManageSieveException {@link Kind#NO_CREDENTIALS} when there is none
+     * @throws ManageSieveException {@link ManageSieveErrorKind#NO_CREDENTIALS} when there is none
      * @throws ConnectorCredentialsException when the provider cannot produce any
      */
     PasswordAuthentication get() throws ManageSieveException, ConnectorCredentialsException;
@@ -143,7 +142,7 @@ public class ManageSieveConnector {
    * @param session the caller's own session
    * @return the authenticated client
    * @throws ManageSieveException when the server is unreachable, refuses TLS, or refuses
-   *           the credentials; {@link Kind#NO_CREDENTIALS} when the session resolves none
+   *           the credentials; {@link ManageSieveErrorKind#NO_CREDENTIALS} when the session resolves none
    * @throws ConnectorCredentialsException never on this path: the session reports a
    *           provider failure as a {@code MailboxAclException}
    */
@@ -153,7 +152,7 @@ public class ManageSieveConnector {
     return open(endpoint, connector, session.username(), () -> {
       PasswordAuthentication credentials = session.mailCredentials();
       if (credentials == null || credentials.getUserName() == null || credentials.getPassword() == null) {
-        throw new ManageSieveException(Kind.NO_CREDENTIALS, "The credentials provider produced no login and password");
+        throw new ManageSieveException(ManageSieveErrorKind.NO_CREDENTIALS, "The credentials provider produced no login and password");
       }
       return credentials;
     });
