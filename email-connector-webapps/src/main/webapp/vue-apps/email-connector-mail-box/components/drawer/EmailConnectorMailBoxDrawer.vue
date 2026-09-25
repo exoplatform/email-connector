@@ -155,11 +155,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           ref="expandedListPane"
           class="flex-grow-1 flex-shrink-1 fill-height overflow-y-auto overflow-x-hidden"
           style="min-width: 0;">
-          <!-- Whose mailbox this is, before anything else in the list (plan 7.6). -->
-          <email-connector-shared-mailbox-band
+          <!-- Whose mailbox this is, before anything else in the list (plan 7.6), and
+               under it the owner's absence dates when she is away (EXO-90651): one
+               pinned block, so the two bands do not pin over each other. -->
+          <div
             v-if="currentSharedMailbox"
-            :entry="currentSharedMailbox"
-            sticky />
+            class="white"
+            style="position: sticky; top: 0; z-index: 3;">
+            <email-connector-shared-mailbox-band :entry="currentSharedMailbox" />
+            <email-connector-absence-band :shared-mailbox="currentSharedMailbox" />
+          </div>
           <!-- The user's own automatic reply, on their own mailbox only (EXO-90642). -->
           <email-connector-absence-band v-else sticky />
           <email-connector-mail-box-drawer-search-results
@@ -221,10 +226,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <!-- Opened on a shared mailbox, the band says whose it is while its list is still
          on its way (plan 7.6: the deep link shows it before the list loads). -->
     <template v-if="emailBoxDrawer && (!loading || (currentSharedMailbox && !expanded))" #content>
-      <email-connector-shared-mailbox-band
+      <div
         v-if="currentSharedMailbox && !expanded"
-        :entry="currentSharedMailbox"
-        sticky />
+        class="white"
+        style="position: sticky; top: 0; z-index: 3;">
+        <email-connector-shared-mailbox-band :entry="currentSharedMailbox" />
+        <email-connector-absence-band :shared-mailbox="currentSharedMailbox" />
+      </div>
       <email-connector-absence-band v-else-if="!currentSharedMailbox && !expanded" sticky />
       <template v-if="!loading">
         <v-list-item v-if="syncBlocked" class="full-height align-center">

@@ -50,6 +50,7 @@ import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.AbsenceSettings;
 import org.exoplatform.emailConnector.model.AbsenceStatus;
+import org.exoplatform.emailConnector.model.OwnerAbsenceStatus;
 import org.exoplatform.emailConnector.model.DelegationFolders;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailDelegation;
@@ -73,6 +74,8 @@ import org.exoplatform.emailConnector.service.UserEmailSettingService;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -1030,31 +1033,42 @@ public class UserEmailSettingRest {
   }
 
   /**
-   * The dates-only summary of the caller's automatic reply, for the mailbox band.
+   * The dates-only summary of an automatic reply, for the mailbox band: the caller's own,
+   * or, with a share, the owner's as her delegate sees it.
    *
    * @param request the HTTP request, carrying the authenticated user
-   * @param delegationId the share the request is made from; any value is refused
+   * @param delegationId the share the caller looks at the owner's mailbox through, or
+   *          null for the caller's own mailbox
    * @return the summary, never the text
    */
   @GetMapping("/absence/status")
   @Secured("users")
-  @Operation(summary = "Reads the summary of the caller's automatic reply", method = "GET",
-      description = "{enabled, start, end, timeZone, source, updatedDate, lastServerReadDate}: dates only, never the text. The "
-          + "cached summary, read again from the mail server when older than email.connector.absence.status.ttlSeconds; a "
-          + "server that cannot be read leaves the cached one. Own mailbox only.")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.absence.ownMailboxOnly)"),
-      @ApiResponse(responseCode = "404", description = "The feature is off") })
-  public AbsenceStatus getAbsenceStatus(HttpServletRequest request,
-                                        @Parameter(description = "The share the request is made from; refused")
-                                        @RequestParam(name = "delegationId", required = false)
-                                        Long delegationId) {
+  @Operation(summary = "Reads the summary of an automatic reply: the caller's, or a shared mailbox owner's", method = "GET",
+      description = "Without delegationId: the caller's own {enabled, start, end, timeZone, source, updatedDate, "
+          + "lastServerReadDate}, the cached summary, read again from the mail server when older than "
+          + "email.connector.absence.status.ttlSeconds; a server that cannot be read leaves the cached one. "
+          + "With delegationId, one of the caller's own accepted shares: the owner's {enabled, start, end, timeZone, "
+          + "updatedDate, lastServerReadDate, stale}, from the summary cached by the owner's own reads, no server asked and "
+          + "nothing done as the owner; stale when that check is older than the TTL. Dates only, never the text or the subject.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled: the caller's own summary, or a shared mailbox owner's dates",
+      content = @Content(schema = @Schema(oneOf = { AbsenceStatus.class, OwnerAbsenceStatus.class }))),
+      @ApiResponse(responseCode = "403", description = "The share is not accepted yet (emailConnector.absence.shareNotAccepted), or the caller may not use mail (emailConnector.absence.notAllowed)"),
+      @ApiResponse(responseCode = "404", description = "The feature is off, or no such share is the caller's"),
+      @ApiResponse(responseCode = "410", description = "The share ended (emailConnector.delegation.revoked, .gone)") })
+  public Object getAbsenceStatus(HttpServletRequest request,
+                                 @Parameter(description = "One of the caller's shares, to read its owner's dates; "
+                                     + "absent for the caller's own")
+                                 @RequestParam(name = "delegationId", required = false)
+                                 Long delegationId) {
     try {
-      return emailAbsenceService.getStatus(request.getRemoteUser(), delegationId);
+      return delegationId == null ? emailAbsenceService.getStatus(request.getRemoteUser(), null)
+                                  : emailAbsenceService.getOwnerAbsenceForDelegate(request.getRemoteUser(), delegationId);
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     }
   }
 

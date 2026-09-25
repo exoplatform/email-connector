@@ -73,6 +73,7 @@ import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.AbsenceSettings;
 import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.AbsenceStatus;
+import org.exoplatform.emailConnector.model.OwnerAbsenceStatus;
 import org.exoplatform.emailConnector.model.DelegationFolder;
 import org.exoplatform.emailConnector.model.DelegationFolders;
 import org.exoplatform.emailConnector.model.DelegationGrantee;
@@ -805,20 +806,52 @@ public class UserEmailSettingRestTest {
   void absenceFromASharedMailboxIsForbidden() throws Exception {
     IllegalAccessException refusal = new IllegalAccessException(EmailAbsenceService.OWN_MAILBOX_ONLY);
     when(emailAbsenceService.getAbsence(SIMPLE_USER, 12L, null, true)).thenThrow(refusal);
-    when(emailAbsenceService.getStatus(SIMPLE_USER, 12L)).thenThrow(refusal);
     when(emailAbsenceService.setVacation(eq(SIMPLE_USER), eq(12L), any(), eq(false))).thenThrow(refusal);
     doThrow(refusal).when(emailAbsenceService).disableVacation(SIMPLE_USER, 12L);
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence?delegationId=12").with(testSimpleUser()))
            .andExpect(status().isForbidden())
            .andExpect(status().reason(EmailAbsenceService.OWN_MAILBOX_ONLY));
-    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/status?delegationId=12").with(testSimpleUser()))
-           .andExpect(status().isForbidden());
     mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation?delegationId=12").with(testSimpleUser())
                                                                                        .content("{\"enabled\":true}")
                                                                                        .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isForbidden());
     mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/absence/vacation?delegationId=12").with(testSimpleUser()))
            .andExpect(status().isForbidden());
+  }
+
+  /**
+   * The status read with a share answers the owner's dates through the delegate's read,
+   * never the caller's own summary, and each refusal of the share its status: 404 for no
+   * such share of the caller's, 403 for a pending share or a caller who may not use mail,
+   * 410 for a share that ended.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void absenceStatusOfASharedMailboxOwner() throws Exception {
+    when(emailAbsenceService.getOwnerAbsenceForDelegate(SIMPLE_USER, 12L))
+        .thenReturn(new OwnerAbsenceStatus(true, "2026-10-01", "2026-10-15", "Europe/Paris", 1L, 2L, true));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/status?delegationId=12").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.enabled").value(true))
+           .andExpect(jsonPath("$.end").value("2026-10-15"))
+           .andExpect(jsonPath("$.stale").value(true))
+           .andExpect(jsonPath("$.source").doesNotExist());
+    verify(emailAbsenceService, never()).getStatus(any(), any());
+
+    when(emailAbsenceService.getOwnerAbsenceForDelegate(SIMPLE_USER, 13L)).thenThrow(new ObjectNotFoundException("not yours"));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/status?delegationId=13").with(testSimpleUser()))
+           .andExpect(status().isNotFound());
+    when(emailAbsenceService.getOwnerAbsenceForDelegate(SIMPLE_USER, 14L))
+        .thenThrow(new IllegalAccessException(EmailAbsenceService.SHARE_NOT_ACCEPTED));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/status?delegationId=14").with(testSimpleUser()))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason(EmailAbsenceService.SHARE_NOT_ACCEPTED));
+    when(emailAbsenceService.getOwnerAbsenceForDelegate(SIMPLE_USER, 15L))
+        .thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/status?delegationId=15").with(testSimpleUser()))
+           .andExpect(status().isGone())
+           .andExpect(status().reason(DelegationRevokedException.REVOKED));
   }
 
   /**
