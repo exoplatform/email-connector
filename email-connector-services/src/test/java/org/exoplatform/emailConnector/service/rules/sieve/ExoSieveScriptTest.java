@@ -181,6 +181,10 @@ public class ExoSieveScriptTest {
     assertCode("emailConnector.absence.text.invalid", () -> vacation(true, null, null, "Away", " "));
     assertCode("emailConnector.absence.text.invalid", () -> vacation(true, null, null, "Away", "x".repeat(4001)));
     assertCode("emailConnector.absence.text.invalid", () -> vacation(true, null, null, "Away", "a\0b"));
+    // the bound applies to the stored CRLF form: 3999 characters with LF breaks store as 4000+
+    assertCode("emailConnector.absence.text.invalid",
+               () -> vacation(true, null, null, "Away", "x".repeat(3990) + "\n".repeat(9)));
+    assertEquals(4000, vacation(true, null, null, "Away", "x".repeat(3990) + "\n".repeat(5)).text().length());
     assertCode("emailConnector.absence.subject.invalid", () -> vacation(true, null, null, "x".repeat(201), "t"));
     assertCode("emailConnector.absence.subject.invalid", () -> vacation(true, null, null, "a\0", "t"));
     assertCode("emailConnector.absence.window.invalid",
