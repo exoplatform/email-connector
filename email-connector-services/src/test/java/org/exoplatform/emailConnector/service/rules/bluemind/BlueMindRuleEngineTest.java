@@ -44,6 +44,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
+import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.EmailConnector;
@@ -61,8 +62,8 @@ import org.exoplatform.emailConnector.service.bluemind.BlueMindMailboxTransport;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindSession;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindTransportException.Kind;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindVacation;
-import org.exoplatform.emailConnector.service.bluemind.FakeBlueMindTransport;
 import org.exoplatform.emailConnector.service.bluemind.FakeBlueMindTransport.Call;
+import org.exoplatform.emailConnector.service.bluemind.FakeBlueMindTransport;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 
 /**
@@ -190,7 +191,7 @@ public class BlueMindRuleEngineTest {
     assertFalse(capabilities.isSupported(ServerRuleCapabilities.FORWARDING_WRITE));
     assertFalse(capabilities.isSupported(ServerRuleCapabilities.MOVE_TO_FOLDER));
     assertFalse(capabilities.publishConflict());
-    assertEquals(ServerRuleCapabilities.VocabularySource.FIXED, capabilities.vocabularySource());
+    assertEquals(ServerRuleVocabularySource.FIXED, capabilities.vocabularySource());
     assertEquals(List.of("login", "getVacation", "logout"), names());
     Call login = bluemind.calls("login").get(0);
     assertEquals(CORE_URL, login.apiRoot());

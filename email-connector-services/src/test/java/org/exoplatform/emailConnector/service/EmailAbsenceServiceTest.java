@@ -55,6 +55,7 @@ import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
@@ -67,6 +68,7 @@ import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.ForwardingState;
 import org.exoplatform.emailConnector.model.OwnerAbsenceStatus;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
+import org.exoplatform.emailConnector.model.ServerRuleElementSupport;
 import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.model.VacationSetting;
@@ -190,7 +192,7 @@ public class EmailAbsenceServiceTest {
    */
   @Test
   public void testTheOwnMailboxIsServed() throws Exception {
-    when(engine.probe(session)).thenReturn(ServerRuleCapabilities.unsupported("x", ServerRuleCapabilities.VocabularySource.NONE));
+    when(engine.probe(session)).thenReturn(ServerRuleCapabilities.unsupported("x", ServerRuleVocabularySource.NONE));
     AbsenceSettings absence = service.getAbsence(USERNAME, null);
     assertEquals("sieve", absence.getEngine());
     assertEquals(VacationState.NONE, absence.getVacationState());
@@ -543,8 +545,8 @@ public class EmailAbsenceServiceTest {
                                       null,
                                       false,
                                       false,
-                                      ServerRuleCapabilities.VocabularySource.DYNAMIC,
-                                      Map.of(ServerRuleCapabilities.VACATION, ServerRuleCapabilities.ElementSupport.SUPPORTED_ELEMENT));
+                                      ServerRuleVocabularySource.DYNAMIC,
+                                      Map.of(ServerRuleCapabilities.VACATION, ServerRuleElementSupport.SUPPORTED_ELEMENT));
   }
 
   /**
@@ -557,11 +559,11 @@ public class EmailAbsenceServiceTest {
                                       null,
                                       false,
                                       false,
-                                      ServerRuleCapabilities.VocabularySource.DYNAMIC,
+                                      ServerRuleVocabularySource.DYNAMIC,
                                       Map.of(ServerRuleCapabilities.VACATION,
-                                             ServerRuleCapabilities.ElementSupport.SUPPORTED_ELEMENT,
+                                             ServerRuleElementSupport.SUPPORTED_ELEMENT,
                                              ServerRuleCapabilities.FORWARDING_READ,
-                                             ServerRuleCapabilities.ElementSupport.SUPPORTED_ELEMENT));
+                                             ServerRuleElementSupport.SUPPORTED_ELEMENT));
   }
 
   /**

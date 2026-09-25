@@ -46,6 +46,7 @@ import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.OwnerAbsenceStatus;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerVacation;
+import org.exoplatform.emailConnector.model.SieveVacation;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.model.VacationSetting;
 import org.exoplatform.emailConnector.model.VacationState;
@@ -781,7 +782,7 @@ public class EmailAbsenceService {
    */
   static VacationSetting validate(VacationSetting vacation) {
     if (vacation == null || StringUtils.isBlank(vacation.getText())
-        || ExoSieveScript.Vacation.storedText(vacation.getText()).length() > MAX_TEXT_LENGTH
+        || SieveVacation.storedText(vacation.getText()).length() > MAX_TEXT_LENGTH
         || vacation.getText().indexOf('\0') >= 0) {
       throw new IllegalArgumentException(INVALID_TEXT);
     }
