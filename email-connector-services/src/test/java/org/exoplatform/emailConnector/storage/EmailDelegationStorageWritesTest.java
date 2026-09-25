@@ -321,6 +321,34 @@ class EmailDelegationStorageWritesTest {
   }
 
   /**
+   * EXO-90626 -- a refusal by the owner's mail server, over the shipped changelog (1.0.0-90
+   * included): recorded with its shape on the grantee's row under the consent it was sent
+   * under, read back with that shape by the grantee and by the owner; a shape that is
+   * neither on behalf nor as the owner is recorded as on behalf, which blocks both; and
+   * the owner's next consent clears the date and the shape.
+   */
+  @Test
+  void aSendRefusalIsReadBackWithItsShape() {
+    EmailDelegation row = emailDelegationStorage.create(acceptedRow("mia"));
+    EmailDelegation consented = emailDelegationStorage.updateSendMode("alice", row.getId(), SendMode.AS);
+
+    assertTrue(emailDelegationStorage.markSendRefused("mia", row.getId(), consented.getSendModeDate(), SendMode.AS));
+    EmailDelegation asGrantee = emailDelegationStorage.getAsGrantee("mia", row.getId());
+    assertNotNull(asGrantee.getSendRefusedDate());
+    assertEquals(SendMode.AS, asGrantee.getSendRefusedMode(), "the grantee reads the shape refused");
+    assertEquals(SendMode.AS, emailDelegationStorage.getAsOwner("alice", row.getId()).getSendRefusedMode(), "and so does the owner");
+    assertFalse(emailDelegationStorage.markSendRefused("mia", row.getId(), null, SendMode.AS), "a consent with no date is never marked");
+
+    EmailDelegation again = emailDelegationStorage.updateSendMode("alice", row.getId(), SendMode.AS);
+    assertNull(again.getSendRefusedDate(), "a consent set again clears the refusal");
+    assertNull(again.getSendRefusedMode(), "and its shape");
+
+    assertTrue(emailDelegationStorage.markSendRefused("mia", row.getId(), again.getSendModeDate(), null));
+    assertEquals(SendMode.ON_BEHALF, emailDelegationStorage.getAsGrantee("mia", row.getId()).getSendRefusedMode(),
+                 "a refusal of no known shape is recorded as on behalf, which blocks both");
+  }
+
+  /**
    * EXO-90582 -- the consent taken off a share once it ended, over the shipped changelog:
    * nothing on a live share, all three columns on an ended one.
    */

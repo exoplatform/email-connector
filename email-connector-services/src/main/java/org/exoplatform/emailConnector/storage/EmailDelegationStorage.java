@@ -374,19 +374,25 @@ public class EmailDelegationStorage {
 
   /**
    * Records, on the grantee's row, that the owner's mail server refused a mail sent in
-   * the owner's name under the consent set at {@code consentDate} (EXO-90583): see
-   * {@link EmailDelegationDAO#markSendRefused}. A consent with no date is never marked.
+   * the owner's name under the consent set at {@code consentDate} (EXO-90583), and the
+   * shape it was sent in (EXO-90626): see {@link EmailDelegationDAO#markSendRefused}. A
+   * consent with no date is never marked. A shape that is neither on behalf nor as the
+   * owner is recorded as on behalf, which blocks both: a refusal whose shape is unknown
+   * never leaves one usable.
    *
    * @param granteeId the grantee, whose row it must be
    * @param id the row id
    * @param consentDate when the consent the mail was sent under was set
+   * @param mode the shape the refused mail was sent in, {@link SendMode#ON_BEHALF} or
+   *          {@link SendMode#AS}
    * @return true when the refusal was recorded
    */
-  public boolean markSendRefused(String granteeId, long id, Date consentDate) {
+  public boolean markSendRefused(String granteeId, long id, Date consentDate, SendMode mode) {
     if (consentDate == null) {
       return false;
     }
-    return emailDelegationDAO.markSendRefused(id, granteeId, consentDate, new Date(), LIVE) > 0;
+    SendMode refused = mode == SendMode.AS ? SendMode.AS : SendMode.ON_BEHALF;
+    return emailDelegationDAO.markSendRefused(id, granteeId, consentDate, refused.name(), new Date(), LIVE) > 0;
   }
 
   /**
@@ -513,6 +519,7 @@ public class EmailDelegationStorage {
     delegation.setSendMode(SendMode.fromStored(entity.getSendMode()));
     delegation.setSendModeDate(entity.getSendModeDate());
     delegation.setSendRefusedDate(entity.getSendRefusedDate());
+    delegation.setSendRefusedMode(SendMode.fromStored(entity.getSendRefusedMode()));
     return delegation;
   }
 
