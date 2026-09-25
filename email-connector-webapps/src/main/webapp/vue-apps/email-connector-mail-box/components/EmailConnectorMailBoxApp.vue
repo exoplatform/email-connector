@@ -53,6 +53,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <email-connector-user-setting-mailbox-sharing-drawer />
     <email-connector-user-setting-sharing-invite-drawer />
     <email-connector-user-setting-folder-access-drawer />
+    <!-- The settings' automatic reply drawer, reused whole, opened by the mailbox band's
+         Edit (EXO-90642); registered by the user-setting bundle, like the drawers above. -->
+    <email-connector-user-setting-absence-drawer />
     <email-connector-mail-box-move-to-folder-drawer />
     <email-connector-mail-box-drawer-attachments-drawer />
     <email-connector-mail-box-drawer-list-item-action-menu-drawer />
