@@ -44,7 +44,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ error || $t('UserSettings.emailConnector.absence.error') }}
         </div>
         <div v-else-if="!supported" class="text-subtitle">
-          {{ $t('UserSettings.emailConnector.absence.row.unsupported') }}
+          {{ unsupportedMessage }}
         </div>
         <template v-else>
           <v-alert
@@ -71,6 +71,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :vacation="absence.vacation"
             :capabilities="absence.capabilities"
             :days="absence.vacationDays || 7"
+            :engine="absence.engine"
             :error="error"
             @can-save="canSave = $event"
             @save="save($event, false)" />
