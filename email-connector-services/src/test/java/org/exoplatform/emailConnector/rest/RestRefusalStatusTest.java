@@ -88,7 +88,8 @@ class RestRefusalStatusTest {
   private static final Map<Class<?>, Integer>               FLOORS = Map.of(EmailBoxRest.class, 48,
                                                                             UserEmailSettingRest.class, 16,
                                                                             EmailConnectorRest.class, 18,
-                                                                            EmailContactRest.class, 1);
+                                                                            EmailContactRest.class, 1,
+                                                                            EmailFilterRest.class, 6);
 
   /**
    * A plain refusal -- no connected mailbox, not an administrator, not the owner --
