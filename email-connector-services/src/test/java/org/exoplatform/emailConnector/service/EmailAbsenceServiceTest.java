@@ -33,6 +33,7 @@ import static org.mockito.Mockito.when;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.Map;
@@ -316,7 +317,7 @@ public class EmailAbsenceServiceTest {
   @Test
   public void testTheStoredHashDecidesModified() throws Exception {
     when(engine.probe(session)).thenReturn(supported());
-    when(engine.readVacation(session)).thenReturn(own(true, "h2"));
+    when(engine.readVacation(eq(session), any())).thenReturn(own(true, "h2"));
     settings.put(EmailAbsenceService.SCRIPT_SETTING_KEY, "{\"hash\":\"h1\"}");
     assertEquals(VacationState.MODIFIED, service.getAbsence(USERNAME, null).getVacationState());
     AbsenceStatus status = JsonUtils.fromJsonString(settings.get(EmailAbsenceService.ABSENCE_SETTING_KEY), AbsenceStatus.class);
@@ -333,10 +334,10 @@ public class EmailAbsenceServiceTest {
    */
   @Test
   public void testSwitchingOff() throws Exception {
-    when(engine.readVacation(session)).thenReturn(ServerVacation.none());
+    when(engine.readVacation(eq(session), any())).thenReturn(ServerVacation.none());
     service.disableVacation(USERNAME, null);
     verify(engine, never()).writeVacation(any(), any(), anyInt(), any());
-    when(engine.readVacation(session)).thenReturn(own(true, "h1"));
+    when(engine.readVacation(eq(session), any())).thenReturn(own(true, "h1"));
     when(engine.writeVacation(eq(session), any(), anyInt(), any())).thenReturn(own(false, "h2"));
     service.disableVacation(USERNAME, null);
     ArgumentCaptor<VacationSetting> written = ArgumentCaptor.forClass(VacationSetting.class);
@@ -362,16 +363,43 @@ public class EmailAbsenceServiceTest {
 
     AbsenceStatus stale = new AbsenceStatus(true, "2026-10-01", "2026-10-15", "Europe/Paris", "EXO", NOW - 5000, NOW - 901_000);
     settings.put(EmailAbsenceService.ABSENCE_SETTING_KEY, JsonUtils.toJsonString(stale));
-    when(engine.readVacation(session)).thenReturn(own(false, "h1"));
+    when(engine.readVacation(eq(session), any())).thenReturn(own(false, "h1"));
     AbsenceStatus refreshed = service.getStatus(USERNAME, null);
     assertFalse(refreshed.isEnabled());
     assertEquals(NOW, refreshed.getLastServerReadDate());
 
     settings.put(EmailAbsenceService.ABSENCE_SETTING_KEY, JsonUtils.toJsonString(stale));
-    when(engine.readVacation(session)).thenThrow(new ServerRuleUnavailableException(ServerRuleUnavailableException.SERVER_UNREACHABLE));
+    when(engine.readVacation(eq(session), any())).thenThrow(new ServerRuleUnavailableException(ServerRuleUnavailableException.SERVER_UNREACHABLE));
     AbsenceStatus kept = service.getStatus(USERNAME, null);
     assertTrue(kept.isEnabled());
     assertEquals(NOW, kept.getLastServerReadDate());
+  }
+
+  /**
+   * The zone a read states the reply's days in: the caller's own when sent, else the one
+   * of the last reply eXo stored, else none; an unknown zone is not used. The status and
+   * the switch-off, which have no browser zone, use the stored one.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheReadZoneHint() throws Exception {
+    when(engine.probe(session)).thenReturn(supported());
+    when(engine.readVacation(eq(session), any())).thenReturn(ServerVacation.none());
+    service.getAbsence(USERNAME, null, "America/New_York");
+    verify(engine).readVacation(session, ZoneId.of("America/New_York"));
+    service.getAbsence(USERNAME, null, "Not/AZone");
+    verify(engine).readVacation(session, null);
+
+    AbsenceStatus stale = new AbsenceStatus(true, "2026-10-01", "2026-10-15", "Asia/Tokyo", "SERVER", NOW - 5000, NOW - 901_000);
+    settings.put(EmailAbsenceService.ABSENCE_SETTING_KEY, JsonUtils.toJsonString(stale));
+    service.getAbsence(USERNAME, null, null);
+    verify(engine).readVacation(session, ZoneId.of("Asia/Tokyo"));
+    settings.put(EmailAbsenceService.ABSENCE_SETTING_KEY, JsonUtils.toJsonString(stale));
+    service.getStatus(USERNAME, null);
+    settings.put(EmailAbsenceService.ABSENCE_SETTING_KEY, JsonUtils.toJsonString(stale));
+    service.disableVacation(USERNAME, null);
+    verify(engine, org.mockito.Mockito.times(3)).readVacation(session, ZoneId.of("Asia/Tokyo"));
   }
 
   /**
@@ -383,7 +411,7 @@ public class EmailAbsenceServiceTest {
   public void testAnUnchangedReplyKeepsItsChangeDate() throws Exception {
     AbsenceStatus stale = new AbsenceStatus(true, "2026-10-01", "2026-10-15", "Europe/Paris", "EXO", NOW - 5000, NOW - 901_000);
     settings.put(EmailAbsenceService.ABSENCE_SETTING_KEY, JsonUtils.toJsonString(stale));
-    when(engine.readVacation(session)).thenReturn(own(true, null));
+    when(engine.readVacation(eq(session), any())).thenReturn(own(true, null));
     AbsenceStatus refreshed = service.getStatus(USERNAME, null);
     assertEquals(NOW - 5000, refreshed.getUpdatedDate());
   }

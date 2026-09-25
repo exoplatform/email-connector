@@ -71,8 +71,9 @@ import io.meeds.social.util.JsonUtils;
  * <p>
  * Boot-time properties: {@code email.connector.absence.enabled} (default true; false
  * answers "not found" everywhere), {@code email.connector.absence.vacation.days}
- * (default 7, the minimum interval between two replies to one sender),
- * {@code email.connector.absence.status.ttlSeconds} (default 900).
+ * (default 7, the minimum interval between two replies to one sender, on a Sieve
+ * server; BlueMind applies its own), {@code email.connector.absence.status.ttlSeconds}
+ * (default 900).
  */
 @Service
 public class EmailAbsenceService {
@@ -181,19 +182,46 @@ public class EmailAbsenceService {
                                     Long delegationId) throws ObjectNotFoundException,
                                                        IllegalAccessException,
                                                        ServerRuleUnavailableException {
+    return getAbsence(username, delegationId, null);
+  }
+
+  /**
+   * The caller's automatic reply section, read live from the server, the reply's days
+   * stated in the caller's zone.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from, or null for the caller's
+   *          own mailbox; any value is refused
+   * @param timeZone the caller's IANA zone, as the browser reports it; an engine that
+   *          stores the window as instants answers its days in it. When blank or unknown,
+   *          the zone of the last reply eXo wrote, else UTC
+   * @return the section
+   * @throws ObjectNotFoundException when the feature is off, or the caller has no
+   *           connected mailbox
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   */
+  public AbsenceSettings getAbsence(String username,
+                                    Long delegationId,
+                                    String timeZone) throws ObjectNotFoundException,
+                                                       IllegalAccessException,
+                                                       ServerRuleUnavailableException {
     ServerRuleEngine engine = engineOf(username, delegationId);
     try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
       ServerRuleCapabilities capabilities = engine.probe(session);
-      ServerVacation vacation = capabilities.isSupported(ServerRuleCapabilities.VACATION) ? refresh(username, engine, session)
-                                                                                          : noReply(username);
+      ServerVacation vacation = capabilities.isSupported(ServerRuleCapabilities.VACATION)
+          ? refresh(username, engine, session, zoneHint(timeZone, username))
+          : noReply(username);
       return settings(capabilities, engine, vacation);
     }
   }
 
   /**
-   * Writes the caller's automatic reply on the server. A reply switched on gets a new
-   * {@code :handle}, so senders answered by a previous one are answered again; editing a
-   * reply that stays on keeps it, so they are not.
+   * Writes the caller's automatic reply on the server. On a Sieve server a reply switched
+   * on gets a new {@code :handle}, so senders answered by a previous one are answered
+   * again, and editing a reply that stays on keeps it, so they are not; on BlueMind the
+   * server decides who is answered again.
    *
    * @param username the caller, from the request's session
    * @param delegationId the share the request was made from; any value is refused
@@ -254,7 +282,7 @@ public class EmailAbsenceService {
                                                  ServerRuleUnsupportedException {
     ServerRuleEngine engine = engineOf(username, delegationId);
     try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
-      ServerVacation current = engine.readVacation(session);
+      ServerVacation current = engine.readVacation(session, zoneHint(null, username));
       VacationSetting reply = current.vacation();
       if (reply == null || !reply.isEnabled()) {
         storeStatus(username, summary(current), true);
@@ -288,7 +316,7 @@ public class EmailAbsenceService {
     try {
       ServerRuleEngine engine = engineOf(username, null);
       try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
-        refresh(username, engine, session);
+        refresh(username, engine, session, zoneHint(null, username));
       }
     } catch (ObjectNotFoundException | IllegalAccessException | ServerRuleUnavailableException e) {
       LOG.debug("The automatic reply of user {} could not be read: {}", username, e.getMessage());
@@ -307,14 +335,16 @@ public class EmailAbsenceService {
    * @param username the caller
    * @param engine the engine
    * @param session the caller's session
+   * @param zone the zone to state the reply's days in, possibly null
    * @return what the server holds, {@link VacationState#MODIFIED} when eXo's script is
    *         not what eXo last wrote
    * @throws ServerRuleUnavailableException when the server cannot be used
    */
   private ServerVacation refresh(String username,
                                  ServerRuleEngine engine,
-                                 MailboxAclSession session) throws ServerRuleUnavailableException {
-    ServerVacation read = compared(engine.readVacation(session), storedHash(username));
+                                 MailboxAclSession session,
+                                 ZoneId zone) throws ServerRuleUnavailableException {
+    ServerVacation read = compared(engine.readVacation(session, zone), storedHash(username));
     storeStatus(username, summary(read), true);
     return read;
   }
@@ -439,6 +469,31 @@ public class EmailAbsenceService {
       return JsonUtils.fromJsonString(value.getValue().toString(), AbsenceStatus.class);
     } catch (RuntimeException e) {
       LOG.debug("The cached automatic reply summary of user {} could not be read", username, e);
+      return null;
+    }
+  }
+
+  /**
+   * The zone a read states the reply's days in: the caller's own when given and known,
+   * else the zone of the last reply eXo wrote or read for the caller, else null.
+   *
+   * @param timeZone the IANA zone the caller sent, possibly blank
+   * @param username the caller
+   * @return the zone, or null
+   */
+  ZoneId zoneHint(String timeZone, String username) {
+    String candidate = StringUtils.trimToNull(timeZone);
+    if (candidate == null) {
+      AbsenceStatus stored = storedStatus(username);
+      candidate = stored == null ? null : StringUtils.trimToNull(stored.getTimeZone());
+    }
+    if (candidate == null) {
+      return null;
+    }
+    try {
+      return ZoneId.of(candidate);
+    } catch (DateTimeException e) {
+      LOG.debug("Unknown time zone '{}' for the automatic reply of user {}", candidate, username);
       return null;
     }
   }
