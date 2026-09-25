@@ -147,6 +147,14 @@ public class EmailDelegation {
   private Date                          sendRefusedDate;
 
   /**
+   * The shape that refusal was in (EXO-90626): {@link SendMode#ON_BEHALF} or
+   * {@link SendMode#AS}; null with a {@link #sendRefusedDate} for a refusal recorded
+   * before the shape was, which {@link SendMode#refusedByServer} reads as every shape
+   * refused.
+   */
+  private SendMode                      sendRefusedMode;
+
+  /**
    * Every column but the owner's consent to writing in her name, in the row's order.
    *
    * @param id the row id
