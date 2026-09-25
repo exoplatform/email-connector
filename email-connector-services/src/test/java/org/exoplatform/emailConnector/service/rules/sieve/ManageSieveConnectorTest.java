@@ -38,8 +38,10 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
+import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
 import org.exoplatform.emailConnector.service.rules.sieve.ManageSieveException.Kind;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 
@@ -143,6 +145,51 @@ public class ManageSieveConnectorTest {
     client.logout();
     assertEquals(2, server.getAuthentications());
     verify(resolver, times(1)).invalidate(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP);
+  }
+
+  /**
+   * Through the caller's session, the conversation authenticates with the material the
+   * session resolves on the IMAP channel -- the same wiring the delegation service builds
+   * -- and a produced credential the server refused is invalidated once and re-resolved
+   * through the session.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheSessionPathUsesTheSessionMaterialAndTheRefusalRule() throws Exception {
+    when(resolver.authenticator(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP))
+                                                                                                    .thenReturn(authenticator("stale-session"),
+                                                                                                                authenticator(FakeManageSieveServer.PASSWORD));
+    when(resolver.retriesAfterRefusal(PROVIDER)).thenReturn(true);
+    MailboxAclSession session = new MailboxAclSession(preset,
+                                                      USERNAME,
+                                                      FakeManageSieveServer.LOGIN,
+                                                      null,
+                                                      null,
+                                                      () -> MailboxAclSession.passwordAuthentication(resolver.authenticator(CONNECTOR_ID,
+                                                                                                                            PROVIDER,
+                                                                                                                            USERNAME,
+                                                                                                                            ConnectorCredentialsChannel.IMAP)));
+    ManageSieveClient client = connector.open(session);
+    client.logout();
+    assertEquals(2, server.getAuthentications());
+    verify(resolver, times(1)).invalidate(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP);
+  }
+
+  /**
+   * A session without mail material opens nothing: its resolver's absence is reported,
+   * never a connection with empty credentials.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testASessionWithoutMailMaterialOpensNothing() throws Exception {
+    MailboxAclSession noResolver = new MailboxAclSession(preset, USERNAME, FakeManageSieveServer.LOGIN, null, null);
+    assertThrows(MailboxAclException.class, () -> connector.open(noResolver));
+    MailboxAclSession nothing = new MailboxAclSession(preset, USERNAME, FakeManageSieveServer.LOGIN, null, null, () -> null);
+    assertEquals(Kind.NO_CREDENTIALS, assertThrows(ManageSieveException.class, () -> connector.open(nothing)).getKind());
+    assertEquals(0, server.getAuthentications());
+    verify(resolver, never()).invalidate(anyLong(), anyString(), anyString(), any());
   }
 
   /**

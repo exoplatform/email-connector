@@ -17,7 +17,9 @@
 package org.exoplatform.emailConnector.rest;
 
 import java.io.ByteArrayInputStream;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.commons.lang3.StringUtils;
@@ -43,6 +45,11 @@ import org.springframework.web.server.ResponseStatusException;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
+import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
+import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
+import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
+import org.exoplatform.emailConnector.model.AbsenceSettings;
+import org.exoplatform.emailConnector.model.AbsenceStatus;
 import org.exoplatform.emailConnector.model.DelegationFolders;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailDelegation;
@@ -53,10 +60,12 @@ import org.exoplatform.emailConnector.model.GrantedDelegations;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.model.VacationSetting;
 import org.exoplatform.emailConnector.rest.model.DelegationFoldersRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationInviteRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationPreferencesRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationSendModeRequest;
+import org.exoplatform.emailConnector.service.EmailAbsenceService;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
@@ -92,6 +101,9 @@ public class UserEmailSettingRest {
 
   @Autowired
   private EmailDelegationService  emailDelegationService;
+
+  @Autowired
+  private EmailAbsenceService     emailAbsenceService;
 
   /**
    * Connects the caller to a connector whose provider asks them for nothing - the
@@ -878,6 +890,169 @@ public class UserEmailSettingRest {
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     }
+  }
+
+  /**
+   * The caller's automatic reply section, read live from their mail server.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param delegationId the share the request is made from; any value is refused, the
+   *          automatic reply being a setting of the caller's own mailbox only
+   * @return the section
+   */
+  @GetMapping("/absence")
+  @Secured("users")
+  @Operation(summary = "Reads the caller's automatic reply from their mail server", method = "GET",
+      description = "A live read, as the caller, of the mail server their connector's rules engine manages "
+          + "(email.connector.rulesEngine[.<connectorId>]): what the engine can do (capabilities), the reply the server holds "
+          + "(vacation, without any copy kept in eXo), and its state -- OWN, ELSEWHERE (another client's active script may send "
+          + "its own reply; foreignScriptName names it), MODIFIED (eXo's script changed outside eXo), INACTIVE (the server no "
+          + "longer runs eXo's script) or NONE. Own mailbox only: with delegationId the answer is 403.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.absence.ownMailboxOnly), or the connector may not be used"),
+      @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected"),
+      @ApiResponse(responseCode = "502", description = "The mail server could not be used (emailConnector.absence.serverUnreachable, .tlsHostName, .authenticationFailed, .serverUnsupported, .serverNotConfigured)") })
+  public AbsenceSettings getAbsence(HttpServletRequest request,
+                                    @Parameter(description = "The share the request is made from; refused")
+                                    @RequestParam(name = "delegationId", required = false)
+                                    Long delegationId) {
+    try {
+      return emailAbsenceService.getAbsence(request.getRemoteUser(), delegationId);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (ServerRuleUnavailableException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getMessage());
+    }
+  }
+
+  /**
+   * Writes the caller's automatic reply on their mail server.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param delegationId the share the request is made from; any value is refused
+   * @param republish true to overwrite eXo's own script although it changed outside eXo
+   * @param vacation the reply
+   * @return the section after the write, or the conflict with the script it is about
+   */
+  @PutMapping("/absence/vacation")
+  @Secured("users")
+  @Operation(summary = "Writes the caller's automatic reply on their mail server", method = "PUT",
+      description = "Plain text, one-line subject (at most 200 characters), text at most 4000 characters, optional first and "
+          + "last days (YYYY-MM-DD, the last one included) in timeZone, the IANA zone of the browser, required with a day. "
+          + "Each sender is answered once per email.connector.absence.vacation.days days; editing a reply that stays on does "
+          + "not answer them again, switching it on again does. Nothing another client wrote is ever replaced: when it would "
+          + "be, the answer is 409 with the script it is about. Own mailbox only.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Written; the section after the write, capabilities not re-read"),
+      @ApiResponse(responseCode = "400", description = "An invalid value (emailConnector.absence.subject.invalid, .text.invalid, .window.invalid, .timeZone.invalid), or a connector that cannot hold a reply (emailConnector.absence.unsupported)"),
+      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.absence.ownMailboxOnly), or the connector may not be used"),
+      @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected"),
+      @ApiResponse(responseCode = "409", description = "{message, scriptName}: another client's reply is active (emailConnector.absence.managedElsewhere), another script is active and the server cannot include it (.serverConflict), or eXo's script changed outside eXo (.modifiedOutside, re-send with republish=true)"),
+      @ApiResponse(responseCode = "502", description = "The mail server could not be used (emailConnector.absence.serverUnreachable, .serverRefused, .tlsHostName, .authenticationFailed, .serverUnsupported, .serverNotConfigured)") })
+  public ResponseEntity<Object> setVacation(HttpServletRequest request,
+                                            @Parameter(description = "The share the request is made from; refused")
+                                            @RequestParam(name = "delegationId", required = false)
+                                            Long delegationId,
+                                            @Parameter(description = "Overwrite eXo's own script although it changed outside eXo")
+                                            @RequestParam(name = "republish", required = false, defaultValue = "false")
+                                            boolean republish,
+                                            @RequestBody
+                                            VacationSetting vacation) {
+    try {
+      return ResponseEntity.ok(emailAbsenceService.setVacation(request.getRemoteUser(), delegationId, vacation, republish));
+    } catch (ServerRuleConflictException e) {
+      return conflict(e);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (IllegalArgumentException | ServerRuleUnsupportedException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (ServerRuleUnavailableException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getMessage());
+    }
+  }
+
+  /**
+   * Switches the caller's automatic reply off, keeping its text on the server.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param delegationId the share the request is made from; any value is refused
+   * @return 204, or the conflict with the script it is about
+   */
+  @DeleteMapping("/absence/vacation")
+  @Secured("users")
+  @Operation(summary = "Switches the caller's automatic reply off", method = "DELETE",
+      description = "The reply's text stays on the server, in eXo's script, for when it is switched on again. Nothing is written "
+          + "when no reply of eXo's is on. Own mailbox only.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Switched off, or nothing was on"),
+      @ApiResponse(responseCode = "400", description = "A connector that cannot hold a reply (emailConnector.absence.unsupported)"),
+      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.absence.ownMailboxOnly), or the connector may not be used"),
+      @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected"),
+      @ApiResponse(responseCode = "409", description = "{message, scriptName}: eXo's script changed outside eXo (emailConnector.absence.modifiedOutside)"),
+      @ApiResponse(responseCode = "502", description = "The mail server could not be used (emailConnector.absence.*)") })
+  public ResponseEntity<Object> disableVacation(HttpServletRequest request,
+                                                @Parameter(description = "The share the request is made from; refused")
+                                                @RequestParam(name = "delegationId", required = false)
+                                                Long delegationId) {
+    try {
+      emailAbsenceService.disableVacation(request.getRemoteUser(), delegationId);
+      return ResponseEntity.noContent().build();
+    } catch (ServerRuleConflictException e) {
+      return conflict(e);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (ServerRuleUnsupportedException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (ServerRuleUnavailableException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getMessage());
+    }
+  }
+
+  /**
+   * The dates-only summary of the caller's automatic reply, for the mailbox band.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param delegationId the share the request is made from; any value is refused
+   * @return the summary, never the text
+   */
+  @GetMapping("/absence/status")
+  @Secured("users")
+  @Operation(summary = "Reads the summary of the caller's automatic reply", method = "GET",
+      description = "{enabled, start, end, timeZone, source, updatedDate, lastServerReadDate}: dates only, never the text. The "
+          + "cached summary, read again from the mail server when older than email.connector.absence.status.ttlSeconds; a "
+          + "server that cannot be read leaves the cached one. Own mailbox only.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.absence.ownMailboxOnly)"),
+      @ApiResponse(responseCode = "404", description = "The feature is off") })
+  public AbsenceStatus getAbsenceStatus(HttpServletRequest request,
+                                        @Parameter(description = "The share the request is made from; refused")
+                                        @RequestParam(name = "delegationId", required = false)
+                                        Long delegationId) {
+    try {
+      return emailAbsenceService.getStatus(request.getRemoteUser(), delegationId);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    }
+  }
+
+  /**
+   * The 409 answer of a publish eXo declined: the code, and the script it is about so the
+   * interface can name the client that manages it.
+   *
+   * @param e the conflict
+   * @return the answer
+   */
+  private static ResponseEntity<Object> conflict(ServerRuleConflictException e) {
+    Map<String, String> body = new LinkedHashMap<>();
+    body.put("message", e.getMessage());
+    body.put("scriptName", e.getScriptName());
+    return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
   }
 
   @GetMapping("/connectors")

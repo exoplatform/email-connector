@@ -160,6 +160,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             v-if="currentSharedMailbox"
             :entry="currentSharedMailbox"
             sticky />
+          <!-- The user's own automatic reply, on their own mailbox only (EXO-90642). -->
+          <email-connector-absence-band v-else sticky />
           <email-connector-mail-box-drawer-search-results
             v-if="searchActive"
             ref="expandedSearchResults"
@@ -223,6 +225,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         v-if="currentSharedMailbox && !expanded"
         :entry="currentSharedMailbox"
         sticky />
+      <email-connector-absence-band v-else-if="!currentSharedMailbox && !expanded" sticky />
       <template v-if="!loading">
         <v-list-item v-if="syncBlocked" class="full-height align-center">
           <v-list-item-content>

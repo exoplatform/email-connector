@@ -67,6 +67,11 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
+import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
+import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
+import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
+import org.exoplatform.emailConnector.model.AbsenceSettings;
+import org.exoplatform.emailConnector.model.AbsenceStatus;
 import org.exoplatform.emailConnector.model.DelegationFolder;
 import org.exoplatform.emailConnector.model.DelegationFolders;
 import org.exoplatform.emailConnector.model.DelegationGrantee;
@@ -90,10 +95,13 @@ import org.exoplatform.emailConnector.model.ReadReceiptSettings;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.model.VacationSetting;
+import org.exoplatform.emailConnector.model.VacationState;
 import org.exoplatform.emailConnector.rest.model.DelegationFoldersRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationSendModeRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationInviteRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationPreferencesRequest;
+import org.exoplatform.emailConnector.service.EmailAbsenceService;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
@@ -144,6 +152,9 @@ public class UserEmailSettingRestTest {
 
   @MockitoBean
   private EmailDelegationService  emailDelegationService;
+
+  @MockitoBean
+  private EmailAbsenceService     emailAbsenceService;
 
   @Autowired
   private SecurityFilterChain     filterChain;
@@ -726,5 +737,139 @@ public class UserEmailSettingRestTest {
                                                                    .content("{\"responsePolicy\":\"ALWAYS\"}")
                                                                    .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isBadRequest());
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Automatic reply (EXO-90642): the caller's own mailbox only, and the refusals as the
+  // statuses the contract promises, code as message.
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * The section is read and written for the caller; the body reaches the service, and
+   * republish is forwarded.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void absenceReadAndWrite() throws Exception {
+    AbsenceSettings settings = new AbsenceSettings(null, "sieve", null, VacationState.NONE, null, 7);
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, null)).thenReturn(settings);
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.engine").value("sieve"))
+           .andExpect(jsonPath("$.vacationState").value("NONE"));
+
+    when(emailAbsenceService.setVacation(eq(SIMPLE_USER), eq(null), any(), eq(true))).thenReturn(settings);
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation?republish=true").with(testSimpleUser())
+                                                                                      .content("{\"enabled\":true,\"subject\":\"Away\",\"text\":\"Back soon\",\"start\":\"2026-10-01\",\"timeZone\":\"Europe/Paris\"}")
+                                                                                      .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailAbsenceService).setVacation(SIMPLE_USER,
+                                            null,
+                                            new VacationSetting(true, "2026-10-01", null, "Europe/Paris", "Away", "Back soon", 0, null),
+                                            true);
+
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/absence/vacation").with(testSimpleUser()))
+           .andExpect(status().isNoContent());
+    verify(emailAbsenceService).disableVacation(SIMPLE_USER, null);
+
+    when(emailAbsenceService.getStatus(SIMPLE_USER, null)).thenReturn(new AbsenceStatus(true, "2026-10-01", null, "Europe/Paris", "EXO", 1L, 2L));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/status").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.enabled").value(true))
+           .andExpect(jsonPath("$.start").value("2026-10-01"));
+  }
+
+  /**
+   * A request made from a shared mailbox answers 403 with the own-mailbox code, on every
+   * verb, and the share id reaches the service to be refused there.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void absenceFromASharedMailboxIsForbidden() throws Exception {
+    IllegalAccessException refusal = new IllegalAccessException(EmailAbsenceService.OWN_MAILBOX_ONLY);
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, 12L)).thenThrow(refusal);
+    when(emailAbsenceService.getStatus(SIMPLE_USER, 12L)).thenThrow(refusal);
+    when(emailAbsenceService.setVacation(eq(SIMPLE_USER), eq(12L), any(), eq(false))).thenThrow(refusal);
+    doThrow(refusal).when(emailAbsenceService).disableVacation(SIMPLE_USER, 12L);
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence?delegationId=12").with(testSimpleUser()))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason(EmailAbsenceService.OWN_MAILBOX_ONLY));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/status?delegationId=12").with(testSimpleUser()))
+           .andExpect(status().isForbidden());
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation?delegationId=12").with(testSimpleUser())
+                                                                                       .content("{\"enabled\":true}")
+                                                                                       .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isForbidden());
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/absence/vacation?delegationId=12").with(testSimpleUser()))
+           .andExpect(status().isForbidden());
+  }
+
+  /**
+   * Each refusal of a write answers its status: 400 for a value or an unsupported
+   * connector, 404 when nothing is connected, 409 with the code and the script's name,
+   * 502 with the transport's code.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void absenceWriteStatuses() throws Exception {
+    String body = "{\"enabled\":true,\"subject\":\"Away\",\"text\":\"Back soon\"}";
+    when(emailAbsenceService.setVacation(eq(SIMPLE_USER), eq(null), any(), eq(false)))
+                                                                                   .thenThrow(new IllegalArgumentException(EmailAbsenceService.INVALID_SUBJECT))
+                                                                                   .thenThrow(new ServerRuleUnsupportedException(ServerRuleUnsupportedException.VACATION_UNSUPPORTED))
+                                                                                   .thenThrow(new ObjectNotFoundException(EmailAbsenceService.NOT_CONNECTED))
+                                                                                   .thenThrow(new ServerRuleConflictException(ServerRuleConflictException.MANAGED_ELSEWHERE,
+                                                                                                                              "roundcube"))
+                                                                                   .thenThrow(new ServerRuleUnavailableException(ServerRuleUnavailableException.TLS_HOST_NAME));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation").with(testSimpleUser())
+                                                                      .content(body)
+                                                                      .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(EmailAbsenceService.INVALID_SUBJECT));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation").with(testSimpleUser())
+                                                                      .content(body)
+                                                                      .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(ServerRuleUnsupportedException.VACATION_UNSUPPORTED));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation").with(testSimpleUser())
+                                                                      .content(body)
+                                                                      .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isNotFound());
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation").with(testSimpleUser())
+                                                                      .content(body)
+                                                                      .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isConflict())
+           .andExpect(jsonPath("$.message").value(ServerRuleConflictException.MANAGED_ELSEWHERE))
+           .andExpect(jsonPath("$.scriptName").value("roundcube"));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation").with(testSimpleUser())
+                                                                      .content(body)
+                                                                      .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadGateway())
+           .andExpect(status().reason(ServerRuleUnavailableException.TLS_HOST_NAME));
+  }
+
+  /**
+   * Switching off answers 409 with the script's name when eXo's script changed outside
+   * eXo, and a read answers 502 with the transport's code.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void absenceSwitchOffAndReadStatuses() throws Exception {
+    doThrow(new ServerRuleConflictException(ServerRuleConflictException.MODIFIED_OUTSIDE, "exo-rules")).when(emailAbsenceService)
+                                                                                                     .disableVacation(SIMPLE_USER, null);
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/absence/vacation").with(testSimpleUser()))
+           .andExpect(status().isConflict())
+           .andExpect(jsonPath("$.message").value(ServerRuleConflictException.MODIFIED_OUTSIDE))
+           .andExpect(jsonPath("$.scriptName").value("exo-rules"));
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, null)).thenThrow(new ServerRuleUnavailableException(ServerRuleUnavailableException.SERVER_UNREACHABLE));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence").with(testSimpleUser()))
+           .andExpect(status().isBadGateway())
+           .andExpect(status().reason(ServerRuleUnavailableException.SERVER_UNREACHABLE));
+    when(emailAbsenceService.getStatus(SIMPLE_USER, null)).thenThrow(new ObjectNotFoundException(EmailAbsenceService.DISABLED));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/status").with(testSimpleUser()))
+           .andExpect(status().isNotFound());
   }
 }

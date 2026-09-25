@@ -69,6 +69,7 @@ import EmailConnectorMailBoxScheduledList from './components/drawer/EmailConnect
 import EmailConnectorMailBoxScheduledListItem from './components/drawer/EmailConnectorMailBoxScheduledListItem.vue';
 import EmailConnectorMailBoxSwitcher from './components/drawer/EmailConnectorMailBoxSwitcher.vue';
 import EmailConnectorSharedMailboxBand from './components/drawer/EmailConnectorSharedMailboxBand.vue';
+import EmailConnectorAbsenceBand from './components/drawer/EmailConnectorAbsenceBand.vue';
 import EmailConnectorSharedMailboxConfirmPopup from './components/drawer/EmailConnectorSharedMailboxConfirmPopup.vue';
 import EmailConnectorNewEmailSharedMailboxNotice from './components/drawer/EmailConnectorNewEmailSharedMailboxNotice.vue';
 
@@ -121,6 +122,7 @@ const components = {
   'email-connector-mail-box-purge-confirm-popup': EmailConnectorMailBoxPurgeConfirmPopup,
   'email-connector-mail-box-switcher': EmailConnectorMailBoxSwitcher,
   'email-connector-shared-mailbox-band': EmailConnectorSharedMailboxBand,
+  'email-connector-absence-band': EmailConnectorAbsenceBand,
   'email-connector-shared-mailbox-confirm-popup': EmailConnectorSharedMailboxConfirmPopup,
   'email-connector-new-email-shared-mailbox-notice': EmailConnectorNewEmailSharedMailboxNotice,
   'email-connector-mail-box-discard-drafts-confirm-popup': EmailConnectorMailBoxDiscardDraftsConfirmPopup,

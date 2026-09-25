@@ -336,6 +336,20 @@ public final class FakeManageSieveServer implements AutoCloseable {
   }
 
   /**
+   * Removes a script as another client would, active or not.
+   *
+   * @param name the name
+   * @return this server
+   */
+  public synchronized FakeManageSieveServer removeScript(String name) {
+    scripts.remove(name);
+    if (name.equals(active)) {
+      active = null;
+    }
+    return this;
+  }
+
+  /**
    * The stored scripts.
    *
    * @return a copy, name to text

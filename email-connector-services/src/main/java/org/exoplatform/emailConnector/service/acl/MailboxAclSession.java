@@ -16,7 +16,12 @@
  */
 package org.exoplatform.emailConnector.service.acl;
 
+import java.util.Properties;
+
+import javax.mail.Authenticator;
 import javax.mail.MessagingException;
+import javax.mail.PasswordAuthentication;
+import javax.mail.Session;
 import javax.mail.Store;
 
 import org.exoplatform.emailConnector.exception.MailboxAclException;
@@ -34,6 +39,9 @@ import org.exoplatform.services.log.Log;
  * transport: it opens what it needs, when it needs it, and nothing is opened for an
  * engine that never asks (a REST engine costs no IMAP connection; a no-op costs
  * nothing at all).
+ * The server-rule engines (automatic reply, server rules) take the same session: their
+ * protocols authenticate with the IMAP channel's login and password, which
+ * {@link #mailCredentials()} resolves the same way, for the same caller.
  * <p>
  * <b>The security invariant this type carries, and must keep carrying.</b> A session
  * acts as <b>the caller, and nobody else</b>. It is built by {@code EmailDelegationService}
@@ -94,6 +102,26 @@ public final class MailboxAclSession implements AutoCloseable {
     String resolve() throws ConnectorCredentialsException;
   }
 
+  /**
+   * Resolves the caller's own mail credential material, on demand -- the login and the
+   * password (or the session id a provider presents as one) that the platform's
+   * credentials contract produces for this connector and user on the IMAP channel. What
+   * a protocol authenticating against the IMAP directory (ManageSieve's SASL
+   * {@code PLAIN}) sends; never stored by anyone.
+   */
+  @FunctionalInterface
+  public interface MailCredentialsResolver {
+
+    /**
+     * Resolves the material.
+     *
+     * @return the login and password, or null when the provider produced none
+     * @throws ConnectorCredentialsException when the configured provider cannot
+     *           produce material for the caller
+     */
+    PasswordAuthentication resolve() throws ConnectorCredentialsException;
+  }
+
   private final EmailConnector            connector;
 
   private final String                    username;
@@ -103,6 +131,8 @@ public final class MailboxAclSession implements AutoCloseable {
   private final StoreOpener               storeOpener;
 
   private final HttpAuthorizationResolver httpAuthorizationResolver;
+
+  private final MailCredentialsResolver   mailCredentialsResolver;
 
   private Store                           store;
 
@@ -124,11 +154,37 @@ public final class MailboxAclSession implements AutoCloseable {
                            String mailboxIdentifier,
                            StoreOpener storeOpener,
                            HttpAuthorizationResolver httpAuthorizationResolver) {
+    this(connector, username, mailboxIdentifier, storeOpener, httpAuthorizationResolver, null);
+  }
+
+  /**
+   * A session for one caller, with the caller's own mail credential material as well.
+   * Built by the service from the caller's own connected setting -- see the class
+   * comment for what the three resolvers must be wired to.
+   *
+   * @param connector the connector preset the caller is connected on
+   * @param username the eXo user acting
+   * @param mailboxIdentifier the caller's own mailbox identifier, as the ACL and the
+   *          namespace name it
+   * @param storeOpener opens the caller's own IMAP store; null when no IMAP transport
+   *          exists for this caller
+   * @param httpAuthorizationResolver resolves the caller's own HTTP material; null
+   *          when the platform's credentials contract is not available
+   * @param mailCredentialsResolver resolves the caller's own IMAP-channel login and
+   *          password; null when the platform's credentials contract is not available
+   */
+  public MailboxAclSession(EmailConnector connector,
+                           String username,
+                           String mailboxIdentifier,
+                           StoreOpener storeOpener,
+                           HttpAuthorizationResolver httpAuthorizationResolver,
+                           MailCredentialsResolver mailCredentialsResolver) {
     this.connector = connector;
     this.username = username;
     this.mailboxIdentifier = mailboxIdentifier;
     this.storeOpener = storeOpener;
     this.httpAuthorizationResolver = httpAuthorizationResolver;
+    this.mailCredentialsResolver = mailCredentialsResolver;
   }
 
   /**
@@ -206,6 +262,46 @@ public final class MailboxAclSession implements AutoCloseable {
       LOG.debug("HTTP credentials of {} could not be resolved for a delegation operation: {}", username, e.getMessage());
       throw new MailboxAclException(MailboxAclException.UNREACHABLE, e);
     }
+  }
+
+  /**
+   * The caller's own mail credential material, resolved on demand through the
+   * platform's credentials contract on the IMAP channel -- what a protocol that
+   * authenticates against the IMAP directory sends (ManageSieve's SASL {@code PLAIN}),
+   * and what a vendor REST login takes as its password. Resolved afresh on every call,
+   * so a caller that told the provider the material was refused gets new material; used
+   * for the call, then dropped.
+   *
+   * @return the login and password, or null when the provider produced none
+   * @throws MailboxAclException {@code UNREACHABLE} when the contract is not available
+   *           or the provider cannot produce material for the caller
+   */
+  public PasswordAuthentication mailCredentials() {
+    if (mailCredentialsResolver == null) {
+      throw new MailboxAclException(MailboxAclException.UNREACHABLE, "no mail credential material for " + username);
+    }
+    try {
+      return mailCredentialsResolver.resolve();
+    } catch (ConnectorCredentialsException e) {
+      LOG.debug("Mail credentials of {} could not be resolved: {}", username, e.getMessage());
+      throw new MailboxAclException(MailboxAclException.UNREACHABLE, e);
+    }
+  }
+
+  /**
+   * The login and password an {@link Authenticator} of the credentials contract hands
+   * out, asked through {@link Session#requestPasswordAuthentication}, the public door
+   * JavaMail itself uses.
+   *
+   * @param authenticator the authenticator, possibly null
+   * @return its login and password, or null when there is no authenticator or it
+   *         produced nothing
+   */
+  public static PasswordAuthentication passwordAuthentication(Authenticator authenticator) {
+    if (authenticator == null) {
+      return null;
+    }
+    return Session.getInstance(new Properties(), authenticator).requestPasswordAuthentication(null, 0, "imap", null, null);
   }
 
   /**
