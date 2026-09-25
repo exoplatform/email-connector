@@ -125,6 +125,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-divider class="mx-4" />
         <email-connector-user-setting-signature />
         <v-divider class="mx-4" />
+        <!-- The automatic reply (EXO-90642): a setting of the user's own mailbox, run by
+             the mail server; before sharing, with the other preferences about their own
+             mail. -->
+        <email-connector-user-setting-absence />
+        <v-divider class="mx-4" />
         <!-- Mailbox delegation (EXO-90503, EXO-90559): one row for both sides of it,
              over one drawer with a tab each. After the preferences about your own
              mail, because it is the only block on this screen about somebody else's. -->
