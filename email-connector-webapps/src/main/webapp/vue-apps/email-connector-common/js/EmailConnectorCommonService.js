@@ -340,13 +340,24 @@ function absenceError(resp, fallback) {
  * The caller's automatic reply section, read live from their mail server: what the
  * engine can do, the reply the server holds, and its state (OWN, ELSEWHERE, MODIFIED,
  * INACTIVE or NONE). The browser's time zone is sent, so a reply the server stores as
- * instants (BlueMind) is answered in the user's own days.
+ * instants (BlueMind) is answered in the user's own days. With the forward, the
+ * mailbox's forward read-only (null when the deployment hides it); without it, the
+ * server is not asked for it.
  *
- * @returns {Promise<object>} {capabilities, engine, vacation, vacationState, foreignScriptName, vacationDays}
+ * @param {boolean} [withForwarding=true] - whether to read the mailbox's forward
+ * @returns {Promise<object>} {capabilities, engine, vacation, vacationState, foreignScriptName, vacationDays, forwarding}
  */
-export function getAbsence() {
+export function getAbsence(withForwarding = true) {
+  const params = new URLSearchParams();
   const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
-  return fetch(`/email-connector/rest/user-email-setting/absence${timeZone ? `?timeZone=${encodeURIComponent(timeZone)}` : ''}`, {
+  if (timeZone) {
+    params.set('timeZone', timeZone);
+  }
+  if (!withForwarding) {
+    params.set('forwarding', 'false');
+  }
+  const query = params.toString();
+  return fetch(`/email-connector/rest/user-email-setting/absence${query ? `?${query}` : ''}`, {
     credentials: 'include',
     cache: 'no-store',
     method: 'GET'
