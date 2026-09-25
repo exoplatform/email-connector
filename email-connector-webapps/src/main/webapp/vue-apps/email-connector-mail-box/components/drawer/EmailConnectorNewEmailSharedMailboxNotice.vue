@@ -70,6 +70,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-list>
         </v-menu>
       </div>
+      <!-- The owner's mail server refused a mail in their name since they set the
+           consent (EXO-90626): which shape, so the user knows why the picker no longer
+           offers it -- as them only, and on their behalf still works; or both. -->
+      <div
+        v-if="refusal"
+        class="caption warning--text text-wrap mb-1 shared-mailbox-refused">
+        {{ refusal }}
+      </div>
       <div class="text--primary">
         <template v-for="(part, index) in noticeParts">
           <b v-if="part.bold" :key="index">{{ part.text }}</b>
@@ -145,6 +153,28 @@ export default {
      */
     identities() {
       return ['NONE', ...this.sendModes.filter(mode => mode === 'ON_BEHALF' || mode === 'AS')];
+    },
+    /**
+     * What the owner's mail server refused since the owner set the consent, from the
+     * switcher entry: writing as them only, while on their behalf is still usable; or
+     * writing in their name at all.
+     *
+     * @returns {String} the sentence, or empty when nothing was refused
+     */
+    refusal() {
+      if (!this.entry.sendRefusedDate) {
+        return '';
+      }
+      const language = window.eXo?.env?.portal?.language || 'en';
+      // "On their behalf still works" only while it does: not once the administrator
+      // switched writing in another's name off, or the connector no longer declares it.
+      const key = this.entry.sendRefusedMode === 'AS' && (this.entry.sendModes || []).includes('ON_BEHALF')
+        ? 'emailConnector.mailBox.sharedMailbox.composer.refused.AS'
+        : 'emailConnector.mailBox.sharedMailbox.composer.refused';
+      return this.$t(key, {
+        0: this.entry.ownerFullName || this.entry.ownerMailbox,
+        1: new Date(this.entry.sendRefusedDate).toLocaleDateString(language),
+      });
     },
     /**
      * The checkbox's full meaning, for its title and accessible name -- the label says
