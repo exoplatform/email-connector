@@ -17,7 +17,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- Mail filters (EXO-90652): the rules the user's mail server runs at delivery,
        authored here. Like the automatic reply's row, it only summarises what the server
-       holds, read live, and opens the drawer mounted at the app's root. -->
+       holds, read live, and opens the drawer mounted at the app's root. The rules eXo
+       runs itself after each sync (EXO-90654) work on every server, so the drawer opens
+       whatever the server answered, and the row counts them too. -->
   <v-list-item class="height-auto">
     <v-list-item-content>
       <v-list-item-title class="text-color">
@@ -32,7 +34,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('UserSettings.emailConnector.filters.row.attention') }}
       </v-list-item-subtitle>
     </v-list-item-content>
-    <v-list-item-action v-if="supported">
+    <v-list-item-action>
       <v-btn
         icon
         :title="$t('UserSettings.emailConnector.filters.edit.tooltip')"
@@ -52,6 +54,7 @@ export default {
     group: null,
     loading: true,
     error: null,
+    exoCount: 0,
   }),
   computed: {
     /**
@@ -80,16 +83,21 @@ export default {
       if (this.loading && !this.group) {
         return this.$t('UserSettings.emailConnector.filters.loading');
       }
+      const exo = this.exoCount ? ` ${this.$t('UserSettings.emailConnector.filters.exo.count', { 0: this.exoCount })}` : '';
       if (!this.group) {
-        return this.error || this.$t('UserSettings.emailConnector.filters.description');
+        return (this.error || this.$t('UserSettings.emailConnector.filters.description')) + exo;
       }
       if (!this.supported) {
-        return this.$t('UserSettings.emailConnector.filters.unsupported');
+        return this.exoCount ? exo.trim() : this.$t('UserSettings.emailConnector.filters.unsupported');
       }
-      const count = (this.group.rules || []).filter(rule => rule.enabled).length;
-      return count
-        ? this.$t('UserSettings.emailConnector.filters.count', { 0: count })
-        : this.$t('UserSettings.emailConnector.filters.none');
+      // A hop is the server half of an eXo rule, counted with the eXo rules.
+      const count = (this.group.rules || [])
+        .filter(rule => rule.enabled && !(rule.actions || []).every(action => action.type === 'TAG'))
+        .length;
+      if (!count && !this.exoCount) {
+        return this.$t('UserSettings.emailConnector.filters.none');
+      }
+      return ((count ? this.$t('UserSettings.emailConnector.filters.count', { 0: count }) : '') + exo).trim();
     },
   },
   created() {
@@ -107,6 +115,9 @@ export default {
      */
     read() {
       this.loading = true;
+      this.$emailConnectorUserSettingService.getExoFilters()
+        .then(filters => this.exoCount = (filters || []).filter(filter => filter.enabled).length)
+        .catch(() => this.exoCount = 0);
       return this.$emailConnectorUserSettingService.getServerFilters()
         .then(group => {
           this.group = group;
