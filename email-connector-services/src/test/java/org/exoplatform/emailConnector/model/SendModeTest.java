@@ -126,17 +126,45 @@ class SendModeTest {
 
   /**
    * The usable shapes: the consent narrowed to the declaration, never widened past the
-   * consent, and none once the server refused one or with no consent at all.
+   * consent, and none with no consent at all.
    */
   @Test
   void theUsableShapesAreTheConsentNarrowedToTheDeclaration() {
     Set<SendMode> both = Set.of(SendMode.ON_BEHALF, SendMode.AS);
     Set<SendMode> onBehalf = Set.of(SendMode.ON_BEHALF);
-    assertEquals(List.of(SendMode.ON_BEHALF, SendMode.AS), SendMode.usable(SendMode.AS, null, both));
-    assertEquals(List.of(SendMode.ON_BEHALF), SendMode.usable(SendMode.AS, null, onBehalf), "as on an on-behalf connector");
-    assertEquals(List.of(SendMode.ON_BEHALF), SendMode.usable(SendMode.ON_BEHALF, null, both), "never wider than the consent");
-    assertEquals(List.of(), SendMode.usable(SendMode.AS, new Date(), both), "refused since last set");
-    assertEquals(List.of(), SendMode.usable(null, null, both));
-    assertEquals(List.of(), SendMode.usable(SendMode.AS, null, Set.of()));
+    assertEquals(List.of(SendMode.ON_BEHALF, SendMode.AS), SendMode.usable(SendMode.AS, null, null, both));
+    assertEquals(List.of(SendMode.ON_BEHALF), SendMode.usable(SendMode.AS, null, null, onBehalf), "as on an on-behalf connector");
+    assertEquals(List.of(SendMode.ON_BEHALF), SendMode.usable(SendMode.ON_BEHALF, null, null, both), "never wider than the consent");
+    assertEquals(List.of(), SendMode.usable(null, null, null, both));
+    assertEquals(List.of(), SendMode.usable(SendMode.AS, null, null, Set.of()));
+  }
+
+  /**
+   * EXO-90626 -- a server's refusal drops the shape it refused and the wider ones, and
+   * nothing narrower: as the owner refused leaves on her behalf; on her behalf refused
+   * leaves nothing; a refusal that named no shape (recorded before the shape was) leaves
+   * nothing, as it did then; a refusal shape without a date refuses nothing.
+   */
+  @Test
+  void aRefusalDropsItsShapeAndTheWiderOnesOnly() {
+    Set<SendMode> both = Set.of(SendMode.ON_BEHALF, SendMode.AS);
+    Date refused = new Date();
+    assertEquals(List.of(SendMode.ON_BEHALF), SendMode.usable(SendMode.AS, refused, SendMode.AS, both),
+                 "as refused: on her behalf still works");
+    assertEquals(List.of(), SendMode.usable(SendMode.AS, refused, SendMode.ON_BEHALF, both), "on her behalf refused: both go");
+    assertEquals(List.of(), SendMode.usable(SendMode.AS, refused, null, both), "a refusal naming no shape: both go");
+    assertEquals(List.of(SendMode.ON_BEHALF), SendMode.usable(SendMode.ON_BEHALF, refused, SendMode.AS, both),
+                 "an on-behalf consent is untouched by a refusal as her");
+    assertEquals(List.of(), SendMode.usable(SendMode.ON_BEHALF, refused, SendMode.ON_BEHALF, both));
+    assertEquals(List.of(SendMode.ON_BEHALF, SendMode.AS), SendMode.usable(SendMode.AS, null, SendMode.AS, both),
+                 "no date, no refusal");
+
+    for (SendMode requested : List.of(SendMode.ON_BEHALF, SendMode.AS)) {
+      assertFalse(SendMode.refusedByServer(requested, null, SendMode.ON_BEHALF), requested + " never refused without a date");
+      assertTrue(SendMode.refusedByServer(requested, refused, SendMode.ON_BEHALF), requested + " after a refusal on her behalf");
+      assertTrue(SendMode.refusedByServer(requested, refused, null), requested + " after a refusal naming no shape");
+    }
+    assertTrue(SendMode.refusedByServer(SendMode.AS, refused, SendMode.AS));
+    assertFalse(SendMode.refusedByServer(SendMode.ON_BEHALF, refused, SendMode.AS), "the narrower shape stays");
   }
 }
