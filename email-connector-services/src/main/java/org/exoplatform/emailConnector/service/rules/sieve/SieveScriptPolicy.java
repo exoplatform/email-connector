@@ -82,6 +82,9 @@ public class SieveScriptPolicy {
   /** The token the vacation-token refusal looks for. */
   static final String          VACATION_TOKEN    = "vacation";
 
+  /** The command a forward is made of, which eXo detects and never writes in this phase. */
+  static final String          REDIRECT_TOKEN    = "redirect";
+
   /** The first line of the wrapper eXo generates. */
   static final String          WRAPPER_HEADER    = "# exo-managed-wrapper-v1";
 
@@ -284,10 +287,8 @@ public class SieveScriptPolicy {
   /**
    * Whether a foreign script, or a personal script it includes (one level), may carry a
    * {@code vacation} -- the detection behind the vacation-token refusal, also what the
-   * automatic reply's read says as "managed elsewhere". Recall first: a nameless script,
-   * an unreadable one, a {@code :global} or non-literal include, an included script that
-   * itself includes, or a listed include that does not exist all answer true, since
-   * absence cannot be established. Detection, never parsing.
+   * automatic reply's read says as "managed elsewhere". Recall first, detection only: see
+   * {@link #mayCarry}.
    *
    * @param client the client
    * @param scripts the account's scripts
@@ -299,6 +300,47 @@ public class SieveScriptPolicy {
   boolean mayCarryVacation(ManageSieveClient client,
                            List<SieveScriptInfo> scripts,
                            String foreign) throws ManageSieveException {
+    return mayCarry(client, scripts, foreign, VACATION_TOKEN);
+  }
+
+  /**
+   * Whether a foreign script, or a personal script it includes (one level), may carry a
+   * {@code redirect} -- what the forward's read says as "a forward may be configured by
+   * this script". Recall first, detection only: the destinations are never read out of
+   * the script. See {@link #mayCarry}.
+   *
+   * @param client the client
+   * @param scripts the account's scripts
+   * @param foreign the foreign script's name
+   * @return true when it may carry a {@code redirect}
+   * @throws ManageSieveException when a script cannot be read for another reason than
+   *           the server refusing it
+   */
+  boolean mayCarryRedirect(ManageSieveClient client,
+                           List<SieveScriptInfo> scripts,
+                           String foreign) throws ManageSieveException {
+    return mayCarry(client, scripts, foreign, REDIRECT_TOKEN);
+  }
+
+  /**
+   * Whether a foreign script, or a personal script it includes (one level), may carry a
+   * command token. Recall first: a nameless script, an unreadable one, a {@code :global}
+   * or non-literal include, an included script that itself includes, or a listed include
+   * that does not exist all answer true, since absence cannot be established. Only
+   * {@code GETSCRIPT} is issued. Detection, never parsing.
+   *
+   * @param client the client
+   * @param scripts the account's scripts
+   * @param foreign the foreign script's name
+   * @param token the command's name
+   * @return true when it may carry the command
+   * @throws ManageSieveException when a script cannot be read for another reason than
+   *           the server refusing it
+   */
+  private boolean mayCarry(ManageSieveClient client,
+                           List<SieveScriptInfo> scripts,
+                           String foreign,
+                           String token) throws ManageSieveException {
     if (foreign.isEmpty()) {
       return true;
     }
@@ -309,10 +351,10 @@ public class SieveScriptPolicy {
       if (e.getKind() != ManageSieveException.Kind.REFUSED) {
         throw e;
       }
-      // Listed yet unreadable: absence of a vacation cannot be established.
+      // Listed yet unreadable: absence of the command cannot be established.
       return true;
     }
-    if (SieveTokenScan.containsWord(text, VACATION_TOKEN) || SieveTokenScan.hasUnreadableInclude(text)) {
+    if (SieveTokenScan.containsWord(text, token) || SieveTokenScan.hasUnreadableInclude(text)) {
       return true;
     }
     for (String included : SieveTokenScan.includedPersonalScripts(text)) {
@@ -323,7 +365,7 @@ public class SieveScriptPolicy {
         return true;
       }
       String includedText = client.getScript(included);
-      if (SieveTokenScan.containsWord(includedText, VACATION_TOKEN) || SieveTokenScan.includesAnything(includedText)) {
+      if (SieveTokenScan.containsWord(includedText, token) || SieveTokenScan.includesAnything(includedText)) {
         return true;
       }
     }
