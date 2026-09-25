@@ -56,6 +56,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       parent-element="div"
       element="div"
       class="my-auto" />
+    <!-- What the user's own eXo rules did to the opened mail, with its Undo
+         (EXO-90654); nothing at all when no rule matched it. -->
+    <email-connector-mail-box-drawer-automations :email="email" />
     <!-- The messages of this conversation the folder list does not hold (a sent reply,
          an archived message), counted from the list row's conversation total and held
          by a skeleton strip each until the conversation lands. No progress bar here:

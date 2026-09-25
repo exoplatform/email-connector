@@ -79,10 +79,35 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       parent-element="div"
       element="div"
       class="my-auto" />
+    <!-- "Create a filter from this mail" (EXO-90654): the filters drawer opens on the
+         rule this mail suggests. Never on a row of a mailbox somebody shared with the
+         user: rules run on the user's own mailbox, and a rule made from someone else's
+         mail would not mean what the click meant. -->
+    <v-list-item
+      v-if="canCreateFilter"
+      class="ps-2 pe-3 height-auto"
+      @click.stop="createFilter">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="icon-default-color mx-auto"
+          size="16">
+          fa-filter
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.filters.createFromMail') }}
+      </span>
+    </v-list-item>
   </v-list>
 </template>
 
 <script>
+import { OPEN_FILTERS_DRAWER_EVENT, ruleFromMail } from '../../../email-connector-user-setting/js/EmailConnectorFilters.js';
+import { canCreateFilterFrom } from '../../js/EmailConnectorMailFilters.js';
+
 export default {
   props: {
     email: {
@@ -96,7 +121,26 @@ export default {
       default: false,
     },
   },
+  computed: {
+    /**
+     * Whether "Create a filter from this mail" belongs on this row: a received mail of
+     * the user's own mailbox, never a draft, never a shared mailbox's row (EXO-90654).
+     *
+     * @returns {Boolean} true when offered
+     */
+    canCreateFilter() {
+      return canCreateFilterFrom(this.email);
+    },
+  },
   methods: {
+    /**
+     * Opens the filters drawer on the rule this mail suggests (EXO-90654).
+     *
+     * @returns {void}
+     */
+    createFilter() {
+      this.$root.$emit(OPEN_FILTERS_DRAWER_EVENT, { prefill: ruleFromMail(this.email) });
+    },
     openForwardEmailDrawer() {
       this.$root.$emit('open-new-email-drawer', this.email, true);
     },
