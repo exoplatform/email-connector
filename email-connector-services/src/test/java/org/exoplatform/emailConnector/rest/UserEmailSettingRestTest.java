@@ -71,6 +71,7 @@ import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.AbsenceSettings;
+import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.AbsenceStatus;
 import org.exoplatform.emailConnector.model.DelegationFolder;
 import org.exoplatform.emailConnector.model.DelegationFolders;
@@ -752,16 +753,26 @@ public class UserEmailSettingRestTest {
    */
   @Test
   void absenceReadAndWrite() throws Exception {
-    AbsenceSettings settings = new AbsenceSettings(null, "sieve", null, VacationState.NONE, null, 7);
-    when(emailAbsenceService.getAbsence(SIMPLE_USER, null, null)).thenReturn(settings);
+    AbsenceSettings settings = new AbsenceSettings(null, "sieve", null, VacationState.NONE, null, 7, null);
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, null, null, true)).thenReturn(settings);
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.engine").value("sieve"))
            .andExpect(jsonPath("$.vacationState").value("NONE"));
-    when(emailAbsenceService.getAbsence(SIMPLE_USER, null, "Europe/Paris")).thenReturn(settings);
-    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence?timeZone=Europe/Paris").with(testSimpleUser()))
+    AbsenceSettings forwarding = new AbsenceSettings(null, "sieve", null, VacationState.NONE, null, 7,
+                                                     ForwardingSetting.mayForwardByScript("roundcube")
+                                                                      .withManageUrl("https://webmail.example.org"));
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, null, "UTC", true)).thenReturn(forwarding);
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence?timeZone=UTC").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.forwarding.state").value("MAY_FORWARD_BY_SCRIPT"))
+           .andExpect(jsonPath("$.forwarding.scriptName").value("roundcube"))
+           .andExpect(jsonPath("$.forwarding.destinations").isEmpty())
+           .andExpect(jsonPath("$.forwarding.manageUrl").value("https://webmail.example.org"));
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, null, "Europe/Paris", false)).thenReturn(settings);
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence?timeZone=Europe/Paris&forwarding=false").with(testSimpleUser()))
            .andExpect(status().isOk());
-    verify(emailAbsenceService).getAbsence(SIMPLE_USER, null, "Europe/Paris");
+    verify(emailAbsenceService).getAbsence(SIMPLE_USER, null, "Europe/Paris", false);
 
     when(emailAbsenceService.setVacation(eq(SIMPLE_USER), eq(null), any(), eq(true))).thenReturn(settings);
     mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation?republish=true").with(testSimpleUser())
@@ -793,7 +804,7 @@ public class UserEmailSettingRestTest {
   @Test
   void absenceFromASharedMailboxIsForbidden() throws Exception {
     IllegalAccessException refusal = new IllegalAccessException(EmailAbsenceService.OWN_MAILBOX_ONLY);
-    when(emailAbsenceService.getAbsence(SIMPLE_USER, 12L, null)).thenThrow(refusal);
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, 12L, null, true)).thenThrow(refusal);
     when(emailAbsenceService.getStatus(SIMPLE_USER, 12L)).thenThrow(refusal);
     when(emailAbsenceService.setVacation(eq(SIMPLE_USER), eq(12L), any(), eq(false))).thenThrow(refusal);
     doThrow(refusal).when(emailAbsenceService).disableVacation(SIMPLE_USER, 12L);
@@ -868,7 +879,7 @@ public class UserEmailSettingRestTest {
            .andExpect(status().isConflict())
            .andExpect(jsonPath("$.message").value(ServerRuleConflictException.MODIFIED_OUTSIDE))
            .andExpect(jsonPath("$.scriptName").value("exo-rules"));
-    when(emailAbsenceService.getAbsence(SIMPLE_USER, null, null)).thenThrow(new ServerRuleUnavailableException(ServerRuleUnavailableException.SERVER_UNREACHABLE));
+    when(emailAbsenceService.getAbsence(SIMPLE_USER, null, null, true)).thenThrow(new ServerRuleUnavailableException(ServerRuleUnavailableException.SERVER_UNREACHABLE));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence").with(testSimpleUser()))
            .andExpect(status().isBadGateway())
            .andExpect(status().reason(ServerRuleUnavailableException.SERVER_UNREACHABLE));

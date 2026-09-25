@@ -22,6 +22,7 @@ import java.util.List;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
+import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.HopRef;
 import org.exoplatform.emailConnector.model.ReconcileReport;
 import org.exoplatform.emailConnector.model.ServerRule;
@@ -117,6 +118,23 @@ public interface ServerRuleEngine {
                                String expectedScriptHash) throws ServerRuleUnavailableException,
                                                           ServerRuleConflictException,
                                                           ServerRuleUnsupportedException;
+
+  /**
+   * Reads whether the caller's mailbox forwards mail, as the server holds it. <b>A read
+   * only</b>: no engine writes a forward in this phase, and this verb never issues a
+   * write to the server. An engine that holds forwards structurally names the
+   * destinations; one that only sees another client's scripts says which script may
+   * forward, and never reads destinations out of it.
+   *
+   * @param session the caller's own session
+   * @return what could be established; {@link ForwardingSetting#unknown()} for an engine
+   *         that cannot read a forward, which is the default
+   * @throws ServerRuleUnavailableException when the server cannot be used for this
+   *           request
+   */
+  default ForwardingSetting readForwarding(MailboxAclSession session) throws ServerRuleUnavailableException {
+    return ForwardingSetting.unknown();
+  }
 
   /**
    * The caller's server rules, in the order the server applies them.

