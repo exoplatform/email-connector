@@ -1656,6 +1656,7 @@ public class EmailDelegationService {
     written.setSendMode(null);
     written.setSendModeDate(null);
     written.setSendRefusedDate(null);
+    written.setSendRefusedMode(null);
     return written;
   }
 
@@ -2773,9 +2774,29 @@ public class EmailDelegationService {
                                          sentCopyEnabled && sentCopyOf(folders, delegation),
                                          SendMode.usable(delegation.getSendMode(),
                                                          delegation.getSendRefusedDate(),
-                                                         declared.computeIfAbsent(delegation.getConnectorId(), SendMode::declaredFor))));
+                                                         delegation.getSendRefusedMode(),
+                                                         declared.computeIfAbsent(delegation.getConnectorId(), SendMode::declaredFor)),
+                                         delegation.getSendRefusedDate(),
+                                         refusedModeOf(delegation)));
     }
     return entries;
+  }
+
+  /**
+   * The shape a share's last refusal blocks from, as the delegate's band names it
+   * (EXO-90626): {@link SendMode#AS} when only writing as the owner was refused,
+   * {@link SendMode#ON_BEHALF} when both are -- a refusal on her behalf, or one recorded
+   * before the shape was -- and null when her server refused nothing since she set the
+   * consent.
+   *
+   * @param delegation the share
+   * @return the refused shape, or null
+   */
+  private static SendMode refusedModeOf(EmailDelegation delegation) {
+    if (delegation.getSendRefusedDate() == null) {
+      return null;
+    }
+    return delegation.getSendRefusedMode() == SendMode.AS ? SendMode.AS : SendMode.ON_BEHALF;
   }
 
   /**
@@ -3593,7 +3614,8 @@ public class EmailDelegationService {
    * covers the shape ({@link SendMode#AS} covers on behalf too -- the more transparent
    * shape is always available -- on behalf covers only itself); the administrator has not
    * switched the feature off, and declares the shape for the connector; and the owner's
-   * mail server has not refused a mail in her name since she last gave her consent. The
+   * mail server has not refused that shape (or a narrower one) since she last gave her
+   * consent -- a refusal as her leaves on her behalf usable (EXO-90626). The
    * last three are the terms of {@link SendMode#usable}, which the delegate's picker is
    * drawn from, so the picker and this guard cannot disagree.
    *
@@ -3625,7 +3647,7 @@ public class EmailDelegationService {
     if (!SendMode.declaredFor(delegation.getConnectorId()).contains(requested)) {
       throw new SendModeUnavailableException(SEND_MODE_UNSUPPORTED_MESSAGE);
     }
-    if (delegation.getSendRefusedDate() != null) {
+    if (SendMode.refusedByServer(requested, delegation.getSendRefusedDate(), delegation.getSendRefusedMode())) {
       throw new SendModeUnavailableException(SendModeUnavailableException.REFUSED_BY_SERVER);
     }
     String ownerName = ownerFullName(delegation);
@@ -3640,9 +3662,10 @@ public class EmailDelegationService {
 
   /**
    * Records that the owner's mail server refused a mail the delegate sent in her name
-   * (EXO-90583), on the consent it was sent under: the owner's sharing screen and the
-   * delegate's band then say so, and the shape is no longer offered until the owner sets
-   * it again -- which clears the date. Written alone, by the grantee, and only while the
+   * (EXO-90583), on the consent it was sent under and in the shape it was sent in
+   * (EXO-90626): the owner's sharing screen and the delegate's band then say so, and that
+   * shape -- both, when it was on her behalf -- is no longer offered until the owner sets
+   * it again, which clears the refusal. Written alone, by the grantee, and only while the
    * row still carries that very consent: an owner who withdrew or set it again meanwhile
    * is not overridden. The server's own text is never kept.
    *
@@ -3651,7 +3674,10 @@ public class EmailDelegationService {
    * @return true when the refusal was recorded
    */
   public boolean markSendRefused(String granteeUsername, SendIdentity identity) {
-    boolean marked = emailDelegationStorage.markSendRefused(granteeUsername, identity.delegationId(), identity.consentDate());
+    boolean marked = emailDelegationStorage.markSendRefused(granteeUsername,
+                                                            identity.delegationId(),
+                                                            identity.consentDate(),
+                                                            identity.mode());
     LOG.warn("The mail server refused a mail sent in another's name: actor={} mode={} ownerMailbox={} recorded={}",
              granteeUsername,
              identity.mode(),

@@ -170,6 +170,12 @@ do not, because turning one off only stops a READ (see their subtitles).
               @change="onSharedMailboxSentCopyChange" />
           </v-list-item-action>
         </v-list-item>
+        <!-- Writing mail in a shared mailbox owner's name depends on the mail server, and is
+             declared in the server's properties rather than here: one help line says so. -->
+        <div class="caption text-light-color text-wrap mt-6 email-connector-send-identity-help">
+          <v-icon size="14" class="me-1">fas fa-info-circle</v-icon>
+          {{ $t('emailConnector.admin.syncSettings.sendIdentity.help') }}
+        </div>
       </div>
       <confirm-dialog
         ref="cacheSizeConfirmDialog"

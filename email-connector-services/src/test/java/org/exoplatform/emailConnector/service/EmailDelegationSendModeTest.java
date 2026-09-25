@@ -70,6 +70,7 @@ import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.SendIdentity;
 import org.exoplatform.emailConnector.model.SendMode;
+import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngine;
@@ -553,6 +554,19 @@ class EmailDelegationSendModeTest {
     share.setSendRefusedDate(new Date());
     assertEquals(List.of(), service.getSharedMailboxes(GRANTEE).get(0).sendModes(), "refused since last set");
     share.setSendRefusedDate(null);
+    System.setProperty(SendMode.MODES_PROPERTY_PREFIX + CONNECTOR_ID, "as");
+    share.setSendRefusedDate(new Date(3_000L));
+    share.setSendRefusedMode(SendMode.AS);
+    SharedMailboxEntry refusedAs = service.getSharedMailboxes(GRANTEE).get(0);
+    assertEquals(List.of(SendMode.ON_BEHALF), refusedAs.sendModes(), "as her refused (EXO-90626): on her behalf still works");
+    assertEquals(SendMode.AS, refusedAs.sendRefusedMode(), "and the band says which");
+    assertEquals(new Date(3_000L), refusedAs.sendRefusedDate(), "and when");
+    share.setSendRefusedMode(null);
+    SharedMailboxEntry refusedBefore = service.getSharedMailboxes(GRANTEE).get(0);
+    assertEquals(List.of(), refusedBefore.sendModes(), "a refusal that named no shape blocks both, as it did then");
+    assertEquals(SendMode.ON_BEHALF, refusedBefore.sendRefusedMode(), "named as the narrowest shape refused");
+    share.setSendRefusedDate(null);
+    assertNull(service.getSharedMailboxes(GRANTEE).get(0).sendRefusedMode(), "nothing refused, nothing said");
     System.setProperty(SendMode.ENABLED_PROPERTY, "false");
     assertEquals(List.of(), service.getSharedMailboxes(GRANTEE).get(0).sendModes(), "switched off");
     share.setSendMode(null);
@@ -691,18 +705,46 @@ class EmailDelegationSendModeTest {
   }
 
   /**
+   * EXO-90626 -- the send guard refuses only the shape the owner's server refused and
+   * the wider ones: as her refused leaves on her behalf; on her behalf refused, or a
+   * refusal recorded before the shape was, refuses both -- each with the server's code.
+   *
+   * @throws Exception when the guard fails otherwise
+   */
+  @Test
+  void aServerRefusalBlocksItsShapeAndTheWiderOnesOnly() throws Exception {
+    EmailDelegation share = consented(DelegationStatus.ACCEPTED);
+    System.setProperty(SendMode.MODES_PROPERTY_PREFIX + CONNECTOR_ID, "as");
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, ID)).thenReturn(share);
+
+    share.setSendRefusedMode(SendMode.AS);
+    assertEquals(SendMode.ON_BEHALF, service.checkSendMode(GRANTEE, ID, SendMode.ON_BEHALF).mode(), "on her behalf still goes");
+    assertEquals(SendModeUnavailableException.REFUSED_BY_SERVER,
+                 assertThrows(SendModeUnavailableException.class, () -> service.checkSendMode(GRANTEE, ID, SendMode.AS)).getMessage());
+    for (SendMode refused : new SendMode[] { SendMode.ON_BEHALF, null }) {
+      share.setSendRefusedMode(refused);
+      for (SendMode requested : List.of(SendMode.ON_BEHALF, SendMode.AS)) {
+        assertEquals(SendModeUnavailableException.REFUSED_BY_SERVER,
+                     assertThrows(SendModeUnavailableException.class, () -> service.checkSendMode(GRANTEE, ID, requested)).getMessage(),
+                     refused + " refused, " + requested + " asked");
+      }
+    }
+  }
+
+  /**
    * EXO-90583 -- a refusal by the owner's server is recorded on the delegate's row,
-   * against the consent the mail was sent under: the grantee, the row and that consent's
-   * date go to the storage's targeted write.
+   * against the consent the mail was sent under: the grantee, the row, that consent's
+   * date and the shape the mail was sent in (EXO-90626) go to the storage's targeted
+   * write.
    */
   @Test
   void aRefusalIsRecordedAgainstTheConsentItWasSentUnder() {
     SendIdentity identity = new SendIdentity(SendMode.AS, ID, OWNER_MAILBOX, "Alice", new Date(1_000L));
-    when(emailDelegationStorage.markSendRefused(GRANTEE, ID, new Date(1_000L))).thenReturn(true);
+    when(emailDelegationStorage.markSendRefused(GRANTEE, ID, new Date(1_000L), SendMode.AS)).thenReturn(true);
 
     assertTrue(service.markSendRefused(GRANTEE, identity));
 
-    verify(emailDelegationStorage).markSendRefused(GRANTEE, ID, new Date(1_000L));
+    verify(emailDelegationStorage).markSendRefused(GRANTEE, ID, new Date(1_000L), SendMode.AS);
     verify(emailDelegationStorage, never()).update(any());
   }
 
@@ -726,6 +768,7 @@ class EmailDelegationSendModeTest {
     assertNull(delegation.getSendMode(), "no mode");
     assertNull(delegation.getSendModeDate(), "no date");
     assertNull(delegation.getSendRefusedDate(), "no refusal");
+    assertNull(delegation.getSendRefusedMode(), "nor its shape");
   }
 
   /**
