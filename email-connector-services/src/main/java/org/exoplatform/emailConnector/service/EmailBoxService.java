@@ -149,6 +149,7 @@ import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
 import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.event.MailboxResetEvent;
+import org.exoplatform.emailConnector.event.NewInboxMailEvent;
 import org.exoplatform.emailConnector.entity.EmailThreadAiSummaryEntity;
 import org.exoplatform.emailConnector.model.DiscoveredFolder;
 import org.exoplatform.emailConnector.model.DraftMailbox;
@@ -200,6 +201,7 @@ import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailReadReceiptAnswerStorage;
 import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
+import org.exoplatform.emailConnector.service.filters.FilterRunContext;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
@@ -3245,7 +3247,9 @@ public class EmailBoxService {
                                                 fetchedParts);
         newEmailIds.addAll(sliceEmailIds);
         if (streamNewEmails) {
-          broadcastGroup.addAll(sliceEmailIds);
+          // The owner's eXo rules run on the slice before it is announced: a mail a rule
+          // filed away is never announced (EXO-90654).
+          broadcastGroup.addAll(runInboxRules(username, uidFolder, messagesOfSlice(uidSlice, messagesByUid), sliceEmailIds));
           slicesSinceBroadcast++;
           // The very first drained slice goes out on its own: it is the ramp's small one, and
           // holding it back for two more would put the mailbox's first paint at the third
@@ -3301,7 +3305,7 @@ public class EmailBoxService {
                                               MimePartStats fetchedParts) throws MessagingException, IllegalAccessException {
     List<Long> newEmailIds = createEmails(uidFolder, serverMessages, username, folderKey, Map.of(), knownEmailsByUid, fetchedParts);
     if (streamNewEmails) {
-      broadcastNewEmailsSynced(username, newEmailIds);
+      broadcastNewEmailsSynced(username, runInboxRules(username, uidFolder, serverMessages, newEmailIds));
     }
     return newEmailIds;
   }
@@ -3828,6 +3832,139 @@ public class EmailBoxService {
                DEFAULT_BODY_PREFETCH_WORKERS);
       return DEFAULT_BODY_PREFETCH_WORKERS;
     }
+  }
+
+  /**
+   * Runs the owner's eXo rules on the inbox mail a sync just cached, before that mail is
+   * announced (EXO-90654). Published as a {@link NewInboxMailEvent}, synchronously, so
+   * the rules act through this service's own methods without this service knowing them.
+   * <p>
+   * What the rules read beyond the cached row comes from the open messages, and only
+   * when a rule asks: the keywords are in the flags the sync fetched anyway
+   * ({@link #buildSyncFetchProfile}), a header or the size is read on demand. Called
+   * for the owner's own inbox only -- the one place {@code streamNewEmails} is set; a
+   * shared inbox's sync never comes here. Never fails the sync: a failure announces
+   * every mail, as if no rule had run.
+   *
+   * @param username the mailbox owner
+   * @param uidFolder the inbox, for the UIDs
+   * @param messages the messages the mails were cached from, possibly more
+   * @param createdUids the UIDs this pass cached
+   * @return the UIDs to announce: the given ones, less those a rule filed away
+   */
+  private List<Long> runInboxRules(String username, UIDFolder uidFolder, Message[] messages, List<Long> createdUids) {
+    if (createdUids == null || createdUids.isEmpty() || messages == null) {
+      return createdUids;
+    }
+    try {
+      Set<Long> created = new HashSet<>(createdUids);
+      List<NewInboxMailEvent.InboxMail> mails = new ArrayList<>();
+      for (Message message : messages) {
+        long uid = uidFolder.getUID(message);
+        if (created.contains(uid)) {
+          mails.add(new NewInboxMailEvent.InboxMail(uid,
+                                                    userKeywords(message),
+                                                    name -> headerValues(message, name),
+                                                    () -> sizeKb(message)));
+        }
+      }
+      NewInboxMailEvent event = new NewInboxMailEvent(username, FilterRunContext.OWN_INBOX, mails);
+      eventPublisher.publishEvent(event);
+      if (event.getFiledUids().isEmpty()) {
+        return createdUids;
+      }
+      return createdUids.stream().filter(uid -> !event.getFiledUids().contains(uid)).toList();
+    } catch (Exception e) {
+      LOG.warn("The mail filters of user {} could not run on {} new message(s); they are announced as they are",
+               username,
+               createdUids.size(),
+               e);
+      return createdUids;
+    }
+  }
+
+  /**
+   * The keywords set on a message, from the flags the sync already fetched.
+   *
+   * @param message the message
+   * @return the keywords, empty when none or unreadable
+   */
+  private static Set<String> userKeywords(Message message) {
+    try {
+      Flags flags = message.getFlags();
+      return flags == null ? Set.of() : Set.of(flags.getUserFlags());
+    } catch (MessagingException | RuntimeException e) {
+      LOG.debug("The keywords of a new message could not be read", e);
+      return Set.of();
+    }
+  }
+
+  /**
+   * The values of one header of a message, read from the server on demand.
+   *
+   * @param message the message
+   * @param name the header's name
+   * @return the values, empty when absent; null when they cannot be read
+   */
+  private static List<String> headerValues(Message message, String name) {
+    try {
+      String[] values = message.getHeader(name);
+      return values == null ? List.of() : List.of(values);
+    } catch (MessagingException | RuntimeException e) {
+      LOG.debug("Header {} of a new message could not be read", name, e);
+      return null; // NOSONAR null is "unknown", which no rule acts on
+    }
+  }
+
+  /**
+   * The size of a message in kilobytes, rounded up.
+   *
+   * @param message the message
+   * @return the size; null when it cannot be read
+   */
+  private static Long sizeKb(Message message) {
+    try {
+      int size = message.getSize();
+      return size < 0 ? null : (size + 1023L) / 1024L;
+    } catch (MessagingException | RuntimeException e) {
+      LOG.debug("The size of a new message could not be read", e);
+      return null;
+    }
+  }
+
+  /**
+   * The first cached row of the owner's own mailbox in a folder carrying a Message-ID,
+   * whole: what a rule's deferred actions and undo act on, found again after a move or a
+   * cache reset renumbered it.
+   *
+   * @param username the mailbox owner
+   * @param mailHeaderId the Message-ID
+   * @param folder the folder key
+   * @return the row with its recipients and attachments, or null when that folder's
+   *         cache holds none
+   * @throws IllegalAccessException if the user may not read their mailbox
+   */
+  public Email getOwnEmailByMailHeaderId(String username, String mailHeaderId, String folder) throws IllegalAccessException {
+    checkCanReadMailbox(username);
+    List<Long> ids = emailBoxStorage.getEmailIdsByMailHeaderId(username, mailHeaderId, folder);
+    if (ids.isEmpty()) {
+      return null;
+    }
+    Email email = getEmailById(ids.get(0), username);
+    return email != null && username.equals(email.getUserId()) ? email : null;
+  }
+
+  /**
+   * The mail eXo keeps of the owner's own inbox, as a list reads it -- no recipients, no
+   * body, an excerpt: what a rule's preview and its one-off pass scan.
+   *
+   * @param username the mailbox owner
+   * @return the cached inbox, newest first
+   * @throws IllegalAccessException if the user may not read their mailbox
+   */
+  public List<Email> getCachedInbox(String username) throws IllegalAccessException {
+    checkCanReadMailbox(username);
+    return emailBoxStorage.getEmails(username, MailFolder.INBOX);
   }
 
   /**
