@@ -16,9 +16,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <!-- The automatic reply's cue (EXO-90642): while the user's own reply is on, a band in
-       the theme's info tint says so in the user's own mailbox, with "End now" and a link
-       to the settings. Read from the dates-only summary eXo caches, so opening the
-       mailbox costs no connection to the mail server until that summary is stale. Never
+       the theme's info tint says so in the user's own mailbox, with "End now" and "Edit",
+       which opens the settings' own drawer, mounted at this app's root. Read from the
+       dates-only summary eXo caches, so opening the mailbox costs no connection to the
+       mail server until that summary is stale. Never
        in someone else's mailbox: the parent shows it on the user's own only. -->
   <div
     v-if="shown"
@@ -50,11 +51,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ $t('emailConnector.mailBox.absence.band.endNow') }}
         </v-btn>
         <v-btn
-          :href="settingsUrl"
           class="px-1"
           color="primary"
           text
-          small>
+          small
+          @click="$root.$emit(OPEN_ABSENCE_DRAWER_EVENT)">
           {{ $t('emailConnector.mailBox.absence.band.edit') }}
         </v-btn>
       </div>
@@ -63,6 +64,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+// The user-setting bundle, which every opening of the mailbox requires first, provides
+// the drawer; the event names are shared with it so neither side spells them alone.
+import { ABSENCE_UPDATED_EVENT, OPEN_ABSENCE_DRAWER_EVENT, notifyAbsenceUpdated } from '../../../email-connector-user-setting/js/EmailConnectorAbsenceMixin.js';
+
 /**
  * Today in the user's own day, yyyy-MM-dd.
  *
@@ -80,6 +85,7 @@ export default {
   },
   data: () => ({
     STICKY_STYLE: { position: 'sticky', top: 0, zIndex: 3 },
+    OPEN_ABSENCE_DRAWER_EVENT,
     status: null,
     ending: false,
   }),
@@ -108,21 +114,14 @@ export default {
         ? this.$t('emailConnector.mailBox.absence.band.onUntil', { 0: this.formatDay(status.end) })
         : this.$t('emailConnector.mailBox.absence.band.on');
     },
-    /**
-     * The user's settings page, where the reply is edited.
-     *
-     * @returns {String} the URL
-     */
-    settingsUrl() {
-      return `${eXo.env.portal.context}/${eXo.env.portal.metaPortalName}/settings`;
-    },
   },
   created() {
     this.read();
-    document.addEventListener('email-absence-updated', this.read);
+    // The drawer and the Settings row's own changes are said on the document.
+    document.addEventListener(ABSENCE_UPDATED_EVENT, this.read);
   },
   beforeDestroy() {
-    document.removeEventListener('email-absence-updated', this.read);
+    document.removeEventListener(ABSENCE_UPDATED_EVENT, this.read);
   },
   methods: {
     /**
@@ -147,6 +146,8 @@ export default {
         .then(() => {
           this.status = { ...this.status, enabled: false };
           this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.absence.band.ended'), 'success');
+          // The Settings row, when the page shows it, reads the server again.
+          notifyAbsenceUpdated();
         })
         .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.absence.band.endFailed'), 'error'))
         .finally(() => this.ending = false);
