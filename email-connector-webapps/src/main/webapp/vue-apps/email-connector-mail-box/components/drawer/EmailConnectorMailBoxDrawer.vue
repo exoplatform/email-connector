@@ -323,6 +323,20 @@ const OPENABLE_FOLDERS = ['INBOX', 'SENT', 'ARCHIVE', 'DRAFTS', 'TRASH', 'JUNK',
 // drawer closed.
 const FOLDERS_CHANGED_EVENTS = ['email-folders-list-changed', 'email-folders-saved', 'email-folders-updated'];
 
+// The App Center badge push: the one word the server sends every page when a badge's
+// count moved (app-center's ApplicationBadgeService relays the WebSocket frame as this
+// document event, {detail: {message: {badgeName}}}), and this add-on's own badge, as
+// EmailApplicationBadgePlugin names it (EXO-90628).
+const BADGE_UPDATED_EVENT = 'appcenter.badge.updated';
+const EMAIL_UNREAD_BADGE = 'emailUnread';
+
+// The CometD channel app-center relays its badge pushes on (its ApplicationBadgeService's
+// COMETD_CHANNEL). A page subscribes to it only once an App Center badge is mounted on it
+// -- a pinned or topbar application carrying one, or the launcher opened once -- and the
+// detached tab (the app-viewer page) mounts none: the mailbox subscribes itself, on every
+// page (EXO-90628).
+const APP_CENTER_BADGE_CHANNEL = '/eXo/Application/AppCenter/Badge';
+
 // The folder column's shade: a light grey veil over the pane, so the column is darker
 // than the list -- the platform's greyColorLighten1Opacity2 tint (its default: #707070
 // at 8 %, the family of the opened row's 20 %), read from the skin's variable as the
@@ -562,6 +576,7 @@ export default {
     // onFoldersChanged). Plain: nothing renders them.
     this.foldersReload = null;
     this.foldersReloadAgain = false;
+    this.foldersReloadInboxOnFailure = false;
     // Plain instance field: a pending timeout id needs no reactivity.
     this.searchDebounceTimer = null;
     // Which hit openSearchResult is opening, so a repeat of it is ignored while another
@@ -763,6 +778,15 @@ export default {
     // (EXO-90415): a folder created, renamed, deleted or opted in or out there -- and
     // the drawer closing -- re-reads the folder list the column and the menu show.
     FOLDERS_CHANGED_EVENTS.forEach(event => this.$root.$on(event, this.onFoldersChanged));
+    // The unread badge moved on the server -- new mail synchronized, above all: the one
+    // push that reaches an open mailbox, whatever its layout (EXO-90628).
+    document.addEventListener(BADGE_UPDATED_EVENT, this.onUnreadBadgeUpdated);
+    // The push travels on app-center's badge channel, which only a mounted App Center
+    // badge subscribes a page to -- none on the detached tab, none on a site page whose
+    // topbar carries no badge: subscribed here, on every page. Social's WebSocket.js
+    // keeps one subscription per channel and page, whoever asks first, so a page a badge
+    // already subscribed pays nothing.
+    this.$socialWebSocket?.initCometd?.(APP_CENTER_BADGE_CHANNEL);
     // Opening the mailbox, optionally straight onto one message — that is how the
     // global Favorites drawer hands a mail over. The payload used to be the plain
     // "loading" flag and callers still pass it that way, so an object is what marks
@@ -849,6 +873,7 @@ export default {
     this.$root.$off('scheduled-email-updated', this.onScheduledEmailUpdated);
     this.$root.$off('expand-mail-box-on-email', this.onExpandMailBoxOnEmail);
     FOLDERS_CHANGED_EVENTS.forEach(event => this.$root.$off(event, this.onFoldersChanged));
+    document.removeEventListener(BADGE_UPDATED_EVENT, this.onUnreadBadgeUpdated);
   },
   computed: {
     hasEmails() {
@@ -3242,14 +3267,88 @@ export default {
       }
     },
     /**
+     * The unread badge moved on the server (EXO-90628): the synchronization brought new
+     * mail, or a message was read, deleted or archived from another client. Nothing else
+     * tells an open mailbox: the listing is read on open, after the drawer's own actions
+     * and by the polls the drawer itself starts, so a mail the server found on its own
+     * stayed off screen until a manual refresh -- in every layout, narrow or full
+     * screen, stuck or not, and in the detached tab. The badge push reaches the page as
+     * a document event (the subscription made at creation), and this re-reads the
+     * listing on it: the rows and the folder counts follow together. Coalesced with the
+     * folders re-read (reloadListing): one in flight, at most one to follow, whatever
+     * burst the server sends. A listing that fails keeps the listed folder: the push says
+     * nothing about folders, and a passing error must not send the user to the inbox.
+     * <p>
+     * The push is the unread badge's, so it fires when the inbox's unread count moved --
+     * not for a mail synchronized into another folder, one arriving already read, or a
+     * cycle whose arrivals and reads cancel out: those still wait for the next re-read.
+     * <p>
+     * A row the listing did not hold before is new mail, and the categoriser writes its
+     * categories in the minute after the sync: the category watch is armed for it, as
+     * loadEmailBox arms it after a sync the drawer watched itself, so the mail reaches the
+     * Important view without a refresh. Not when a watch already runs (loadEmailBox
+     * counted this listing for it), nor when the rows compared are not the same view's
+     * -- a listing still on its way when the push came (the drawer opening, a folder
+     * switch, a message being pulled), a folder or Favorites switch meanwhile. The
+     * re-read itself is never skipped: a push during such a load is the sync that ended
+     * while the load was on its way, and its mail is exactly what that load may miss. A
+     * push with no new row -- a read acknowledged, a delete -- arms nothing: the polls
+     * would watch a number that cannot change.
+     *
+     * @param {CustomEvent} event the push, {detail: {message: {badgeName}}}
+     * @returns {Promise<void>} resolved once the listing is re-read, or at once when the
+     *          push is another badge's or the mailbox is closed
+     */
+    async onUnreadBadgeUpdated(event) {
+      if (event?.detail?.message?.badgeName !== EMAIL_UNREAD_BADGE || !this.emailBoxDrawer) {
+        return;
+      }
+      const folder = this.currentFolder;
+      const favoriteOnly = this.favoriteOnly;
+      const comparable = !this.loading;
+      const watching = !!this.categoryWatchDeadline;
+      const listedBefore = new Set(this.listedRowKeys());
+      await this.reloadListing(false);
+      // Both the watch that ran before the push and the one a coalesced push just armed
+      // are left alone: a second call would count a poll that never ran.
+      if (this.emailBoxDrawer && comparable && !watching && !this.categoryWatchDeadline
+          && this.currentFolder === folder && this.favoriteOnly === favoriteOnly
+          && this.listedRowKeys().some(key => !listedBefore.has(key))) {
+        this.watchIncomingCategories();
+      }
+    },
+    /**
+     * The rows the listing holds, keyed by folder and UID: a UID only numbers a message
+     * within its folder (EXO-90416), so the folder is part of a row's identity.
+     *
+     * @returns {Array<String>} the keys, "folder:uid"
+     */
+    listedRowKeys() {
+      return (this.emailBox?.emails || []).map(email => `${email.folder || this.currentFolder}:${email.mailRemoteId}`);
+    },
+    /**
      * Re-reads the folder list after the settings' folders drawer changed it
      * (EXO-90415), so the column and the menu show it at once. A listed folder that is
      * gone -- deleted, opted out, missing on the server, or refused by the listing --
-     * gives way to the inbox. Coalesced: one re-read in flight, at most one to follow.
+     * gives way to the inbox. Coalesced (reloadListing).
      *
      * @returns {Promise<void>} resolved once the list is re-read
      */
     onFoldersChanged() {
+      return this.reloadListing(true);
+    },
+    /**
+     * Re-reads the whole listing -- for the folders drawer (onFoldersChanged) and for the
+     * badge push (onUnreadBadgeUpdated, EXO-90628) -- one re-read in flight, at most one
+     * to follow. The follow-up gives way to the inbox on a failed listing when any of the
+     * re-reads it stands for asked to.
+     *
+     * @param {Boolean} inboxOnFailure whether a listing that fails gives way to the inbox
+     *        -- the folders drawer's re-read, whose listed folder may be gone; not the
+     *        badge push's, which says nothing about folders
+     * @returns {Promise<void>} resolved once the listing is re-read
+     */
+    reloadListing(inboxOnFailure) {
       if (!this.emailBoxDrawer) {
         return Promise.resolve();
       }
@@ -3258,31 +3357,37 @@ export default {
       // whole listing, racing the others.
       if (this.foldersReload) {
         this.foldersReloadAgain = true;
+        this.foldersReloadInboxOnFailure = this.foldersReloadInboxOnFailure || inboxOnFailure;
         return this.foldersReload;
       }
-      this.foldersReload = this.reloadFolders().finally(() => {
+      this.foldersReload = this.reloadFolders(inboxOnFailure).finally(() => {
         this.foldersReload = null;
         if (this.foldersReloadAgain) {
           this.foldersReloadAgain = false;
-          return this.onFoldersChanged();
+          const again = this.foldersReloadInboxOnFailure;
+          this.foldersReloadInboxOnFailure = false;
+          return this.reloadListing(again);
         }
       });
       return this.foldersReload;
     },
     /**
-     * The re-read behind onFoldersChanged: the listing again, and the inbox when the
-     * listed folder is gone.
+     * The re-read behind reloadListing: the listing again, and the inbox when the listed
+     * folder is gone -- listed no more, or refused by a listing that failed when the
+     * caller reads a failure that way.
      *
+     * @param {Boolean} inboxOnFailure whether a listing that fails gives way to the inbox
      * @returns {Promise<void>} resolved once done
      */
-    async reloadFolders() {
+    async reloadFolders(inboxOnFailure) {
       let listed = true;
       try {
         await this.loadEmailBox();
       } catch (e) {
         listed = false;
       }
-      if (this.currentFolder !== 'INBOX' && (!listed || !this.availableFolders.some(folder => folder.key === this.currentFolder))) {
+      if (this.currentFolder !== 'INBOX'
+          && (listed ? !this.availableFolders.some(folder => folder.key === this.currentFolder) : inboxOnFailure)) {
         this.onSwitchFolder('INBOX');
       }
     },
