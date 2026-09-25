@@ -89,6 +89,7 @@ import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailDelegationStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -4574,7 +4575,30 @@ public class EmailDelegationService {
                                                                                         : () -> emailCredentialsResolver.authorization(connector.getId(),
                                                                                                                                        connector.getAuthProviderName(),
                                                                                                                                        username);
-    return new MailboxAclSession(connector, username, mailboxIdentifier, opener, http);
+    MailboxAclSession.MailCredentialsResolver mail =
+                                                   emailCredentialsResolver == null ? null
+                                                                                    : () -> MailboxAclSession.passwordAuthentication(emailCredentialsResolver.authenticator(connector.getId(),
+                                                                                                                                                                            connector.getAuthProviderName(),
+                                                                                                                                                                            username,
+                                                                                                                                                                            ConnectorCredentialsChannel.IMAP));
+    return new MailboxAclSession(connector, username, mailboxIdentifier, opener, http, mail);
+  }
+
+  /**
+   * The caller's own session on their own connected mailbox, for a feature that acts on
+   * the caller's mail server outside delegation (the automatic reply). Built by
+   * {@link #session(EmailConnector, String, String)}, the one place a session is built,
+   * so it carries the same invariant: it acts as the caller and nobody else. The caller
+   * closes it.
+   *
+   * @param username the caller, resolved from the request's session
+   * @return the session, nothing opened yet
+   * @throws IllegalAccessException when the caller has no connected mailbox or its
+   *           preset no longer exists
+   */
+  public MailboxAclSession openOwnSession(String username) throws IllegalAccessException {
+    UserEmailSetting setting = connectedSetting(username);
+    return session(connectorOf(setting), username, mailboxIdentifier(setting));
   }
 
   /**

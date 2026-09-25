@@ -47,7 +47,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import javax.mail.Authenticator;
 import javax.mail.MessagingException;
+import javax.mail.PasswordAuthentication;
 import javax.mail.Store;
 
 import org.junit.jupiter.api.AfterEach;
@@ -94,12 +96,14 @@ import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.SharedMailboxSearchFolders;
 import org.exoplatform.emailConnector.model.SharedMailboxSearchScope;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngine;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngineRegistry;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailDelegationStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.model.Profile;
 import org.exoplatform.social.core.manager.IdentityManager;
@@ -3319,6 +3323,40 @@ class EmailDelegationServiceTest {
     EmailDelegation delegation = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
     delegation.setRights(letters);
     return delegation;
+  }
+
+  /**
+   * The caller's own session for the automatic reply (EXO-90642): built for the caller
+   * on their own connected mailbox, its mail credentials resolved through the credentials
+   * contract on the IMAP channel for that caller, and refused to a caller with no
+   * connected mailbox.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void theOwnSessionActsAsTheCallerOnTheImapChannel() throws Exception {
+    EmailCredentialsResolver resolver = org.mockito.Mockito.mock(EmailCredentialsResolver.class);
+    ReflectionTestUtils.setField(service, "emailCredentialsResolver", resolver);
+    when(resolver.authenticator(CONNECTOR_ID, null, OWNER, ConnectorCredentialsChannel.IMAP)).thenReturn(new Authenticator() {
+      /**
+       * The owner's material.
+       *
+       * @return the login and password
+       */
+      @Override
+      protected PasswordAuthentication getPasswordAuthentication() {
+        return new PasswordAuthentication(OWNER_MAILBOX, "secret");
+      }
+    });
+    try (MailboxAclSession own = service.openOwnSession(OWNER)) {
+      assertEquals(OWNER, own.username());
+      assertEquals(OWNER_MAILBOX, own.mailboxIdentifier());
+      assertEquals(OWNER_MAILBOX, own.mailCredentials().getUserName());
+      assertFalse(own.hasOpenStore());
+    }
+    verify(resolver).authenticator(CONNECTOR_ID, null, OWNER, ConnectorCredentialsChannel.IMAP);
+    when(userEmailSettingService.getUserEmailSetting("carol")).thenReturn(new UserEmailSetting());
+    assertThrows(IllegalAccessException.class, () -> service.openOwnSession("carol"));
   }
 
   /**
