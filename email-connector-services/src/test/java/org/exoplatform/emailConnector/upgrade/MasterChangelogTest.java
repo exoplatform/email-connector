@@ -1060,6 +1060,169 @@ public class MasterChangelogTest {
   }
 
   /**
+   * EXO-90654 -- the mail filters' changesets (1.0.0-70 to -75) apply, roll back and
+   * apply again, to a tag placed immediately before 1.0.0-70 for the reason the folder
+   * registry's test gives. They sit before 1.0.0-76 in the file, where their ids were
+   * reserved, so the rollback also undoes the delegation changesets after them, and the
+   * re-apply brings everything back. Between the two, the keys are exercised: one match
+   * per user, rule and mail, and one rule per keyword, with any number of rules carrying
+   * no keyword at all.
+   *
+   * @throws Exception when a changeset does not apply or roll back
+   */
+  @Test
+  void theMailFilterChangesetsRollBackAndReapply() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback70" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-70"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-mail-filters");
+      assertFalse(tableExists(connection, "EMAIL_FILTER"), "sanity: not there before 1.0.0-71");
+      assertTrue(tableExists(connection, "EMAIL_READ_RECEIPT_ANSWER"), "1.0.0-68 runs before it");
+      liquibase.update("");
+      assertTrue(sequenceExists(connection, "SEQ_EMAIL_FILTER_ID"), "1.0.0-70 creates the rules' sequence");
+      assertTrue(tableExists(connection, "EMAIL_FILTER"), "1.0.0-71 creates EMAIL_FILTER");
+      assertTrue(indexExists(connection, "EMAIL_FILTER", "IDX_EMAIL_FILTER_USER"), "and its listing index");
+      assertTrue(indexExists(connection, "EMAIL_FILTER", "UK_EMAIL_FILTER_TAG"), "and its keyword key");
+      assertTrue(sequenceExists(connection, "SEQ_EMAIL_FILTER_MATCH_ID"), "1.0.0-73 creates the matches' sequence");
+      assertTrue(tableExists(connection, "EMAIL_FILTER_MATCH"), "1.0.0-74 creates EMAIL_FILTER_MATCH");
+      for (String index : List.of("UK_EMAIL_FILTER_MATCH", "IDX_EMAIL_FILTER_MATCH_AGENT", "IDX_EMAIL_FILTER_MATCH_MAIL")) {
+        assertTrue(indexExists(connection, "EMAIL_FILTER_MATCH", index), index);
+      }
+      assertTrue(tableExists(connection, "EMAIL_DELEGATION"), "the delegation changesets after them apply too");
+      assertOneRulePerKeyword(connection);
+      assertOneMatchPerUserRuleAndMail(connection);
+
+      liquibase.rollback("before-mail-filters", "");
+      assertFalse(tableExists(connection, "EMAIL_FILTER"), "rolling back drops EMAIL_FILTER");
+      assertFalse(tableExists(connection, "EMAIL_FILTER_MATCH"), "and EMAIL_FILTER_MATCH");
+      assertFalse(sequenceExists(connection, "SEQ_EMAIL_FILTER_ID"), "and the rules' sequence");
+      assertFalse(sequenceExists(connection, "SEQ_EMAIL_FILTER_MATCH_ID"), "and the matches' sequence");
+      assertTrue(tableExists(connection, "EMAIL_READ_RECEIPT_ANSWER"), "and nothing before them");
+
+      liquibase.update("");
+      assertTrue(tableExists(connection, "EMAIL_FILTER"), "the changesets apply again after their rollback");
+      assertTrue(tableExists(connection, "EMAIL_FILTER_MATCH"));
+      assertTrue(tableExists(connection, "EMAIL_DELEGATION"));
+      assertOneMatchPerUserRuleAndMail(connection);
+    }
+  }
+
+  /**
+   * EXO-90654 -- the mail filters' changesets as MySQL and PostgreSQL would run them,
+   * bounded to their own ids: the auto-increment / sequence split, the table options and
+   * the binary collations of 1.0.0-72 and -75 on MySQL, the NOT NULL columns and their
+   * defaults, the keys on both, and a rollback that drops the indexes before their
+   * tables and, on PostgreSQL, the sequences last.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theMailFilterChangesetsOnMySqlAndPostgreSql() throws Exception {
+    String mysql = offlineUpdateSql("mysql?version=8.0.17", "1.0.0-70", "1.0.0-75");
+    for (String table : List.of("EMAIL_FILTER", "EMAIL_FILTER_MATCH")) {
+      Matcher create = Pattern.compile("CREATE TABLE " + table + " \\(.*?\\)[^;]*", Pattern.DOTALL).matcher(mysql);
+      assertTrue(create.find(), "no CREATE TABLE " + table + " in the MySQL SQL: " + mysql);
+      assertTrue(create.group().contains("AUTO_INCREMENT"), "MySQL ids come from an auto-increment: " + create.group());
+      assertTrue(mysql.contains("ALTER TABLE " + table + " ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"),
+                 "the table options: " + mysql);
+      assertTrue(mysql.contains("ALTER TABLE " + table + " MODIFY USER_ID VARCHAR(250) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL"),
+                 "the owner compared byte for byte: " + mysql);
+    }
+    assertTrue(mysql.contains("ALTER TABLE EMAIL_FILTER MODIFY TAG_KEYWORD VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NULL"),
+               "and the keyword: " + mysql);
+    assertFalse(mysql.contains("SEQ_EMAIL_FILTER"), "no sequence on MySQL");
+
+    String postgresql = offlineUpdateSql("postgresql?version=15", "1.0.0-70", "1.0.0-75");
+    assertTrue(postgresql.contains("CREATE SEQUENCE  IF NOT EXISTS SEQ_EMAIL_FILTER_ID START WITH 1"), postgresql);
+    assertTrue(postgresql.contains("CREATE SEQUENCE  IF NOT EXISTS SEQ_EMAIL_FILTER_MATCH_ID START WITH 1"), postgresql);
+    assertTrue(postgresql.indexOf("SEQ_EMAIL_FILTER_ID") < postgresql.indexOf("CREATE TABLE EMAIL_FILTER (ID BIGINT NOT NULL,"),
+               "created before its table, with no auto-increment on the id: " + postgresql);
+    assertFalse(postgresql.contains("ALTER TABLE EMAIL_FILTER ENGINE"), "no MySQL options elsewhere");
+
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-70", "1.0.0-75").toUpperCase(Locale.ROOT);
+      assertTrue(update.contains("CREATE UNIQUE INDEX UK_EMAIL_FILTER_MATCH ON EMAIL_FILTER_MATCH(USER_ID, FILTER_ID, MAIL_HEADER_HASH)"),
+                 vendor + ": " + update);
+      assertTrue(update.contains("CREATE UNIQUE INDEX UK_EMAIL_FILTER_TAG ON EMAIL_FILTER(TAG_KEYWORD)"), vendor + ": " + update);
+      assertTrue(update.contains("CREATE INDEX IDX_EMAIL_FILTER_USER ON EMAIL_FILTER(USER_ID, POSITION)"), vendor + ": " + update);
+      assertTrue(update.contains("CREATE INDEX IDX_EMAIL_FILTER_MATCH_AGENT ON EMAIL_FILTER_MATCH(USER_ID, AGENT_STATUS)"), vendor + ": " + update);
+      assertTrue(update.contains("CREATE INDEX IDX_EMAIL_FILTER_MATCH_MAIL ON EMAIL_FILTER_MATCH(USER_ID, MAIL_HEADER_HASH)"), vendor + ": " + update);
+      for (String column : List.of("USER_ID VARCHAR(250) NOT NULL", "NAME VARCHAR(200) NOT NULL", "KIND VARCHAR(10) NOT NULL",
+                                   "MAIL_HEADER_HASH VARCHAR(64) NOT NULL", "MAIL_HEADER_ID VARCHAR(998) NOT NULL",
+                                   "FILTER_ID BIGINT NOT NULL", "TAG_KEYWORD VARCHAR(64)", "SERVER_RULE_REF VARCHAR(200)",
+                                   "ACTIVE_SINCE")) {
+        assertTrue(update.contains(column), vendor + " " + column + ": " + update);
+      }
+      assertTrue(Pattern.compile("MAILBOX_SCOPE VARCHAR\\(20\\) DEFAULT 'OWN' NOT NULL").matcher(update).find(), vendor + ": " + update);
+      assertTrue(Pattern.compile("AGENT_STATUS VARCHAR\\(20\\) DEFAULT 'NONE' NOT NULL").matcher(update).find(), vendor + ": " + update);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-70", "1.0.0-75").toUpperCase(Locale.ROOT);
+      int matchKey = rollback.indexOf("UK_EMAIL_FILTER_MATCH");
+      int matchTable = rollback.indexOf("DROP TABLE EMAIL_FILTER_MATCH");
+      int tagKey = rollback.indexOf("UK_EMAIL_FILTER_TAG");
+      int filterTable = rollback.indexOf("DROP TABLE EMAIL_FILTER;");
+      assertTrue(matchKey >= 0 && matchTable > matchKey, vendor + " the match key, then its table: " + rollback);
+      assertTrue(tagKey > matchTable && filterTable > tagKey, vendor + " then the rule's key, then its table: " + rollback);
+    }
+    String postgresqlRollback = offlineRollbackSql("postgresql?version=15", "1.0.0-70", "1.0.0-75");
+    assertTrue(postgresqlRollback.contains("DROP SEQUENCE SEQ_EMAIL_FILTER_MATCH_ID")
+        && postgresqlRollback.contains("DROP SEQUENCE SEQ_EMAIL_FILTER_ID"), "and the sequences: " + postgresqlRollback);
+  }
+
+  /**
+   * The keyword key of EMAIL_FILTER: two rules with one keyword are refused, any number
+   * of rules without one are not -- which a key on (USER_ID, TAG_KEYWORD) would refuse
+   * on Oracle.
+   *
+   * @param connection the database
+   * @throws SQLException when a statement other than the refused one fails
+   */
+  private void assertOneRulePerKeyword(Connection connection) throws SQLException {
+    try (Statement statement = connection.createStatement()) {
+      String insert = "INSERT INTO EMAIL_FILTER (ID, USER_ID, NAME, POSITION, KIND, ACTIONS, TAG_KEYWORD, CREATED_DATE, UPDATED_DATE)"
+          + " VALUES (%d, 'alice', 'rule', %d, '%s', '[]', %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
+      statement.executeUpdate(String.format(insert, 1, 0, "EXO", "NULL"));
+      statement.executeUpdate(String.format(insert, 2, 1, "EXO", "NULL"));
+      statement.executeUpdate(String.format(insert, 3, 2, "HOP", "'exo-filter-3'"));
+      assertThrows(SQLException.class,
+                   () -> statement.executeUpdate(String.format(insert, 4, 3, "HOP", "'exo-filter-3'")),
+                   "one rule per keyword");
+      try (ResultSet row = statement.executeQuery("SELECT MAILBOX_SCOPE, ENABLED, STOP_PROCESSING, MATCH_COUNT FROM EMAIL_FILTER WHERE ID = 1")) {
+        assertTrue(row.next());
+        assertEquals("OWN", row.getString(1), "a rule runs on its owner's own mailbox by default");
+        assertTrue(row.getBoolean(2), "enabled by default");
+        assertFalse(row.getBoolean(3));
+        assertEquals(0, row.getLong(4));
+      }
+      statement.executeUpdate("DELETE FROM EMAIL_FILTER");
+    }
+  }
+
+  /**
+   * The at-most-once key of EMAIL_FILTER_MATCH: a second match of one rule on one mail of
+   * one user is refused; another rule, another mail or another user's is not.
+   *
+   * @param connection the database
+   * @throws SQLException when a statement other than the refused one fails
+   */
+  private void assertOneMatchPerUserRuleAndMail(Connection connection) throws SQLException {
+    try (Statement statement = connection.createStatement()) {
+      String insert = "INSERT INTO EMAIL_FILTER_MATCH (ID, USER_ID, FILTER_ID, MAIL_HEADER_ID, MAIL_HEADER_HASH, MATCHED_DATE, CREATED_DATE)"
+          + " VALUES (%d, '%s', %d, '<m@x>', '%s', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
+      statement.executeUpdate(String.format(insert, 1, "alice", 7, "abc"));
+      assertThrows(SQLException.class, () -> statement.executeUpdate(String.format(insert, 2, "alice", 7, "abc")), "one match per rule and mail");
+      statement.executeUpdate(String.format(insert, 3, "alice", 8, "abc"));
+      statement.executeUpdate(String.format(insert, 4, "alice", 7, "def"));
+      statement.executeUpdate(String.format(insert, 5, "bob", 7, "abc"));
+      try (ResultSet row = statement.executeQuery("SELECT AGENT_STATUS, AGENT_ATTEMPTS FROM EMAIL_FILTER_MATCH WHERE ID = 1")) {
+        assertTrue(row.next());
+        assertEquals("NONE", row.getString(1), "no assistant by default");
+        assertEquals(0, row.getInt(2));
+      }
+      statement.executeUpdate("DELETE FROM EMAIL_FILTER_MATCH");
+    }
+  }
+
+  /**
    * The declared size of a column, from the JDBC metadata.
    *
    * @param connection the database
@@ -1470,7 +1633,7 @@ public class MasterChangelogTest {
   // (the custom-folder registry, 1.0.0-53 to -56; the sync-state table, 1.0.0-58 and
   // -59; the notification boundary, 1.0.0-61; the scheduled-send table, 1.0.0-62 to
   // -65; the read-receipt columns, 1.0.0-66; the read-receipt answer store, 1.0.0-67
-  // to -69; mailbox delegation, 1.0.0-76 to -79). They are the ones a second evaluation computes ahead of the update in
+  // to -69; the mail filters, 1.0.0-70 to -75; mailbox delegation, 1.0.0-76 to -79). They are the ones a second evaluation computes ahead of the update in
   // the pin, and nothing on this list may ever drift.
   private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-53",
                                                               "1.0.0-54",
@@ -1487,6 +1650,12 @@ public class MasterChangelogTest {
                                                               "1.0.0-67",
                                                               "1.0.0-68",
                                                               "1.0.0-69",
+                                                              "1.0.0-70",
+                                                              "1.0.0-71",
+                                                              "1.0.0-72",
+                                                              "1.0.0-73",
+                                                              "1.0.0-74",
+                                                              "1.0.0-75",
                                                               "1.0.0-76",
                                                               "1.0.0-77",
                                                               "1.0.0-78",
