@@ -293,6 +293,36 @@ public class EmailBoxService {
    */
   static final String             HEADER_EXO_SENT_BY                                          = "X-Exo-Sent-By";
 
+  /**
+   * On the copy of a draft appended to the writer's Drafts folder, the mailbox shared
+   * with the writer the draft was written in (EXO-90598): the share's id, so a draft
+   * re-read from the server -- after its row was lost, or resaved by another client that
+   * keeps unknown headers -- comes back in that mailbox. A client that drops them on
+   * resave returns the draft as the writer's own, unflagged: nothing else on the copy
+   * tells it from a draft the writer wrote there. A hint, never a proof: the import resolves it among the
+   * writer's own shares ({@link EmailDelegationService#requireOwnShare}) and stores
+   * nothing it did not confirm.
+   */
+  static final String             HEADER_EXO_DRAFT_MAILBOX                                    = "X-Exo-Draft-Mailbox";
+
+  /**
+   * Beside {@link #HEADER_EXO_DRAFT_MAILBOX}, the name the draft is to go out in
+   * (EXO-90598): {@code NONE}, {@code ON_BEHALF} or {@code AS}, as the row records it.
+   * Kept on import only when the mailbox resolved; the owner's consent is checked again
+   * at every send, as for any draft.
+   */
+  static final String             HEADER_EXO_DRAFT_SEND_MODE                                  = "X-Exo-Draft-Send-Mode";
+
+  /**
+   * The mailbox an imported draft names when its {@link #HEADER_EXO_DRAFT_MAILBOX} does
+   * not resolve to one of the writer's own shares (EXO-90598): an id no share carries
+   * (the sequence starts at 1), which every reader already takes for "a mailbox that is
+   * no longer shared" -- named so on the draft, and never sent from the writer's own
+   * mailbox instead. Negative rather than zero, which the composer's JavaScript would
+   * read as no mailbox at all. Not the header's id: nothing unconfirmed is stored.
+   */
+  static final long               UNRESOLVED_DRAFT_MAILBOX                                    = -1L;
+
   private static final String     HEADER_RETURN_PATH                                          = "Return-Path";
 
   // The IMAP keyword every client reads as "this message's read-receipt request was
@@ -407,7 +437,9 @@ public class EmailBoxService {
                                                                                                       HEADER_LIST_UNSUBSCRIBE,
                                                                                                       HEADER_ORIGINAL_SENDER,
                                                                                                       HEADER_DISPOSITION_NOTIFICATION_TO,
-                                                                                                      HEADER_RETURN_PATH);
+                                                                                                      HEADER_RETURN_PATH,
+                                                                                                      HEADER_EXO_DRAFT_MAILBOX,
+                                                                                                      HEADER_EXO_DRAFT_SEND_MODE);
 
   // How long a new-mail notification waits for someone to classify the messages first. Short,
   // because with no such consumer this is pure added latency.
@@ -1538,8 +1570,10 @@ public class EmailBoxService {
    * @param previousSnapshot what the last full sync of the folder saw, may be null: a
    *          different UIDVALIDITY moves the INBOX to a new epoch
    * @return the folder's change snapshot as of this sync's SELECT, for the next
-   *         sync's skip-if-unchanged check; null when none could be captured (the
-   *         next sync then simply takes the full path again)
+   *         sync's skip-if-unchanged check; null when none could be captured, or
+   *         when a Drafts message could not be imported -- the snapshot kept is then
+   *         the one from before, which predates that message, so the next sync takes
+   *         the full path again and retries it
    */
   private FolderSyncSnapshot syncFolder(Folder folder,
                           String folderKey,
@@ -1613,8 +1647,12 @@ public class EmailBoxService {
       // be shared is what comes next: the rest of this method treats the server as the
       // truth and the cache as its copy, and for drafts that is exactly backwards.
       if (MailFolder.DRAFTS.equals(folderKey)) {
-        syncDraftRows(uidFolder, serverMessages, folderEmails, knownEmailsByUid, username, userEmailSetting, emailBoxCacheSize);
-        return folderSnapshot;
+        boolean complete = syncDraftRows(uidFolder, serverMessages, folderEmails, knownEmailsByUid, username, userEmailSetting,
+                                         emailBoxCacheSize);
+        // A draft left out -- its mailbox could not be checked, or it could not be read --
+        // must be tried again even if nothing else changes in the folder: no new snapshot,
+        // so the one kept predates it and the skip check cannot pass over it.
+        return complete ? folderSnapshot : null;
       }
       if (notify) {
         // Open the notification window BEFORE anything is broadcast: the groups of new
@@ -12260,6 +12298,15 @@ public class EmailBoxService {
     if (StringUtils.isNotBlank(draft.getMailReferences())) {
       message.setHeader(HEADER_REFERENCES, draft.getMailReferences());
     }
+    // The mailbox shared with the writer the draft belongs to, and the name it goes out
+    // in (EXO-90598): what a re-import needs to put it back where it was written. Only on
+    // this Drafts copy -- a send builds its own message -- and only for a shared mailbox.
+    if (draft.getSendDelegationId() != null && draft.getSendDelegationId() > 0) {
+      message.setHeader(HEADER_EXO_DRAFT_MAILBOX, String.valueOf(draft.getSendDelegationId()));
+      if (StringUtils.isNotBlank(draft.getSendMode())) {
+        message.setHeader(HEADER_EXO_DRAFT_SEND_MODE, draft.getSendMode());
+      }
+    }
     message.setFlag(Flags.Flag.DRAFT, true);
     message.setFlag(Flags.Flag.SEEN, true);
     return message;
@@ -14680,8 +14727,10 @@ public class EmailBoxService {
    * @param username the mailbox owner
    * @param userEmailSetting the user's connector binding
    * @param windowSize the number of most recent drafts to keep
+   * @return true when every Drafts message the window holds was imported or known; false
+   *         when one could not be, which the next sync must retry
    */
-  private void syncDraftRows(UIDFolder uidFolder,
+  private boolean syncDraftRows(UIDFolder uidFolder,
                              Message[] serverMessages,
                              List<Email> cachedDrafts,
                              Map<Long, Email> knownDraftsByUid,
@@ -14692,7 +14741,9 @@ public class EmailBoxService {
     // the janitor removes them on its own connection and must be able to prove, at that
     // point, that the message still sitting at that number is the one it judged.
     Map<Long, String> strayCopies = new LinkedHashMap<>();
-    int imported = importServerDrafts(uidFolder, serverMessages, knownDraftsByUid, username, userEmailSetting, strayCopies);
+    AtomicInteger failedImports = new AtomicInteger();
+    int imported = importServerDrafts(uidFolder, serverMessages, knownDraftsByUid, username, userEmailSetting, strayCopies,
+                                      failedImports);
     int detached = detachDraftsDeletedElsewhere(uidFolder, serverMessages, cachedDrafts, username);
     // The same cleanup every other folder gets, and the moment its draft guard stops
     // being theoretical: rows the server no longer has go, EXCEPT the ones this
@@ -14709,6 +14760,7 @@ public class EmailBoxService {
              detached,
              strayCopies.size(),
              removedStrays);
+    return failedImports.get() == 0;
   }
 
   /**
@@ -14729,6 +14781,8 @@ public class EmailBoxService {
    * @param userEmailSetting the user's connector binding
    * @param strayCopies collects the copies of already-sent mail, by UID and by the
    *          Message-ID they were recognised through, for the janitor to remove
+   * @param failedImports counts the messages that could not be imported, for the
+   *          caller to have them retried
    * @return the number of drafts imported
    */
   private int importServerDrafts(UIDFolder uidFolder,
@@ -14736,7 +14790,8 @@ public class EmailBoxService {
                                  Map<Long, Email> knownDraftsByUid,
                                  String username,
                                  UserEmailSetting userEmailSetting,
-                                 Map<Long, String> strayCopies) {
+                                 Map<Long, String> strayCopies,
+                                 AtomicInteger failedImports) {
     int imported = 0;
     for (Message message : serverMessages) {
       try {
@@ -14757,6 +14812,7 @@ public class EmailBoxService {
         // Per message, like the rest of the sync: one unreadable draft must not stop
         // the others from arriving.
         LOG.warn("Error importing a draft of user {} from the Drafts folder", username, e);
+        failedImports.incrementAndGet();
       }
     }
     return imported;
@@ -14862,7 +14918,66 @@ public class EmailBoxService {
     draft.setMailReferences(references);
     draft.setThreadIndexRoot(threadIndexRoot != null ? threadIndexRoot : "");
     draft.setThreadId(computeThreadId(username, messageId, messageUid, inReplyTo, references, threadIndexRoot));
+    ImportedDraftMailbox mailbox = importedDraftMailbox(message, username);
+    draft.setSendDelegationId(mailbox.delegationId());
+    draft.setSendMode(mailbox.sendMode());
     emailBoxStorage.createEmail(draft);
+  }
+
+  /**
+   * The mailbox an imported draft was written in, and the name it goes out in, as its
+   * private headers claim them (EXO-90598) -- confirmed, never trusted:
+   * <ul>
+   * <li>no {@link #HEADER_EXO_DRAFT_MAILBOX}: the writer's own mailbox, as for any draft
+   * another client wrote;</li>
+   * <li>a share of the writer's own ({@link EmailDelegationService#requireOwnShare},
+   * whatever its status, as a draft's first save resolves it): that mailbox, and the
+   * name the header gives when it is one a draft can hold -- the row then reads exactly
+   * as it did before it was lost, so a share ended since is named "no longer shared"
+   * and refused at the send, and a consent withdrawn since is caught by the composer
+   * and by the send guard, as for any stored draft;</li>
+   * <li>anything else -- somebody else's share, an unknown or unreadable id: not a
+   * mailbox this writer can be told about, and not the writer's own either;
+   * {@link #UNRESOLVED_DRAFT_MAILBOX}, which every reader names as a mailbox no longer
+   * shared and no send takes from the writer's own mailbox. The header's id is never
+   * stored.</li>
+   * </ul>
+   * A failure to read the writer's shares is not an answer: it propagates, the draft is
+   * skipped by this sync, which keeps the snapshot it had -- older than this draft -- so
+   * the next one reads the folder again and retries it.
+   *
+   * @param message the Drafts message
+   * @param username the writer, whose Drafts folder it is
+   * @return the mailbox and the name, both null for the writer's own mailbox
+   * @throws MessagingException if the headers cannot be read
+   */
+  private ImportedDraftMailbox importedDraftMailbox(Message message, String username) throws MessagingException {
+    String named = StringUtils.trimToNull(firstHeader(message, HEADER_EXO_DRAFT_MAILBOX));
+    if (named == null) {
+      return new ImportedDraftMailbox(null, null);
+    }
+    EmailDelegation share = null;
+    try {
+      share = emailDelegationService.requireOwnShare(username, Long.parseLong(named));
+    } catch (NumberFormatException | ObjectNotFoundException e) {
+      LOG.warn("A draft of user {} names a mailbox that is not one of theirs; it is imported as written in a mailbox no longer shared",
+               username);
+    }
+    if (share == null || share.getId() == null) {
+      return new ImportedDraftMailbox(UNRESOLVED_DRAFT_MAILBOX, null);
+    }
+    SendMode mode = SendMode.of(firstHeader(message, HEADER_EXO_DRAFT_SEND_MODE));
+    return new ImportedDraftMailbox(share.getId(), mode == null ? null : mode.name());
+  }
+
+  /**
+   * What an imported draft's headers resolve to (EXO-90598).
+   *
+   * @param delegationId the share the draft belongs to, {@link #UNRESOLVED_DRAFT_MAILBOX}
+   *          for one that did not resolve, null for the writer's own mailbox
+   * @param sendMode the name it goes out in, as a draft row stores it, or null
+   */
+  private record ImportedDraftMailbox(Long delegationId, String sendMode) {
   }
 
   /**

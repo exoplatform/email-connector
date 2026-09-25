@@ -24,6 +24,7 @@ import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.model.SendIdentity;
 import org.exoplatform.emailConnector.model.SendMode;
 import javax.mail.internet.AddressException;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -15035,6 +15036,236 @@ public class EmailBoxServiceTest {
     ArgumentCaptor<Email> imported = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxStorage).createEmail(imported.capture());
     assertTrue(imported.getValue().isReadReceiptRequested());
+  }
+
+  /**
+   * EXO-90598 -- a draft of Alice's shared mailbox keeps its mailbox and the name it was
+   * written in when it comes back from the server: the Drafts copy carries both as
+   * private headers, and the import resolves the mailbox among the user's own shares
+   * before it stores anything.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aSharedDraftsCopyComesBackInItsMailboxAndName() throws Exception {
+    Email draft = draft("draft-1");
+    draft.setSendDelegationId(100L);
+    draft.setSendMode("AS");
+    MimeMessage copy = draftsCopyOf(draft);
+    assertArrayEquals(new String[] { "100" }, copy.getHeader("X-Exo-Draft-Mailbox"));
+    assertArrayEquals(new String[] { "AS" }, copy.getHeader("X-Exo-Draft-Send-Mode"));
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenReturn(alicesShare(SendMode.AS));
+
+    Email imported = importedFrom(copy);
+    assertEquals(100L, imported.getSendDelegationId(), "Alice's mailbox, as confirmed among the user's shares");
+    assertEquals("AS", imported.getSendMode(), "and the name it was left in");
+  }
+
+  /**
+   * EXO-90598 -- a draft of the user's own mailbox says nothing on its Drafts copy, and
+   * comes back as the user's own without anything being looked up; nor does a draft
+   * whose mailbox never resolved.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void anOwnDraftsCopyNamesNoMailbox() throws Exception {
+    MimeMessage copy = draftsCopyOf(draft("draft-1"));
+    assertNull(copy.getHeader("X-Exo-Draft-Mailbox"));
+    assertNull(copy.getHeader("X-Exo-Draft-Send-Mode"));
+
+    Email imported = importedFrom(copy);
+    assertNull(imported.getSendDelegationId());
+    assertNull(imported.getSendMode());
+    verify(emailDelegationService, never()).requireOwnShare(anyString(), anyLong());
+
+    Email unresolved = draft("draft-2");
+    unresolved.setSendDelegationId(EmailBoxService.UNRESOLVED_DRAFT_MAILBOX);
+    assertNull(draftsCopyOf(unresolved).getHeader("X-Exo-Draft-Mailbox"), "a mailbox that never resolved is not stamped again");
+  }
+
+  /**
+   * EXO-90598 -- the header is a hint, never trusted alone: a mailbox that is not one of
+   * the user's own shares (somebody else's, or unknown), or an unreadable id, comes back
+   * as a mailbox no longer shared -- never as the user's own, and never with the
+   * header's id stored -- and its name is dropped.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftNamingAMailboxThatIsNotTheUsersOwnComesBackAsNoLongerShared() throws Exception {
+    Email draft = draft("draft-1");
+    draft.setSendDelegationId(200L);
+    draft.setSendMode("ON_BEHALF");
+    MimeMessage copy = draftsCopyOf(draft);
+    when(emailDelegationService.requireOwnShare(TEST_USER, 200L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+
+    Email foreign = importedFrom(copy);
+    assertEquals(EmailBoxService.UNRESOLVED_DRAFT_MAILBOX, foreign.getSendDelegationId(), "not the user's own mailbox");
+    assertNotEquals(200L, foreign.getSendDelegationId(), "and not the id the header named");
+    assertNull(foreign.getSendMode());
+
+    org.mockito.Mockito.clearInvocations(emailBoxStorage);
+    copy.setHeader("X-Exo-Draft-Mailbox", "not-an-id");
+    Email unreadable = importedFrom(copy);
+    assertEquals(EmailBoxService.UNRESOLVED_DRAFT_MAILBOX, unreadable.getSendDelegationId());
+    assertNull(unreadable.getSendMode());
+  }
+
+  /**
+   * EXO-90598 -- a mailbox that is the user's own share keeps its place whatever the
+   * share's state, as a draft's first save resolves it: one that ended since is named
+   * "no longer shared" and refused at the send, as for any stored draft. A name the
+   * header garbles is dropped, the mailbox kept.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftOfAnEndedShareKeepsItsMailboxAndAGarbledNameIsDropped() throws Exception {
+    Email draft = draft("draft-1");
+    draft.setSendDelegationId(100L);
+    draft.setSendMode("ON_BEHALF");
+    MimeMessage copy = draftsCopyOf(draft);
+    EmailDelegation ended = alicesShare(SendMode.ON_BEHALF);
+    ended.setStatus(DelegationStatus.REVOKED);
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenReturn(ended);
+
+    Email imported = importedFrom(copy);
+    assertEquals(100L, imported.getSendDelegationId(), "the mailbox it was written in, named no longer shared by every reader");
+    assertEquals("ON_BEHALF", imported.getSendMode(), "the row reads as it did before it was lost");
+
+    org.mockito.Mockito.clearInvocations(emailBoxStorage);
+    copy.setHeader("X-Exo-Draft-Send-Mode", "SUDO");
+    Email garbled = importedFrom(copy);
+    assertEquals(100L, garbled.getSendDelegationId());
+    assertNull(garbled.getSendMode(), "a name no draft can hold is not kept");
+  }
+
+  /**
+   * EXO-90598 -- the user's shares could not be read: no answer, so no row -- the draft is
+   * left for a later sync rather than imported in the wrong mailbox.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftWhoseMailboxCannotBeCheckedIsNotImported() throws Exception {
+    Email draft = draft("draft-1");
+    draft.setSendDelegationId(100L);
+    MimeMessage copy = draftsCopyOf(draft);
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenThrow(new IllegalStateException("database down"));
+
+    assertThrows(IllegalStateException.class,
+                 () -> ReflectionTestUtils.invokeMethod(emailBoxService,
+                                                        "createDraftFromServerMessage",
+                                                        copy,
+                                                        77L,
+                                                        "<draft@example.org>",
+                                                        TEST_USER,
+                                                        userEmailSetting()));
+    verify(emailBoxStorage, never()).createEmail(any());
+  }
+
+  /**
+   * EXO-90598 -- a Drafts message whose mailbox could not be checked makes the Drafts
+   * sync report itself incomplete, so the sync keeps no snapshot and the next one reads
+   * the folder again and retries it, even when nothing else changed there; one that
+   * imports reports complete.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftsSyncThatLeftADraftOutAsksToBeRetried() throws Exception {
+    Email draft = draft("draft-1");
+    draft.setSendDelegationId(100L);
+    MimeMessage copy = draftsCopyOf(draft);
+    javax.mail.UIDFolder uidFolder = mock(javax.mail.UIDFolder.class);
+    when(uidFolder.getUID(copy)).thenReturn(77L);
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenThrow(new IllegalStateException("database down"));
+
+    Boolean incomplete = ReflectionTestUtils.invokeMethod(emailBoxService, "syncDraftRows", uidFolder, new javax.mail.Message[] { copy },
+                                                          new ArrayList<Email>(), new HashMap<Long, Email>(), TEST_USER, userEmailSetting(), 50);
+    assertFalse(incomplete, "a draft left out: no snapshot, so the next sync retries it");
+    verify(emailBoxStorage, never()).createEmail(any());
+
+    org.mockito.Mockito.reset(emailDelegationService);
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenReturn(alicesShare(SendMode.ON_BEHALF));
+    Boolean complete = ReflectionTestUtils.invokeMethod(emailBoxService, "syncDraftRows", uidFolder, new javax.mail.Message[] { copy },
+                                                        new ArrayList<Email>(), new HashMap<Long, Email>(), TEST_USER, userEmailSetting(), 50);
+    assertTrue(complete);
+    verify(emailBoxStorage).createEmail(any());
+  }
+
+  /**
+   * EXO-90598 -- through the whole sync: a Drafts folder holding a draft whose mailbox
+   * could not be checked saves no new snapshot for Drafts, so the skip check cannot pass
+   * over the folder next time, even on a server that reports HIGHESTMODSEQ; once the
+   * draft imports, the snapshot is saved.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftsFolderWithADraftLeftOutKeepsNoSnapshot() throws Exception {
+    Email draft = draft("draft-1");
+    draft.setSendDelegationId(100L);
+    MimeMessage copy = draftsCopyOf(draft);
+    IMAPFolder draftsFolder = givenASyncableDraftsFolder(copy);
+    when(draftsFolder.getUID(copy)).thenReturn(77L);
+    lenient().when(draftsFolder.getUIDValidity()).thenReturn(11L);
+    lenient().when(draftsFolder.getUIDNext()).thenReturn(78L);
+    lenient().when(draftsFolder.getHighestModSeq()).thenReturn(900L);
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenThrow(new IllegalStateException("database down"));
+
+    emailBoxService.synchronize(TEST_USER);
+    assertNull(savedDraftsSnapshot(), "a draft left out: no Drafts snapshot to skip on");
+    verify(emailBoxStorage, never()).createEmail(any());
+
+    org.mockito.Mockito.reset(emailDelegationService, settingService);
+    when(emailDelegationService.requireOwnShare(TEST_USER, 100L)).thenReturn(alicesShare(SendMode.ON_BEHALF));
+    emailBoxService.synchronize(TEST_USER);
+    FolderSyncSnapshot saved = savedDraftsSnapshot();
+    assertNotNull(saved, "everything imported: the snapshot is saved");
+    assertEquals(900L, saved.getHighestModSeq());
+  }
+
+  /**
+   * The Drafts snapshot the last sync saved, if any.
+   *
+   * @return the snapshot, or null when none was saved
+   */
+  private FolderSyncSnapshot savedDraftsSnapshot() {
+    ArgumentCaptor<SettingValue> savedState = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService, org.mockito.Mockito.atLeast(0)).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), savedState.capture());
+    if (savedState.getAllValues().isEmpty()) {
+      return null;
+    }
+    return JsonUtils.fromJsonString(savedState.getValue().getValue().toString(), MailboxSyncState.class).getSnapshot(MailFolder.DRAFTS);
+  }
+
+  /**
+   * The copy of a draft the Drafts folder gets, with a body, as the server would store it.
+   *
+   * @param draft the draft
+   * @return the copy
+   * @throws Exception when it cannot be built
+   */
+  private MimeMessage draftsCopyOf(Email draft) throws Exception {
+    MimeMessage copy = ReflectionTestUtils.invokeMethod(emailBoxService, "buildDraftMessage", draft, userEmailSetting(), TEST_USER);
+    copy.setText("half a sentence");
+    copy.saveChanges();
+    return copy;
+  }
+
+  /**
+   * The row an import of a Drafts message creates.
+   *
+   * @param copy the Drafts message
+   * @return the row stored
+   */
+  private Email importedFrom(MimeMessage copy) {
+    ReflectionTestUtils.invokeMethod(emailBoxService, "createDraftFromServerMessage", copy, 77L, "<draft@example.org>", TEST_USER, userEmailSetting());
+    ArgumentCaptor<Email> imported = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(imported.capture());
+    return imported.getValue();
   }
 
   /**

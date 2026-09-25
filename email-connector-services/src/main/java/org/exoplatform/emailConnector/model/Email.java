@@ -200,8 +200,14 @@ public class Email {
 
   // On a draft, the mailbox shared with its writer that it was written in (EXO-90595):
   // the share's delegation id, null for the writer's own mailbox. In on a draft's FIRST
-  // save only, where the server resolves it against the writer's own accepted shares;
-  // ignored by every later save and by every send. Out on every read of a draft, so the
+  // save only, where the server resolves it against the writer's own shares, whatever
+  // their status; ignored by every later save and by every send. Also written by the
+  // import of a draft re-read from the server's Drafts folder (EXO-90598), resolved the
+  // same way from the copy's private header, or -1 (EmailBoxService.
+  // UNRESOLVED_DRAFT_MAILBOX) when that header named a mailbox that could not be
+  // confirmed. Any id that does not resolve -- -1 included -- is read as a mailbox no
+  // longer shared, and NEVER as the writer's own: no reader may map it to null, and the
+  // column carries no foreign key on purpose. Out on every read of a draft, so the
   // composer resumes it in its own mailbox whatever the switcher shows.
   private Long                 sendDelegationId;
 
