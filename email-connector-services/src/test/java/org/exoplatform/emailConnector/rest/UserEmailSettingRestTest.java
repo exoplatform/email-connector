@@ -381,7 +381,7 @@ public class UserEmailSettingRestTest {
 
   /**
    * Inviting hands the grantee and the preset to the service under the caller's name;
-   * the service's refusals map to 400 (a message code), 401, and 502 (the mail server
+   * the service's refusals map to 400 (a message code), 403, and 502 (the mail server
    * would not).
    */
   @Test
@@ -540,7 +540,7 @@ public class UserEmailSettingRestTest {
     assertSendModeAnswer(8L, 400, EmailDelegationService.NOT_CHANGEABLE_MESSAGE);
     assertSendModeAnswer(9L, 502, MailboxAclException.UNREACHABLE);
     assertSendModeAnswer(10L, 404, null);
-    assertSendModeAnswer(11L, 401, null);
+    assertSendModeAnswer(11L, 403, null);
 
     DelegationGrantee bob = DelegationGrantee.of(MailboxAce.ofLetters("bob@acme.com", MailboxRights.of("lrswite")), "bob", consented)
                                              .withConsentContext("Bob Martin", true);
@@ -793,13 +793,13 @@ public class UserEmailSettingRestTest {
     verify(userEmailSettingService).connectThroughProvider(1L, SIMPLE_USER);
   }
 
-  /** A user who may not connect this connector gets a 401, as the endpoint documents. */
+  /** A user who may not connect this connector gets a 403, as the endpoint documents. */
   @Test
   @SneakyThrows
-  void connectThroughProviderAnswers401WhenTheUserMayNotConnect() {
+  void connectThroughProviderAnswers403WhenTheUserMayNotConnect() {
     doThrow(new IllegalAccessException("not allowed")).when(userEmailSettingService).connectThroughProvider(1L, SIMPLE_USER);
     mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/connect?emailConnectorId=1").with(testSimpleUser()))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
   }
 
   /** A provider that expects the user to type something is a 400: the browser shows the form. */
