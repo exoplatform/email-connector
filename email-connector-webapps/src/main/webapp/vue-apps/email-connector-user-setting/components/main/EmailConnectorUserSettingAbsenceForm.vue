@@ -17,8 +17,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- The automatic reply's form: on/off, an optional first and last day in the user's
        own time zone, a one-line subject and a plain-text message. What the mail server
-       decides on its own (once per sender per N days, never to lists or automated mail)
-       is stated, not editable. Its Save and Cancel are the drawer's footer, which calls
+       decides on its own is stated, not editable: on a Sieve server eXo's script answers
+       once per sender per N days and never lists or automated mail; BlueMind applies its
+       own rules. Its Save and Cancel are the drawer's footer, which calls
        submit() and reads the can-save event. Laid out like the platform's drawer forms:
        a plain label above each field, the switch at the end of its label's row, the two
        optional days as two equal date pickers side by side, empty meaning no bound.
@@ -126,7 +127,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       class="extended-textarea pt-0"
       auto-grow />
     <div class="text-subtitle mt-4">
-      {{ $t('UserSettings.emailConnector.absence.form.rules', { 0: days }) }}
+      {{ rulesText }}
     </div>
     <div class="text-subtitle mt-2">
       {{ $t('UserSettings.emailConnector.absence.form.ownMailbox') }}
@@ -147,8 +148,10 @@ export default {
     vacation: { type: Object, default: null },
     // The engine's answer per element.
     capabilities: { type: Object, default: null },
-    // Days between two replies to one sender.
+    // Days between two replies to one sender, on a server eXo writes them to.
     days: { type: Number, default: 7 },
+    // The connector's rules engine: sieve, bluemind or none.
+    engine: { type: String, default: null },
     error: { type: String, default: null },
   },
   data: () => ({
@@ -162,6 +165,17 @@ export default {
     text: '',
   }),
   computed: {
+    /**
+     * What the mail server decides on its own, in words: eXo writes the interval and the
+     * exclusions into a Sieve script; BlueMind applies its own.
+     *
+     * @returns {String} the localized statement
+     */
+    rulesText() {
+      return this.engine === 'bluemind'
+        ? this.$t('UserSettings.emailConnector.absence.form.rules.server')
+        : this.$t('UserSettings.emailConnector.absence.form.rules', { 0: this.days });
+    },
     /**
      * Whether the server can bound the reply by days.
      *
