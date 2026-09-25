@@ -47,6 +47,8 @@ export function notifyAbsenceUpdated() {
 export default {
   data: () => ({
     absence: null,
+    // Whether this view shows the forward; a view that does not spares the server its read.
+    absenceWithForwarding: true,
     loading: true,
     // The last refusal's message, in the user's words; null when none.
     error: null,
@@ -114,7 +116,7 @@ export default {
      */
     readAbsence() {
       this.loading = true;
-      return this.$emailConnectorCommonService.getAbsence()
+      return this.$emailConnectorCommonService.getAbsence(this.absenceWithForwarding)
         .then(absence => {
           this.absence = absence;
           this.error = null;
