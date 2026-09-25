@@ -276,8 +276,31 @@ public class SieveScriptPolicy {
                                         List<SieveScriptInfo> scripts,
                                         String foreign,
                                         ExoSieveScript script) throws ManageSieveException, ServerRuleConflictException {
-    if (!script.emitsVacation()) {
-      return;
+    if (script.emitsVacation() && mayCarryVacation(client, scripts, foreign)) {
+      throw new ServerRuleConflictException(ServerRuleConflictException.MANAGED_ELSEWHERE, foreign);
+    }
+  }
+
+  /**
+   * Whether a foreign script, or a personal script it includes (one level), may carry a
+   * {@code vacation} -- the detection behind the vacation-token refusal, also what the
+   * automatic reply's read says as "managed elsewhere". Recall first: a nameless script,
+   * an unreadable one, a {@code :global} or non-literal include, an included script that
+   * itself includes, or a listed include that does not exist all answer true, since
+   * absence cannot be established. Detection, never parsing.
+   *
+   * @param client the client
+   * @param scripts the account's scripts
+   * @param foreign the foreign script's name
+   * @return true when it may carry a {@code vacation}
+   * @throws ManageSieveException when a script cannot be read for another reason than
+   *           the server refusing it
+   */
+  boolean mayCarryVacation(ManageSieveClient client,
+                           List<SieveScriptInfo> scripts,
+                           String foreign) throws ManageSieveException {
+    if (foreign.isEmpty()) {
+      return true;
     }
     String text;
     try {
@@ -286,24 +309,44 @@ public class SieveScriptPolicy {
       if (e.getKind() != ManageSieveException.Kind.REFUSED) {
         throw e;
       }
-      // Listed as active yet unreadable: absence of a vacation cannot be established.
-      throw new ServerRuleConflictException(ServerRuleConflictException.MANAGED_ELSEWHERE, foreign);
+      // Listed yet unreadable: absence of a vacation cannot be established.
+      return true;
     }
     if (SieveTokenScan.containsWord(text, VACATION_TOKEN) || SieveTokenScan.hasUnreadableInclude(text)) {
-      throw new ServerRuleConflictException(ServerRuleConflictException.MANAGED_ELSEWHERE, foreign);
+      return true;
     }
     for (String included : SieveTokenScan.includedPersonalScripts(text)) {
       if (isOwn(included) || included.equals(foreign)) {
         continue;
       }
       if (!exists(scripts, included)) {
-        throw new ServerRuleConflictException(ServerRuleConflictException.MANAGED_ELSEWHERE, foreign);
+        return true;
       }
       String includedText = client.getScript(included);
       if (SieveTokenScan.containsWord(includedText, VACATION_TOKEN) || SieveTokenScan.includesAnything(includedText)) {
-        throw new ServerRuleConflictException(ServerRuleConflictException.MANAGED_ELSEWHERE, foreign);
+        return true;
       }
     }
+    return false;
+  }
+
+  /**
+   * Stores eXo's script <b>without activating anything</b> -- how a reply is switched
+   * off while eXo's script is not the one running: the header keeps the text for "switch
+   * it back on", and no wrapper is created around another client's script for a script
+   * that sends nothing. Checked first when the server offers {@code CHECKSCRIPT}; written
+   * through the one guard.
+   *
+   * @param client an authenticated client
+   * @param script the script to store
+   * @return the SHA-256 of the text as stored
+   * @throws ManageSieveException when the server refuses a command or fails
+   */
+  public String store(ManageSieveClient client, ExoSieveScript script) throws ManageSieveException {
+    String text = script.toScript(SieveStringEncoding.forCapabilities(client.getCapabilities()));
+    client.checkScript(text);
+    put(client, SCRIPT_NAME, text);
+    return ExoSieveScript.sha256(text);
   }
 
   /**
@@ -373,7 +416,7 @@ public class SieveScriptPolicy {
    * @return true for {@value ExoSieveScript#SCRIPT_NAME} and
    *         {@value ExoSieveScript#WRAPPER_NAME}
    */
-  private static boolean isOwn(String name) {
+  static boolean isOwn(String name) {
     return SCRIPT_NAME.equals(name) || WRAPPER_NAME.equals(name);
   }
 
@@ -383,7 +426,7 @@ public class SieveScriptPolicy {
    * @param scripts the account's scripts
    * @return the name, or null when none is active
    */
-  private static String activeScript(List<SieveScriptInfo> scripts) {
+  static String activeScript(List<SieveScriptInfo> scripts) {
     return scripts.stream().filter(SieveScriptInfo::active).map(SieveScriptInfo::name).findFirst().orElse(null);
   }
 
@@ -394,7 +437,7 @@ public class SieveScriptPolicy {
    * @param name the name
    * @return true when listed
    */
-  private static boolean exists(List<SieveScriptInfo> scripts, String name) {
+  static boolean exists(List<SieveScriptInfo> scripts, String name) {
     return scripts.stream().anyMatch(info -> info.name().equals(name));
   }
 
