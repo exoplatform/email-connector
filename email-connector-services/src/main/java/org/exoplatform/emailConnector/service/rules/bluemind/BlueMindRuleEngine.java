@@ -26,6 +26,7 @@ import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import javax.mail.PasswordAuthentication;
@@ -38,6 +39,7 @@ import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities.VocabularySource;
@@ -47,6 +49,7 @@ import org.exoplatform.emailConnector.model.VacationState;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindEndpoint;
+import org.exoplatform.emailConnector.service.bluemind.BlueMindForwarding;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindMailboxTransport;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindSession;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindTransportException;
@@ -267,6 +270,41 @@ public class BlueMindRuleEngine implements ServerRuleEngine {
                                                                                              : null));
       return toServerVacation(transport.getVacation(bm), dayZone);
     });
+  }
+
+  /**
+   * Reads the forward of the caller's own mailbox through {@code _forwarding}, read only:
+   * the port offers no write of it. Without an implementation of the port, nothing is
+   * read and no network call is made.
+   *
+   * @param session the caller's own session
+   * @return the destinations and whether a copy is kept, {@link ForwardingSetting#none()}
+   *         when no forward is on, {@link ForwardingSetting#unknown()} without an
+   *         implementation of the port
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   */
+  @Override
+  public ForwardingSetting readForwarding(MailboxAclSession session) throws ServerRuleUnavailableException {
+    if (transport == null) {
+      return ForwardingSetting.unknown();
+    }
+    return toForwardingSetting(call(session, transport::getForwarding));
+  }
+
+  /**
+   * eXo's answer for the forward BlueMind holds: on only when it is enabled and names at
+   * least one non-blank destination.
+   *
+   * @param forwarding what BlueMind holds, possibly null
+   * @return the answer
+   */
+  static ForwardingSetting toForwardingSetting(BlueMindForwarding forwarding) {
+    if (forwarding == null || !forwarding.enabled()) {
+      return ForwardingSetting.none();
+    }
+    List<String> destinations = forwarding.emails().stream().filter(StringUtils::isNotBlank).map(String::trim).toList();
+    return destinations.isEmpty() ? ForwardingSetting.none()
+                                  : ForwardingSetting.serverForward(destinations, forwarding.localCopy());
   }
 
   /**

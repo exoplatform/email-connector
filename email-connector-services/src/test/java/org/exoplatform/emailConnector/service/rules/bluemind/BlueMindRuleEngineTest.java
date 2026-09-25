@@ -47,6 +47,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.ForwardingSetting;
+import org.exoplatform.emailConnector.model.ForwardingState;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.VacationSetting;
@@ -54,6 +56,7 @@ import org.exoplatform.emailConnector.model.VacationState;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindEndpoint;
+import org.exoplatform.emailConnector.service.bluemind.BlueMindForwarding;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindMailboxTransport;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindSession;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindTransportException.Kind;
@@ -330,6 +333,62 @@ public class BlueMindRuleEngineTest {
     engine.writeVacation(session, read, 7, null);
     assertEquals("Je suis absente.\nRetour le 19.", lastPosted().text());
     assertNull(lastPosted().textHtml());
+  }
+
+  /**
+   * The forward is read through {@code _forwarding} of the login's own mailbox: its
+   * destinations and whether a copy is kept; only reads are issued, and the session is
+   * closed.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheForwardIsReadAndNothingWritten() throws Exception {
+    bluemind.setForwarding(new BlueMindForwarding(true, false, Set.of("z@demo3.livecollab.fr", "a@demo3.livecollab.fr", " ")));
+    ForwardingSetting forwarding = engine.readForwarding(session);
+    assertEquals(ForwardingState.SERVER_FORWARD, forwarding.state());
+    assertEquals(List.of("a@demo3.livecollab.fr", "z@demo3.livecollab.fr"), forwarding.destinations());
+    assertFalse(forwarding.keepCopy());
+    assertNull(forwarding.scriptName());
+    assertEquals(List.of("login", "getForwarding", "logout"), names());
+    assertEquals(FakeBlueMindTransport.USER_UID, bluemind.calls("getForwarding").get(0).session().userUid());
+  }
+
+  /**
+   * A forward switched off, or on without a destination, forwards nothing.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testAForwardOffForwardsNothing() throws Exception {
+    bluemind.setForwarding(new BlueMindForwarding(false, true, Set.of("a@demo3.livecollab.fr")));
+    assertEquals(ForwardingSetting.none(), engine.readForwarding(session));
+    bluemind.setForwarding(new BlueMindForwarding(true, true, Set.of()));
+    assertEquals(ForwardingSetting.none(), engine.readForwarding(session));
+    assertTrue(bluemind.posted().isEmpty());
+  }
+
+  /**
+   * A failed read is the engine's code, never the server's text.
+   */
+  @Test
+  public void testAFailedForwardReadIsUnavailable() {
+    bluemind.fail("getForwarding", Kind.UNREACHABLE);
+    assertEquals(ServerRuleUnavailableException.SERVER_UNREACHABLE,
+                 assertThrows(ServerRuleUnavailableException.class, () -> engine.readForwarding(session)).getMessage());
+  }
+
+  /**
+   * Without an implementation of the port the forward is unknown: no credential is
+   * resolved and nothing is called.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testNoTransportReadsNoForward() throws Exception {
+    BlueMindRuleEngine dormant = new BlueMindRuleEngine(null, resolver);
+    assertEquals(ForwardingSetting.unknown(), dormant.readForwarding(session));
+    assertEquals(0, resolved.get());
   }
 
   /**
