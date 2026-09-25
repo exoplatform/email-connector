@@ -402,12 +402,19 @@ export function disableVacation() {
 }
 
 /**
- * The dates-only summary of the caller's automatic reply, for the mailbox band.
+ * The dates-only summary of an automatic reply, for the mailbox band: the user's own, or,
+ * with a share, its owner's as her delegate sees it -- read from what eXo cached, never
+ * the text.
  *
- * @returns {Promise<object>} {enabled, start, end, timeZone, source, updatedDate}
+ * @param {number} [delegationId] the share the user is looking at the owner's mailbox
+ *   through; none for the user's own mailbox
+ * @returns {Promise<object>} own: {enabled, start, end, timeZone, source, updatedDate,
+ *   lastServerReadDate}; an owner's: {enabled, start, end, timeZone, updatedDate,
+ *   lastServerReadDate, stale}
  */
-export function getAbsenceStatus() {
-  return fetch('/email-connector/rest/user-email-setting/absence/status', {
+export function getAbsenceStatus(delegationId) {
+  const query = delegationId ? `?delegationId=${encodeURIComponent(delegationId)}` : '';
+  return fetch(`/email-connector/rest/user-email-setting/absence/status${query}`, {
     credentials: 'include',
     cache: 'no-store',
     method: 'GET'

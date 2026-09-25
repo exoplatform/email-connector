@@ -33,13 +33,17 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.AbsenceSettings;
 import org.exoplatform.emailConnector.model.AbsenceStatus;
+import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.ForwardingSetting;
+import org.exoplatform.emailConnector.model.OwnerAbsenceStatus;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -62,7 +66,9 @@ import io.meeds.social.util.JsonUtils;
  * asks the server, through the connector preset's rules engine
  * ({@code email.connector.rulesEngine[.<connectorId>]}), acting as the caller with the
  * caller's own session -- never as anyone else, and never on a shared mailbox: a request
- * made from someone else's mailbox is refused.
+ * made from someone else's mailbox is refused. What a delegate sees of the owner's reply
+ * is its dates alone, from the owner's cached summary
+ * ({@link #getOwnerAbsenceForDelegate}), with no server asked.
  * <p>
  * Two small user settings are kept, under the add-on's scope: {@code emailSieveScript},
  * the hash of eXo's Sieve script as eXo last wrote it (shared with the server rules,
@@ -122,6 +128,9 @@ public class EmailAbsenceService {
 
   /** A request made from someone else's mailbox. */
   public static final String       OWN_MAILBOX_ONLY    = "emailConnector.absence.ownMailboxOnly";
+
+  /** A delegate's read through a share the delegate has not accepted yet. */
+  public static final String       SHARE_NOT_ACCEPTED  = "emailConnector.absence.shareNotAccepted";
 
   /** The caller has no connected mailbox. */
   public static final String       NOT_CONNECTED       = "emailConnector.absence.notConnected";
@@ -427,6 +436,62 @@ public class EmailAbsenceService {
   }
 
   /**
+   * What a delegate sees of the automatic reply of a mailbox shared with them (V6): the
+   * dates of the owner's reply, from the summary eXo cached when the owner's own reads
+   * and writes last asked her server. Nothing is asked of any server here and nothing is
+   * done as the owner: a summary older than the TTL is answered as it is, marked stale,
+   * with the date it was last checked; a reply the owner set outside eXo and never had read in
+   * eXo is not known, and answered off.
+   * <p>
+   * The caller must still be allowed to use mail first, the switch every shared mailbox
+   * is reached behind. Then the share is resolved with the caller as its grantee, so a
+   * client-supplied id never names somebody else's mailbox: an unknown id and another
+   * user's share are both "no such delegation". Then it must be accepted: pending or
+   * offered-and-never-subscribed is refused, and a share that ended -- revoked,
+   * declined, gone -- is gone.
+   *
+   * @param granteeUsername the caller, from the request's session
+   * @param delegationId the share the caller is looking at the owner's mailbox through
+   * @return the owner's dates, never the text; off when she has no summary
+   * @throws ObjectNotFoundException when the feature is off, or no such share is the
+   *           caller's
+   * @throws IllegalAccessException when the caller may not use mail, or the share is not
+   *           accepted (pending, or available and never subscribed)
+   * @throws DelegationRevokedException when the share ended
+   */
+  public OwnerAbsenceStatus getOwnerAbsenceForDelegate(String granteeUsername,
+                                                       long delegationId) throws ObjectNotFoundException,
+                                                                          IllegalAccessException {
+    requireEnabled();
+    UserEmailSetting setting = userEmailSettingService.getUserEmailSetting(granteeUsername);
+    if (setting == null || StringUtils.isBlank(setting.getEmailConnectorId())
+        || !userEmailSettingService.canConnect(Long.parseLong(setting.getEmailConnectorId()), granteeUsername)) {
+      throw new IllegalAccessException(NOT_ALLOWED);
+    }
+    EmailDelegation share = emailDelegationService.requireOwnShare(granteeUsername, delegationId);
+    DelegationStatus shareStatus = share.getStatus();
+    if (shareStatus == DelegationStatus.PENDING || shareStatus == DelegationStatus.AVAILABLE) {
+      throw new IllegalAccessException(SHARE_NOT_ACCEPTED);
+    }
+    if (shareStatus != DelegationStatus.ACCEPTED) {
+      throw new DelegationRevokedException(shareStatus == DelegationStatus.GONE ? DelegationRevokedException.GONE
+                                                                                : DelegationRevokedException.REVOKED);
+    }
+    String ownerUsername = StringUtils.trimToNull(share.getOwnerId());
+    AbsenceStatus owners = ownerUsername == null ? null : storedStatus(ownerUsername);
+    if (owners == null) {
+      return new OwnerAbsenceStatus();
+    }
+    return new OwnerAbsenceStatus(owners.isEnabled(),
+                                  owners.getStart(),
+                                  owners.getEnd(),
+                                  owners.getTimeZone(),
+                                  owners.getUpdatedDate(),
+                                  owners.getLastServerReadDate(),
+                                  clock.millis() - owners.getLastServerReadDate() > ttlSeconds() * 1000L);
+  }
+
+  /**
    * Reads the reply, compares eXo's script with the hash eXo stored, and refreshes the
    * summary.
    *
@@ -689,11 +754,20 @@ public class EmailAbsenceService {
    * @throws IllegalAccessException when the request comes from someone else's mailbox
    */
   private void requireOwnMailbox(Long delegationId) throws ObjectNotFoundException, IllegalAccessException {
-    if (!Boolean.parseBoolean(System.getProperty(ENABLED_PROPERTY, "true").trim())) {
-      throw new ObjectNotFoundException(DISABLED);
-    }
+    requireEnabled();
     if (delegationId != null) {
       throw new IllegalAccessException(OWN_MAILBOX_ONLY);
+    }
+  }
+
+  /**
+   * The feature is on for the deployment.
+   *
+   * @throws ObjectNotFoundException when it is switched off
+   */
+  private static void requireEnabled() throws ObjectNotFoundException {
+    if (!Boolean.parseBoolean(System.getProperty(ENABLED_PROPERTY, "true").trim())) {
+      throw new ObjectNotFoundException(DISABLED);
     }
   }
 
