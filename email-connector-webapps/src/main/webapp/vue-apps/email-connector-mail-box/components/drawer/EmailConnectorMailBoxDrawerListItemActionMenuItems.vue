@@ -328,9 +328,11 @@ export default {
       return this.thread ? this.thread.emails.some(message => message.starred) : !!this.email.starred;
     },
     // The favorite is pushed to the row's own folder, so every folder offers it but the
-    // read-only ones (Trash, Spam), like every other action that writes to the server.
+    // read-only ones (Trash, Spam), like every other action that writes to the server;
+    // and never on a draft, which may have no message on the server to carry the flag
+    // (the read item's rule, EXO-90438).
     canFavorite() {
-      return !this.readOnly;
+      return !this.readOnly && !this.inDrafts;
     },
     /**
      * Whether this row sits in a folder the interface may only read (Trash, Spam), in

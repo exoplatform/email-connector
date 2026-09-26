@@ -401,9 +401,10 @@ export default {
       return this.thread ? this.thread.emails.some(message => message.starred) : !!this.email.starred;
     },
     // The favorite is pushed to the row's own folder, so every folder can toggle it but
-    // the read-only ones (Trash, Spam), where no action writes to the mail server.
+    // the read-only ones (Trash, Spam), where no action writes to the mail server; and
+    // never on a draft, which may have no message on the server to carry the flag.
     canToggleFavorite() {
-      return !this.readOnly;
+      return !this.readOnly && !this.isDraft;
     },
     /**
      * Whether this row sits in a folder the interface may only read (Trash, Spam),
