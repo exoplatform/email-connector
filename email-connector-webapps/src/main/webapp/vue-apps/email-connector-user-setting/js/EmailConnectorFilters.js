@@ -60,6 +60,42 @@ export function isFlagField(field) {
   return field === 'IS_LIST' || field === 'IS_AUTOMATED';
 }
 
+/** A size in kilobytes, as the form takes it. */
+const SIZE = /^[1-9][0-9]{0,7}$/;
+
+/** A header name, as the form takes it. */
+const HEADER_NAME = /^[A-Za-z0-9-]{1,76}$/;
+
+/**
+ * What is wrong with a condition's header name, shared by the condition row that shows
+ * it and the forms that decide whether they may save.
+ *
+ * @param {string} value - the header name
+ * @returns {string} the i18n key of the reason, or null when valid
+ */
+export function headerError(value) {
+  return HEADER_NAME.test((value || '').trim()) ? null : 'UserSettings.emailConnector.filters.form.headerInvalid';
+}
+
+/**
+ * What is wrong with a condition's value, shared by the condition row that shows it and
+ * the forms that decide whether they may save. A flag field takes no value.
+ *
+ * @param {string} field - one of FIELDS
+ * @param {string} value - the value
+ * @returns {string} the i18n key of the reason, or null when valid
+ */
+export function valueError(field, value) {
+  if (isFlagField(field)) {
+    return null;
+  }
+  const text = (value || '').trim();
+  if (field === 'MESSAGE_SIZE') {
+    return SIZE.test(text) ? null : 'UserSettings.emailConnector.filters.form.sizeInvalid';
+  }
+  return text.length > 0 && !/[\r\n]/.test(text) ? null : 'UserSettings.emailConnector.filters.form.required';
+}
+
 /**
  * Whether the mail server can run an element of the form.
  *
