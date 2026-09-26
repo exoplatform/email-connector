@@ -50,8 +50,11 @@ export const FILING_ACTIONS = ['MOVE_TO_FOLDER', 'MARK_JUNK', 'DELETE'];
 export const ALL_FIELDS = ['FROM', 'TO', 'CC', 'ANY_RECIPIENT', 'SUBJECT', 'BODY', 'SUBJECT_OR_BODY', 'HEADER', 'MESSAGE_SIZE',
   'IS_LIST', 'IS_AUTOMATED', 'HAS_ATTACHMENT'];
 
-/** The actions a mail server may run itself, when its capabilities say so. */
-export const SERVER_ACTIONS = ['MOVE_TO_FOLDER', 'MARK_READ', 'STAR', 'MARK_JUNK', 'DELETE'];
+/**
+ * The actions a mail server may run itself, when its capabilities say so; FORWARD, a copy
+ * to a confirmed address, only the mail server runs (EXO-90656).
+ */
+export const SERVER_ACTIONS = ['MOVE_TO_FOLDER', 'MARK_READ', 'STAR', 'MARK_JUNK', 'DELETE', 'FORWARD'];
 
 /**
  * Where a filter will run, as the server decides it when it is saved
@@ -96,7 +99,12 @@ export function serverItem(rule) {
     enabled: !!rule.enabled,
     matchAll: rule.matchAll !== false,
     conditions: rule.conditions || [],
-    actions: (rule.actions || []).map(action => ({ type: action.type, folderKey: action.folderKey, folderPath: action.folderPath })),
+    actions: (rule.actions || []).map(action => ({
+      type: action.type,
+      folderKey: action.folderKey,
+      folderPath: action.folderPath,
+      destination: action.destination,
+    })),
     stopProcessing: !!rule.stop,
   };
 }
