@@ -420,3 +420,95 @@ export function getAbsenceStatus(delegationId) {
     method: 'GET'
   }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when reading the automatic reply status')));
 }
+
+/**
+ * Whether the user may set a forward from eXo, and within which bounds (EXO-90656).
+ *
+ * @returns {Promise<object>} {enabled, reasonCode, allowedDomains, confirmedDestinations}
+ */
+export function getForwardingAuthoring() {
+  return fetch('/email-connector/rest/user-email-setting/absence/forwarding/authoring', {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when reading the forwarding settings')));
+}
+
+/**
+ * Sends a confirmation code to a forwarding destination; the platform mails it there.
+ *
+ * @param {string} destination - the address
+ * @returns {Promise<object>} {destination, expiresAt}
+ */
+export function sendForwardingCode(destination) {
+  return fetch('/email-connector/rest/user-email-setting/absence/forwarding/code', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify({ destination }),
+  }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when sending the confirmation code')));
+}
+
+/**
+ * Confirms a forwarding destination with the code it received.
+ *
+ * @param {string} destination - the address
+ * @param {string} code - the code
+ * @returns {Promise<object>} {destination}
+ */
+export function confirmForwarding(destination, code) {
+  return fetch('/email-connector/rest/user-email-setting/absence/forwarding/confirm', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify({ destination, code }),
+  }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when confirming the address')));
+}
+
+/**
+ * Sets the user's forward: a copy of every mail to a confirmed address, the mail kept.
+ *
+ * @param {string} destination - the address
+ * @param {boolean} [republish=false] - overwrite eXo's own script although it changed outside eXo
+ * @returns {Promise<object>} the forward as the mail server holds it
+ */
+export function setForwarding(destination, republish = false) {
+  return fetch(`/email-connector/rest/user-email-setting/absence/forwarding${republish ? '?republish=true' : ''}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({ destination }),
+  }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when setting the forward')));
+}
+
+/**
+ * Removes the forward set from eXo.
+ *
+ * @param {boolean} [republish=false] - overwrite eXo's own script although it changed outside eXo
+ * @returns {Promise<void>} resolved once removed
+ */
+export function removeForwarding(republish = false) {
+  return fetch(`/email-connector/rest/user-email-setting/absence/forwarding${republish ? '?republish=true' : ''}`, {
+    credentials: 'include',
+    method: 'DELETE'
+  }).then(resp => (resp?.ok ? null : absenceError(resp, 'Error when removing the forward')));
+}
+
+/**
+ * The forward the mailbox band shows, from what eXo cached.
+ *
+ * @returns {Promise<object>} {state, destinations, keepCopy, managedByExo, scriptName, ruleForwards, lastServerReadDate}
+ */
+export function getForwardingStatus() {
+  return fetch('/email-connector/rest/user-email-setting/absence/forwarding/status', {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => (resp?.ok ? resp.json() : absenceError(resp, 'Error when reading the forward')));
+}
