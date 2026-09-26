@@ -34,6 +34,8 @@ import EmailConnectorUserSettingSharing from './components/main/EmailConnectorUs
 import EmailConnectorUserSettingAbsence from './components/main/EmailConnectorUserSettingAbsence.vue';
 import EmailConnectorUserSettingAbsenceForm from './components/main/EmailConnectorUserSettingAbsenceForm.vue';
 import EmailConnectorUserSettingAbsenceDrawer from './components/drawer/absence/EmailConnectorUserSettingAbsenceDrawer.vue';
+import EmailConnectorUserSettingForwardingDrawer from './components/drawer/forwarding/EmailConnectorUserSettingForwardingDrawer.vue';
+import EmailConnectorForwardingConfirm from './components/drawer/forwarding/EmailConnectorForwardingConfirm.vue';
 import EmailConnectorUserSettingFilters from './components/main/EmailConnectorUserSettingFilters.vue';
 import EmailConnectorUserSettingFiltersDrawer from './components/drawer/filters/EmailConnectorUserSettingFiltersDrawer.vue';
 import EmailConnectorUserSettingFilterForm from './components/drawer/filters/EmailConnectorUserSettingFilterForm.vue';
@@ -66,6 +68,8 @@ const components = {
   'email-connector-user-setting-absence': EmailConnectorUserSettingAbsence,
   'email-connector-user-setting-absence-form': EmailConnectorUserSettingAbsenceForm,
   'email-connector-user-setting-absence-drawer': EmailConnectorUserSettingAbsenceDrawer,
+  'email-connector-user-setting-forwarding-drawer': EmailConnectorUserSettingForwardingDrawer,
+  'email-connector-forwarding-confirm': EmailConnectorForwardingConfirm,
   'email-connector-user-setting-filters': EmailConnectorUserSettingFilters,
   'email-connector-user-setting-filters-drawer': EmailConnectorUserSettingFiltersDrawer,
   'email-connector-user-setting-filter-form': EmailConnectorUserSettingFilterForm,
