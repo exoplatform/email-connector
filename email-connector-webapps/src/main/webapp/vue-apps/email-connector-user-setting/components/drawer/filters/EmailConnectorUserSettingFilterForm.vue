@@ -186,6 +186,44 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-model="notify"
       :label="$t('UserSettings.emailConnector.filters.exo.form.notify')"
       class="mt-2" />
+    <!-- "Forward to" (EXO-90656): a copy of the mail to one confirmed address in the
+         allowed domains, the mail kept; only where the deployment enabled forwarding, and
+         only on the mail server. The address is confirmed here, by the code eXo sends to
+         it, before the filter can be saved. -->
+    <template v-if="forwardOffered">
+      <div class="mt-4 mb-2">
+        {{ $t('UserSettings.emailConnector.filters.form.forwardTo') }}
+      </div>
+      <v-text-field
+        v-model="forwardInput"
+        :rules="[forwardRule]"
+        :aria-label="$t('UserSettings.emailConnector.filters.form.forwardTo')"
+        :placeholder="$t('UserSettings.emailConnector.forwarding.form.placeholder')"
+        class="border-box-sizing width-auto pt-0"
+        type="email"
+        maxlength="254"
+        clearable
+        outlined
+        dense />
+      <template v-if="forwardInput">
+        <div class="text-subtitle">
+          {{ $t('UserSettings.emailConnector.forwarding.form.allowed', { 0: allowedDomains.join(', ') }) }}
+        </div>
+        <email-connector-forwarding-confirm
+          :destination="forwardDestination"
+          :confirmed-destinations="confirmedDestinations"
+          @confirmed="forwardConfirmed = $event" />
+        <div class="text-subtitle mt-2">
+          {{ $t('UserSettings.emailConnector.filters.form.forwardCopy') }}
+        </div>
+      </template>
+    </template>
+    <div
+      v-if="forwardNotOnServer"
+      class="error--text mt-2"
+      role="alert">
+      {{ $t('UserSettings.emailConnector.filters.form.forwardServerOnly') }}
+    </div>
     <email-connector-user-setting-filter-switch
       v-model="stop"
       :label="$t('UserSettings.emailConnector.filters.form.stop')"
@@ -220,6 +258,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { isAllowedDestination, normalizeDestination } from '../../../js/EmailConnectorForwarding.js';
 import {
   ALL_FIELDS,
   EXO_ONLY_FIELDS,
@@ -287,8 +326,52 @@ export default {
     previewing: false,
     previewResult: null,
     previewError: null,
+    // The address a copy is forwarded to, as typed, and whether it is confirmed.
+    forwardInput: '',
+    forwardConfirmed: false,
+    // The bounds of forwarding: {enabled, allowedDomains, confirmedDestinations}.
+    forwardingAuthoring: null,
   }),
   computed: {
+    /**
+     * Whether the form offers "Forward to": the mail server can forward a copy and the
+     * deployment lets the user set one, or the filter already forwards.
+     *
+     * @returns {Boolean} true when offered
+     */
+    forwardOffered() {
+      return isSupported(this.capabilities, 'FORWARD') || !!this.forwardInput;
+    },
+    /**
+     * @returns {String[]} the domains a copy may be forwarded to
+     */
+    allowedDomains() {
+      return this.forwardingAuthoring?.allowedDomains || [];
+    },
+    /**
+     * @returns {String[]} the addresses the user already confirmed
+     */
+    confirmedDestinations() {
+      return this.forwardingAuthoring?.confirmedDestinations || [];
+    },
+    /**
+     * The address typed, when it is a plain address in an allowed domain.
+     *
+     * @returns {String} the normalised address, or null
+     */
+    forwardDestination() {
+      const destination = normalizeDestination(this.forwardInput);
+      return destination && isAllowedDestination(destination, this.allowedDomains) ? destination : null;
+    },
+    /**
+     * Whether the filter forwards and would not run on the mail server: eXo never
+     * forwards a mail itself.
+     *
+     * @returns {Boolean} true when it cannot be saved for that
+     */
+    forwardNotOnServer() {
+      return !!this.forwardInput && !this.capabilitiesUnknown && this.kind !== 'SERVER';
+    },
     /**
      * Every condition field; the size, which only the mail server checks, greyed out when
      * it cannot.
@@ -343,7 +426,8 @@ export default {
      * @returns {Boolean} true with one action at least
      */
     hasAction() {
-      return !!this.moveTo || !!this.categoryId || this.markRead || this.star || this.notify || this.usedExtensionActions.length > 0;
+      return !!this.moveTo || !!this.categoryId || this.markRead || this.star || this.notify || !!this.forwardDestination
+        || this.usedExtensionActions.length > 0;
     },
     /**
      * The actions, as the REST takes them.
@@ -370,6 +454,9 @@ export default {
       }
       if (this.notify) {
         actions.push({ type: 'NOTIFY' });
+      }
+      if (this.forwardDestination) {
+        actions.push({ type: 'FORWARD', destination: this.forwardDestination });
       }
       return actions;
     },
@@ -453,7 +540,8 @@ export default {
      * @returns {Boolean} true when valid
      */
     valid() {
-      return this.nameRule(this.name) === true && this.hasAction && this.conditionsValid && !this.exoOnlyRefused;
+      const forwardValid = !this.forwardInput || (!!this.forwardDestination && this.forwardConfirmed && !this.forwardNotOnServer);
+      return this.nameRule(this.name) === true && this.hasAction && this.conditionsValid && !this.exoOnlyRefused && forwardValid;
     },
     /**
      * The preview's sentence.
@@ -477,6 +565,9 @@ export default {
     kind() {
       this.previewResult = null;
     },
+    forwardOffered() {
+      this.readForwardingAuthoring();
+    },
   },
   created() {
     this.actionExtensions = extensionRegistry.loadExtensions(FILTER_ACTION_EXTENSION.app, FILTER_ACTION_EXTENSION.type) || [];
@@ -484,6 +575,7 @@ export default {
     this.$emailConnectorCommonService.getAvailableEmailCategories()
       .then(list => this.categories = list || [])
       .catch(() => this.categories = []);
+    this.readForwardingAuthoring();
   },
   methods: {
     /**
@@ -513,6 +605,7 @@ export default {
       this.markRead = actions.some(action => action.type === 'MARK_READ');
       this.star = actions.some(action => action.type === 'STAR');
       this.notify = actions.some(action => action.type === 'NOTIFY');
+      this.forwardInput = actions.find(action => action.type === 'FORWARD')?.destination || '';
       const extensionActions = {};
       this.actionExtensions.forEach(extension => {
         extensionActions[extension.type] = actions.find(action => action.type === extension.type) || null;
@@ -572,6 +665,36 @@ export default {
           this.previewError = filtersMessage(this.$t.bind(this), error);
         })
         .finally(() => this.previewing = false);
+    },
+    /**
+     * Reads the bounds of forwarding once the form offers "Forward to".
+     *
+     * @returns {void}
+     */
+    readForwardingAuthoring() {
+      if (!this.forwardOffered || this.forwardingAuthoring) {
+        return;
+      }
+      this.$emailConnectorCommonService.getForwardingAuthoring()
+        .then(authoring => this.forwardingAuthoring = authoring)
+        .catch(() => this.forwardingAuthoring = null);
+    },
+    /**
+     * The forward's rule: empty, or a plain address in an allowed domain.
+     *
+     * @param {String} value - the address as typed
+     * @returns {Boolean|String} true, or why not
+     */
+    forwardRule(value) {
+      if (!value) {
+        return true;
+      }
+      const destination = normalizeDestination(value);
+      if (!destination) {
+        return this.$t('UserSettings.emailConnector.forwarding.destination.invalid');
+      }
+      return isAllowedDestination(destination, this.allowedDomains)
+        || this.$t('UserSettings.emailConnector.forwarding.destination.notAllowed');
     },
     /**
      * The name's rule.

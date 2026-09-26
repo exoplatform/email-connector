@@ -176,8 +176,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             <email-connector-shared-mailbox-band :entry="currentSharedMailbox" />
             <email-connector-absence-band :shared-mailbox="currentSharedMailbox" />
           </div>
-          <!-- The user's own automatic reply, on their own mailbox only (EXO-90642). -->
-          <email-connector-absence-band v-else sticky />
+          <!-- The user's own automatic reply (EXO-90642) and forward (EXO-90656), on their
+               own mailbox only: one pinned block, so the two bands do not pin over each
+               other. -->
+          <div
+            v-else
+            class="white"
+            style="position: sticky; top: 0; z-index: 3;">
+            <email-connector-absence-band />
+            <email-connector-forwarding-band />
+          </div>
           <email-connector-mail-box-drawer-search-results
             v-if="searchActive"
             ref="expandedSearchResults"
@@ -253,7 +261,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <email-connector-shared-mailbox-band :entry="currentSharedMailbox" />
         <email-connector-absence-band :shared-mailbox="currentSharedMailbox" />
       </div>
-      <email-connector-absence-band v-else-if="!currentSharedMailbox && !expanded" sticky />
+      <div
+        v-else-if="!currentSharedMailbox && !expanded"
+        class="white"
+        style="position: sticky; top: 0; z-index: 3;">
+        <email-connector-absence-band />
+        <email-connector-forwarding-band />
+      </div>
       <template v-if="!loading">
         <v-list-item v-if="syncBlocked" class="full-height align-center">
           <v-list-item-content>
