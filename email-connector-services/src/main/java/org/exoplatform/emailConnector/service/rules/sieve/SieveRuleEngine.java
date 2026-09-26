@@ -407,6 +407,37 @@ public class SieveRuleEngine implements ServerRuleEngine {
                                    String expectedScriptHash) throws ServerRuleUnavailableException,
                                                               ServerRuleConflictException,
                                                               ServerRuleUnsupportedException {
+    return reconcile(session, hops, null, null, expectedScriptHash);
+  }
+
+  /**
+   * Makes eXo's script hold exactly the given hops, and in the same one write appends a
+   * user's rule or removes one: a filter that changes where it runs is swapped in one
+   * PUTSCRIPT, so the server never holds both halves, nor neither. Every other rule is
+   * kept in its place; nothing is written when nothing differs.
+   *
+   * @param session the caller's own session
+   * @param hops the hops eXo's rules need
+   * @param added a user's rule to append under a new reference, its folders resolved;
+   *          null for none
+   * @param droppedRef the reference of a user's rule to remove; null for none, and one
+   *          the script no longer holds removes nothing
+   * @param expectedScriptHash as for {@link #saveRule}
+   * @return what was done, and the rules afterwards
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when the policy refuses, or eXo's script changed
+   *           outside eXo; nothing was written
+   * @throws ServerRuleUnsupportedException when the server lacks {@code imap4flags}, or
+   *           an extension the added rule needs
+   */
+  @Override
+  public ReconcileReport reconcile(MailboxAclSession session,
+                                   List<HopRef> hops,
+                                   ServerRule added,
+                                   String droppedRef,
+                                   String expectedScriptHash) throws ServerRuleUnavailableException,
+                                                              ServerRuleConflictException,
+                                                              ServerRuleUnsupportedException {
     Map<String, ServerRule> wanted = new LinkedHashMap<>();
     for (HopRef hop : hops == null ? List.<HopRef> of() : hops) {
       ServerRule rule = hop.toRule().validated();
@@ -415,10 +446,18 @@ public class SieveRuleEngine implements ServerRuleEngine {
       }
       wanted.put(rule.ref(), rule);
     }
+    ServerRule addedRule = added == null ? null : added.validated();
+    if (addedRule != null && addedRule.isHop()) {
+      // Hops are the server half of eXo's own rules: never added as a user's rule.
+      throw new IllegalArgumentException(ServerRule.INVALID_ACTION);
+    }
     ManageSieveClient client = open(session);
     try {
       for (ServerRule rule : wanted.values()) {
         requireSupported(client, rule);
+      }
+      if (addedRule != null) {
+        requireSupported(client, addedRule);
       }
       List<SieveScriptInfo> scripts = client.listScripts();
       ExoSieveScript base = current(client, scripts, expectedScriptHash);
@@ -436,7 +475,7 @@ public class SieveRuleEngine implements ServerRuleEngine {
           if (!hop.equals(existing)) {
             published.add(hop.ref());
           }
-        } else if (existing.isHop()) {
+        } else if (existing.isHop() || existing.ref().equals(droppedRef)) {
           removed.add(existing.ref());
         } else {
           rules.add(existing);
@@ -445,6 +484,11 @@ public class SieveRuleEngine implements ServerRuleEngine {
       for (ServerRule hop : wanted.values()) {
         rules.add(hop);
         published.add(hop.ref());
+      }
+      if (addedRule != null) {
+        String ref = nextRef(base.getRules());
+        rules.add(addedRule.withRef(ref));
+        published.add(ref);
       }
       if (!published.isEmpty() || !removed.isEmpty()) {
         writeRules(client, scripts, base.withRules(rules));
