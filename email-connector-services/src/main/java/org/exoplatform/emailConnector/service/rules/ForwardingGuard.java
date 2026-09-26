@@ -16,10 +16,13 @@
  */
 package org.exoplatform.emailConnector.service.rules;
 
+import java.time.Clock;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
@@ -57,7 +60,9 @@ import io.meeds.social.util.JsonUtils;
  * a comma- or space-separated list of domains, matched exactly; when empty, the domain
  * of the user's own mailbox address -- mail stays in the organisation.
  * <p>
- * <b>The confirmed destinations</b> are kept per user in the {@code GLOBAL} setting
+ * <b>The confirmed destinations</b> count for {@value #CONFIRMATION_TTL_PROPERTY} days
+ * (90 by default) for a new forward or a new forwarding filter; a forward already on
+ * keeps running until it is changed. They are kept per user in the {@code GLOBAL} setting
  * context, never in the user's own: the platform's settings REST lets a user write any
  * key of their own context, and a confirmation a session could write for itself would
  * prove nothing. Only this class writes them, after a code sent to the destination was
@@ -95,6 +100,15 @@ public class ForwardingGuard {
   /** The key prefix of the hash of the Sieve script eXo last wrote for a user. */
   static final String          SCRIPT_KEY_PREFIX        = "script.";
 
+  /** How many days a confirmed destination counts for a new forward or filter. */
+  public static final String   CONFIRMATION_TTL_PROPERTY = "email.connector.forwarding.confirmation.ttlDays";
+
+  /** The default of {@value #CONFIRMATION_TTL_PROPERTY}. */
+  public static final long     DEFAULT_CONFIRMATION_TTL_DAYS = 90;
+
+  /** The longest a confirmation may count, in days: a hundred years. */
+  static final long            MAX_CONFIRMATION_TTL_DAYS = 36_500;
+
   /** The most confirmed destinations kept per user; the oldest goes first. */
   static final int             MAX_CONFIRMED            = 10;
 
@@ -103,6 +117,9 @@ public class ForwardingGuard {
 
   @Autowired
   private UserEmailSettingService userEmailSettingService;
+
+  /** The clock confirmations are dated with; a test moves it. */
+  private Clock                   clock = Clock.systemUTC();
 
   /**
    * Whether eXo may set a forward, or a rule that forwards, on a connector.
@@ -162,52 +179,106 @@ public class ForwardingGuard {
   }
 
   /**
-   * The destinations a user confirmed, by entering the code sent to each.
+   * The destinations a user confirmed, by entering the code sent to each, less than
+   * {@value #CONFIRMATION_TTL_PROPERTY} days ago: an older confirmation no longer counts
+   * for a new forward or a new forwarding filter. A forward already on keeps running
+   * until it is changed; nothing here removes it.
    *
    * @param username the user
    * @return the destinations, normalised, never null
    */
-  @SuppressWarnings("unchecked")
   public Set<String> confirmedDestinations(String username) {
-    SettingValue<?> value = settingService.get(Context.GLOBAL, FORWARDING_SCOPE, CONFIRMED_KEY_PREFIX + username);
+    long oldest = clock.millis() - confirmationTtlDays() * 86_400_000L;
     Set<String> confirmed = new LinkedHashSet<>();
-    if (value == null || value.getValue() == null) {
-      return confirmed;
-    }
-    try {
-      List<Object> stored = JsonUtils.fromJsonString(value.getValue().toString(), List.class);
-      for (Object item : stored == null ? List.of() : stored) {
-        try {
-          confirmed.add(ForwardingDestination.normalize(String.valueOf(item)));
-        } catch (IllegalArgumentException e) {
-          LOG.debug("A stored forwarding destination of user {} is not an address and is ignored", username);
-        }
+    storedConfirmations(username).forEach((destination, date) -> {
+      if (date >= oldest) {
+        confirmed.add(destination);
       }
-    } catch (RuntimeException e) {
-      LOG.debug("The confirmed forwarding destinations of user {} could not be read", username, e);
-    }
+    });
     return confirmed;
   }
 
   /**
-   * Records that a user confirmed a destination: only ever called once the code sent to
-   * it was entered.
+   * Records that a user confirmed a destination, now: only ever called once the code sent
+   * to it was entered. Expired confirmations are dropped, and the most recent ones kept.
    *
    * @param username the user
    * @param destination the destination, normalised
    */
   public void confirm(String username, String destination) {
-    Set<String> confirmed = confirmedDestinations(username);
-    confirmed.remove(destination);
-    confirmed.add(destination);
-    List<String> kept = new ArrayList<>(confirmed);
-    if (kept.size() > MAX_CONFIRMED) {
-      kept = kept.subList(kept.size() - MAX_CONFIRMED, kept.size());
-    }
+    long oldest = clock.millis() - confirmationTtlDays() * 86_400_000L;
+    Map<String, Long> confirmations = new LinkedHashMap<>();
+    storedConfirmations(username).forEach((address, date) -> {
+      if (date >= oldest && !address.equals(destination)) {
+        confirmations.put(address, date);
+      }
+    });
+    confirmations.put(destination, clock.millis());
+    List<Map<String, Object>> kept = new ArrayList<>();
+    confirmations.forEach((address, date) -> kept.add(Map.of("address", address, "date", date)));
+    List<Map<String, Object>> latest = kept.size() > MAX_CONFIRMED ? kept.subList(kept.size() - MAX_CONFIRMED, kept.size()) : kept;
     settingService.set(Context.GLOBAL,
                        FORWARDING_SCOPE,
                        CONFIRMED_KEY_PREFIX + username,
-                       SettingValue.create(JsonUtils.toJsonString(kept)));
+                       SettingValue.create(JsonUtils.toJsonString(latest)));
+  }
+
+  /**
+   * A user's stored confirmations, oldest first: each address and when it was confirmed.
+   * An entry that is not an address with a date -- an older format included -- counts as
+   * never confirmed.
+   *
+   * @param username the user
+   * @return the confirmations, by address
+   */
+  @SuppressWarnings("unchecked")
+  private Map<String, Long> storedConfirmations(String username) {
+    Map<String, Long> confirmations = new LinkedHashMap<>();
+    SettingValue<?> value = settingService.get(Context.GLOBAL, FORWARDING_SCOPE, CONFIRMED_KEY_PREFIX + username);
+    if (value == null || value.getValue() == null) {
+      return confirmations;
+    }
+    try {
+      List<Object> stored = JsonUtils.fromJsonString(value.getValue().toString(), List.class);
+      for (Object item : stored == null ? List.of() : stored) {
+        if (item instanceof Map<?, ?> entry && entry.get("date") instanceof Number date) {
+          try {
+            confirmations.put(ForwardingDestination.normalize(String.valueOf(entry.get("address"))), date.longValue());
+          } catch (IllegalArgumentException e) {
+            LOG.debug("A stored forwarding destination of user {} is not an address and is ignored", username);
+          }
+        }
+      }
+    } catch (RuntimeException e) {
+      LOG.debug("The confirmed forwarding destinations of user {} could not be read", username, e);
+    }
+    return confirmations;
+  }
+
+  /**
+   * How many days a confirmation counts, from {@value #CONFIRMATION_TTL_PROPERTY}.
+   *
+   * @return days, from one to {@value #MAX_CONFIRMATION_TTL_DAYS}
+   */
+  static long confirmationTtlDays() {
+    try {
+      return Math.min(MAX_CONFIRMATION_TTL_DAYS,
+                      Math.max(1,
+                               Long.parseLong(System.getProperty(CONFIRMATION_TTL_PROPERTY,
+                                                                 String.valueOf(DEFAULT_CONFIRMATION_TTL_DAYS))
+                                                    .trim())));
+    } catch (NumberFormatException e) {
+      return DEFAULT_CONFIRMATION_TTL_DAYS;
+    }
+  }
+
+  /**
+   * Replaces the clock; for tests.
+   *
+   * @param newClock the clock
+   */
+  public void setClock(Clock newClock) {
+    this.clock = newClock;
   }
 
   /**
