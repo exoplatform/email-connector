@@ -17,8 +17,8 @@
 package org.exoplatform.emailConnector.service;
 
 /**
- * A second proof of identity before a forward is set from eXo: the plan's control (g),
- * "re-enter your password", plugs in here. A session thief who holds eXo's session but
+ * A second proof of identity before a forward is set from eXo -- a re-entry of the
+ * mailbox password -- plugs in here. A session thief who holds eXo's session but
  * not the mailbox password would be stopped by it -- once the settings endpoint no
  * longer answers the decoded password, which today makes such a check prove nothing.
  * No implementation ships: when a bean implements this interface, the forwarding service

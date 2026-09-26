@@ -36,7 +36,7 @@ import org.exoplatform.services.resources.ResourceBundleService;
  * Tells the owner of a mailbox every time where her mail goes changes (EXO-90656): a
  * forward set, changed or removed from eXo, a rule that forwards saved or removed, and a
  * forward eXo did not set found on her mail server. The detection half of the forwarding
- * safeguards: whoever made the change, the owner hears of it on every channel she
+ * safeguards: whoever made the change, the owner hears of it on the channels she
  * follows, beside the mail eXo drops into the mailbox itself.
  * <p>
  * The payload is what changed, the destination and the rule's or script's name; the

@@ -148,6 +148,7 @@ public class EmailAbsenceServiceTest {
     lenient().when(emailDelegationService.openOwnSession(USERNAME)).thenReturn(session);
     lenient().when(engine.getName()).thenReturn("sieve");
     lenient().when(emailForwardingService.narrowed(any(), any())).thenAnswer(invocation -> invocation.getArgument(0));
+    lenient().when(emailForwardingService.recognise(any(), any())).thenAnswer(invocation -> invocation.getArgument(1));
     // The one-pass read is the SPI's default: the reply's read, then the forward's.
     lenient().when(engine.readAbsence(any(), any(), anyBoolean())).thenCallRealMethod();
     lenient().when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenAnswer(invocation -> {
@@ -481,22 +482,24 @@ public class EmailAbsenceServiceTest {
   }
 
   /**
-   * The display switched off reads nothing and shows nothing; switched on again, the
-   * forward is read.
+   * The display switched off shows no forward another client set -- the forward is read
+   * in the reply's conversation all the same -- but always the forward eXo set, which
+   * runs whatever the switches; switched on again, every forward is shown.
    *
    * @throws Exception on failure
    */
   @Test
-  public void testTheDisplayKillSwitchReadsNothing() throws Exception {
+  public void testTheDisplayKillSwitchShowsOnlyEXosForward() throws Exception {
     when(engine.probe(session)).thenReturn(supportedWithForwarding());
     when(engine.readVacation(eq(session), any())).thenReturn(ServerVacation.none());
+    when(engine.readForwarding(session)).thenReturn(ForwardingSetting.mayForwardByScript("roundcube"));
     System.setProperty(EmailAbsenceService.FORWARDING_DISPLAY_PROPERTY, "false");
     assertNull(service.getAbsence(USERNAME, null).getForwarding());
-    verify(engine, never()).readForwarding(any());
+    when(engine.readForwarding(session)).thenReturn(ForwardingSetting.exoForward("bob@example.org", null));
+    assertTrue(service.getAbsence(USERNAME, null).getForwarding().managedByExo());
     System.setProperty(EmailAbsenceService.FORWARDING_DISPLAY_PROPERTY, "true");
     when(engine.readForwarding(session)).thenReturn(ForwardingSetting.none());
     assertEquals(ForwardingState.NONE, service.getAbsence(USERNAME, null).getForwarding().state());
-    verify(engine).readForwarding(session);
   }
 
   /**
