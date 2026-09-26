@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -108,6 +109,9 @@ public class EmailFilterRoutingTest {
 
   @Mock
   private ListenerService              listenerService;
+
+  @Mock
+  private EmailForwardingService       emailForwardingService;
 
   @InjectMocks
   private EmailFilterService           service;
@@ -475,6 +479,95 @@ public class EmailFilterRoutingTest {
                                                  eq(true),
                                                  eq(publishing));
     return hops.getValue();
+  }
+
+  /**
+   * A filter that forwards a copy is a server rule, its destination carried to the
+   * server rule; its checks come first.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aForwardingFilterRunsOnTheServer() throws Exception {
+    EmailFilter saved = service.saveRouted(USERNAME, null, filter(List.of(FROM_ACME), forwardTo("bob@example.org")), null, null, true, false);
+    assertEquals(EmailFilter.KIND_SERVER, saved.getKind());
+    verify(emailForwardingService).requireRuleForwardsAllowed(eq(USERNAME), any());
+    ArgumentCaptor<ServerRule> rule = ArgumentCaptor.forClass(ServerRule.class);
+    verify(emailServerRuleService).saveRule(eq(USERNAME), isNull(), isNull(), rule.capture(), eq(false), eq(true));
+    assertEquals("bob@example.org", rule.getValue().actions().get(0).destination());
+    assertEquals(ServerRule.FORWARD, rule.getValue().actions().get(0).type());
+  }
+
+  /**
+   * A filter that forwards and could not run on the mail server -- a condition only eXo
+   * reads, an action only eXo runs, a server where forwarding is off -- is refused: eXo
+   * never forwards a mail itself. Nothing is written or stored.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aForwardingFilterNeverRunsInEXo() throws Exception {
+    assertEquals(EmailForwardingService.SERVER_ONLY,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> service.saveRouted(USERNAME,
+                                                       null,
+                                                       filter(List.of(FROM_ACME, BODY_INVOICE), forwardTo("bob@example.org")),
+                                                       null,
+                                                       null,
+                                                       true,
+                                                       false)).getMessage());
+    assertEquals(EmailForwardingService.SERVER_ONLY,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> service.saveRouted(USERNAME,
+                                                       null,
+                                                       filter(List.of(FROM_ACME), forwardTo("bob@example.org"), action(FilterAction.NOTIFY)),
+                                                       null,
+                                                       null,
+                                                       true,
+                                                       false)).getMessage());
+    when(emailServerRuleService.getCapabilities(USERNAME, null)).thenReturn(capabilities(Set.of(ServerRuleCapabilities.FORWARD)));
+    assertThrows(IllegalArgumentException.class,
+                 () -> service.saveRouted(USERNAME, null, filter(List.of(FROM_ACME), forwardTo("bob@example.org")), null, null, true, false));
+    verify(emailServerRuleService, never()).saveRule(any(), any(), any(), any(), anyBoolean(), anyBoolean());
+    assertTrue(filters.isEmpty());
+    // Nor is it ever stored as a filter eXo runs.
+    EmailFilter exo = filter(List.of(FROM_ACME), forwardTo("bob@example.org"));
+    exo.setKind(EmailFilter.KIND_EXO);
+    assertEquals(EmailForwardingService.SERVER_ONLY,
+                 assertThrows(IllegalArgumentException.class, () -> service.createFilter(USERNAME, null, exo, true, false)).getMessage());
+  }
+
+  /**
+   * A forwarding filter the checks refuse is refused before anything is routed or
+   * written.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aRefusedForwardWritesNothing() throws Exception {
+    doThrow(new IllegalAccessException("emailConnector.forwarding.destination.notConfirmed")).when(emailForwardingService)
+                                                                                                .requireRuleForwardsAllowed(eq(USERNAME), any());
+    assertEquals("emailConnector.forwarding.destination.notConfirmed",
+                 assertThrows(IllegalAccessException.class,
+                              () -> service.saveRouted(USERNAME,
+                                                       null,
+                                                       filter(List.of(FROM_ACME), forwardTo("bob@example.org")),
+                                                       null,
+                                                       null,
+                                                       true,
+                                                       false)).getMessage());
+    verify(emailServerRuleService, never()).getCapabilities(any(), any());
+    verify(emailServerRuleService, never()).saveRule(any(), any(), any(), any(), anyBoolean(), anyBoolean());
+  }
+
+  /**
+   * A forward action.
+   *
+   * @param destination where
+   * @return the action
+   */
+  private static FilterAction forwardTo(String destination) {
+    return new FilterAction(FilterAction.FORWARD, null, null, null, null, null, null, destination);
   }
 
   /**

@@ -44,12 +44,14 @@ import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.OwnerAbsenceStatus;
+import org.exoplatform.emailConnector.model.ServerAbsence;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.model.VacationSetting;
 import org.exoplatform.emailConnector.model.VacationState;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
+import org.exoplatform.emailConnector.service.rules.ForwardingGuard;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngine;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngineRegistry;
 import org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript;
@@ -84,9 +86,11 @@ import io.meeds.social.util.JsonUtils;
  * (default 900), {@code email.connector.forwarding.display.enabled} (default true; false
  * neither reads nor shows a forward).
  * <p>
- * <b>A forward is only ever read.</b> The section shows whether the caller's own mailbox
- * forwards mail, as the server holds it, with where to manage it; no verb of this service
- * writes a forward, and a forward that cannot be read never fails the section.
+ * <b>This service only reads the forward.</b> The section shows whether the caller's own
+ * mailbox forwards mail, as the server holds it, with where to manage it, read in the
+ * same conversation as the reply; a forward that cannot be read never fails the section.
+ * Setting one is {@link EmailForwardingService}'s, behind its safeguards; every read
+ * here is handed to it, so a forward eXo did not set is told to the owner.
  */
 @Service
 public class EmailAbsenceService {
@@ -174,6 +178,9 @@ public class EmailAbsenceService {
   @Autowired
   private SettingService           settingService;
 
+  @Autowired
+  private EmailForwardingService   emailForwardingService;
+
   /** The clock the summary's dates are taken from; a test fixes it. */
   private Clock                    clock               = Clock.systemUTC();
 
@@ -257,46 +264,85 @@ public class EmailAbsenceService {
                                                             ServerRuleUnavailableException {
     ServerRuleEngine engine = engineOf(username, delegationId);
     try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
-      ServerRuleCapabilities capabilities = engine.probe(session);
-      ServerVacation vacation = capabilities.isSupported(ServerRuleCapabilities.VACATION)
-          ? refresh(username, engine, session, zoneHint(timeZone, username))
-          : noReply(username);
+      ServerRuleCapabilities capabilities = emailForwardingService.narrowed(engine.probe(session), session.connector());
+      // A deployment that lets users set a forward shows it, whatever the display switch.
+      boolean shown = forwardingDisplayed() || ForwardingGuard.authoringEnabled(session.connector());
+      boolean readForward = withForwarding && shown && capabilities.isSupported(ServerRuleCapabilities.FORWARDING_READ);
+      ServerVacation vacation;
+      ForwardingSetting forwarding = null;
+      if (capabilities.isSupported(ServerRuleCapabilities.VACATION)) {
+        // One conversation for the reply and the forward.
+        ServerAbsence read = readAbsence(engine, session, zoneHint(timeZone, username), readForward);
+        vacation = refresh(username, read.vacation());
+        forwarding = read.forwarding();
+      } else {
+        vacation = noReply(username);
+        forwarding = readForward ? readForwardingQuietly(engine, session) : null;
+      }
       AbsenceSettings settings = settings(capabilities, engine, vacation);
       if (withForwarding) {
-        settings.setForwarding(forwarding(engine, session, capabilities));
+        settings.setForwarding(shown ? forwarding(session, forwarding) : null);
+        String mailboxAddress = userEmailSettingService.getUserEmailSetting(username).getEmailAddress();
+        emailForwardingService.observe(username, mailboxAddress, forwarding);
+        settings.setForwardingAuthoring(emailForwardingService.authoring(username, session.connector(), mailboxAddress, capabilities));
       }
       return settings;
     }
   }
 
   /**
-   * The forward of the caller's own mailbox, read only, with the webmail that manages it:
-   * nothing is read when the deployment switched the display off, and nothing asked of
-   * an engine that cannot read a forward. A failed read is answered "unknown" rather than
-   * failing the section, whose reply was read already.
+   * Reads the reply and, when asked, the forward in one pass; a failed forward read never
+   * fails the reply's: the reply is read again alone.
    *
    * @param engine the engine
    * @param session the caller's own session
-   * @param capabilities the probe's answer
-   * @return the forward, {@link ForwardingSetting#unknown()} when it cannot be read, null
-   *         when the display is off
+   * @param zone the zone to state the reply's days in
+   * @param withForwarding whether to read the forward
+   * @return what the server holds
+   * @throws ServerRuleUnavailableException when the reply cannot be read
    */
-  private ForwardingSetting forwarding(ServerRuleEngine engine, MailboxAclSession session, ServerRuleCapabilities capabilities) {
-    if (!forwardingDisplayed()) {
+  private ServerAbsence readAbsence(ServerRuleEngine engine,
+                                    MailboxAclSession session,
+                                    ZoneId zone,
+                                    boolean withForwarding) throws ServerRuleUnavailableException {
+    if (!withForwarding) {
+      return engine.readAbsence(session, zone, false);
+    }
+    try {
+      return engine.readAbsence(session, zone, true);
+    } catch (ServerRuleUnavailableException e) {
+      LOG.debug("The reply and the forward of user {} could not be read together: {}", session.username(), e.getMessage());
+      return new ServerAbsence(engine.readVacation(session, zone), null);
+    }
+  }
+
+  /**
+   * Reads the forward alone, a failure answered null.
+   *
+   * @param engine the engine
+   * @param session the caller's own session
+   * @return the forward, or null when it could not be read
+   */
+  private static ForwardingSetting readForwardingQuietly(ServerRuleEngine engine, MailboxAclSession session) {
+    try {
+      return engine.readForwarding(session);
+    } catch (ServerRuleUnavailableException e) {
+      LOG.debug("The forward of user {} could not be read: {}", session.username(), e.getMessage());
       return null;
     }
-    ForwardingSetting forwarding = null;
-    if (capabilities.isSupported(ServerRuleCapabilities.FORWARDING_READ)) {
-      try {
-        forwarding = engine.readForwarding(session);
-      } catch (ServerRuleUnavailableException e) {
-        LOG.debug("The forward of user {} could not be read: {}", session.username(), e.getMessage());
-      }
-    }
-    if (forwarding == null) {
-      forwarding = ForwardingSetting.unknown();
-    }
-    return forwarding.withManageUrl(webmailUrl(session.connector()));
+  }
+
+  /**
+   * The forward of the caller's own mailbox as the section shows it, with the webmail
+   * that manages it: "unknown" when it could not be read -- never a failure of the
+   * section, whose reply was read already.
+   *
+   * @param session the caller's own session
+   * @param read what was read, or null when nothing could be
+   * @return the forward, {@link ForwardingSetting#unknown()} when it cannot be read
+   */
+  private ForwardingSetting forwarding(MailboxAclSession session, ForwardingSetting read) {
+    return (read == null ? ForwardingSetting.unknown() : read).withManageUrl(webmailUrl(session.connector()));
   }
 
   /**
@@ -423,7 +469,7 @@ public class EmailAbsenceService {
     try {
       ServerRuleEngine engine = engineOf(username, null);
       try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
-        refresh(username, engine, session, zoneHint(null, username));
+        refresh(username, engine.readVacation(session, zoneHint(null, username)));
       }
     } catch (ObjectNotFoundException | IllegalAccessException | ServerRuleUnavailableException e) {
       LOG.debug("The automatic reply of user {} could not be read: {}", username, e.getMessage());
@@ -492,22 +538,16 @@ public class EmailAbsenceService {
   }
 
   /**
-   * Reads the reply, compares eXo's script with the hash eXo stored, and refreshes the
+   * Compares the reply read from the server with the hash eXo stored, and refreshes the
    * summary.
    *
    * @param username the caller
-   * @param engine the engine
-   * @param session the caller's session
-   * @param zone the zone to state the reply's days in, possibly null
+   * @param vacation the reply as the engine read it
    * @return what the server holds, {@link VacationState#MODIFIED} when eXo's script is
    *         not what eXo last wrote
-   * @throws ServerRuleUnavailableException when the server cannot be used
    */
-  private ServerVacation refresh(String username,
-                                 ServerRuleEngine engine,
-                                 MailboxAclSession session,
-                                 ZoneId zone) throws ServerRuleUnavailableException {
-    ServerVacation read = compared(engine.readVacation(session, zone), storedHash(username));
+  private ServerVacation refresh(String username, ServerVacation vacation) {
+    ServerVacation read = compared(vacation, storedHash(username));
     storeStatus(username, summary(read), true);
     return read;
   }
@@ -753,7 +793,7 @@ public class EmailAbsenceService {
    * @throws ObjectNotFoundException when the feature is off
    * @throws IllegalAccessException when the request comes from someone else's mailbox
    */
-  private void requireOwnMailbox(Long delegationId) throws ObjectNotFoundException, IllegalAccessException {
+  static void requireOwnMailbox(Long delegationId) throws ObjectNotFoundException, IllegalAccessException {
     requireEnabled();
     if (delegationId != null) {
       throw new IllegalAccessException(OWN_MAILBOX_ONLY);

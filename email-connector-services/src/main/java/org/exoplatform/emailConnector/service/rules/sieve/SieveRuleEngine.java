@@ -22,6 +22,7 @@ import static org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript.
 import java.security.cert.CertificateException;
 import java.time.Clock;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -43,6 +44,8 @@ import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.HopRef;
 import org.exoplatform.emailConnector.model.ReconcileReport;
+import org.exoplatform.emailConnector.model.ServerAbsence;
+import org.exoplatform.emailConnector.model.ServerForwarding;
 import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerRuleSet;
@@ -52,6 +55,7 @@ import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.VacationSetting;
 import org.exoplatform.emailConnector.model.VacationState;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
+import org.exoplatform.emailConnector.service.rules.ForwardingGuard;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngine;
 import org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript.Vacation;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
@@ -77,6 +81,14 @@ import org.exoplatform.services.log.Log;
  * the one running, switching it off stores the script without activating anything, so no
  * wrapper is ever created around another client's script for a script that sends
  * nothing.
+ * <p>
+ * eXo's forward is a section of the same script, {@code redirect :copy} to one address,
+ * and a rule may forward the same way. Every write of the script -- the reply's, a
+ * rule's, the forward's -- is generated with the destinations the
+ * {@link ForwardingGuard} authorizes for the caller, so the generator refuses a
+ * {@code redirect} to any other address whatever the header read back from the server
+ * holds; a server that does not advertise {@code copy}, or where one mail could meet
+ * more redirects than it allows in one run, gets none.
  */
 @Service
 public class SieveRuleEngine implements ServerRuleEngine {
@@ -96,6 +108,9 @@ public class SieveRuleEngine implements ServerRuleEngine {
 
   private final SieveScriptPolicy  policy;
 
+  /** Who may forward where; null only in a test that writes no forward. */
+  private final ForwardingGuard    forwardingGuard;
+
   /** The clock the handles are taken from; a test fixes it. */
   private Clock                    clock         = Clock.systemUTC();
 
@@ -105,10 +120,23 @@ public class SieveRuleEngine implements ServerRuleEngine {
    * @param manageSieveConnector opens authenticated conversations
    * @param policy the one-active-script policy
    */
-  @Autowired
   public SieveRuleEngine(ManageSieveConnector manageSieveConnector, SieveScriptPolicy policy) {
+    this(manageSieveConnector, policy, null);
+  }
+
+  /**
+   * The engine over the shared Sieve foundation, with the forwarding checks every
+   * generated {@code redirect} goes through.
+   *
+   * @param manageSieveConnector opens authenticated conversations
+   * @param policy the one-active-script policy
+   * @param forwardingGuard who may forward where; null authorizes no destination
+   */
+  @Autowired
+  public SieveRuleEngine(ManageSieveConnector manageSieveConnector, SieveScriptPolicy policy, ForwardingGuard forwardingGuard) {
     this.manageSieveConnector = manageSieveConnector;
     this.policy = policy;
+    this.forwardingGuard = forwardingGuard;
   }
 
   /**
@@ -226,7 +254,9 @@ public class SieveRuleEngine implements ServerRuleEngine {
         // keeps them, byte for byte.
         base = parsed.get();
       }
-      ExoSieveScript script = base.withVacation(toVacation(vacation, days, base.getVacation().orElse(null)));
+      ExoSieveScript script = authorize(session,
+                                        client,
+                                        base.withVacation(toVacation(vacation, days, base.getVacation().orElse(null))));
       String active = SieveScriptPolicy.activeScript(scripts);
       if (vacation.isEnabled() || SCRIPT_NAME.equals(active) || WRAPPER_NAME.equals(active)) {
         policy.publish(client, script);
@@ -308,7 +338,7 @@ public class SieveRuleEngine implements ServerRuleEngine {
       } else {
         rules.set(index, validated.withRef(ref));
       }
-      writeRules(client, scripts, base.withRules(rules));
+      writeRules(session, client, scripts, base.withRules(rules));
       return readRules(client);
     } catch (ManageSieveException e) {
       throw unavailable(e);
@@ -336,7 +366,8 @@ public class SieveRuleEngine implements ServerRuleEngine {
                                   String ref,
                                   String expectedScriptHash) throws ObjectNotFoundException,
                                                              ServerRuleUnavailableException,
-                                                             ServerRuleConflictException {
+                                                             ServerRuleConflictException,
+                                                             ServerRuleUnsupportedException {
     ManageSieveClient client = open(session);
     try {
       List<SieveScriptInfo> scripts = client.listScripts();
@@ -351,7 +382,7 @@ public class SieveRuleEngine implements ServerRuleEngine {
         throw new IllegalArgumentException(ServerRule.INVALID_ACTION);
       }
       rules.remove(index);
-      writeRules(client, scripts, base.withRules(rules));
+      writeRules(session, client, scripts, base.withRules(rules));
       return readRules(client);
     } catch (ManageSieveException e) {
       throw unavailable(e);
@@ -373,12 +404,13 @@ public class SieveRuleEngine implements ServerRuleEngine {
   @Override
   public ServerRuleSet publishRules(MailboxAclSession session,
                                     String expectedScriptHash) throws ServerRuleUnavailableException,
-                                                               ServerRuleConflictException {
+                                                               ServerRuleConflictException,
+                                                               ServerRuleUnsupportedException {
     ManageSieveClient client = open(session);
     try {
       List<SieveScriptInfo> scripts = client.listScripts();
       ExoSieveScript base = current(client, scripts, expectedScriptHash);
-      policy.publish(client, base);
+      policy.publish(client, authorize(session, client, base));
       return readRules(client);
     } catch (ManageSieveException e) {
       throw unavailable(e);
@@ -491,7 +523,7 @@ public class SieveRuleEngine implements ServerRuleEngine {
         published.add(ref);
       }
       if (!published.isEmpty() || !removed.isEmpty()) {
-        writeRules(client, scripts, base.withRules(rules));
+        writeRules(session, client, scripts, base.withRules(rules));
       }
       return new ReconcileReport(published, removed, readRules(client));
     } catch (ManageSieveException e) {
@@ -530,24 +562,107 @@ public class SieveRuleEngine implements ServerRuleEngine {
   }
 
   /**
-   * Writes a script whose rules changed: published -- stored, and made to run through the
-   * policy -- when it runs something or eXo's script is the one the server runs; stored
-   * only otherwise, so that saving a disabled rule never activates anything.
+   * Writes a script whose rules or forward changed: published -- stored, and made to run
+   * through the policy -- when it runs something or eXo's script is the one the server
+   * runs; stored only otherwise, so that saving a disabled rule never activates anything.
+   * The script is generated with the destinations the caller may forward to.
    *
+   * @param session the caller's own session
    * @param client the client
    * @param scripts the account's scripts, as read before the write
    * @param script the script to write
    * @throws ManageSieveException when a command fails
    * @throws ServerRuleConflictException when the policy refuses; nothing was written
+   * @throws ServerRuleUnsupportedException when the script forwards and the server would
+   *           not keep a copy, or allows fewer redirects per run than it holds
    */
-  private void writeRules(ManageSieveClient client,
+  private void writeRules(MailboxAclSession session,
+                          ManageSieveClient client,
                           List<SieveScriptInfo> scripts,
-                          ExoSieveScript script) throws ManageSieveException, ServerRuleConflictException {
+                          ExoSieveScript script) throws ManageSieveException,
+                                                 ServerRuleConflictException,
+                                                 ServerRuleUnsupportedException {
+    ExoSieveScript authorized = authorize(session, client, script);
     String active = SieveScriptPolicy.activeScript(scripts);
-    if (script.emitsRules() || script.emitsVacation() || SieveScriptPolicy.isOwn(active)) {
-      policy.publish(client, script);
+    if (authorized.emitsRules() || authorized.emitsVacation() || authorized.emitsRedirect() || SieveScriptPolicy.isOwn(active)) {
+      policy.publish(client, authorized);
     } else {
-      policy.store(client, script);
+      policy.store(client, authorized);
+    }
+  }
+
+  /**
+   * The script as it may be generated for this write: with the destinations the caller
+   * may forward to, from the {@link ForwardingGuard} -- every {@code redirect} the
+   * generator writes must be one of them -- after checking that the server keeps a copy
+   * of a forwarded mail and allows as many redirects in one run as one mail could meet.
+   * A script that forwards nothing is returned as it is.
+   *
+   * @param session the caller's own session
+   * @param client the client, its capabilities read after TLS
+   * @param script the script
+   * @return the script, allowed to forward to the caller's authorized destinations only
+   * @throws ServerRuleUnsupportedException {@value ServerRuleUnsupportedException#FORWARDING_UNSUPPORTED}
+   *           without {@code copy},
+   *           {@value ServerRuleUnsupportedException#TOO_MANY_REDIRECTS} beyond the
+   *           server's limit
+   */
+  ExoSieveScript authorize(MailboxAclSession session,
+                           ManageSieveClient client,
+                           ExoSieveScript script) throws ServerRuleUnsupportedException {
+    if (!script.emitsRedirect()) {
+      return script;
+    }
+    ManageSieveCapabilities capabilities = client.getCapabilities();
+    if (!capabilities.hasExtension(SieveRulesSection.COPY_EXTENSION)) {
+      throw new ServerRuleUnsupportedException(ServerRuleUnsupportedException.FORWARDING_UNSUPPORTED);
+    }
+    if (script.redirectCount() > capabilities.redirectLimit()) {
+      throw new ServerRuleUnsupportedException(ServerRuleUnsupportedException.TOO_MANY_REDIRECTS);
+    }
+    return script.withAuthorizedRedirects(forwardingGuard == null ? Set.of() : forwardingGuard.authorizedDestinations(session));
+  }
+
+  /**
+   * Sets, changes or removes eXo's forward -- the forward section of eXo's script, a copy
+   * of every mail to one address -- keeping the reply and the rules as the header holds
+   * them, and publishes. Removing a forward that is not there writes nothing.
+   *
+   * @param session the caller's own session
+   * @param destination the address, normalised; null to remove the forward
+   * @param expectedScriptHash the hash of eXo's script as eXo last wrote it, or null to
+   *          overwrite it whatever it holds, as long as eXo can read it
+   * @return the forward after the write, and the script's hash
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when another client's script may forward too
+   *           ({@link ServerRuleConflictException#FORWARDED_ELSEWHERE}), the policy
+   *           refuses, or eXo's script changed outside eXo; nothing was written
+   * @throws ServerRuleUnsupportedException when the server would not keep a copy, or
+   *           allows fewer redirects in one run than one mail could then meet
+   */
+  @Override
+  public ServerForwarding writeForwarding(MailboxAclSession session,
+                                          String destination,
+                                          String expectedScriptHash) throws ServerRuleUnavailableException,
+                                                                     ServerRuleConflictException,
+                                                                     ServerRuleUnsupportedException {
+    ManageSieveClient client = open(session);
+    try {
+      if (destination != null
+          && !SieveCapabilityDerivation.derive(client.getCapabilities()).isSupported(ServerRuleCapabilities.FORWARDING_WRITE)) {
+        throw new ServerRuleUnsupportedException(ServerRuleUnsupportedException.FORWARDING_UNSUPPORTED);
+      }
+      List<SieveScriptInfo> scripts = client.listScripts();
+      ExoSieveScript base = current(client, scripts, expectedScriptHash);
+      if (destination != null || base.getForward().isPresent()) {
+        writeRules(session, client, scripts, base.withForward(destination));
+      }
+      Lookup lookup = lookup(client, client.listScripts());
+      return new ServerForwarding(forwarding(client, lookup), lookup.exoHash());
+    } catch (ManageSieveException e) {
+      throw unavailable(e);
+    } finally {
+      client.logout();
     }
   }
 
@@ -646,29 +761,26 @@ public class SieveRuleEngine implements ServerRuleEngine {
   }
 
   /**
-   * Whether the caller's mail may be forwarded, as far as ManageSieve lets eXo see: the
+   * Whether the caller's mail is, or may be, forwarded, as far as ManageSieve lets eXo
+   * see, in one conversation: eXo's own forward and the rules of eXo's that forward, read
+   * from eXo's header while the server runs eXo's script; otherwise, or beside them, the
    * script another client manages that runs at delivery, and the personal scripts it
-   * includes (one level), are scanned for the {@code redirect} token. A hit, or a script
-   * that cannot be read far enough, answers "a forward may be configured by this script";
-   * its destinations are never read out of it. eXo's own script is not scanned: its
-   * generator emits no {@code redirect} in this phase. Only {@code LISTSCRIPTS} and
+   * includes (one level), scanned for {@code redirect} and {@code notify}. A hit, or a
+   * script that cannot be read far enough, answers "a forward may be configured by this
+   * script"; its destinations are never read out of it. Only {@code LISTSCRIPTS} and
    * {@code GETSCRIPT} are issued -- nothing is written.
    *
    * @param session the caller's own session
-   * @return {@link ForwardingSetting#mayForwardByScript(String)} naming the script, or
-   *         {@link ForwardingSetting#none()}
+   * @return eXo's forward, {@link ForwardingSetting#mayForwardByScript(String)} naming
+   *         the other script, or {@link ForwardingSetting#none()}; with eXo's rules that
+   *         forward
    * @throws ServerRuleUnavailableException when the server cannot be used
    */
   @Override
   public ForwardingSetting readForwarding(MailboxAclSession session) throws ServerRuleUnavailableException {
     ManageSieveClient client = open(session);
     try {
-      List<SieveScriptInfo> scripts = client.listScripts();
-      String foreign = runningForeignScript(client, scripts);
-      if (foreign != null && policy.mayCarryRedirect(client, scripts, foreign)) {
-        return ForwardingSetting.mayForwardByScript(foreign);
-      }
-      return ForwardingSetting.none();
+      return forwarding(client, lookup(client, client.listScripts()));
     } catch (ManageSieveException e) {
       throw unavailable(e);
     } finally {
@@ -677,49 +789,113 @@ public class SieveRuleEngine implements ServerRuleEngine {
   }
 
   /**
-   * The script another client manages that the server runs at delivery: the active
-   * script when it is not eXo's, the script eXo's wrapper includes next to eXo's, or the
-   * wrapper itself once it no longer reads as the one eXo generated.
+   * The reply and the forward in one conversation: one {@code LISTSCRIPTS}, one read of
+   * eXo's script and of its wrapper, shared by both answers.
    *
-   * @param client the client
-   * @param scripts the account's scripts
-   * @return its name, empty for a script without one; null when only eXo's script runs,
-   *         or nothing does
-   * @throws ManageSieveException when the wrapper cannot be read
+   * @param session the caller's own session
+   * @param zone not used: eXo's header holds the reply's days and zone
+   * @param withForwarding whether to read the forward too
+   * @return the reply, and the forward or null
+   * @throws ServerRuleUnavailableException when the server cannot be used
    */
-  static String runningForeignScript(ManageSieveClient client, List<SieveScriptInfo> scripts) throws ManageSieveException {
-    String active = SieveScriptPolicy.activeScript(scripts);
-    if (active == null || SCRIPT_NAME.equals(active)) {
-      return null;
-    }
-    if (!WRAPPER_NAME.equals(active)) {
-      return active;
-    }
+  @Override
+  public ServerAbsence readAbsence(MailboxAclSession session,
+                                   ZoneId zone,
+                                   boolean withForwarding) throws ServerRuleUnavailableException {
+    ManageSieveClient client = open(session);
     try {
-      String wrapped = SieveScriptPolicy.wrappedScript(client.getScript(WRAPPER_NAME));
-      // A wrapper including a script that is gone fails at delivery: nothing runs.
-      return SieveScriptPolicy.exists(scripts, wrapped) ? wrapped : null;
-    } catch (ServerRuleConflictException e) {
-      // No longer eXo's wrapper: whatever it holds now is scanned as another client's.
-      return WRAPPER_NAME;
+      Lookup lookup = lookup(client, client.listScripts());
+      return new ServerAbsence(vacation(client, lookup), withForwarding ? forwarding(client, lookup) : null);
+    } catch (ManageSieveException e) {
+      throw unavailable(e);
+    } finally {
+      client.logout();
     }
   }
 
   /**
-   * The reply as {@code LISTSCRIPTS} and eXo's header say, on an open conversation.
+   * The forward on an open conversation, from one lookup of the account.
    *
    * @param client the client
-   * @return what the server holds
-   * @throws ManageSieveException when a command fails
+   * @param lookup what runs at delivery
+   * @return the forward
+   * @throws ManageSieveException when a script cannot be read
    */
-  ServerVacation read(ManageSieveClient client) throws ManageSieveException {
-    List<SieveScriptInfo> scripts = client.listScripts();
+  private ForwardingSetting forwarding(ManageSieveClient client, Lookup lookup) throws ManageSieveException {
+    String foreign = lookup.forwardScanTarget();
+    boolean foreignMayForward = foreign != null && policy.mayCarryRedirect(client, lookup.scripts(), foreign);
+    ExoSieveScript exo = lookup.exo().orElse(null);
+    if (exo == null || !lookup.exoRuns()) {
+      return foreignMayForward ? ForwardingSetting.mayForwardByScript(foreign) : ForwardingSetting.none();
+    }
+    List<ForwardingSetting.RuleForward> ruleForwards = new ArrayList<>();
+    for (ServerRule rule : exo.getRules()) {
+      if (rule.enabled()) {
+        rule.forwardDestinations().forEach(to -> ruleForwards.add(new ForwardingSetting.RuleForward(rule.name(), to)));
+      }
+    }
+    ForwardingSetting answer;
+    if (exo.getForward().isPresent()) {
+      answer = ForwardingSetting.exoForward(exo.getForward().get(), foreignMayForward ? foreign : null);
+    } else {
+      answer = foreignMayForward ? ForwardingSetting.mayForwardByScript(foreign) : ForwardingSetting.none();
+    }
+    return answer.withRuleForwards(ruleForwards);
+  }
+
+  /**
+   * What runs at delivery for the caller, read once per conversation: the scripts, eXo's
+   * script and whether the server runs it, the other client's script the reply is
+   * compared with, and whether eXo's wrapper was edited outside eXo.
+   *
+   * @param scripts the account's scripts
+   * @param exoText the text of eXo's script, null when there is none
+   * @param exo eXo's model, empty when there is none or it cannot be read
+   * @param exoRuns whether the server runs eXo's script, alone or through the wrapper
+   * @param foreign the other client's script that runs at delivery, empty for a script
+   *          without a name; null when none
+   * @param wrapperModified whether eXo's wrapper no longer reads as eXo's
+   */
+  record Lookup(List<SieveScriptInfo> scripts,
+                String exoText,
+                Optional<ExoSieveScript> exo,
+                boolean exoRuns,
+                String foreign,
+                boolean wrapperModified) {
+
+    /**
+     * The hash of eXo's script as the server holds it.
+     *
+     * @return the hash, or null when there is no script
+     */
+    String exoHash() {
+      return exoText == null ? null : ExoSieveScript.sha256(exoText);
+    }
+
+    /**
+     * The script a forward is looked for in: the other client's, or eXo's wrapper once it
+     * no longer reads as eXo's -- whatever it holds now is scanned as another client's.
+     *
+     * @return its name, or null when only eXo's script runs, or nothing does
+     */
+    String forwardScanTarget() {
+      return wrapperModified ? WRAPPER_NAME : foreign;
+    }
+  }
+
+  /**
+   * Reads what runs at delivery for the caller: one {@code GETSCRIPT} of eXo's script
+   * and, when eXo's wrapper is active, one of the wrapper.
+   *
+   * @param client the client
+   * @param scripts the account's scripts, as {@code LISTSCRIPTS} answered
+   * @return the lookup
+   * @throws ManageSieveException when a script cannot be read
+   */
+  static Lookup lookup(ManageSieveClient client, List<SieveScriptInfo> scripts) throws ManageSieveException {
     String active = SieveScriptPolicy.activeScript(scripts);
     boolean hasExo = SieveScriptPolicy.exists(scripts, SCRIPT_NAME);
     String exoText = hasExo ? client.getScript(SCRIPT_NAME) : null;
-    Optional<ExoSieveScript> exo = ExoSieveScript.parse(exoText);
-    String hash = exoText == null ? null : ExoSieveScript.sha256(exoText);
-    VacationSetting setting = exo.flatMap(ExoSieveScript::getVacation).map(SieveRuleEngine::toSetting).orElse(null);
     boolean exoRuns = hasExo && SCRIPT_NAME.equals(active);
     boolean wrapperModified = false;
     String foreign = null;
@@ -731,22 +907,49 @@ public class SieveRuleEngine implements ServerRuleEngine {
           exoRuns = hasExo;
         }
         // Otherwise the wrapper includes a script that is gone: it fails at delivery and
-        // nothing runs, so eXo's reply reads as not running.
+        // nothing runs, so eXo's script reads as not running.
       } catch (ServerRuleConflictException e) {
         wrapperModified = true;
       }
     } else if (active != null && !exoRuns) {
       foreign = active;
     }
-    if (foreign != null && policy.mayCarryVacation(client, scripts, foreign)) {
+    return new Lookup(scripts, exoText, ExoSieveScript.parse(exoText), exoRuns, foreign, wrapperModified);
+  }
+
+  /**
+   * The reply as {@code LISTSCRIPTS} and eXo's header say, on an open conversation.
+   *
+   * @param client the client
+   * @return what the server holds
+   * @throws ManageSieveException when a command fails
+   */
+  ServerVacation read(ManageSieveClient client) throws ManageSieveException {
+    return vacation(client, lookup(client, client.listScripts()));
+  }
+
+  /**
+   * The reply on an open conversation, from one lookup of the account.
+   *
+   * @param client the client
+   * @param lookup what runs at delivery
+   * @return what the server holds
+   * @throws ManageSieveException when a script cannot be read
+   */
+  private ServerVacation vacation(ManageSieveClient client, Lookup lookup) throws ManageSieveException {
+    Optional<ExoSieveScript> exo = lookup.exo();
+    String hash = lookup.exoHash();
+    VacationSetting setting = exo.flatMap(ExoSieveScript::getVacation).map(SieveRuleEngine::toSetting).orElse(null);
+    String foreign = lookup.foreign();
+    if (foreign != null && policy.mayCarryVacation(client, lookup.scripts(), foreign)) {
       return new ServerVacation(VacationState.ELSEWHERE, setting, foreign, hash);
     }
-    if (wrapperModified) {
+    if (lookup.wrapperModified()) {
       // eXo's wrapper no longer reads as eXo's: named, so the interface says which script
       // to repair; "Re-publish" cannot rewrite it, the other script's name being lost.
       return new ServerVacation(VacationState.MODIFIED, setting, WRAPPER_NAME, hash);
     }
-    if (!hasExo) {
+    if (lookup.exoText() == null) {
       return ServerVacation.none();
     }
     if (exo.isEmpty()) {
@@ -758,7 +961,7 @@ public class SieveRuleEngine implements ServerRuleEngine {
     if (setting == null) {
       return new ServerVacation(VacationState.NONE, null, null, hash);
     }
-    if (setting.isEnabled() && !exoRuns) {
+    if (setting.isEnabled() && !lookup.exoRuns()) {
       return new ServerVacation(VacationState.INACTIVE, setting, null, hash);
     }
     return new ServerVacation(VacationState.OWN, setting, null, hash);
