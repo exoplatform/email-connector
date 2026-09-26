@@ -49,6 +49,12 @@ public class ServerRuleConflictException extends Exception {
    */
   public static final String UNREADABLE        = "emailConnector.absence.unreadable";
 
+  /**
+   * Another active script may already forward mail ({@code redirect} or {@code notify}):
+   * eXo adds no forward of its own next to it, since one mail would leave twice.
+   */
+  public static final String FORWARDED_ELSEWHERE = "emailConnector.forwarding.managedElsewhere";
+
   /** The script the conflict is about. */
   private final String       scriptName;
 

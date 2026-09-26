@@ -56,4 +56,31 @@ public class AbsenceSettings {
    * the request did not ask for it; in either case nothing was read.
    */
   private ForwardingSetting      forwarding;
+
+  /**
+   * Whether the caller may set a forward from eXo, and within which bounds; null when the
+   * forward was not asked for.
+   */
+  private ForwardingAuthoring    forwardingAuthoring;
+
+  /**
+   * The section without the forwarding authoring bounds.
+   *
+   * @param capabilities what the engine can do
+   * @param engine the engine's name
+   * @param vacation the reply
+   * @param vacationState the reply's state
+   * @param foreignScriptName the other client's script
+   * @param vacationDays the reply interval
+   * @param forwarding the forward
+   */
+  public AbsenceSettings(ServerRuleCapabilities capabilities,
+                         String engine,
+                         VacationSetting vacation,
+                         VacationState vacationState,
+                         String foreignScriptName,
+                         int vacationDays,
+                         ForwardingSetting forwarding) {
+    this(capabilities, engine, vacation, vacationState, foreignScriptName, vacationDays, forwarding, null);
+  }
 }
