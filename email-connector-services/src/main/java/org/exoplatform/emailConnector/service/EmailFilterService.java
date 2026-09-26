@@ -57,12 +57,14 @@ import org.exoplatform.emailConnector.model.FilterPreview;
 import org.exoplatform.emailConnector.model.HopRef;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ServerRule;
+import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.notification.plugin.EmailFilterNotificationPlugin;
 import org.exoplatform.emailConnector.service.filters.EmailFilterMail;
 import org.exoplatform.emailConnector.service.filters.FilterConditionEvaluator;
 import org.exoplatform.emailConnector.service.filters.FilterConditionEvaluator.Result;
 import org.exoplatform.emailConnector.service.filters.FilterRunContext;
+import org.exoplatform.emailConnector.service.rules.sieve.SieveRuleEngine;
 import org.exoplatform.emailConnector.storage.EmailFilterStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
@@ -197,6 +199,13 @@ public class EmailFilterService {
   private static final Set<String>    EXO_ONLY_FIELDS            = Set.of(FilterConditionEvaluator.BODY,
                                                                           FilterConditionEvaluator.SUBJECT_OR_BODY,
                                                                           FilterConditionEvaluator.HAS_ATTACHMENT);
+
+  /** The actions a mail server may run itself, when its capabilities say so. */
+  private static final Set<String>    SERVER_ACTIONS             = Set.of(FilterAction.MOVE_TO_FOLDER,
+                                                                          FilterAction.MARK_READ,
+                                                                          FilterAction.STAR,
+                                                                          FilterAction.MARK_JUNK,
+                                                                          FilterAction.DELETE);
 
   /** The fields eXo cannot evaluate on a mail it already keeps. */
   private static final List<String>   NOT_PREVIEWABLE            = List.of(ServerRule.HEADER, ServerRule.MESSAGE_SIZE);
@@ -396,6 +405,403 @@ public class EmailFilterService {
     }
     emailFilterStorage.delete(id, username);
     LOG.info("Mail filter {} deleted by user {}", id, username);
+  }
+
+  /**
+   * Saves a filter of the one list of the filters drawer, and decides where it runs --
+   * the one entry point the drawer's form saves through:
+   * <ul>
+   * <li>{@link EmailFilter#KIND_SERVER}: every condition and every action is one the mail
+   * server can run, per its capabilities; the mail server runs it at delivery, and eXo
+   * keeps no copy of it.</li>
+   * <li>{@link EmailFilter#KIND_HOP}: every condition is the server's, some action is not
+   * (a category, a notification, the assistant, or a flag the server cannot set), and
+   * the server can set eXo's keyword: the server marks the mail at delivery, eXo applies
+   * every action after its next sync.</li>
+   * <li>{@link EmailFilter#KIND_EXO} otherwise -- a condition only eXo reads, or a server
+   * that lets eXo manage no rule: eXo alone runs it, after each sync.</li>
+   * </ul>
+   * A filter that changes kind moves cleanly, the server first: a server filter that
+   * becomes an eXo one is removed from the server in the write that adds its hop, or
+   * before its eXo row is switched on; an eXo filter that becomes a server one is switched
+   * off in eXo first, swapped for the server rule in one write when it had a hop, and
+   * deleted once the server holds the rule. When the server refuses, nothing changed.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @param input the filter as the form sent it; its kind is ignored
+   * @param fromRef the server rule the filter was, by its reference; null otherwise
+   * @param fromId the eXo filter it was, by its id; null otherwise
+   * @param consent true when the caller agreed, in this request, that eXo manages rules
+   *          on their mail server
+   * @param republish true to overwrite eXo's script although it changed outside eXo
+   * @return the filter as saved: an eXo row, or for a server filter its kind, name,
+   *         conditions and actions, and its reference when it had one
+   * @throws ObjectNotFoundException when a feature the filter needs is off, no mailbox is
+   *           connected, or the filter it was is not the caller's
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   * @throws IllegalArgumentException with a message code for an invalid value, both a
+   *           reference and an id, a missing consent, or too many rules
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when another client's script is in the way, or
+   *           eXo's script changed outside eXo
+   * @throws ServerRuleUnsupportedException when the connector cannot hold the rule
+   */
+  public EmailFilter saveRouted(String username,
+                                Long delegationId,
+                                EmailFilter input,
+                                String fromRef,
+                                Long fromId,
+                                boolean consent,
+                                boolean republish) throws ObjectNotFoundException,
+                                                   IllegalAccessException,
+                                                   ServerRuleUnavailableException,
+                                                   ServerRuleConflictException,
+                                                   ServerRuleUnsupportedException {
+    if (input == null || fromRef != null && fromId != null) {
+      throw new IllegalArgumentException(ServerRule.INVALID);
+    }
+    if (delegationId != null) {
+      throw new IllegalAccessException(EmailServerRuleService.OWN_MAILBOX_ONLY);
+    }
+    String kind = route(input, capabilitiesFor(username, input, fromRef != null));
+    if (EmailFilter.KIND_SERVER.equals(kind)) {
+      return fromId == null ? saveServer(username, input, fromRef, consent, republish)
+                            : toServer(username, fromId, input, consent, republish);
+    }
+    EmailFilter routed = copyOf(input);
+    routed.setKind(kind);
+    if (fromRef != null) {
+      return fromServer(username, routed, fromRef, consent, republish);
+    }
+    return fromId == null ? createFilter(username, null, routed, consent, republish)
+                          : updateFilter(username, null, fromId, routed, consent, republish);
+  }
+
+  /**
+   * Where a filter runs, from what the mail server can do: {@link EmailFilter#KIND_SERVER}
+   * when the server can run every condition and every action,
+   * {@link EmailFilter#KIND_HOP} when it can test every condition and set eXo's keyword
+   * but not run every action, {@link EmailFilter#KIND_EXO} otherwise.
+   *
+   * @param filter the filter
+   * @param capabilities what the server can do, or null when eXo manages no rule there
+   * @return the kind
+   */
+  static String route(EmailFilter filter, ServerRuleCapabilities capabilities) {
+    if (capabilities == null || !capabilities.supported()) {
+      return EmailFilter.KIND_EXO;
+    }
+    List<ServerRule.Condition> conditions = filter.getConditions() == null ? List.of() : filter.getConditions();
+    boolean serverConditions = conditions.stream()
+                                         .allMatch(condition -> condition != null && condition.field() != null
+                                             && !EXO_ONLY_FIELDS.contains(condition.field().trim().toUpperCase(Locale.ROOT))
+                                             && capabilities.isSupported(condition.field().trim().toUpperCase(Locale.ROOT)));
+    if (!serverConditions) {
+      return EmailFilter.KIND_EXO;
+    }
+    List<FilterAction> actions = filter.getActions() == null ? List.of() : filter.getActions();
+    boolean serverActions = actions.stream()
+                                   .allMatch(action -> action != null && action.type() != null
+                                       && SERVER_ACTIONS.contains(action.type().trim().toUpperCase(Locale.ROOT))
+                                       && capabilities.isSupported(action.type().trim().toUpperCase(Locale.ROOT)));
+    if (serverActions) {
+      return EmailFilter.KIND_SERVER;
+    }
+    return capabilities.isSupported(ServerRuleCapabilities.TAG) ? EmailFilter.KIND_HOP : EmailFilter.KIND_EXO;
+  }
+
+  /**
+   * What the caller's mail server can do, for routing a filter: null when eXo manages no
+   * rule there -- server rules switched off, or an engine without rules -- so the filter
+   * runs in eXo. A filter with a condition only eXo reads runs in eXo whatever the server
+   * can do, so it needs no probe unless it was a server filter, which the server must
+   * remove. A server that cannot be reached leaves the filter to eXo, unless it was a
+   * server filter: then it is said, since the server must remove it.
+   *
+   * @param username the caller
+   * @param filter the filter
+   * @param existing whether the filter was a server filter
+   * @return the capabilities, or null
+   * @throws ObjectNotFoundException when no mailbox is connected
+   * @throws IllegalAccessException when the caller may not use their connector
+   * @throws ServerRuleUnavailableException when the server, needed, cannot be used
+   */
+  private ServerRuleCapabilities capabilitiesFor(String username,
+                                                 EmailFilter filter,
+                                                 boolean existing) throws ObjectNotFoundException,
+                                                                   IllegalAccessException,
+                                                                   ServerRuleUnavailableException {
+    boolean exoOnly = filter.getConditions() != null
+        && filter.getConditions()
+                 .stream()
+                 .anyMatch(condition -> condition != null && condition.field() != null
+                     && EXO_ONLY_FIELDS.contains(condition.field().trim().toUpperCase(Locale.ROOT)));
+    if (exoOnly && !existing) {
+      return null;
+    }
+    try {
+      return emailServerRuleService.getCapabilities(username, null);
+    } catch (ObjectNotFoundException e) {
+      if (EmailServerRuleService.DISABLED.equals(e.getMessage())) {
+        return null;
+      }
+      throw e;
+    } catch (ServerRuleUnavailableException e) {
+      // A server that cannot be reached runs no new rule: the filter runs in eXo, which
+      // needs no server. A filter that is a server rule must leave the server, so that
+      // one waits for it.
+      if (existing) {
+        throw e;
+      }
+      LOG.debug("Mail server of user {} unreachable, the filter runs in eXo: {}", username, e.getMessage());
+      return null;
+    }
+  }
+
+  /**
+   * Creates or replaces a server filter.
+   *
+   * @param username the caller
+   * @param input the filter
+   * @param ref the server rule it replaces, or null for a new one
+   * @param consent as for {@link #saveRouted}
+   * @param republish as for {@link #saveRouted}
+   * @return the filter, kind {@link EmailFilter#KIND_SERVER}
+   * @throws ObjectNotFoundException when the feature is off, or no such server rule
+   * @throws IllegalAccessException when the caller may not use their connector
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when eXo's script is in the way
+   * @throws ServerRuleUnsupportedException when the connector cannot hold the rule
+   */
+  private EmailFilter saveServer(String username,
+                                 EmailFilter input,
+                                 String ref,
+                                 boolean consent,
+                                 boolean republish) throws ObjectNotFoundException,
+                                                    IllegalAccessException,
+                                                    ServerRuleUnavailableException,
+                                                    ServerRuleConflictException,
+                                                    ServerRuleUnsupportedException {
+    emailServerRuleService.saveRule(username, null, ref, serverRuleOf(input), republish, consent);
+    return serverFilter(input, ref);
+  }
+
+  /**
+   * Turns one of the caller's eXo filters into a server filter. The eXo filter is
+   * switched off first, so eXo never acts on a mail the server rule acted on; then the
+   * server takes the rule -- in the one write that removes its hop, when it had one --
+   * and only then is the eXo filter deleted. When the server refuses, the eXo filter is
+   * put back as it was.
+   *
+   * @param username the caller
+   * @param id the eXo filter
+   * @param input the filter as it becomes
+   * @param consent as for {@link #saveRouted}
+   * @param republish as for {@link #saveRouted}
+   * @return the filter, kind {@link EmailFilter#KIND_SERVER}
+   * @throws ObjectNotFoundException when a feature is off, or the filter is not the
+   *           caller's
+   * @throws IllegalAccessException when the caller may not use their connector
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when eXo's script is in the way
+   * @throws ServerRuleUnsupportedException when the connector cannot hold the rule
+   */
+  private EmailFilter toServer(String username,
+                               long id,
+                               EmailFilter input,
+                               boolean consent,
+                               boolean republish) throws ObjectNotFoundException,
+                                                  IllegalAccessException,
+                                                  ServerRuleUnavailableException,
+                                                  ServerRuleConflictException,
+                                                  ServerRuleUnsupportedException {
+    checkOwnMailbox(username, null);
+    EmailFilter existing = ownFilter(username, id);
+    ServerRule rule = serverRuleOf(input);
+    if (existing.isEnabled()) {
+      EmailFilter off = copyOf(existing);
+      off.setEnabled(false);
+      emailFilterStorage.save(username, off, now());
+    }
+    try {
+      if (isLiveHop(existing)) {
+        emailServerRuleService.reconcileHops(username, hopsBut(username, id), rule, null, republish, consent, false);
+      } else {
+        emailServerRuleService.saveRule(username, null, null, rule, republish, consent);
+      }
+    } catch (ObjectNotFoundException | IllegalAccessException | ServerRuleUnavailableException | ServerRuleConflictException
+        | ServerRuleUnsupportedException | RuntimeException e) {
+      // The server did not take the rule: the eXo filter stays what it was.
+      emailFilterStorage.save(username, existing, now());
+      throw e;
+    }
+    emailFilterStorage.delete(id, username);
+    LOG.info("Mail filter {} of user {} moved to the mail server", id, username);
+    return serverFilter(input, null);
+  }
+
+  /**
+   * Turns one of the caller's server filters into an eXo filter, with or without a hop.
+   * Like a creation, the eXo row is inserted switched off to get its id; the server rule
+   * is then removed -- in the one write that adds the hop, for a hop -- and only then is
+   * the row switched on. When the server refuses, the row is deleted and the server rule
+   * stays; once the server took the write, the row is never deleted, and stays switched
+   * off when it cannot be switched on.
+   *
+   * @param username the caller
+   * @param input the filter as it becomes, its kind set
+   * @param ref the server rule it was
+   * @param consent as for {@link #saveRouted}
+   * @param republish as for {@link #saveRouted}
+   * @return the eXo filter as stored
+   * @throws ObjectNotFoundException when a feature is off, or no mailbox is connected
+   * @throws IllegalAccessException when the caller may not use their connector
+   * @throws IllegalArgumentException with a message code, as for {@link #createFilter}
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when eXo's script is in the way
+   * @throws ServerRuleUnsupportedException when the connector cannot hold the hop
+   */
+  private EmailFilter fromServer(String username,
+                                 EmailFilter input,
+                                 String ref,
+                                 boolean consent,
+                                 boolean republish) throws ObjectNotFoundException,
+                                                    IllegalAccessException,
+                                                    ServerRuleUnavailableException,
+                                                    ServerRuleConflictException,
+                                                    ServerRuleUnsupportedException {
+    checkOwnMailbox(username, null);
+    if (emailFilterStorage.getFilters(username).size() >= MAX_FILTERS) {
+      throw new IllegalArgumentException(TOO_MANY);
+    }
+    EmailFilter filter = validated(username, input);
+    filter.setId(null);
+    filter.setPosition(emailFilterStorage.nextPosition(username));
+    Date now = now();
+    filter.setActiveSince(now.getTime());
+    boolean wanted = filter.isEnabled();
+    filter.setEnabled(false);
+    EmailFilter provisional = emailFilterStorage.save(username, filter, now);
+    EmailFilter saved = EmailFilter.KIND_HOP.equals(provisional.getKind()) ? withHopNames(provisional) : provisional;
+    try {
+      if (EmailFilter.KIND_HOP.equals(saved.getKind())) {
+        List<HopRef> hops = hopsBut(username, saved.getId());
+        if (wanted) {
+          saved.setEnabled(true);
+          hops.add(hopOf(saved));
+        }
+        emailServerRuleService.reconcileHops(username, hops, null, ref, republish, consent, wanted);
+      } else {
+        removeServerRule(username, ref, republish);
+      }
+    } catch (ObjectNotFoundException | IllegalAccessException | ServerRuleUnavailableException | ServerRuleConflictException
+        | ServerRuleUnsupportedException | RuntimeException e) {
+      // The server still holds the rule: the eXo filter is not created.
+      emailFilterStorage.delete(provisional.getId(), username);
+      throw e;
+    }
+    // The server no longer holds the rule: from here on the row is the filter's only copy,
+    // never deleted. When it cannot be switched on, it stays in the list, switched off,
+    // for the user to switch on again.
+    saved.setEnabled(wanted);
+    return emailFilterStorage.save(username, saved, now);
+  }
+
+  /**
+   * Removes a server rule a filter was, when it became an eXo filter. A rule the server
+   * no longer holds is already gone.
+   *
+   * @param username the caller
+   * @param ref the rule's reference
+   * @param republish as for {@link #saveRouted}
+   * @throws ObjectNotFoundException when the feature is off
+   * @throws IllegalAccessException when the caller may not use their connector
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when eXo's script is in the way
+   * @throws ServerRuleUnsupportedException when the connector holds no rules
+   */
+  private void removeServerRule(String username, String ref, boolean republish) throws ObjectNotFoundException,
+                                                                                IllegalAccessException,
+                                                                                ServerRuleUnavailableException,
+                                                                                ServerRuleConflictException,
+                                                                                ServerRuleUnsupportedException {
+    try {
+      emailServerRuleService.deleteRule(username, null, ref, republish);
+    } catch (ObjectNotFoundException e) {
+      if (!SieveRuleEngine.RULE_NOT_FOUND.equals(e.getMessage())) {
+        throw e;
+      }
+    }
+  }
+
+  /**
+   * A filter as a server rule, folders as eXo keys, the way the server group's form
+   * sends it.
+   *
+   * @param filter the filter
+   * @return the rule, without a reference
+   */
+  static ServerRule serverRuleOf(EmailFilter filter) {
+    List<ServerRule.Action> actions = new ArrayList<>();
+    if (filter.getActions() != null) {
+      filter.getActions()
+            .forEach(action -> actions.add(action == null ? null : new ServerRule.Action(action.type(), action.folderKey(), null, null)));
+    }
+    return new ServerRule(null,
+                          StringUtils.trimToEmpty(filter.getName()),
+                          filter.isEnabled(),
+                          filter.isMatchAll(),
+                          filter.getConditions(),
+                          actions,
+                          filter.isStopProcessing());
+  }
+
+  /**
+   * A server filter, as the entry point answers it.
+   *
+   * @param input the filter as saved
+   * @param ref its reference, when known
+   * @return the filter, kind {@link EmailFilter#KIND_SERVER}, no id
+   */
+  private static EmailFilter serverFilter(EmailFilter input, String ref) {
+    EmailFilter answer = copyOf(input);
+    answer.setId(null);
+    answer.setKind(EmailFilter.KIND_SERVER);
+    answer.setServerRuleRef(ref);
+    answer.setTagKeyword(null);
+    return answer;
+  }
+
+  /**
+   * A shallow copy of a filter, the lists shared.
+   *
+   * @param filter the filter
+   * @return the copy
+   */
+  private static EmailFilter copyOf(EmailFilter filter) {
+    EmailFilter copy = new EmailFilter();
+    copy.setId(filter.getId());
+    copy.setName(filter.getName());
+    copy.setEnabled(filter.isEnabled());
+    copy.setPosition(filter.getPosition());
+    copy.setKind(filter.getKind());
+    copy.setMailboxScope(filter.getMailboxScope());
+    copy.setMatchAll(filter.isMatchAll());
+    copy.setConditions(filter.getConditions());
+    copy.setActions(filter.getActions());
+    copy.setStopProcessing(filter.isStopProcessing());
+    copy.setTagKeyword(filter.getTagKeyword());
+    copy.setServerRuleRef(filter.getServerRuleRef());
+    copy.setAgentNameId(filter.getAgentNameId());
+    copy.setMatchCount(filter.getMatchCount());
+    copy.setLastMatchDate(filter.getLastMatchDate());
+    copy.setLastError(filter.getLastError());
+    copy.setActiveSince(filter.getActiveSince());
+    copy.setCreatedDate(filter.getCreatedDate());
+    copy.setUpdatedDate(filter.getUpdatedDate());
+    return copy;
   }
 
   /**
@@ -1275,18 +1681,22 @@ public class EmailFilterService {
   }
 
   /**
-   * The server half of a hop rule.
+   * The server half of a hop rule: the rule's conditions, eXo's keyword as its one
+   * action, and never "stop".
    *
    * @param filter the rule, named
    * @return the hop
    */
   static HopRef hopOf(EmailFilter filter) {
+    // Never "stop" on the server: the filters the server runs apply first, whatever the
+    // eXo filters' order, and an eXo filter's "stop" stops the eXo filters after it, which
+    // eXo applies after its sync -- a hop that stopped the server would reorder the list.
     return new HopRef(filter.getServerRuleRef(),
                       filter.getName(),
                       filter.isMatchAll(),
                       filter.getConditions(),
                       filter.getTagKeyword(),
-                      filter.isStopProcessing());
+                      false);
   }
 
   /**

@@ -54,6 +54,7 @@ import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailFolder;
+import org.exoplatform.emailConnector.model.ReconcileReport;
 import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRule.Action;
 import org.exoplatform.emailConnector.model.ServerRule.Condition;
@@ -192,6 +193,33 @@ public class EmailServerRuleServiceTest {
     assertEquals(String.valueOf(NOW), settings.get(EmailServerRuleService.CONSENT_SETTING_KEY));
     when(engine.saveRule(eq(session), any(), eq("h1"))).thenReturn(written("h2"));
     service.saveRule(USERNAME, null, null, rule, false, false);
+  }
+
+  /**
+   * A swap -- a user's rule added or removed in the write that reconciles the hops --
+   * needs the consent when it adds a rule, hands the engine the rule validated with its
+   * folders resolved, refuses a malformed reference, and a plain reconciliation stays the
+   * engine's plain one.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testASwapAddsAValidatedRuleWithTheConsent() throws Exception {
+    ServerRule rule = rule(List.of(new Action("STAR", null, null, null)));
+    assertEquals(EmailServerRuleService.CONSENT_REQUIRED,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> service.reconcileHops(USERNAME, List.of(), rule, null, false, false, false)).getMessage());
+    assertThrows(IllegalArgumentException.class, () -> service.reconcileHops(USERNAME, List.of(), null, "no ref", false, true, false));
+    verifyNoInteractions(engine);
+    ReconcileReport report = new ReconcileReport(List.of("2"), List.of("hop-1"), written("h1"));
+    when(engine.reconcile(eq(session), eq(List.of()), any(ServerRule.class), isNull(), isNull())).thenReturn(report);
+    assertEquals(report, service.reconcileHops(USERNAME, List.of(), rule, null, false, true, false));
+    ArgumentCaptor<ServerRule> added = ArgumentCaptor.forClass(ServerRule.class);
+    verify(engine).reconcile(eq(session), eq(List.of()), added.capture(), isNull(), isNull());
+    assertEquals(rule.validated(), added.getValue(), "validated, without a reference");
+    when(engine.reconcile(eq(session), eq(List.of()), eq("h1"))).thenReturn(new ReconcileReport(List.of(), List.of(), written("h1")));
+    service.reconcileHops(USERNAME, List.of(), false, false, false);
+    verify(engine).reconcile(eq(session), eq(List.of()), eq("h1"));
   }
 
   /**
