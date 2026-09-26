@@ -205,12 +205,16 @@ public class EmailFilterService {
                                                                           FilterConditionEvaluator.SUBJECT_OR_BODY,
                                                                           FilterConditionEvaluator.HAS_ATTACHMENT);
 
-  /** The actions a mail server may run itself, when its capabilities say so. */
+  /**
+   * The actions a mail server may run itself, when its capabilities say so; the forward
+   * only where the deployment enabled forwarding, which narrows the capabilities.
+   */
   private static final Set<String>    SERVER_ACTIONS             = Set.of(FilterAction.MOVE_TO_FOLDER,
                                                                           FilterAction.MARK_READ,
                                                                           FilterAction.STAR,
                                                                           FilterAction.MARK_JUNK,
-                                                                          FilterAction.DELETE);
+                                                                          FilterAction.DELETE,
+                                                                          FilterAction.FORWARD);
 
   /** The fields eXo cannot evaluate on a mail it already keeps. */
   private static final List<String>   NOT_PREVIEWABLE            = List.of(ServerRule.HEADER, ServerRule.MESSAGE_SIZE);
@@ -242,6 +246,9 @@ public class EmailFilterService {
 
   @Autowired
   private EmailServerRuleService      emailServerRuleService;
+
+  @Autowired
+  private EmailForwardingService      emailForwardingService;
 
   @Autowired
   private EmailBoxService             emailBoxService;
@@ -446,6 +453,9 @@ public class EmailFilterService {
    * <li>{@link EmailFilter#KIND_EXO} otherwise -- a condition only eXo reads, or a server
    * that lets eXo manage no rule: eXo alone runs it, after each sync.</li>
    * </ul>
+   * A filter that forwards a copy runs on the mail server only: its destinations are
+   * checked first (the connector allows forwarding, the domain is allowed, the address
+   * confirmed), and it is refused when it could not be a server filter.
    * A filter that changes kind moves cleanly, the server first: a server filter that
    * becomes an eXo one is removed from the server in the write that adds its hop, or
    * before its eXo row is switched on; an eXo filter that becomes a server one is switched
@@ -464,10 +474,12 @@ public class EmailFilterService {
    *         conditions and actions, and its reference when it had one
    * @throws ObjectNotFoundException when a feature the filter needs is off, no mailbox is
    *           connected, or the filter it was is not the caller's
-   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
-   *           the caller may not use their connector
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, the
+   *           caller may not use their connector, or the filter forwards where the
+   *           forwarding checks do not allow
    * @throws IllegalArgumentException with a message code for an invalid value, both a
-   *           reference and an id, a missing consent, or too many rules
+   *           reference and an id, a missing consent, too many rules, or a filter that
+   *           forwards and cannot run on the mail server
    * @throws ServerRuleUnavailableException when the server cannot be used
    * @throws ServerRuleConflictException when another client's script is in the way, or
    *           eXo's script changed outside eXo
@@ -490,7 +502,21 @@ public class EmailFilterService {
     if (delegationId != null) {
       throw new IllegalAccessException(EmailServerRuleService.OWN_MAILBOX_ONLY);
     }
+    boolean forwards = input.getActions() != null
+        && input.getActions()
+                .stream()
+                .anyMatch(action -> action != null && action.type() != null
+                    && FilterAction.FORWARD.equalsIgnoreCase(action.type().trim()));
+    if (forwards) {
+      // Before anything is routed: the connector allows forwarding, and every destination
+      // is in the allowed domains and was confirmed.
+      emailForwardingService.requireRuleForwardsAllowed(username, serverRuleOf(input).actions());
+    }
     String kind = route(input, capabilitiesFor(username, input, fromRef != null));
+    if (forwards && !EmailFilter.KIND_SERVER.equals(kind)) {
+      // A forward is the mail server's to run, as the mail arrives; eXo never sends one.
+      throw new IllegalArgumentException(EmailForwardingService.SERVER_ONLY);
+    }
     if (EmailFilter.KIND_SERVER.equals(kind)) {
       return fromId == null ? saveServer(username, input, fromRef, consent, republish)
                             : toServer(username, fromId, input, consent, republish);
@@ -772,7 +798,12 @@ public class EmailFilterService {
     List<ServerRule.Action> actions = new ArrayList<>();
     if (filter.getActions() != null) {
       filter.getActions()
-            .forEach(action -> actions.add(action == null ? null : new ServerRule.Action(action.type(), action.folderKey(), null, null)));
+            .forEach(action -> actions.add(action == null ? null
+                                                         : new ServerRule.Action(action.type(),
+                                                                                 action.folderKey(),
+                                                                                 null,
+                                                                                 null,
+                                                                                 action.destination())));
     }
     return new ServerRule(null,
                           StringUtils.trimToEmpty(filter.getName()),
@@ -2161,6 +2192,10 @@ public class EmailFilterService {
       String type = action == null || action.type() == null ? null : action.type().trim().toUpperCase(Locale.ROOT);
       if (type == null || !FilterAction.TYPES.contains(type) || !types.add(type)) {
         throw new IllegalArgumentException(ServerRule.INVALID_ACTION);
+      }
+      if (FilterAction.FORWARD.equals(type)) {
+        // eXo never forwards a mail itself: only the mail server does, as it arrives.
+        throw new IllegalArgumentException(EmailForwardingService.SERVER_ONLY);
       }
       clean.add(switch (type) {
       case FilterAction.MOVE_TO_FOLDER -> new FilterAction(type, ownFolder(username, action.folderKey()), null, null, null, null, null);
