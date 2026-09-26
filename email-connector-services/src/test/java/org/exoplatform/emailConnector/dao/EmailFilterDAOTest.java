@@ -143,6 +143,34 @@ public class EmailFilterDAOTest {
   }
 
   /**
+   * The handler's read takes the waiting matches and the running ones a dead run left,
+   * never a running one still being written, nor another status or another user's.
+   */
+  @Test
+  void theHandlerTakesUpWaitingAndAbandonedRuns() {
+    persistMatch(OWNER, 7L, "h1", "PENDING", 1_000L);
+    Long abandoned = persistMatch(OWNER, 7L, "h2", "RUNNING", 2_000L, 10_000L);
+    persistMatch(OWNER, 7L, "h3", "RUNNING", 3_000L, 50_000L);
+    Long neverWritten = persistMatch(OWNER, 7L, "h4", "RUNNING", 4_000L, null);
+    persistMatch(OWNER, 7L, "h5", "FAILED", 500L);
+    persistMatch(OTHER, 7L, "h1", "PENDING", 100L);
+    entityManager.clear();
+
+    List<EmailFilterMatchEntity> due = emailFilterMatchDAO.findDueForAgent(OWNER,
+                                                                          "PENDING",
+                                                                          "RUNNING",
+                                                                          new Date(30_000L),
+                                                                          PageRequest.of(0, 10));
+
+    assertEquals(List.of("h1", "h2", "h4"), due.stream().map(EmailFilterMatchEntity::getMailHeaderHash).toList(),
+                 "oldest first; the live run and the finished one are left alone");
+    assertEquals(List.of(abandoned, neverWritten), due.subList(1, 3).stream().map(EmailFilterMatchEntity::getId).toList());
+    assertEquals(1,
+                 emailFilterMatchDAO.findDueForAgent(OWNER, "PENDING", "RUNNING", new Date(30_000L), PageRequest.of(0, 1)).size(),
+                 "paged");
+  }
+
+  /**
    * Stores a rule.
    *
    * @param userId the owner
@@ -178,7 +206,23 @@ public class EmailFilterDAOTest {
    * @param date when it matched
    */
   private void persistMatch(String userId, Long filterId, String hash, String status, long date) {
+    persistMatch(userId, filterId, hash, status, date, null);
+  }
+
+  /**
+   * Stores a match with the date of its assistant's last write.
+   *
+   * @param userId the owner
+   * @param filterId the rule
+   * @param hash the mail's hash
+   * @param status the assistant's status
+   * @param date when it matched
+   * @param agentDate when the assistant last wrote it, or null
+   * @return its id
+   */
+  private Long persistMatch(String userId, Long filterId, String hash, String status, long date, Long agentDate) {
     EmailFilterMatchEntity entity = new EmailFilterMatchEntity();
+    entity.setAgentDate(agentDate == null ? null : new Date(agentDate));
     entity.setUserId(userId);
     entity.setFilterId(filterId);
     entity.setMailHeaderId("<" + hash + "@x>");
@@ -186,6 +230,6 @@ public class EmailFilterDAOTest {
     entity.setMatchedDate(new Date(date));
     entity.setAgentStatus(status);
     entity.setCreatedDate(new Date(date));
-    entityManager.persistAndFlush(entity);
+    return entityManager.persistAndFlush(entity).getId();
   }
 }

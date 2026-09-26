@@ -344,6 +344,26 @@ public class EmailFilterStorage {
   }
 
   /**
+   * A user's matches the assistant's handler takes up, oldest first: the waiting ones,
+   * and the running ones whose last write is older than a date.
+   *
+   * @param userId the owner
+   * @param runningBefore a running match last written before this is taken up again
+   * @param limit how many
+   * @return the matches
+   */
+  public List<EmailFilterMatch> getMatchesDueForAgent(String userId, Date runningBefore, int limit) {
+    return emailFilterMatchDAO.findDueForAgent(userId,
+                                               EmailFilterMatch.AGENT_PENDING,
+                                               EmailFilterMatch.AGENT_RUNNING,
+                                               runningBefore,
+                                               PageRequest.of(0, limit))
+                              .stream()
+                              .map(EmailFilterStorage::toDto)
+                              .toList();
+  }
+
+  /**
    * How many of a user's matches are in an assistant status.
    *
    * @param userId the owner

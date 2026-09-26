@@ -105,6 +105,27 @@ public interface EmailFilterMatchDAO extends JpaRepository<EmailFilterMatchEntit
   String agentStatus, Pageable pageable);
 
   /**
+   * A user's matches the assistant's handler takes up, oldest first: those waiting, and
+   * those left running by a run that cannot be alive any more -- one whose last write is
+   * older than the queue's run ceiling.
+   *
+   * @param userId the owner
+   * @param pending the waiting status, {@code PENDING}
+   * @param running the running status, {@code RUNNING}
+   * @param runningBefore a running match whose last write is older than this is taken up
+   * @param pageable how many
+   * @return the matches
+   */
+  @Query("SELECT fm FROM EmailFilterMatchEntity fm WHERE fm.userId = :userId AND (fm.agentStatus = :pending"
+      + " OR (fm.agentStatus = :running AND (fm.agentDate IS NULL OR fm.agentDate < :runningBefore)))"
+      + " ORDER BY fm.matchedDate ASC, fm.id ASC")
+  List<EmailFilterMatchEntity> findDueForAgent(@Param("userId")
+  String userId, @Param("pending")
+  String pending, @Param("running")
+  String running, @Param("runningBefore")
+  Date runningBefore, Pageable pageable);
+
+  /**
    * How many of a user's matches are in an assistant status: the pending cap.
    *
    * @param userId the owner
