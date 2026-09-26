@@ -19,139 +19,108 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        "any", where the mail goes and which flags it gets, and whether the filters after
        it still apply. What this mail server cannot run is greyed out, per element, from
        the capabilities the drawer read. The folder a mail is filed into is picked from
-       the user's own mirrored folders, never typed. -->
+       the user's own mirrored folders, never typed.
+       Laid out like the platform's drawer forms, as the automatic reply's: a plain label
+       above each field, outlined dense fields without a floating label, a section title
+       over the conditions and over the actions, each on/off choice a switch at the end of
+       its label's row, the condition rows with a minus button each and a plus button at
+       the end of their title, hints in the platform's subtitle style. The condition row
+       and the switch row are shared with the eXo filter form. -->
   <v-form class="d-flex flex-column" @submit.prevent>
+    <div class="mb-2">
+      {{ $t('UserSettings.emailConnector.filters.form.name') }}
+    </div>
     <v-text-field
       v-model="name"
-      :label="$t('UserSettings.emailConnector.filters.form.name')"
       :rules="[nameRule]"
+      :aria-label="$t('UserSettings.emailConnector.filters.form.name')"
+      class="border-box-sizing width-auto pt-0"
       maxlength="100"
+      type="text"
       outlined
       dense />
-    <v-switch
+    <email-connector-user-setting-filter-switch
       v-model="enabled"
-      :label="$t('UserSettings.emailConnector.filters.form.enabled')"
-      class="mt-0"
-      hide-details />
-    <div class="text-subtitle-1 mt-4">{{ $t('UserSettings.emailConnector.filters.form.when') }}</div>
-    <v-radio-group
-      v-model="matchAll"
-      class="mt-1"
-      hide-details
-      row>
-      <v-radio :label="$t('UserSettings.emailConnector.filters.form.matchAll')" :value="true" />
-      <v-radio :label="$t('UserSettings.emailConnector.filters.form.matchAny')" :value="false" />
-    </v-radio-group>
-    <div
-      v-for="(condition, index) in conditions"
-      :key="condition.key"
-      class="mt-3">
-      <div class="d-flex align-center">
-        <v-select
-          v-model="condition.field"
-          :items="fieldItems"
-          :aria-label="$t('UserSettings.emailConnector.filters.form.field')"
-          class="me-2 flex-grow-1 flex-shrink-1"
-          style="flex-basis: 0"
-          outlined
-          dense
-          hide-details
-          @change="resetOperator(condition)" />
-        <v-select
-          v-model="condition.operator"
-          :items="operatorItems(condition.field)"
-          :aria-label="$t('UserSettings.emailConnector.filters.form.operator')"
-          class="me-1 flex-grow-1 flex-shrink-1"
-          style="flex-basis: 0"
-          outlined
-          dense
-          hide-details />
-        <v-btn
-          :disabled="conditions.length === 1"
-          :title="$t('UserSettings.emailConnector.filters.form.removeCondition')"
-          :aria-label="$t('UserSettings.emailConnector.filters.form.removeCondition')"
-          icon
-          small
-          @click="conditions.splice(index, 1)">
-          <v-icon size="16" class="icon-default-color">fa-times</v-icon>
-        </v-btn>
-      </div>
-      <v-text-field
-        v-if="condition.field === 'HEADER'"
-        v-model="condition.header"
-        :placeholder="$t('UserSettings.emailConnector.filters.form.header')"
-        :rules="[headerRule]"
-        class="mt-2"
-        maxlength="76"
-        outlined
-        dense />
-      <v-text-field
-        v-if="!isFlagField(condition.field)"
-        v-model="condition.value"
-        :placeholder="valuePlaceholder(condition.field)"
-        :suffix="condition.field === 'MESSAGE_SIZE' ? $t('UserSettings.emailConnector.filters.form.kb') : ''"
-        :rules="[value => valueRule(condition, value)]"
-        :class="condition.field === 'HEADER' ? '' : 'mt-2'"
-        maxlength="500"
-        outlined
-        dense />
-    </div>
-    <div>
+      :label="$t('UserSettings.emailConnector.filters.form.enabled')" />
+    <div class="d-flex align-center justify-space-between mt-4 mb-2">
+      <span class="text-header">{{ $t('UserSettings.emailConnector.filters.form.when') }}</span>
       <v-btn
         :disabled="conditions.length >= 10"
-        class="px-0 mt-2"
-        color="primary"
-        text
-        small
+        :title="$t('UserSettings.emailConnector.filters.form.addCondition')"
+        :aria-label="$t('UserSettings.emailConnector.filters.form.addCondition')"
+        icon
         @click="addCondition">
-        <v-icon size="14" class="me-1">fa-plus</v-icon>
-        {{ $t('UserSettings.emailConnector.filters.form.addCondition') }}
+        <v-icon size="16">fas fa-plus</v-icon>
       </v-btn>
     </div>
-    <div class="text-subtitle-1 mt-4">{{ $t('UserSettings.emailConnector.filters.form.then') }}</div>
+    <v-radio-group
+      v-model="matchAll"
+      class="mt-0 mb-2 ms-n1 text-no-wrap"
+      mandatory
+      hide-details
+      row>
+      <v-radio :value="true" class="mx-0 me-4">
+        <template #label>
+          <span class="text-font-size">{{ $t('UserSettings.emailConnector.filters.form.matchAll') }}</span>
+        </template>
+      </v-radio>
+      <v-radio :value="false" class="mx-0">
+        <template #label>
+          <span class="text-font-size">{{ $t('UserSettings.emailConnector.filters.form.matchAny') }}</span>
+        </template>
+      </v-radio>
+    </v-radio-group>
+    <email-connector-user-setting-filter-condition
+      v-for="(condition, index) in conditions"
+      :key="condition.key"
+      v-model="conditions[index]"
+      :field-items="fieldItems"
+      :removable="conditions.length > 1"
+      @remove="conditions.splice(index, 1)" />
+    <div class="mt-2 mb-2 text-header">{{ $t('UserSettings.emailConnector.filters.form.then') }}</div>
+    <div class="mb-2">
+      {{ $t('UserSettings.emailConnector.filters.form.moveTo') }}
+    </div>
     <v-select
+      ref="moveToSelect"
       v-model="moveTo"
       :items="moveItems"
-      :label="$t('UserSettings.emailConnector.filters.form.moveTo')"
-      class="mt-2"
+      :menu-props="{ bottom: true, offsetY: true }"
+      :aria-label="$t('UserSettings.emailConnector.filters.form.moveTo')"
+      class="pa-0"
       clearable
-      outlined
       dense
-      hide-details />
-    <v-checkbox
+      outlined
+      hide-details
+      @blur="$refs.moveToSelect.blur()" />
+    <email-connector-user-setting-filter-switch
       v-model="markRead"
-      :disabled="!supports('MARK_READ')"
       :label="$t('UserSettings.emailConnector.filters.form.markRead')"
-      class="mt-2"
-      hide-details />
-    <v-checkbox
+      :disabled="!supports('MARK_READ')"
+      class="mt-4" />
+    <email-connector-user-setting-filter-switch
       v-model="star"
-      :disabled="!supports('STAR')"
       :label="$t('UserSettings.emailConnector.filters.form.star')"
-      class="mt-1"
-      hide-details />
-    <v-switch
+      :disabled="!supports('STAR')"
+      class="mt-2" />
+    <email-connector-user-setting-filter-switch
       v-model="stop"
       :label="$t('UserSettings.emailConnector.filters.form.stop')"
-      class="mt-4"
-      hide-details />
-    <div v-if="!hasAction" class="caption text-sub-title mt-2">
+      class="mt-2" />
+    <div v-if="!hasAction" class="text-subtitle mt-4">
       {{ $t('UserSettings.emailConnector.filters.form.actionRequired') }}
     </div>
-    <div class="caption text-sub-title mt-4">
+    <div class="text-subtitle mt-4">
       {{ $t('UserSettings.emailConnector.filters.form.atDelivery') }}
     </div>
-    <div class="caption text-sub-title mt-2">
+    <div class="text-subtitle mt-2">
       {{ $t('UserSettings.emailConnector.filters.form.publishes') }}
     </div>
   </v-form>
 </template>
 
 <script>
-import { FIELDS, isFlagField, isSupported, operatorsOf } from '../../../js/EmailConnectorFilters.js';
-
-const SIZE = /^[1-9][0-9]{0,7}$/;
-const HEADER_NAME = /^[A-Za-z0-9-]{1,76}$/;
+import { FIELDS, headerError, isFlagField, isSupported, valueError } from '../../../js/EmailConnectorFilters.js';
 
 let nextKey = 1;
 
@@ -255,8 +224,8 @@ export default {
     valid() {
       return this.nameRule(this.name) === true && this.hasAction
         && this.conditions.every(condition => this.supports(condition.field)
-          && (condition.field !== 'HEADER' || this.headerRule(condition.header) === true)
-          && this.valueRule(condition, condition.value) === true);
+          && (condition.field !== 'HEADER' || !headerError(condition.header))
+          && !valueError(condition.field, condition.value));
     },
   },
   watch: {
@@ -271,7 +240,6 @@ export default {
     this.fill(this.rule);
   },
   methods: {
-    isFlagField,
     /**
      * Fills the form from a filter the server holds, or with a new one.
      *
@@ -313,46 +281,12 @@ export default {
       return isSupported(this.capabilities, element);
     },
     /**
-     * The operators of a field, as the select's items.
-     *
-     * @param {String} field - the field
-     * @returns {Object[]} the items
-     */
-    operatorItems(field) {
-      return operatorsOf(field).map(operator => ({
-        value: operator,
-        text: this.$t(`UserSettings.emailConnector.filters.operator.${field === 'MESSAGE_SIZE' ? `size.${operator}` : operator}`),
-      }));
-    },
-    /**
-     * Puts a condition on its field's first operator when the field changed under it.
-     *
-     * @param {Object} condition - the condition
-     * @returns {void}
-     */
-    resetOperator(condition) {
-      if (!operatorsOf(condition.field).includes(condition.operator)) {
-        condition.operator = operatorsOf(condition.field)[0];
-      }
-    },
-    /**
      * Adds a condition on the sender.
      *
      * @returns {void}
      */
     addCondition() {
       this.conditions.push({ key: nextKey++, field: 'FROM', operator: 'CONTAINS', header: '', value: '' });
-    },
-    /**
-     * The hint of a condition's value.
-     *
-     * @param {String} field - the field
-     * @returns {String} the localized hint
-     */
-    valuePlaceholder(field) {
-      return field === 'MESSAGE_SIZE'
-        ? this.$t('UserSettings.emailConnector.filters.form.size')
-        : this.$t('UserSettings.emailConnector.filters.form.value');
     },
     /**
      * The name's rule.
@@ -363,32 +297,6 @@ export default {
     nameRule(value) {
       const name = (value || '').trim();
       return (name.length > 0 && name.length <= 100) || this.$t('UserSettings.emailConnector.filters.form.required');
-    },
-    /**
-     * A header name's rule.
-     *
-     * @param {String} value - the header name
-     * @returns {Boolean|String} true, or why not
-     */
-    headerRule(value) {
-      return HEADER_NAME.test((value || '').trim()) || this.$t('UserSettings.emailConnector.filters.form.headerInvalid');
-    },
-    /**
-     * A condition value's rule.
-     *
-     * @param {Object} condition - the condition
-     * @param {String} value - the value
-     * @returns {Boolean|String} true, or why not
-     */
-    valueRule(condition, value) {
-      if (isFlagField(condition.field)) {
-        return true;
-      }
-      const text = (value || '').trim();
-      if (condition.field === 'MESSAGE_SIZE') {
-        return SIZE.test(text) || this.$t('UserSettings.emailConnector.filters.form.sizeInvalid');
-      }
-      return (text.length > 0 && !/[\r\n]/.test(text)) || this.$t('UserSettings.emailConnector.filters.form.required');
     },
   },
 };

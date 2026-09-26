@@ -37,6 +37,8 @@ import EmailConnectorUserSettingAbsenceDrawer from './components/drawer/absence/
 import EmailConnectorUserSettingFilters from './components/main/EmailConnectorUserSettingFilters.vue';
 import EmailConnectorUserSettingFiltersDrawer from './components/drawer/filters/EmailConnectorUserSettingFiltersDrawer.vue';
 import EmailConnectorUserSettingFilterForm from './components/drawer/filters/EmailConnectorUserSettingFilterForm.vue';
+import EmailConnectorUserSettingFilterCondition from './components/drawer/filters/EmailConnectorUserSettingFilterCondition.vue';
+import EmailConnectorUserSettingFilterSwitch from './components/drawer/filters/EmailConnectorUserSettingFilterSwitch.vue';
 import EmailConnectorUserSettingMailboxSharingDrawer from './components/sharing/EmailConnectorUserSettingMailboxSharingDrawer.vue';
 import EmailConnectorUserSettingSharingInviteDrawer from './components/sharing/EmailConnectorUserSettingSharingInviteDrawer.vue';
 import EmailConnectorUserSettingFolderAccessDrawer from './components/sharing/EmailConnectorUserSettingFolderAccessDrawer.vue';
@@ -65,6 +67,8 @@ const components = {
   'email-connector-user-setting-filters': EmailConnectorUserSettingFilters,
   'email-connector-user-setting-filters-drawer': EmailConnectorUserSettingFiltersDrawer,
   'email-connector-user-setting-filter-form': EmailConnectorUserSettingFilterForm,
+  'email-connector-user-setting-filter-condition': EmailConnectorUserSettingFilterCondition,
+  'email-connector-user-setting-filter-switch': EmailConnectorUserSettingFilterSwitch,
   'email-connector-user-setting-mailbox-sharing-drawer': EmailConnectorUserSettingMailboxSharingDrawer,
   'email-connector-user-setting-sharing-invite-drawer': EmailConnectorUserSettingSharingInviteDrawer,
   'email-connector-user-setting-folder-access-drawer': EmailConnectorUserSettingFolderAccessDrawer,
