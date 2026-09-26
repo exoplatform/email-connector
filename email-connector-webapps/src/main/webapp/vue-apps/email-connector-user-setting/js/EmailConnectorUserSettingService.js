@@ -756,6 +756,27 @@ export function saveExoFilter(filter, id, options) {
 }
 
 /**
+ * Saves a filter of the drawer's one list, wherever it runs: the server decides from what
+ * the mail server can do -- a server rule, a rule the server marks and eXo applies after
+ * its sync, or a rule eXo alone runs -- and moves a filter that changes where it runs,
+ * the server first.
+ *
+ * @param {object} filter - {name, enabled, matchAll, conditions, actions, stopProcessing}
+ * @param {object} [origin] - {ref} for the server filter it replaces, {id} for the eXo one
+ * @param {object} [options] - {consent, republish}
+ * @returns {Promise<object>} the filter as saved: an eXo rule, or {kind: SERVER, ...}
+ */
+export function saveRoutedFilter(filter, origin, options) {
+  const query = filterQuery({
+    ref: origin?.ref,
+    id: origin?.id,
+    consent: options?.consent,
+    republish: options?.republish,
+  });
+  return filterRequest(`/routed${query}`, 'POST', filter, 'Error when saving the filter');
+}
+
+/**
  * Deletes one rule eXo runs after each sync, and its server half first when it has one.
  *
  * @param {number} id - the rule
