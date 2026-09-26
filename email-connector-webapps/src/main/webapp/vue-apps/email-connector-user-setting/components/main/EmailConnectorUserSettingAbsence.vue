@@ -44,11 +44,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-btn>
       </v-list-item-action>
     </v-list-item>
-    <!-- The forward (EXO-90650), read-only, below the reply because both are what the
-         mail server does with the mail it delivers. Nothing here writes: eXo shows a
-         forward the server holds and says where to manage it. Hidden while nothing could
-         be established, and when the deployment switched the display off (no forwarding
-         in the answer). -->
+    <!-- The forward (EXO-90650), below the reply because both are what the mail server
+         does with the mail it delivers: what the server holds, and where to manage it.
+         Where the deployment lets the user set a forward from eXo (EXO-90656), or eXo
+         set the one on, the edit icon opens the forward's drawer; otherwise the row stays
+         read-only. Hidden while nothing could be established, and when the deployment
+         switched the display off (no forwarding in the answer). -->
     <v-list-item v-if="forwardingShown" class="height-auto">
       <v-list-item-content>
         <v-list-item-title class="text-color">
@@ -58,12 +59,27 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ forwardingSummary }}
         </v-list-item-subtitle>
         <v-list-item-subtitle
-          v-if="forwardingManagedElsewhere"
+          v-for="rule in ruleForwards"
+          :key="`${rule.name}-${rule.destination}`"
+          class="text-wrap">
+          {{ $t('UserSettings.emailConnector.forwarding.rule', { 0: rule.name, 1: rule.destination }) }}
+        </v-list-item-subtitle>
+        <v-list-item-subtitle
+          v-if="forwardingManagedElsewhere && !forwardingEditable"
           class="text-subtitle text-wrap">
           {{ $t('UserSettings.emailConnector.forwarding.manage') }}
         </v-list-item-subtitle>
       </v-list-item-content>
-      <v-list-item-action v-if="forwardingManagedElsewhere && forwarding.manageUrl">
+      <v-list-item-action v-if="forwardingEditable">
+        <v-btn
+          :title="$t('UserSettings.emailConnector.forwarding.edit.tooltip')"
+          :aria-label="$t('UserSettings.emailConnector.forwarding.edit.tooltip')"
+          icon
+          @click="$root.$emit(OPEN_FORWARDING_DRAWER_EVENT)">
+          <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
+        </v-btn>
+      </v-list-item-action>
+      <v-list-item-action v-else-if="forwardingManagedElsewhere && forwarding.manageUrl">
         <v-btn
           :href="forwarding.manageUrl"
           :title="$t('UserSettings.emailConnector.forwarding.webmail.tooltip')"
@@ -80,13 +96,32 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import absenceMixin, { ABSENCE_UPDATED_EVENT, OPEN_ABSENCE_DRAWER_EVENT } from '../../js/EmailConnectorAbsenceMixin.js';
+import { FORWARDING_UPDATED_EVENT, OPEN_FORWARDING_DRAWER_EVENT } from '../../js/EmailConnectorForwarding.js';
 
 export default {
   mixins: [absenceMixin],
   data: () => ({
     OPEN_ABSENCE_DRAWER_EVENT,
+    OPEN_FORWARDING_DRAWER_EVENT,
   }),
   computed: {
+    /**
+     * Whether the forward can be managed from eXo: the deployment lets the user set one,
+     * or eXo set the one on, which can always be removed.
+     *
+     * @returns {Boolean} true when the drawer is offered
+     */
+    forwardingEditable() {
+      return !!this.absence?.forwardingAuthoring?.enabled || !!this.forwarding?.managedByExo;
+    },
+    /**
+     * eXo's own rules that forward a copy of the mail they match.
+     *
+     * @returns {Object[]} {name, destination}
+     */
+    ruleForwards() {
+      return this.forwarding?.ruleForwards || [];
+    },
     /**
      * The forward the server holds, read only; null when the display is off.
      *
@@ -102,7 +137,7 @@ export default {
      * @returns {Boolean} true when the row is shown
      */
     forwardingShown() {
-      return !!this.forwarding?.state && this.forwarding.state !== 'UNKNOWN';
+      return !!this.forwarding?.state && (this.forwarding.state !== 'UNKNOWN' || this.forwardingEditable);
     },
     /**
      * Whether a forward is, or may be, on: then the user is told where to manage it.
@@ -131,6 +166,8 @@ export default {
         }
         return this.$t('UserSettings.emailConnector.forwarding.server', { 0: destinations });
       }
+      case 'UNKNOWN':
+        return this.$t('UserSettings.emailConnector.forwarding.unknown');
       case 'MAY_FORWARD_BY_SCRIPT':
         return forwarding.scriptName
           ? this.$t('UserSettings.emailConnector.forwarding.script', { 0: forwarding.scriptName })
@@ -168,9 +205,11 @@ export default {
     this.readAbsence();
     // The drawer and the mailbox band change the reply too; each says so on the document.
     document.addEventListener(ABSENCE_UPDATED_EVENT, this.readAbsence);
+    document.addEventListener(FORWARDING_UPDATED_EVENT, this.readAbsence);
   },
   beforeDestroy() {
     document.removeEventListener(ABSENCE_UPDATED_EVENT, this.readAbsence);
+    document.removeEventListener(FORWARDING_UPDATED_EVENT, this.readAbsence);
   },
 };
 </script>
