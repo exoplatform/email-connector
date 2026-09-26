@@ -871,6 +871,50 @@ public class SieveRuleEngineTest {
   }
 
   /**
+   * A hop is the server half of one of eXo's own rules: deleting it by its reference is
+   * refused like saving it, and nothing is written; a user's rule beside it still goes.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testAHopIsNotDeletedByItsReference() throws Exception {
+    engine.saveRule(session, ExoSieveScriptTest.listsRead().withRef(null), null);
+    HopRef hop = new HopRef("hop-1", "Invoices", true, ExoSieveScriptTest.acmeInvoices().conditions(), "exo-filter-1", false);
+    engine.reconcile(session, List.of(hop), null);
+    int puts = server.getCommands("PUTSCRIPT").size();
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> engine.deleteRule(session, "hop-1", null));
+    assertEquals(ServerRule.INVALID_ACTION, e.getMessage());
+    assertEquals(puts, server.getCommands("PUTSCRIPT").size());
+    assertEquals(List.of("1", "hop-1"), engine.listRules(session).rules().stream().map(ServerRule::ref).toList());
+    engine.deleteRule(session, "1", null);
+    assertEquals(List.of("hop-1"), engine.listRules(session).rules().stream().map(ServerRule::ref).toList());
+  }
+
+  /**
+   * The automatic reply never writes over a header eXo cannot read, not even on
+   * "Re-publish": the rules it may hold would be dropped. The reply reads as changed
+   * outside eXo in eXo's own script, named, so no "Re-publish" is offered, and a write is
+   * refused under its own code, with nothing written.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheReplyNeverWritesOverAnUnreadableScript() throws Exception {
+    String unreadable = "# exo-managed-v1: {\"v\":1,\"rules\":[{\"id\":1}]}\r\nrequire [\"fileinto\"];\r\nif true { fileinto \"Lists\"; }\r\n";
+    server.script("exo-rules", unreadable, true);
+    ServerVacation read = engine.readVacation(session);
+    assertEquals(VacationState.MODIFIED, read.state());
+    assertEquals("exo-rules", read.foreignScriptName());
+    int puts = server.getCommands("PUTSCRIPT").size();
+    ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class,
+                                                 () -> engine.writeVacation(session, reply(true, "Away"), 7, null));
+    assertEquals(ServerRuleConflictException.UNREADABLE, e.getMessage(), "its own code: a readable script changed outside eXo keeps Re-publish");
+    assertEquals("exo-rules", e.getScriptName());
+    assertEquals(puts, server.getCommands("PUTSCRIPT").size());
+    assertEquals(unreadable, server.getScripts().get("exo-rules"));
+  }
+
+  /**
    * The rules' states, read: none, a header eXo cannot read, and eXo's script not the one
    * running.
    *
