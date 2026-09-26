@@ -92,6 +92,9 @@ public class ForwardingGuard {
   /** The key prefix of a user's confirmed destinations, followed by the user name. */
   static final String          CONFIRMED_KEY_PREFIX     = "confirmed.";
 
+  /** The key prefix of the hash of the Sieve script eXo last wrote for a user. */
+  static final String          SCRIPT_KEY_PREFIX        = "script.";
+
   /** The most confirmed destinations kept per user; the oldest goes first. */
   static final int             MAX_CONFIRMED            = 10;
 
@@ -205,6 +208,32 @@ public class ForwardingGuard {
                        FORWARDING_SCOPE,
                        CONFIRMED_KEY_PREFIX + username,
                        SettingValue.create(JsonUtils.toJsonString(kept)));
+  }
+
+  /**
+   * Records the hash of the Sieve script eXo just wrote for a user, where the user cannot
+   * write it: what tells a script eXo wrote from one edited outside eXo when it comes to
+   * forwarding -- the hash the reply and the rules compare with sits in the user's own
+   * settings, which the user can rewrite.
+   *
+   * @param username the user
+   * @param hash the SHA-256 of the text written; null writes nothing
+   */
+  public void recordScriptHash(String username, String hash) {
+    if (hash != null) {
+      settingService.set(Context.GLOBAL, FORWARDING_SCOPE, SCRIPT_KEY_PREFIX + username, SettingValue.create(hash));
+    }
+  }
+
+  /**
+   * The hash of the Sieve script eXo last wrote for a user.
+   *
+   * @param username the user
+   * @return the hash, or null when eXo recorded none
+   */
+  public String lastWrittenScriptHash(String username) {
+    SettingValue<?> value = settingService.get(Context.GLOBAL, FORWARDING_SCOPE, SCRIPT_KEY_PREFIX + username);
+    return value == null || value.getValue() == null ? null : value.getValue().toString();
   }
 
   /**

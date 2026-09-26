@@ -95,7 +95,8 @@ import io.meeds.social.util.JsonUtils;
  * a code works once.</li>
  * <li><b>Every change is told to the owner</b>, set, changed or removed, a rule that
  * forwards saved or removed, and a forward eXo did not set found on the server: an eXo
- * notification on every channel, and a mail into the mailbox itself.</li>
+ * notification, and a mail into the mailbox itself from the platform's sender -- the one
+ * channel a session cannot switch off from eXo's notification settings.</li>
  * <li><b>A band stays in the mailbox while a forward is on</b>, from a status eXo caches
  * ({@link #getStatus}).</li>
  * </ul>
@@ -171,6 +172,9 @@ public class EmailForwardingService {
   /** The fingerprint's prefix of a server forward eXo did not set. */
   static final String              SERVER_FINGERPRINT      = "server:";
 
+  /** The key prefix of the forward eXo last set on an engine without a script (BlueMind). */
+  static final String              WRITTEN_KEY_PREFIX      = "written.";
+
   /** The key prefix of the rules that forwarded when last written. */
   static final String              RULES_KEY_PREFIX        = "rules.";
 
@@ -185,6 +189,9 @@ public class EmailForwardingService {
 
   /** The advice under the change in the mailbox's mail. */
   static final String              OWNER_MAIL_ADVICE_KEY   = "emailForwarding.owner.mail.advice";
+
+  /** The locks of the pending codes, a user's by the hash of the user name. */
+  private static final Object[]    LOCKS                   = newLocks(64);
 
   /** Where codes and salts come from. */
   private static final SecureRandom RANDOM                 = new SecureRandom();
@@ -213,7 +220,7 @@ public class EmailForwardingService {
   @Autowired
   private ResourceBundleService    resourceBundleService;
 
-  /** The second proof of identity, control (g); none ships. */
+  /** The second proof of identity, a re-entry of the mailbox password; none ships. */
   @Autowired(required = false)
   private ForwardingStepUp         stepUp;
 
@@ -311,30 +318,38 @@ public class EmailForwardingService {
     Mailbox mailbox = mailboxOf(username, delegationId);
     String to = allowedNewDestination(username, mailbox, destination);
     long now = clock.millis();
-    Map<String, Object> pending = pending(username);
-    List<Long> sends = recentSends(pending, now);
-    if (sends.size() >= intProperty(CODE_MAX_SENDS_PROPERTY, DEFAULT_MAX_SENDS)
-        || !sends.isEmpty() && now - sends.get(sends.size() - 1) < MIN_SEND_INTERVAL) {
-      throw new IllegalAccessException(CODE_TOO_MANY_SENDS);
-    }
     String code = newCode();
-    String salt = HexFormat.of().formatHex(randomBytes());
     long expiresAt = now + codeTtlSeconds() * 1000L;
-    sends.add(now);
     Map<String, Object> stored = new LinkedHashMap<>();
-    stored.put("destination", to);
-    stored.put("salt", salt);
-    stored.put("hash", hash(salt, code));
-    stored.put("expiresAt", expiresAt);
-    stored.put("attempts", 0);
-    stored.put("sends", sends);
-    storePending(username, stored);
+    // The limit is checked and the send counted in one step per user: requests sent at
+    // once are not each allowed their own send.
+    synchronized (lockOf(username)) {
+      List<Long> sends = recentSends(pending(username), now);
+      if (sends.size() >= intProperty(CODE_MAX_SENDS_PROPERTY, DEFAULT_MAX_SENDS)
+          || !sends.isEmpty() && now - sends.get(sends.size() - 1) < MIN_SEND_INTERVAL) {
+        throw new IllegalAccessException(CODE_TOO_MANY_SENDS);
+      }
+      String salt = HexFormat.of().formatHex(randomBytes());
+      sends.add(now);
+      stored.put("destination", to);
+      stored.put("salt", salt);
+      stored.put("hash", hash(salt, code));
+      stored.put("expiresAt", expiresAt);
+      stored.put("attempts", 0);
+      stored.put("sends", sends);
+      storePending(username, stored);
+    }
     try {
       sendCodeMail(username, to, code);
     } catch (Exception e) {
       // The send still counts against the limit: a failing relay is not a way around it.
-      stored.remove("hash");
-      storePending(username, stored);
+      synchronized (lockOf(username)) {
+        Map<String, Object> current = pending(username);
+        if (Objects.equals(current.get("hash"), stored.get("hash"))) {
+          current.remove("hash");
+          storePending(username, current);
+        }
+      }
       LOG.warn("The forwarding confirmation code of user {} could not be sent to {}", username, to, e);
       throw new ServerRuleUnavailableException(CODE_NOT_SENT, e);
     }
@@ -373,7 +388,7 @@ public class EmailForwardingService {
   /**
    * Sets or changes the caller's forward: a copy of every mail to one confirmed address,
    * the mail kept. The destination must be confirmed already, or confirmed by the code
-   * this request carries. The owner is told on every channel, and the band shows it.
+   * this request carries. The owner is notified and mailed, and the band shows it.
    *
    * @param username the caller, from the request's session
    * @param delegationId the share the request was made from; any value is refused
@@ -414,7 +429,7 @@ public class EmailForwardingService {
     try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
       ForwardingSetting before = safeRead(engine, session);
       ServerForwarding written = engine.writeForwarding(session, to, republish ? null : storedHash(username));
-      recordWrite(username, written);
+      written = recordWrite(username, written, to);
       String previous = before != null && before.managedByExo() && !before.destinations().isEmpty() ? before.destinations().get(0)
                                                                                                      : null;
       if (!to.equals(previous)) {
@@ -453,8 +468,13 @@ public class EmailForwardingService {
     ServerRuleEngine engine = serverRuleEngineRegistry.engineFor(mailbox.connector());
     try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
       ForwardingSetting before = safeRead(engine, session);
+      if (before != null && before.state() == ForwardingState.SERVER_FORWARD && !before.managedByExo()) {
+        // A forward eXo did not set -- the one BlueMind holds, set in the webmail -- is
+        // managed where it was set: removing eXo's forward never switches it off.
+        return;
+      }
       ServerForwarding written = engine.writeForwarding(session, null, republish ? null : storedHash(username));
-      recordWrite(username, written);
+      recordWrite(username, written, null);
       if (before != null && before.managedByExo() && !before.destinations().isEmpty()) {
         notifyChange(username, mailbox.address(), Change.REMOVED, before.destinations().get(0), null);
         LOG.info("Mail forward removed by user {} on connector {}: was to {}",
@@ -480,17 +500,26 @@ public class EmailForwardingService {
     EmailAbsenceService.requireOwnMailbox(delegationId);
     ForwardingStatus cached = storedStatus(username);
     long now = clock.millis();
+    boolean shown;
+    try {
+      shown = foreignShown(mailboxOf(username, null).connector());
+    } catch (ObjectNotFoundException | IllegalAccessException e) {
+      shown = false;
+    }
     if (cached != null && now - cached.getLastServerReadDate() <= EmailAbsenceService.ttlSeconds() * 1000L) {
-      return cached;
+      return visible(cached, shown);
     }
     try {
       Mailbox mailbox = mailboxOf(username, null);
-      if (!EmailAbsenceService.forwardingDisplayed() && !ForwardingGuard.authoringEnabled(mailbox.connector())) {
+      boolean exoForwarded = cached != null && (cached.isManagedByExo() || !cached.getRuleForwards().isEmpty());
+      if (!shown && !exoForwarded) {
+        // Neither shown nor authored: unless eXo set a forward, which is always shown
+        // while it runs.
         return new ForwardingStatus();
       }
       ServerRuleEngine engine = serverRuleEngineRegistry.engineFor(mailbox.connector());
       try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
-        observe(username, mailbox.address(), engine.readForwarding(session));
+        observe(username, mailbox.address(), engine.readForwarding(session), shown);
       }
     } catch (ObjectNotFoundException | IllegalAccessException | ServerRuleUnavailableException e) {
       LOG.debug("The forward of user {} could not be read: {}", username, e.getMessage());
@@ -499,7 +528,38 @@ public class EmailForwardingService {
       storeStatus(username, kept);
     }
     ForwardingStatus status = storedStatus(username);
-    return status == null ? new ForwardingStatus() : status;
+    return status == null ? new ForwardingStatus() : visible(status, shown);
+  }
+
+  /**
+   * Whether forwards eXo did not set are shown and told on a connector: when the
+   * deployment shows forwards, or lets users set one. The forward eXo set, and eXo's rules
+   * that forward, are shown whatever the switches.
+   *
+   * @param connector the connector
+   * @return true when shown
+   */
+  public static boolean foreignShown(EmailConnector connector) {
+    return EmailAbsenceService.forwardingDisplayed() || ForwardingGuard.authoringEnabled(connector);
+  }
+
+  /**
+   * A status as the band may show it: whole when forwards eXo did not set are shown, else
+   * only eXo's own forward and rules.
+   *
+   * @param status the status
+   * @param foreignShown whether forwards eXo did not set are shown
+   * @return the status to answer
+   */
+  static ForwardingStatus visible(ForwardingStatus status, boolean foreignShown) {
+    if (foreignShown || status.isManagedByExo()) {
+      return status;
+    }
+    ForwardingStatus own = new ForwardingStatus();
+    own.setState(status.getState() == null ? null : ForwardingState.NONE);
+    own.setRuleForwards(status.getRuleForwards());
+    own.setLastServerReadDate(status.getLastServerReadDate());
+    return own;
   }
 
   /**
@@ -510,16 +570,34 @@ public class EmailForwardingService {
    *
    * @param username the owner
    * @param mailboxAddress the owner's mailbox address, where the mail goes
-   * @param read what the server holds
+   * @param forwarding what the server holds
    */
-  public void observe(String username, String mailboxAddress, ForwardingSetting read) {
+  public void observe(String username, String mailboxAddress, ForwardingSetting forwarding) {
+    observe(username, mailboxAddress, forwarding, true);
+  }
+
+  /**
+   * Records what a live read of the server found, as {@link #observe(String, String,
+   * ForwardingSetting)} does; a forward eXo did not set is told only where such forwards
+   * are shown.
+   *
+   * @param username the owner
+   * @param mailboxAddress the owner's mailbox address, where the mail goes
+   * @param forwarding what the server holds
+   * @param foreignShown whether forwards eXo did not set are shown on the connector
+   */
+  public void observe(String username, String mailboxAddress, ForwardingSetting forwarding, boolean foreignShown) {
+    ForwardingSetting read = recognise(username, forwarding);
     if (read == null || read.state() == ForwardingState.UNKNOWN) {
       return;
     }
     storeStatus(username, ForwardingStatus.of(read, clock.millis()));
     String foreign = foreignFingerprint(read);
     String seen = global(FOREIGN_KEY_PREFIX + username);
-    if (!Objects.equals(foreign, StringUtils.defaultString(seen))) {
+    // Where forwards eXo did not set are not shown, nothing is told -- nor remembered, so
+    // one is told once they are shown -- but eXo's own forward edited outside eXo, which
+    // is always shown.
+    if ((foreignShown || read.managedByExo()) && !Objects.equals(foreign, StringUtils.defaultString(seen))) {
       setGlobal(FOREIGN_KEY_PREFIX + username, foreign);
       if (!foreign.isEmpty()) {
         if (foreign.startsWith(SCRIPT_FINGERPRINT)) {
@@ -619,6 +697,20 @@ public class EmailForwardingService {
     value.put("rules", now);
     value.put("names", names);
     setGlobal(RULES_KEY_PREFIX + username, JsonUtils.toJsonString(value));
+    // The band says the rules that forward at once, not after its status' TTL.
+    ForwardingStatus status = storedStatus(username);
+    if (status == null) {
+      status = new ForwardingStatus();
+      status.setState(ForwardingState.NONE);
+    }
+    List<ForwardingSetting.RuleForward> ruleForwards = new ArrayList<>();
+    for (ServerRule rule : rules == null ? List.<ServerRule> of() : rules) {
+      if (rule.enabled()) {
+        rule.forwardDestinations().forEach(to -> ruleForwards.add(new ForwardingSetting.RuleForward(rule.name(), to)));
+      }
+    }
+    status.setRuleForwards(ruleForwards);
+    storeStatus(username, status);
     LOG.info("Mail filters that forward, user {}: {}", username, now);
   }
 
@@ -652,7 +744,7 @@ public class EmailForwardingService {
   }
 
   /**
-   * The second proof of identity, control (g) of the plan: asked of the
+   * The second proof of identity, a re-entry of the mailbox password: asked of the
    * {@link ForwardingStepUp} bean when one is configured, before any forwarding change.
    * None ships until the settings endpoint no longer answers the decoded password.
    *
@@ -678,6 +770,23 @@ public class EmailForwardingService {
    *           wrong try, or after it
    */
   private void verifyCode(String username, String destination, String code) throws IllegalAccessException {
+    // One check at a time per user, and each try counted before the code is compared:
+    // requests sent at once do not each get a free guess.
+    synchronized (lockOf(username)) {
+      checkCode(username, destination, code);
+    }
+  }
+
+  /**
+   * The check of {@link #verifyCode}, under the user's lock.
+   *
+   * @param username the caller
+   * @param destination the destination the code was sent to, normalised
+   * @param code the code, as typed
+   * @throws IllegalArgumentException {@value #CODE_INVALID} or {@value #CODE_EXPIRED}
+   * @throws IllegalAccessException {@value #CODE_TOO_MANY_TRIES}
+   */
+  private void checkCode(String username, String destination, String code) throws IllegalAccessException {
     Map<String, Object> pending = pending(username);
     String hash = pending.get("hash") == null ? null : pending.get("hash").toString();
     String salt = pending.get("salt") == null ? null : pending.get("salt").toString();
@@ -694,19 +803,46 @@ public class EmailForwardingService {
       usedUp(username, pending);
       throw new IllegalAccessException(CODE_TOO_MANY_TRIES);
     }
+    // The try is counted before the comparison.
+    attempts++;
+    pending.put("attempts", attempts);
+    storePending(username, pending);
     String typed = StringUtils.deleteWhitespace(StringUtils.defaultString(code));
     if (!MessageDigest.isEqual(hash.getBytes(StandardCharsets.US_ASCII), hash(salt, typed).getBytes(StandardCharsets.US_ASCII))) {
-      attempts++;
       if (attempts >= maxTries) {
         usedUp(username, pending);
         LOG.warn("Forwarding confirmation code of user {} for {} tried wrong {} times: thrown away", username, destination, attempts);
         throw new IllegalAccessException(CODE_TOO_MANY_TRIES);
       }
-      pending.put("attempts", attempts);
-      storePending(username, pending);
       throw new IllegalArgumentException(CODE_INVALID);
     }
     usedUp(username, pending);
+  }
+
+  /**
+   * New locks.
+   *
+   * @param count how many
+   * @return the locks
+   */
+  private static Object[] newLocks(int count) {
+    Object[] locks = new Object[count];
+    for (int i = 0; i < count; i++) {
+      locks[i] = new Object();
+    }
+    return locks;
+  }
+
+  /**
+   * The lock of one user's pending code, on this node: it bounds the requests one user
+   * sends at once to one node; on a cluster without sticky sessions each node grants its
+   * own tries.
+   *
+   * @param username the user
+   * @return the lock
+   */
+  private static Object lockOf(String username) {
+    return LOCKS[Math.floorMod(username.hashCode(), LOCKS.length)];
   }
 
   /**
@@ -746,7 +882,7 @@ public class EmailForwardingService {
   }
 
   /**
-   * Tells the owner about a change: an eXo notification on every channel she follows,
+   * Tells the owner about a change: an eXo notification on the channels she follows,
    * and a mail into the mailbox itself, from the platform's sender -- the channel a
    * session thief cannot silence from eXo. Never fails the change it reports.
    *
@@ -777,7 +913,7 @@ public class EmailForwardingService {
   }
 
   /**
-   * The eXo notification of a change, on every channel the owner follows. Never fails
+   * The eXo notification of a change, on the channels the owner follows. Never fails
    * the change it reports.
    *
    * @param username the owner
@@ -829,7 +965,7 @@ public class EmailForwardingService {
    */
   private ForwardingSetting safeRead(ServerRuleEngine engine, MailboxAclSession session) {
     try {
-      return engine.readForwarding(session);
+      return recognise(session.username(), engine.readForwarding(session));
     } catch (ServerRuleUnavailableException e) {
       LOG.debug("The forward of user {} could not be read before a change: {}", session.username(), e.getMessage());
       return null;
@@ -837,13 +973,53 @@ public class EmailForwardingService {
   }
 
   /**
+   * Records the hash of the Sieve script eXo just wrote for a user, whichever feature
+   * wrote it, where the user cannot rewrite it: what forwarding trusts to tell eXo's
+   * script from one edited outside eXo.
+   *
+   * @param username the user
+   * @param hash the SHA-256 of the text written
+   */
+  public void recordScriptHash(String username, String hash) {
+    forwardingGuard.recordScriptHash(username, hash);
+  }
+
+  /**
+   * A forward read from an engine without a script, recognised as eXo's own when it is
+   * exactly the one eXo last set there: BlueMind holds one forward per mailbox, whoever
+   * set it, and only this record tells eXo's from the webmail's. A Sieve engine says so
+   * itself, from eXo's script.
+   *
+   * @param username the owner
+   * @param read what the server holds, possibly null
+   * @return the same forward, marked eXo's when it is
+   */
+  public ForwardingSetting recognise(String username, ForwardingSetting read) {
+    if (read == null || read.managedByExo() || read.state() != ForwardingState.SERVER_FORWARD) {
+      return read;
+    }
+    String written = global(WRITTEN_KEY_PREFIX + username);
+    // eXo's forward always keeps a copy: one edited not to is not eXo's any more.
+    return StringUtils.isNotBlank(written) && read.destinations().equals(List.of(written)) && Boolean.TRUE.equals(read.keepCopy())
+        ? read.withManagedByExo(true)
+        : read;
+  }
+
+  /**
    * After the server accepted a forward's write: the script's hash, in the entry the
-   * automatic reply and the rules compare with too, and the band's status.
+   * automatic reply and the rules compare with too, or -- on an engine without a script
+   * -- the destination eXo set, and the band's status.
    *
    * @param username the caller
    * @param written what the server holds after the write
+   * @param destination what eXo set, null when it removed its forward
+   * @return what the server holds, eXo's own forward recognised
    */
-  private void recordWrite(String username, ServerForwarding written) {
+  private ServerForwarding recordWrite(String username, ServerForwarding written, String destination) {
+    if (written.scriptHash() == null) {
+      setGlobal(WRITTEN_KEY_PREFIX + username, StringUtils.defaultString(destination));
+      written = new ServerForwarding(recognise(username, written.forwarding()), null);
+    }
     if (written.scriptHash() != null) {
       Map<String, Object> value = new LinkedHashMap<>();
       value.put("hash", written.scriptHash());
@@ -852,10 +1028,12 @@ public class EmailForwardingService {
                          UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
                          ExoSieveScript.HASH_SETTING_KEY,
                          SettingValue.create(JsonUtils.toJsonString(value)));
+      recordScriptHash(username, written.scriptHash());
     }
     if (written.forwarding() != null && written.forwarding().state() != ForwardingState.UNKNOWN) {
       storeStatus(username, ForwardingStatus.of(written.forwarding(), clock.millis()));
     }
+    return written;
   }
 
   /**
