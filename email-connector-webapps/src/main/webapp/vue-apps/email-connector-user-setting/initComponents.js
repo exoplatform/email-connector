@@ -39,8 +39,7 @@ import EmailConnectorUserSettingFiltersDrawer from './components/drawer/filters/
 import EmailConnectorUserSettingFilterForm from './components/drawer/filters/EmailConnectorUserSettingFilterForm.vue';
 import EmailConnectorUserSettingFilterCondition from './components/drawer/filters/EmailConnectorUserSettingFilterCondition.vue';
 import EmailConnectorUserSettingFilterSwitch from './components/drawer/filters/EmailConnectorUserSettingFilterSwitch.vue';
-import EmailConnectorUserSettingExoFilters from './components/drawer/filters/EmailConnectorUserSettingExoFilters.vue';
-import EmailConnectorUserSettingExoFilterForm from './components/drawer/filters/EmailConnectorUserSettingExoFilterForm.vue';
+import EmailConnectorUserSettingFilterList from './components/drawer/filters/EmailConnectorUserSettingFilterList.vue';
 import EmailConnectorUserSettingMailboxSharingDrawer from './components/sharing/EmailConnectorUserSettingMailboxSharingDrawer.vue';
 import EmailConnectorUserSettingSharingInviteDrawer from './components/sharing/EmailConnectorUserSettingSharingInviteDrawer.vue';
 import EmailConnectorUserSettingFolderAccessDrawer from './components/sharing/EmailConnectorUserSettingFolderAccessDrawer.vue';
@@ -71,8 +70,7 @@ const components = {
   'email-connector-user-setting-filter-form': EmailConnectorUserSettingFilterForm,
   'email-connector-user-setting-filter-condition': EmailConnectorUserSettingFilterCondition,
   'email-connector-user-setting-filter-switch': EmailConnectorUserSettingFilterSwitch,
-  'email-connector-user-setting-exo-filters': EmailConnectorUserSettingExoFilters,
-  'email-connector-user-setting-exo-filter-form': EmailConnectorUserSettingExoFilterForm,
+  'email-connector-user-setting-filter-list': EmailConnectorUserSettingFilterList,
   'email-connector-user-setting-mailbox-sharing-drawer': EmailConnectorUserSettingMailboxSharingDrawer,
   'email-connector-user-setting-sharing-invite-drawer': EmailConnectorUserSettingSharingInviteDrawer,
   'email-connector-user-setting-folder-access-drawer': EmailConnectorUserSettingFolderAccessDrawer,
