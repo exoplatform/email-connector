@@ -25,6 +25,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -43,6 +45,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -110,6 +113,9 @@ public class EmailServerRuleServiceTest {
   @Mock
   private ServerRuleEngine         engine;
 
+  @Mock
+  private EmailForwardingService   emailForwardingService;
+
   @InjectMocks
   private EmailServerRuleService   service;
 
@@ -137,6 +143,7 @@ public class EmailServerRuleServiceTest {
     lenient().when(serverRuleEngineRegistry.engineFor(connector)).thenReturn(engine);
     lenient().when(emailDelegationService.openOwnSession(USERNAME)).thenReturn(session);
     lenient().when(engine.getName()).thenReturn("sieve");
+    lenient().when(emailForwardingService.narrowed(any(), any())).thenAnswer(invocation -> invocation.getArgument(0));
     lenient().when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenAnswer(invocation -> {
       String value = settings.get(invocation.getArgument(2, String.class));
       return value == null ? null : SettingValue.create(value);
@@ -316,6 +323,34 @@ public class EmailServerRuleServiceTest {
                  assertThrows(IllegalArgumentException.class,
                               () -> service.saveRule(USERNAME, null, null, rule(List.of(action)), false, true)).getMessage(),
                  String.valueOf(action));
+  }
+
+  /**
+   * A rule that forwards is checked by the forwarding service before anything reaches
+   * the server, its destination normalised; a refusal writes nothing. After every write,
+   * the forwarding service is told the rules as the server holds them.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testARuleThatForwardsIsCheckedFirst() throws Exception {
+    settings.put(EmailServerRuleService.CONSENT_SETTING_KEY, "1");
+    ServerRule forward = rule(List.of(new Action(ServerRule.FORWARD, null, null, null, " Bob@Example.org ")));
+    doThrow(new IllegalAccessException("emailConnector.forwarding.destination.notConfirmed")).when(emailForwardingService)
+                                                                                                .requireRuleForwardsAllowed(eq(USERNAME), any());
+    assertThrows(IllegalAccessException.class, () -> service.saveRule(USERNAME, null, null, forward, false, true));
+    assertThrows(IllegalAccessException.class, () -> service.reconcileHops(USERNAME, List.of(), forward, null, false, true, false));
+    verifyNoInteractions(engine);
+    org.mockito.Mockito.reset(emailForwardingService);
+    ServerRuleSet after = written("h1");
+    when(engine.saveRule(eq(session), any(), isNull())).thenReturn(after);
+    service.saveRule(USERNAME, null, null, forward, false, true);
+    ArgumentCaptor<ServerRule> sent = ArgumentCaptor.forClass(ServerRule.class);
+    InOrder order = inOrder(emailForwardingService, engine);
+    order.verify(emailForwardingService).requireRuleForwardsAllowed(eq(USERNAME), any());
+    order.verify(engine).saveRule(eq(session), sent.capture(), isNull());
+    order.verify(emailForwardingService).recordRuleForwards(USERNAME, after.rules());
+    assertEquals("bob@example.org", sent.getValue().actions().get(0).destination());
   }
 
   /**
