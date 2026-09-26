@@ -49,8 +49,7 @@ public record ManageSieveCapabilities(String implementation,
 
   /**
    * The redirects one run may execute when the server does not say: one, the most eXo
-   * can prove -- Stalwart advertises one, Pigeonhole advertises nothing while its own
-   * default is four.
+   * can prove. A server that advertises {@code MAXREDIRECTS} is taken at its word.
    */
   public static final int DEFAULT_MAX_REDIRECTS = 1;
 
