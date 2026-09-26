@@ -75,7 +75,8 @@ export default {
       return ['INACTIVE', 'MODIFIED', 'UNREADABLE'].includes(this.group?.state);
     },
     /**
-     * The row's one line: loading, unsupported, none, or how many filters run.
+     * The row's one line: loading, none, or how many filters run, on the server and in
+     * eXo; a server that lets eXo manage no rule leaves every filter to eXo.
      *
      * @returns {String} the localized line
      */
@@ -88,7 +89,7 @@ export default {
         return (this.error || this.$t('UserSettings.emailConnector.filters.description')) + exo;
       }
       if (!this.supported) {
-        return this.exoCount ? exo.trim() : this.$t('UserSettings.emailConnector.filters.unsupported');
+        return this.exoCount ? exo.trim() : this.$t('UserSettings.emailConnector.filters.none');
       }
       // A hop is the server half of an eXo rule, counted with the eXo rules.
       const count = (this.group.rules || [])
