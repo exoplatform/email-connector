@@ -28,6 +28,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <email-connector-user-setting-disconnect-drawer />
       <email-connector-user-setting-signature-drawer />
       <email-connector-user-setting-absence-drawer />
+      <email-connector-user-setting-forwarding-drawer />
       <email-connector-user-setting-filters-drawer />
       <email-connector-user-setting-filter-log-drawer />
       <email-connector-user-setting-mailbox-sharing-drawer />
