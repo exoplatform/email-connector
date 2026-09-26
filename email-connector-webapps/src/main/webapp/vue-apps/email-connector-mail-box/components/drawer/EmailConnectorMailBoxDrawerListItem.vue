@@ -395,10 +395,10 @@ export default {
     threadUnread() {
       return this.thread ? this.thread.unreadCount > 0 : !this.email.read;
     },
-    // A thread shows the favorite when any of its listed messages carries the flag,
-    // the same any-of rule as unread.
+    // A thread shows the favorite when any of its messages in the row's own folder carries
+    // the flag: the ones the star's click changes (a search row may gather other folders').
     threadFavorite() {
-      return this.thread ? this.thread.emails.some(message => message.starred) : !!this.email.starred;
+      return this.$emailConnectorMailBoxService.threadRowsInFolder(this.email, this.thread).some(message => message.starred);
     },
     // The favorite is pushed to the row's own folder, so every folder can toggle it but
     // the read-only ones (Trash, Spam), where no action writes to the mail server; and
