@@ -15,13 +15,15 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- The filters drawer (EXO-90652): the rules the user's mail server runs at delivery,
-       read live on every opening -- eXo keeps no copy -- with the state the server is in
-       and its one action, and the form of one filter in place of the list while it is
-       edited. Opened by the root event OPEN_FILTERS_DRAWER_EVENT from the Settings row,
-       and from the mailbox's "Create a filter from this mail" with the rule it suggests.
-       Under the server group, the eXo group (EXO-90654): the rules eXo runs after each
-       sync, which work on every server and are shown whatever the server answered. -->
+  <!-- The filters drawer (EXO-90652, EXO-90654): the user's mail filters in one list,
+       wherever they run -- on the mail server as mail arrives, or in eXo after its sync --
+       and the one form of a filter in place of the list while it is edited. Where a
+       filter runs is not the user's choice: the server decides it on save, from what the
+       mail server can do. The server's rules are read live on every opening -- eXo keeps
+       no copy -- with the state the server is in and its one action; eXo's are read from
+       eXo, so a server that cannot be reached never hides them. Opened by the root event
+       OPEN_FILTERS_DRAWER_EVENT from the Settings row, and from the mailbox's "Create a
+       filter from this mail" with the rule it suggests. -->
   <div>
     <exo-drawer
       id="userSettingFiltersDrawer"
@@ -33,14 +35,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </template>
       <template #content>
         <div class="pa-4">
-          <v-progress-linear
-            v-if="loading && !group"
-            indeterminate
-            color="primary"
-            class="mb-4" />
           <template v-if="!editing">
-            <!-- The one-off pass a rule just created is offered: once, over the mail
-                 eXo keeps of the inbox, the assistant only when asked. -->
+            <!-- The one-off pass a filter eXo runs is offered once it is created: once,
+                 over the mail eXo keeps of the inbox, the assistant only when asked. -->
             <v-alert
               v-if="created"
               type="info"
@@ -70,22 +67,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 </v-btn>
               </div>
             </v-alert>
+            <v-progress-linear
+              v-if="loading && !group"
+              indeterminate
+              color="primary"
+              class="mb-4" />
             <div
-              v-if="!group && !loading"
+              v-else-if="groupError"
               class="error--text mb-4"
               role="alert">
-              {{ error || $t('UserSettings.emailConnector.filters.error') }}
+              {{ groupError }}
             </div>
-            <div v-else-if="group && !supported" class="text-subtitle mb-4">
-              {{ $t('UserSettings.emailConnector.filters.unsupported') }}
-            </div>
-          </template>
-          <template v-if="!editing && group && supported">
-            <div class="text-subtitle-1 text-color">
-              {{ $t('UserSettings.emailConnector.filters.server.title') }}
-            </div>
-            <div class="caption text-sub-title mb-4">
-              {{ $t('UserSettings.emailConnector.filters.server.description') }}
+            <div v-else-if="!supported && !exoDisabled" class="text-subtitle mb-4">
+              {{ $t('UserSettings.emailConnector.filters.exoOnly') }}
             </div>
             <v-alert
               v-if="stateMessage"
@@ -114,91 +108,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             </v-alert>
             <div
               v-if="foreignMessage"
-              class="caption text-sub-title mb-4">
+              class="text-subtitle mb-4">
               {{ foreignMessage }}
             </div>
-            <!-- Each filter as the platform's settings lists show a row with actions (the
-                 activity stream settings' categories): its name over what it does, then
-                 its switch and its icon buttons, the delete one in the error color. -->
-            <v-list
-              v-if="rules.length"
-              class="pa-0"
-              dense>
-              <v-list-item
-                v-for="rule in rules"
-                :key="rule.ref"
-                class="pa-0"
-                dense>
-                <v-list-item-content class="me-2 pa-0">
-                  <v-list-item-title class="text-truncate">{{ rule.name }}</v-list-item-title>
-                  <v-list-item-subtitle class="text-wrap">{{ ruleSummary(rule) }}</v-list-item-subtitle>
-                </v-list-item-content>
-                <v-list-item-action class="mx-0 my-auto">
-                  <v-switch
-                    :input-value="rule.enabled"
-                    :disabled="saving"
-                    :aria-label="$t('UserSettings.emailConnector.filters.form.enabled')"
-                    :ripple="false"
-                    class="ma-0 width-fit-content"
-                    hide-details
-                    @change="toggle(rule, $event)" />
-                </v-list-item-action>
-                <v-list-item-action class="mx-0 my-auto">
-                  <v-btn
-                    :title="$t('UserSettings.emailConnector.filters.edit')"
-                    :aria-label="$t('UserSettings.emailConnector.filters.edit')"
-                    icon
-                    @click="edit(rule)">
-                    <v-icon size="18">fas fa-edit</v-icon>
-                  </v-btn>
-                </v-list-item-action>
-                <v-list-item-action class="mx-0 my-auto">
-                  <v-btn
-                    :title="$t('UserSettings.emailConnector.filters.delete')"
-                    :aria-label="$t('UserSettings.emailConnector.filters.delete')"
-                    icon
-                    @click="askDelete(rule)">
-                    <v-icon size="18" color="error">fas fa-trash</v-icon>
-                  </v-btn>
-                </v-list-item-action>
-              </v-list-item>
-            </v-list>
-            <div v-else class="text-sub-title mb-2">
-              {{ $t('UserSettings.emailConnector.filters.empty') }}
-            </div>
-            <v-btn
-              :disabled="saving"
-              class="btn mt-2"
-              @click="edit(null)">
-              <v-icon size="14" class="me-2">fa-plus</v-icon>
-              {{ $t('UserSettings.emailConnector.filters.new') }}
-            </v-btn>
-          </template>
-          <email-connector-user-setting-exo-filters
-            v-if="drawer && !editing"
-            ref="exoFilters"
-            :key="exoListKey"
-            :server-rules="group && supported ? group.rules : null"
-            :folders="folders"
-            class="mt-6"
-            @edit="editExo" />
-          <template v-if="editing && editing.exo">
-            <v-alert
-              v-if="error"
-              type="error"
-              class="text-body-2 mb-4"
-              dense
-              text>
-              {{ error }}
-            </v-alert>
-            <email-connector-user-setting-exo-filter-form
-              :key="formKey"
-              :filter="editing.rule"
-              :capabilities="group && group.capabilities"
+            <email-connector-user-setting-filter-list
+              v-if="drawer"
+              :key="listKey"
+              :server-rules="supported && group ? group.rules : null"
               :folders="folders"
-              @change="formValue = $event" />
+              @edit="edit"
+              @changed="read"
+              @exo-disabled="exoDisabled = true" />
           </template>
-          <template v-else-if="editing">
+          <template v-else>
             <v-alert
               v-if="error"
               type="error"
@@ -209,8 +131,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             </v-alert>
             <email-connector-user-setting-filter-form
               :key="formKey"
-              :rule="editing.rule"
-              :capabilities="group.capabilities"
+              :filter="editing.item"
+              :capabilities="supported ? group.capabilities : null"
+              :capabilities-unknown="!!groupError"
+              :exo-disabled="exoDisabled"
               :folders="folders"
               @change="formValue = $event" />
           </template>
@@ -253,38 +177,40 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :ok-label="$t('UserSettings.emailConnector.filters.republish')"
       :cancel-label="$t('UserSettings.emailConnector.userSetting.drawer.cancel')"
       @ok="publish(true)" />
-    <exo-confirm-dialog
-      ref="deleteDialog"
-      :title="$t('UserSettings.emailConnector.filters.delete.title')"
-      :message="$t('UserSettings.emailConnector.filters.delete.message', { 0: deleting ? deleting.name : '' })"
-      :ok-label="$t('UserSettings.emailConnector.filters.delete')"
-      :cancel-label="$t('UserSettings.emailConnector.userSetting.drawer.cancel')"
-      @ok="doDelete" />
   </div>
 </template>
 
 <script>
 import { OPEN_FILTERS_DRAWER_EVENT, filtersMessage, notifyFiltersUpdated } from '../../../js/EmailConnectorFilters.js';
 
+/** The refusal of a deployment that switched server rules off: not an error, eXo runs every filter. */
+const RULES_DISABLED = 'emailConnector.rules.disabled';
+
+/** The refusal of a server write the user has not consented to yet. */
+const CONSENT_REQUIRED = 'emailConnector.rules.consentRequired';
+
 export default {
   data: () => ({
     drawer: false,
     group: null,
+    // Why the server group could not be read, or null.
+    groupError: null,
+    // Whether the deployment switched eXo's filters off: only server filters remain.
+    exoDisabled: false,
     loading: false,
     saving: false,
     error: null,
     folders: [],
-    // The filter being edited, {rule} with rule null for a new one; null on the list.
+    // The filter being edited, {item} with item null or a prefill for a new one; null on
+    // the list.
     editing: null,
     // Bumped on every edit, so the form fills again.
     formKey: 1,
-    // The form's last {value, valid}.
+    // The form's last {value, valid, kind}.
     formValue: null,
-    // The filter a deletion is being confirmed for.
-    deleting: null,
-    // Bumped to read the eXo group again.
-    exoListKey: 1,
-    // The eXo rule just created, while its one-off pass is offered.
+    // Bumped to read eXo's filters again.
+    listKey: 1,
+    // The filter eXo runs just created, while its one-off pass is offered.
     created: null,
     // Whether the one-off pass also queues the assistant.
     applyWithAgent: false,
@@ -300,12 +226,12 @@ export default {
       if (!this.editing) {
         return this.$t('UserSettings.emailConnector.filters.title');
       }
-      return this.editing.rule && (this.editing.rule.ref || this.editing.rule.id)
+      return this.editing.item && (this.editing.item.ref || this.editing.item.id)
         ? this.$t('UserSettings.emailConnector.filters.form.editTitle')
         : this.$t('UserSettings.emailConnector.filters.form.newTitle');
     },
     /**
-     * Whether the rule just created runs an assistant.
+     * Whether the filter just created runs an assistant.
      *
      * @returns {Boolean} true with an AGENT action
      */
@@ -321,22 +247,15 @@ export default {
       return !!this.group?.capabilities?.supported;
     },
     /**
-     * The filters on the server, in the order it applies them.
-     *
-     * @returns {Object[]} the filters
-     */
-    rules() {
-      // A hop -- a rule whose only action is eXo's keyword -- is the server half of an
-      // eXo rule, written by reconciliation: it is not the user's to edit here.
-      return (this.group?.rules || []).filter(rule => !(rule.actions || []).every(action => action.type === 'TAG'));
-    },
-    /**
      * What the user must know about the server's state.
      *
      * @returns {String} the localized message, or null
      */
     stateMessage() {
-      switch (this.group?.state) {
+      if (!this.supported) {
+        return null;
+      }
+      switch (this.group.state) {
       case 'INACTIVE':
         return this.group.foreignScriptName
           ? this.$t('UserSettings.emailConnector.filters.state.inactive.named', { 0: this.group.foreignScriptName })
@@ -357,7 +276,10 @@ export default {
      * @returns {Object} {label, run}, or null
      */
     stateAction() {
-      switch (this.group?.state) {
+      if (!this.supported) {
+        return null;
+      }
+      switch (this.group.state) {
       case 'INACTIVE':
         return { label: this.$t('UserSettings.emailConnector.filters.reactivate'), run: () => this.publish(false) };
       case 'MODIFIED':
@@ -376,7 +298,7 @@ export default {
      * @returns {String} the localized line, or null
      */
     foreignMessage() {
-      return this.group?.state === 'OWN' && this.group.foreignScriptName
+      return this.supported && this.group.state === 'OWN' && this.group.foreignScriptName
         ? this.$t('UserSettings.emailConnector.filters.foreign', { 0: this.group.foreignScriptName })
         : null;
     },
@@ -389,9 +311,8 @@ export default {
   },
   methods: {
     /**
-     * Opens the drawer on the list, read again from the server, and the folders a filter
-     * may file into. With the rule a mail suggests, opens straight on its form: a server
-     * filter where the server lets eXo manage its rules, an eXo rule otherwise.
+     * Opens the drawer on the list, read again, and the folders a filter may file into.
+     * With the rule a mail suggests, opens straight on its form.
      *
      * @param {Object} [options] - {prefill: {name, matchAll, conditions, subjectSuggestion}}
      * @returns {void}
@@ -399,16 +320,14 @@ export default {
     open(options) {
       this.editing = null;
       this.error = null;
+      this.created = null;
+      this.exoDisabled = false;
       this.drawer = true;
-      this.exoListKey++;
+      this.listKey++;
       const prefill = options?.prefill || null;
       this.read().then(() => {
         if (prefill) {
-          if (this.supported) {
-            this.edit({ ...prefill, enabled: true, actions: [] });
-          } else {
-            this.editExo(prefill);
-          }
+          this.edit(prefill);
         }
       });
       this.$emailConnectorUserSettingService.getMailFolders(false)
@@ -423,42 +342,33 @@ export default {
         .catch(() => this.folders = []);
     },
     /**
-     * Reads the server group.
+     * Reads the server group; a deployment without server rules is no error.
      *
      * @returns {Promise<void>} resolved once read, or once the refusal is shown
      */
     read() {
       this.loading = true;
       return this.$emailConnectorUserSettingService.getServerFilters()
-        .then(group => this.group = group)
+        .then(group => {
+          this.group = group;
+          this.groupError = null;
+        })
         .catch(error => {
           this.group = null;
-          this.error = filtersMessage(this.$t.bind(this), error);
+          this.groupError = error?.message === RULES_DISABLED ? null : filtersMessage(this.$t.bind(this), error);
         })
         .finally(() => this.loading = false);
     },
     /**
-     * Shows the form of a filter, or of a new one.
+     * Shows the form of a filter of the list, or of a new one.
      *
-     * @param {Object} rule - the filter, or null
+     * @param {Object} item - the filter, a prefill, or null
      * @returns {void}
      */
-    edit(rule) {
+    edit(item) {
       this.error = null;
       this.formValue = null;
-      this.editing = { rule, exo: false };
-      this.formKey++;
-    },
-    /**
-     * Shows the form of an eXo rule, or of a new one.
-     *
-     * @param {Object} filter - the rule, or null
-     * @returns {void}
-     */
-    editExo(filter) {
-      this.error = null;
-      this.formValue = null;
-      this.editing = { rule: filter, exo: true };
+      this.editing = { item };
       this.formKey++;
     },
     /**
@@ -471,7 +381,8 @@ export default {
       this.error = null;
     },
     /**
-     * Saves the form, after the one-time consent when the user never gave it.
+     * Saves the form, after the one-time consent when the filter writes on the mail
+     * server and the user never gave it.
      *
      * @returns {void}
      */
@@ -479,66 +390,57 @@ export default {
       if (!this.formValue?.valid) {
         return;
       }
-      // An eXo rule writes nothing on the server unless it also runs at delivery.
-      const publishes = !this.editing?.exo || this.formValue.value.kind === 'HOP';
-      if (!publishes || this.group?.consented) {
+      if (this.formValue.kind === 'EXO' || this.group?.consented) {
         this.save(false);
       } else {
         this.$refs.consentDialog.open();
       }
     },
     /**
-     * Saves the edited filter on the server.
+     * Saves the edited filter through the one entry point, which decides where it runs
+     * and moves it when that changed. After creating a filter eXo runs, offers to apply
+     * it to the mail already in the inbox.
      *
      * @param {Boolean} consent - whether the user just agreed that eXo manages rules on
      *   their mail server
      * @returns {Promise<void>} resolved once saved, or once the refusal is shown
      */
     save(consent) {
-      if (this.editing?.exo) {
-        return this.saveExo(consent);
+      const item = this.editing?.item;
+      let origin = null;
+      if (item?.kind === 'SERVER' && item.ref) {
+        origin = { ref: item.ref };
+      } else if (item?.id) {
+        origin = { id: item.id };
       }
-      const ref = this.editing?.rule?.ref;
-      return this.write(() => this.$emailConnectorUserSettingService.saveServerFilter(this.formValue.value, ref, { consent }))
-        .then(ok => {
-          if (ok) {
-            this.editing = null;
-          }
-        });
-    },
-    /**
-     * Saves the edited eXo rule: a rule that also runs at delivery writes the server
-     * first, and nothing is stored when it refuses. After a creation, offers to apply
-     * the rule to the mail already in the inbox.
-     *
-     * @param {Boolean} consent - whether the user just agreed that eXo manages rules on
-     *   their mail server
-     * @returns {Promise<void>} resolved once saved, or once the refusal is shown
-     */
-    saveExo(consent) {
-      const id = this.editing?.rule?.id;
-      const value = this.formValue.value;
       this.saving = true;
       this.error = null;
-      return this.$emailConnectorUserSettingService.saveExoFilter(value, id, { consent })
+      return this.$emailConnectorUserSettingService.saveRoutedFilter(this.formValue.value, origin, { consent })
         .then(filter => {
           notifyFiltersUpdated();
-          this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.filters.exo.saved'), 'success');
+          const saved = filter?.kind === 'SERVER' ? 'UserSettings.emailConnector.filters.saved' : 'UserSettings.emailConnector.filters.exo.saved';
+          this.$root.$emit('alert-message', this.$t(saved), 'success');
           this.editing = null;
-          this.exoListKey++;
-          if (value.kind === 'HOP') {
-            this.read();
-          }
-          if (!id && filter?.id && filter.enabled) {
+          this.listKey++;
+          this.read();
+          if (!origin && filter?.id && filter.enabled) {
             this.created = filter;
             this.applyWithAgent = false;
           }
         })
-        .catch(error => this.error = filtersMessage(this.$t.bind(this), error))
+        .catch(error => {
+          if (!consent && error?.message === CONSENT_REQUIRED) {
+            // The form could not tell the filter writes on the mail server (its answer was
+            // unknown when the drawer opened): the consent is asked now.
+            this.$refs.consentDialog.open();
+          } else {
+            this.error = filtersMessage(this.$t.bind(this), error);
+          }
+        })
         .finally(() => this.saving = false);
     },
     /**
-     * Applies the rule just created to the mail already in the inbox, once.
+     * Applies the filter just created to the mail already in the inbox, once.
      *
      * @returns {Promise<void>} resolved once applied, or once the refusal is shown
      */
@@ -554,94 +456,31 @@ export default {
           this.$root.$emit('alert-message',
             this.$t('UserSettings.emailConnector.filters.exo.apply.done', { 0: report?.matched || 0, 1: report?.queued || 0 }),
             'success');
-          this.exoListKey++;
+          this.listKey++;
         })
         .catch(error => this.$root.$emit('alert-message', filtersMessage(this.$t.bind(this), error), 'error'))
         .finally(() => this.applying = false);
     },
     /**
-     * Switches a filter on or off on the server.
-     *
-     * @param {Object} rule - the filter
-     * @param {Boolean} enabled - its new state
-     * @returns {Promise<void>} resolved once saved, or once the refusal is shown
-     */
-    toggle(rule, enabled) {
-      return this.write(() => this.$emailConnectorUserSettingService.saveServerFilter({ ...rule, enabled }, rule.ref, {}));
-    },
-    /**
-     * Asks to confirm a deletion.
-     *
-     * @param {Object} rule - the filter
-     * @returns {void}
-     */
-    askDelete(rule) {
-      this.deleting = rule;
-      this.$refs.deleteDialog.open();
-    },
-    /**
-     * Deletes the confirmed filter on the server.
-     *
-     * @returns {Promise<void>} resolved once deleted, or once the refusal is shown
-     */
-    doDelete() {
-      const rule = this.deleting;
-      this.deleting = null;
-      return rule ? this.write(() => this.$emailConnectorUserSettingService.deleteServerFilter(rule.ref)) : Promise.resolve();
-    },
-    /**
-     * Re-activates, or re-publishes, the filters eXo manages.
+     * Re-activates, or re-publishes, the filters eXo manages on the server.
      *
      * @param {Boolean} republish - overwrite an edit made outside eXo
      * @returns {Promise<void>} resolved once written, or once the refusal is shown
      */
     publish(republish) {
-      return this.write(() => this.$emailConnectorUserSettingService.publishServerFilters(republish));
-    },
-    /**
-     * Runs a write: the group it answers replaces the list, the capabilities read at
-     * opening kept; a refusal is said in the user's words and the list read again.
-     *
-     * @param {Function} request - the write
-     * @returns {Promise<Boolean>} true when written
-     */
-    write(request) {
       this.saving = true;
       this.error = null;
-      return request()
+      return this.$emailConnectorUserSettingService.publishServerFilters(republish)
         .then(group => {
           this.group = { ...group, capabilities: group?.capabilities || this.group?.capabilities };
           notifyFiltersUpdated();
           this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.filters.saved'), 'success');
-          return true;
         })
         .catch(error => {
           this.error = filtersMessage(this.$t.bind(this), error);
-          if (!this.editing) {
-            this.read();
-          }
-          return false;
+          this.read();
         })
         .finally(() => this.saving = false);
-    },
-    /**
-     * A filter in one line: what it does.
-     *
-     * @param {Object} rule - the filter
-     * @returns {String} the localized line
-     */
-    ruleSummary(rule) {
-      const parts = (rule.actions || []).map(action => {
-        if (action.type === 'MOVE_TO_FOLDER') {
-          const folder = this.folders.find(candidate => candidate.key === action.folderKey);
-          return this.$t('UserSettings.emailConnector.filters.summary.move', { 0: folder?.label || action.folderPath });
-        }
-        return this.$t(`UserSettings.emailConnector.filters.summary.${action.type}`);
-      });
-      if (rule.stop) {
-        parts.push(this.$t('UserSettings.emailConnector.filters.summary.stop'));
-      }
-      return parts.join(', ');
     },
   },
 };
