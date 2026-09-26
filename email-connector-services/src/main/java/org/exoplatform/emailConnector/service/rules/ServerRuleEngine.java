@@ -184,13 +184,15 @@ public interface ServerRuleEngine {
   }
 
   /**
-   * Deletes one of the caller's server rules, and publishes.
+   * Deletes one of the caller's server rules, and publishes. A hop is not deleted here:
+   * {@link #reconcile} owns them.
    *
    * @param session the caller's own session
    * @param ref the rule's reference
    * @param expectedScriptHash as for {@link #saveRule}
    * @return the rules as the server holds them after the write
    * @throws ObjectNotFoundException when no rule of eXo's holds the reference
+   * @throws IllegalArgumentException when the reference names a hop
    * @throws ServerRuleUnavailableException when the server cannot be used
    * @throws ServerRuleConflictException when another client's active state is in the way,
    *           or eXo's script changed outside eXo; nothing was written

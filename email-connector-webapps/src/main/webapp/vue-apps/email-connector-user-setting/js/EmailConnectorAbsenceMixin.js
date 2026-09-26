@@ -31,6 +31,13 @@ export const ABSENCE_UPDATED_EVENT = 'email-absence-updated';
 export const OPEN_ABSENCE_DRAWER_EVENT = 'open-email-absence-drawer';
 
 /**
+ * eXo's own script on the mail server: named as the reply's state when it no longer
+ * reads as eXo's, which the user repairs or deletes in their mail client -- eXo never
+ * writes over it, since the rules it may hold could not be written back.
+ */
+const EXO_SCRIPT = 'exo-rules';
+
+/**
  * Tells every view of the automatic reply that it changed on the mail server.
  *
  * @returns {void}
@@ -98,6 +105,9 @@ export default {
           ? this.$t('UserSettings.emailConnector.absence.state.elsewhere', { 0: this.absence.foreignScriptName })
           : this.$t('UserSettings.emailConnector.absence.state.elsewhere.nameless');
       case 'MODIFIED':
+        if (this.absence.foreignScriptName === EXO_SCRIPT) {
+          return this.$t('UserSettings.emailConnector.absence.state.unreadable');
+        }
         return this.absence.foreignScriptName
           ? this.$t('UserSettings.emailConnector.absence.state.wrapperModified', { 0: this.absence.foreignScriptName })
           : this.$t('UserSettings.emailConnector.absence.state.modified');
@@ -132,6 +142,9 @@ export default {
      */
     absenceMessage(error) {
       const code = error?.message || '';
+      if (code === 'emailConnector.absence.unreadable') {
+        return this.$t('UserSettings.emailConnector.absence.state.unreadable');
+      }
       if (code === 'emailConnector.absence.modifiedOutside' && error.scriptName === 'exo-main') {
         return this.$t('UserSettings.emailConnector.absence.state.wrapperModified', { 0: error.scriptName });
       }

@@ -188,11 +188,12 @@ public class SieveRuleEngine implements ServerRuleEngine {
    * @param vacation the reply, validated by the caller
    * @param days the minimum number of days between two replies to one sender
    * @param expectedScriptHash the hash of eXo's script as eXo last wrote it, or null to
-   *          overwrite it whatever it holds
+   *          overwrite it whatever it holds -- as long as eXo can read it
    * @return what the server holds after the write
    * @throws ServerRuleUnavailableException when the server cannot be used
-   * @throws ServerRuleConflictException when the policy refuses, or eXo's script changed
-   *           outside eXo; nothing was written
+   * @throws ServerRuleConflictException when the policy refuses, eXo's script changed
+   *           outside eXo, or ({@link ServerRuleConflictException#UNREADABLE}) eXo's script
+   *           cannot be read as eXo's, even with a null hash; nothing was written
    * @throws ServerRuleUnsupportedException when the server lacks {@code vacation}, or the
    *           date extensions a window needs
    */
@@ -212,12 +213,18 @@ public class SieveRuleEngine implements ServerRuleEngine {
       if (hasExo) {
         String text = client.getScript(SCRIPT_NAME);
         Optional<ExoSieveScript> parsed = ExoSieveScript.parse(text);
+        // A header eXo cannot read is never written over, even on "Re-publish": the rules
+        // it holds could not be written back, and a reply-only script would drop them.
+        // The user repairs or deletes it in their mail client, as for the rules.
+        if (parsed.isEmpty()) {
+          throw new ServerRuleConflictException(ServerRuleConflictException.UNREADABLE, SCRIPT_NAME);
+        }
         if (expectedScriptHash != null && !expectedScriptHash.equals(ExoSieveScript.sha256(text))) {
           throw new ServerRuleConflictException(ServerRuleConflictException.MODIFIED_OUTSIDE, SCRIPT_NAME);
         }
         // The rules the header holds are regenerated as they are: the reply's write
         // keeps them, byte for byte.
-        base = parsed.orElse(base);
+        base = parsed.get();
       }
       ExoSieveScript script = base.withVacation(toVacation(vacation, days, base.getVacation().orElse(null)));
       String active = SieveScriptPolicy.activeScript(scripts);
@@ -318,6 +325,8 @@ public class SieveRuleEngine implements ServerRuleEngine {
    * @param expectedScriptHash as for {@link #saveRule}
    * @return the rules after the write
    * @throws ObjectNotFoundException when eXo's script holds no such rule
+   * @throws IllegalArgumentException when the rule is a hop, which only reconciliation
+   *           removes
    * @throws ServerRuleUnavailableException when the server cannot be used
    * @throws ServerRuleConflictException when the policy refuses, or eXo's script changed
    *           outside eXo; nothing was written
@@ -336,6 +345,10 @@ public class SieveRuleEngine implements ServerRuleEngine {
       int index = indexOf(rules, ref);
       if (index < 0) {
         throw new ObjectNotFoundException(RULE_NOT_FOUND);
+      }
+      if (rules.get(index).isHop()) {
+        // Hops are the server half of eXo's own rules: removed by reconciliation only.
+        throw new IllegalArgumentException(ServerRule.INVALID_ACTION);
       }
       rules.remove(index);
       writeRules(client, scripts, base.withRules(rules));
@@ -693,7 +706,10 @@ public class SieveRuleEngine implements ServerRuleEngine {
       return ServerVacation.none();
     }
     if (exo.isEmpty()) {
-      return new ServerVacation(VacationState.MODIFIED, setting, null, hash);
+      // eXo's script no longer reads as eXo's: named, like a wrapper changed outside eXo,
+      // so the interface says which script to repair and offers no "Re-publish", which
+      // would have to drop the rules the script may hold.
+      return new ServerVacation(VacationState.MODIFIED, setting, SCRIPT_NAME, hash);
     }
     if (setting == null) {
       return new ServerVacation(VacationState.NONE, null, null, hash);

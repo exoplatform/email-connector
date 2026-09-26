@@ -42,6 +42,13 @@ public class ServerRuleConflictException extends Exception {
   /** eXo's own wrapper was edited by another client and no longer reads as eXo's. */
   public static final String MODIFIED_OUTSIDE  = "emailConnector.absence.modifiedOutside";
 
+  /**
+   * eXo's own script no longer reads as eXo's: nothing eXo writes may replace it, not even
+   * on "Re-publish", since what it holds could not be written back. Repaired or deleted in
+   * the mail client.
+   */
+  public static final String UNREADABLE        = "emailConnector.absence.unreadable";
+
   /** The script the conflict is about. */
   private final String       scriptName;
 
