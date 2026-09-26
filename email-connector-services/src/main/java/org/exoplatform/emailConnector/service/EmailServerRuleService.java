@@ -36,6 +36,7 @@ import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailFolder;
+import org.exoplatform.emailConnector.model.ForwardingDestination;
 import org.exoplatform.emailConnector.model.HopRef;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ReconcileReport;
@@ -123,6 +124,9 @@ public class EmailServerRuleService {
   @Autowired
   private SettingService           settingService;
 
+  @Autowired
+  private EmailForwardingService   emailForwardingService;
+
   private Clock                    clock               = Clock.systemUTC();
 
   /**
@@ -151,7 +155,7 @@ public class EmailServerRuleService {
                                                                    ServerRuleUnavailableException {
     ServerRuleEngine engine = engineOf(username, delegationId);
     try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
-      return engine.probe(session);
+      return emailForwardingService.narrowed(engine.probe(session), session.connector());
     }
   }
 
@@ -173,7 +177,7 @@ public class EmailServerRuleService {
                                                                ServerRuleUnavailableException {
     ServerRuleEngine engine = engineOf(username, delegationId);
     try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
-      ServerRuleCapabilities capabilities = engine.probe(session);
+      ServerRuleCapabilities capabilities = emailForwardingService.narrowed(engine.probe(session), session.connector());
       if (!capabilities.supported()) {
         return settings(username, capabilities, engine, ServerRuleSet.none());
       }
@@ -231,6 +235,7 @@ public class EmailServerRuleService {
                                          rule.conditions(),
                                          resolveActions(username, rule.actions()),
                                          rule.stop()).validated();
+    emailForwardingService.requireRuleForwardsAllowed(username, resolved.actions());
     requireConsent(username, consent);
     try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
       ServerRuleSet written = engine.saveRule(session, resolved, republish ? null : storedHash(username));
@@ -395,6 +400,9 @@ public class EmailServerRuleService {
                                                          added.conditions(),
                                                          resolveActions(username, added.actions()),
                                                          added.stop()).validated();
+    if (resolved != null) {
+      emailForwardingService.requireRuleForwardsAllowed(username, resolved.actions());
+    }
     if (publishing || resolved != null) {
       requireConsent(username, consent);
     }
@@ -422,7 +430,9 @@ public class EmailServerRuleService {
   /**
    * The actions of a rule the user authored, their folders resolved against the user's
    * own mirrored folders: a move to one of their custom folders or to Archive, a move to
-   * their Junk or Trash. The keyword action is refused: only reconciliation writes it.
+   * their Junk or Trash; a forward's destination in its one accepted form, whether it
+   * may be used being the forwarding service's to check. The keyword action is refused:
+   * only reconciliation writes it.
    *
    * @param username the caller
    * @param actions the actions as sent
@@ -444,6 +454,11 @@ public class EmailServerRuleService {
       }
       case ServerRule.MARK_JUNK -> resolved.add(new ServerRule.Action(type, MailFolder.JUNK, builtIn(username, MailFolder.JUNK), null));
       case ServerRule.DELETE -> resolved.add(new ServerRule.Action(type, MailFolder.TRASH, builtIn(username, MailFolder.TRASH), null));
+      case ServerRule.FORWARD -> resolved.add(new ServerRule.Action(type,
+                                                                    null,
+                                                                    null,
+                                                                    null,
+                                                                    ForwardingDestination.normalize(action.destination())));
       default -> resolved.add(new ServerRule.Action(type, null, null, action.keyword()));
       }
     }
@@ -547,13 +562,15 @@ public class EmailServerRuleService {
   }
 
   /**
-   * After the server accepted a write: the script's hash, in the entry the automatic
-   * reply compares with too.
+   * After the server accepted a write: the owner told about every rule that now forwards
+   * or no longer does, then the script's hash, in the entry the automatic reply compares
+   * with too.
    *
    * @param username the caller
    * @param written what the server holds after the write
    */
   private void recordWrite(String username, ServerRuleSet written) {
+    emailForwardingService.recordRuleForwards(username, written.rules());
     if (written.scriptHash() != null) {
       Map<String, Object> value = new LinkedHashMap<>();
       value.put("hash", written.scriptHash());

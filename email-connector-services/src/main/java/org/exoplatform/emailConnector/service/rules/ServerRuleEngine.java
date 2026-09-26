@@ -26,6 +26,8 @@ import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.HopRef;
 import org.exoplatform.emailConnector.model.ReconcileReport;
+import org.exoplatform.emailConnector.model.ServerAbsence;
+import org.exoplatform.emailConnector.model.ServerForwarding;
 import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRuleSet;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
@@ -122,10 +124,10 @@ public interface ServerRuleEngine {
 
   /**
    * Reads whether the caller's mailbox forwards mail, as the server holds it. <b>A read
-   * only</b>: no engine writes a forward in this phase, and this verb never issues a
-   * write to the server. An engine that holds forwards structurally names the
-   * destinations; one that only sees another client's scripts says which script may
-   * forward, and never reads destinations out of it.
+   * only</b>: this verb never issues a write to the server. An engine that holds forwards
+   * structurally names the destinations, and so does one for the forward eXo set itself;
+   * one that only sees another client's scripts says which script may forward, and never
+   * reads destinations out of it.
    *
    * @param session the caller's own session
    * @return what could be established; {@link ForwardingSetting#unknown()} for an engine
@@ -135,6 +137,50 @@ public interface ServerRuleEngine {
    */
   default ForwardingSetting readForwarding(MailboxAclSession session) throws ServerRuleUnavailableException {
     return ForwardingSetting.unknown();
+  }
+
+  /**
+   * Reads the caller's automatic reply and, when asked, the forward, in one pass: an
+   * engine that talks to the server per conversation reads both in one.
+   *
+   * @param session the caller's own session
+   * @param zone the zone to state the reply's days in, the caller's own; null when
+   *          unknown
+   * @param withForwarding whether to read the forward too
+   * @return the reply, and the forward or null
+   * @throws ServerRuleUnavailableException when the server cannot be used for this
+   *           request
+   */
+  default ServerAbsence readAbsence(MailboxAclSession session,
+                                    ZoneId zone,
+                                    boolean withForwarding) throws ServerRuleUnavailableException {
+    return new ServerAbsence(readVacation(session, zone), withForwarding ? readForwarding(session) : null);
+  }
+
+  /**
+   * Sets, changes or removes the forward eXo manages for the caller: every mail a copy to
+   * one address, the mail always kept in the mailbox. The caller has already checked
+   * that the deployment allows it, that the address is in the allowed domains and that
+   * it was confirmed; the engine checks the address again against the destinations its
+   * {@link ForwardingGuard} authorizes, and writes nothing that would not keep a copy.
+   * Whatever else the server holds for the caller is kept as it is.
+   *
+   * @param session the caller's own session
+   * @param destination the address, normalised; null to remove eXo's forward
+   * @param expectedScriptHash as for {@link #saveRule}
+   * @return the forward as the server holds it after the write
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when another client may forward too, or eXo's
+   *           script changed outside eXo; nothing was written
+   * @throws ServerRuleUnsupportedException when this engine or server cannot hold a
+   *           forward that keeps a copy, which is the default
+   */
+  default ServerForwarding writeForwarding(MailboxAclSession session,
+                                           String destination,
+                                           String expectedScriptHash) throws ServerRuleUnavailableException,
+                                                                      ServerRuleConflictException,
+                                                                      ServerRuleUnsupportedException {
+    throw new ServerRuleUnsupportedException(ServerRuleUnsupportedException.FORWARDING_UNSUPPORTED);
   }
 
   /**

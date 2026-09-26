@@ -59,6 +59,11 @@ import org.exoplatform.services.log.Log;
  * never by name: a foreign out-of-office is "an active script eXo does not own" plus the
  * token — Stalwart's JMAP one has an empty name, which can be neither read nor included,
  * and is refused as such.</li>
+ * <li><b>Forward coexistence.</b> Before wrapping a script that forwards (eXo's forward,
+ * or a rule that forwards), the other script and the personal scripts it includes are
+ * scanned the same way for {@code redirect} and {@code notify}; found, eXo refuses with
+ * {@link ServerRuleConflictException#FORWARDED_ELSEWHERE} -- one mail would leave twice,
+ * and two redirects may exceed what one run is allowed.</li>
  * <li><b>Wrapper ordering.</b> eXo's script is included first while it files, stops,
  * discards, rejects and redirects nothing — a reply-only script, which a {@code stop}
  * in the other script would otherwise skip — and second otherwise, so the other
@@ -82,8 +87,15 @@ public class SieveScriptPolicy {
   /** The token the vacation-token refusal looks for. */
   static final String          VACATION_TOKEN    = "vacation";
 
-  /** The command a forward is made of, which eXo detects and never writes in this phase. */
+  /** The command a forward is made of. */
   static final String          REDIRECT_TOKEN    = "redirect";
+
+  /**
+   * The other command that sends a delivered mail elsewhere: an {@code enotify}
+   * notification to a {@code mailto:} address (RFC 5435), scanned beside
+   * {@code redirect}.
+   */
+  static final String          NOTIFY_TOKEN      = "notify";
 
   /** The first line of the wrapper eXo generates. */
   static final String          WRAPPER_HEADER    = "# exo-managed-wrapper-v1";
@@ -174,6 +186,7 @@ public class SieveScriptPolicy {
         return new PublishOutcome(PolicyCase.WRAPPER_REMOVED, SCRIPT_NAME, null, false, hash);
       }
       requireNoForeignVacation(client, scripts, foreign, script);
+      requireNoForeignRedirect(client, scripts, foreign, script);
       client.checkScript(text);
       put(client, SCRIPT_NAME, text);
       put(client, WRAPPER_NAME, wrapper(foreign, exoFirst));
@@ -183,14 +196,19 @@ public class SieveScriptPolicy {
       // A nameless active script (what Stalwart's JMAP out-of-office creates) can be
       // neither read nor included by name: with a reply to publish it is an
       // out-of-office managed elsewhere, without one a script eXo cannot wrap.
-      throw new ServerRuleConflictException(script.emitsVacation() ? ServerRuleConflictException.MANAGED_ELSEWHERE
-                                                                   : ServerRuleConflictException.SERVER_CONFLICT,
-                                            active);
+      String code = ServerRuleConflictException.SERVER_CONFLICT;
+      if (script.emitsVacation()) {
+        code = ServerRuleConflictException.MANAGED_ELSEWHERE;
+      } else if (script.emitsRedirect()) {
+        code = ServerRuleConflictException.FORWARDED_ELSEWHERE;
+      }
+      throw new ServerRuleConflictException(code, active);
     }
     if (!client.getCapabilities().hasExtension(INCLUDE_EXTENSION) || !includable(active)) {
       throw new ServerRuleConflictException(ServerRuleConflictException.SERVER_CONFLICT, active);
     }
     requireNoForeignVacation(client, scripts, active, script);
+    requireNoForeignRedirect(client, scripts, active, script);
     client.checkScript(text);
     put(client, SCRIPT_NAME, text);
     put(client, WRAPPER_NAME, wrapper(active, exoFirst));
@@ -285,6 +303,27 @@ public class SieveScriptPolicy {
   }
 
   /**
+   * The forward coexistence rule: when eXo's script forwards, the foreign script and the
+   * personal scripts it includes must not forward too. Recall first, as for the reply.
+   *
+   * @param client the client
+   * @param scripts the account's scripts
+   * @param foreign the foreign active script
+   * @param script eXo's script
+   * @throws ManageSieveException when a script cannot be read
+   * @throws ServerRuleConflictException {@link ServerRuleConflictException#FORWARDED_ELSEWHERE}
+   *           when one may
+   */
+  private void requireNoForeignRedirect(ManageSieveClient client,
+                                        List<SieveScriptInfo> scripts,
+                                        String foreign,
+                                        ExoSieveScript script) throws ManageSieveException, ServerRuleConflictException {
+    if (script.emitsRedirect() && mayCarryRedirect(client, scripts, foreign)) {
+      throw new ServerRuleConflictException(ServerRuleConflictException.FORWARDED_ELSEWHERE, foreign);
+    }
+  }
+
+  /**
    * Whether a foreign script, or a personal script it includes (one level), may carry a
    * {@code vacation} -- the detection behind the vacation-token refusal, also what the
    * automatic reply's read says as "managed elsewhere". Recall first, detection only: see
@@ -304,10 +343,12 @@ public class SieveScriptPolicy {
   }
 
   /**
-   * Whether a foreign script, or a personal script it includes (one level), may carry a
-   * {@code redirect} -- what the forward's read says as "a forward may be configured by
-   * this script". Recall first, detection only: the destinations are never read out of
-   * the script. See {@link #mayCarry}.
+   * Whether a foreign script, or a personal script it includes (one level), may send a
+   * delivered mail elsewhere -- a {@code redirect}, or a {@code notify} that can mail a
+   * {@code mailto:} address -- what the forward's read says as "a forward may be
+   * configured by this script", and what eXo refuses to add its own forward next to.
+   * Recall first, detection only: the destinations are never read out of the script. See
+   * {@link #mayCarry}.
    *
    * @param client the client
    * @param scripts the account's scripts
@@ -319,7 +360,7 @@ public class SieveScriptPolicy {
   boolean mayCarryRedirect(ManageSieveClient client,
                            List<SieveScriptInfo> scripts,
                            String foreign) throws ManageSieveException {
-    return mayCarry(client, scripts, foreign, REDIRECT_TOKEN);
+    return mayCarry(client, scripts, foreign, REDIRECT_TOKEN, NOTIFY_TOKEN);
   }
 
   /**
@@ -332,15 +373,15 @@ public class SieveScriptPolicy {
    * @param client the client
    * @param scripts the account's scripts
    * @param foreign the foreign script's name
-   * @param token the command's name
-   * @return true when it may carry the command
+   * @param tokens the commands' names; any one found is enough
+   * @return true when it may carry one of the commands
    * @throws ManageSieveException when a script cannot be read for another reason than
    *           the server refusing it
    */
   private boolean mayCarry(ManageSieveClient client,
                            List<SieveScriptInfo> scripts,
                            String foreign,
-                           String token) throws ManageSieveException {
+                           String... tokens) throws ManageSieveException {
     if (foreign.isEmpty()) {
       return true;
     }
@@ -354,7 +395,7 @@ public class SieveScriptPolicy {
       // Listed yet unreadable: absence of the command cannot be established.
       return true;
     }
-    if (SieveTokenScan.containsWord(text, token) || SieveTokenScan.hasUnreadableInclude(text)) {
+    if (containsAny(text, tokens) || SieveTokenScan.hasUnreadableInclude(text)) {
       return true;
     }
     for (String included : SieveTokenScan.includedPersonalScripts(text)) {
@@ -365,7 +406,23 @@ public class SieveScriptPolicy {
         return true;
       }
       String includedText = client.getScript(included);
-      if (SieveTokenScan.containsWord(includedText, token) || SieveTokenScan.includesAnything(includedText)) {
+      if (containsAny(includedText, tokens) || SieveTokenScan.includesAnything(includedText)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether a script's text holds one of the command tokens, as a word outside comments.
+   *
+   * @param text the text
+   * @param tokens the tokens
+   * @return true when one is found
+   */
+  private static boolean containsAny(String text, String... tokens) {
+    for (String token : tokens) {
+      if (SieveTokenScan.containsWord(text, token)) {
         return true;
       }
     }
