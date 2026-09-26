@@ -32,6 +32,22 @@ public class NotificationConstants {
   /** One of the user's own mail filters matched new mail (EXO-90654). */
   public static final String EMAIL_FILTER_NOTIFICATION_PLUGIN = "EmailFilterNotificationPlugin";
 
+  /**
+   * The user's mail forward changed, or one eXo did not set was found (EXO-90656): set,
+   * changed, removed, a rule that forwards saved or removed. Its own id, so it has its own
+   * line in the notification settings.
+   */
+  public static final String EMAIL_FORWARDING_NOTIFICATION_PLUGIN = "EmailForwardingNotificationPlugin";
+
+  /** What happened to the forward: an {@code EmailForwardingNotificationPlugin.Change} name. */
+  public static final String FORWARDING_CHANGE              = "FORWARDING_CHANGE";
+
+  /** Where mail is, or was, forwarded. */
+  public static final String FORWARDING_DESTINATION         = "FORWARDING_DESTINATION";
+
+  /** The rule, or the other client's script, the change is about; blank when none. */
+  public static final String FORWARDING_SOURCE              = "FORWARDING_SOURCE";
+
   /** The mail filter's name, as its notification carries it. */
   public static final String FILTER_NAME                    = "FILTER_NAME";
 

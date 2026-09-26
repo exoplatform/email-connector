@@ -34,6 +34,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+import org.exoplatform.emailConnector.exception.ForwardingRefusedException;
+import org.exoplatform.emailConnector.model.ForwardingDestination;
 import org.exoplatform.emailConnector.model.ServerRule;
 
 import tools.jackson.core.JacksonException;
@@ -50,20 +52,31 @@ import tools.jackson.databind.node.ObjectNode;
  * The first line is {@code # exo-managed-v1: {"v":1,"vacation":{…},"rules":[…]}} — a
  * Sieve comment holding the model as one line of JSON. eXo reads its own script back
  * from that line, never from the Sieve below it: the server stays the only store, and
- * free-form Sieve is never parsed. The two reserved keys are {@code vacation} and
- * {@code rules}; any other top-level key is kept and written back untouched, so a
- * later feature needs no header version.
+ * free-form Sieve is never parsed. The reserved keys are {@code vacation},
+ * {@code forward} and {@code rules}; any other top-level key is kept and written back
+ * untouched, so a later feature needs no header version.
  * <p>
  * The generated Sieve is sectioned, in a fixed order: the {@code require} line (the
- * union of what the emitted sections need), the {@code # exo-vacation} section, then
- * the {@code # exo-rules} section. The vacation section comes first because
- * {@code vacation} neither files nor stops (RFC 5230 §4.6): no later {@code stop} can
- * skip it, and a later {@code fileinto} still applies.
+ * union of what the emitted sections need), the {@code # exo-vacation} section, the
+ * {@code # exo-forward} section, then the {@code # exo-rules} section. The vacation and
+ * the forward come first because neither files nor stops ({@code vacation}, RFC 5230
+ * §4.6; {@code redirect :copy}, RFC 3894): no later {@code stop} can skip them, and a
+ * later {@code fileinto} still applies.
+ * <p>
+ * <b>A forward is never written on the model's word alone.</b> The forward and every
+ * rule that forwards are written as {@code redirect :copy} -- never a plain
+ * {@code redirect}, so the mail always stays in the mailbox -- and only to a destination
+ * the caller authorized for this write ({@link #withAuthorizedRedirects}); any other one
+ * is refused with {@link ForwardingRefusedException}, and so is a server that does not
+ * advertise {@code copy}. A header read back from the server, even one edited outside
+ * eXo and re-published, cannot make eXo forward anywhere the caller's checks do not
+ * allow.
  * <p>
  * The vocabulary is a closed allowlist: {@code require}, {@code if allof(currentdate …)}
  * and {@code vacation} with {@code :days}, {@code :subject} and {@code :handle} for the
- * reply; for the rules, what {@link SieveRulesSection} generates -- address, header,
- * exists and size tests, {@code addflag}, {@code fileinto}, {@code stop}. Every user
+ * reply; {@code redirect :copy} for the forward; for the rules, what
+ * {@link SieveRulesSection} generates -- address, header, exists and size tests,
+ * {@code addflag}, {@code redirect :copy}, {@code fileinto}, {@code stop}. Every user
  * string becomes a Sieve quoted string with {@code \} and {@code "} escaped, so it
  * cannot close its string and become a command. The {@code require} line is the union of
  * what the two sections emit; a script without rules is byte for byte what the reply
@@ -94,6 +107,12 @@ public final class ExoSieveScript {
   /** The reserved header key of the server rules. */
   public static final String        KEY_RULES         = "rules";
 
+  /** The reserved header key of eXo's forward: {@code {"to":"<address>"}}. */
+  public static final String        KEY_FORWARD       = "forward";
+
+  /** The comment opening the forward section. */
+  public static final String        FORWARD_MARKER    = "# exo-forward";
+
   /** The comment opening the vacation section. */
   public static final String        VACATION_MARKER   = "# exo-vacation";
 
@@ -121,36 +140,111 @@ public final class ExoSieveScript {
   /** Every other top-level header key, in its order, written back untouched. */
   private final Map<String, JsonNode> otherKeys;
 
+  /** The address eXo's forward sends a copy to, or null when there is none. */
+  private final String              forward;
+
+  /**
+   * The destinations a {@code redirect} may be written to in this write: never part of
+   * the header or of the model's equality, set by the caller from its forwarding checks.
+   */
+  private final Set<String>         authorizedRedirects;
+
   /**
    * A script model.
    *
    * @param vacation the automatic reply, possibly null
    * @param rules the rules, possibly null for none
    * @param otherKeys the unknown top-level keys, possibly null
+   * @param forward the forward's address, possibly null
+   * @param authorizedRedirects the destinations this write may forward to, possibly null
    */
-  private ExoSieveScript(Vacation vacation, List<ServerRule> rules, Map<String, JsonNode> otherKeys) {
+  private ExoSieveScript(Vacation vacation,
+                         List<ServerRule> rules,
+                         Map<String, JsonNode> otherKeys,
+                         String forward,
+                         Set<String> authorizedRedirects) {
     this.vacation = vacation;
     this.rules = rules == null ? List.of() : List.copyOf(rules);
     this.otherKeys = otherKeys == null ? Map.of() : new LinkedHashMap<>(otherKeys);
+    this.forward = forward;
+    this.authorizedRedirects = authorizedRedirects == null ? Set.of() : Set.copyOf(authorizedRedirects);
   }
 
   /**
-   * A script with nothing in it: no automatic reply, no rule.
+   * A script with nothing in it: no automatic reply, no forward, no rule.
    *
    * @return the empty script
    */
   public static ExoSieveScript empty() {
-    return new ExoSieveScript(null, null, null);
+    return new ExoSieveScript(null, null, null, null, null);
   }
 
   /**
-   * This script with another automatic reply, rules and unknown keys unchanged.
+   * This script with another automatic reply, everything else unchanged.
    *
    * @param newVacation the automatic reply, null to remove it from the model
    * @return the new script
    */
   public ExoSieveScript withVacation(Vacation newVacation) {
-    return new ExoSieveScript(newVacation, rules, otherKeys);
+    return new ExoSieveScript(newVacation, rules, otherKeys, forward, authorizedRedirects);
+  }
+
+  /**
+   * This script with another forward, everything else unchanged. Its destination is
+   * checked for its shape here, and for being allowed when the script is generated.
+   *
+   * @param destination the address a copy of every mail goes to, null for no forward
+   * @return the new script
+   * @throws IllegalArgumentException {@value ForwardingDestination#INVALID} for anything
+   *           but a plain address
+   */
+  public ExoSieveScript withForward(String destination) {
+    return new ExoSieveScript(vacation,
+                              rules,
+                              otherKeys,
+                              destination == null ? null : ForwardingDestination.normalize(destination),
+                              authorizedRedirects);
+  }
+
+  /**
+   * This script, allowed to forward to the given destinations in the write it is
+   * generated for: what the caller's forwarding checks allow, and nothing else. Not part
+   * of the header.
+   *
+   * @param destinations the destinations, normalised
+   * @return the new script
+   */
+  public ExoSieveScript withAuthorizedRedirects(Set<String> destinations) {
+    return new ExoSieveScript(vacation, rules, otherKeys, forward, destinations);
+  }
+
+  /**
+   * The address eXo's forward sends a copy of every mail to.
+   *
+   * @return the address, or empty when there is no forward
+   */
+  public Optional<String> getForward() {
+    return Optional.ofNullable(forward);
+  }
+
+  /**
+   * How many {@code redirect}s the generated script holds, which one mail may all meet:
+   * the forward and each enabled rule that forwards.
+   *
+   * @return the count
+   */
+  public int redirectCount() {
+    return (forward == null ? 0 : 1)
+        + (int) rules.stream().filter(rule -> rule.enabled() && !rule.forwardDestinations().isEmpty()).count();
+  }
+
+  /**
+   * Whether the generated script forwards anything.
+   *
+   * @return true when it holds a {@code redirect}
+   */
+  public boolean emitsRedirect() {
+    return redirectCount() > 0;
   }
 
   /**
@@ -172,7 +266,7 @@ public final class ExoSieveScript {
       }
       validated.add(clean);
     }
-    return new ExoSieveScript(vacation, validated, otherKeys);
+    return new ExoSieveScript(vacation, validated, otherKeys, forward, authorizedRedirects);
   }
 
   /**
@@ -213,11 +307,12 @@ public final class ExoSieveScript {
   }
 
   /**
-   * Whether the generated script may file, stop, discard, reject or redirect a mail. The
-   * generator knows what it emits: the vacation section does none of these, a rule that
-   * only flags does none of these either, and an enabled rule with a filing action or
-   * {@code stop} does. It never emits {@code discard}, {@code reject} or
-   * {@code redirect}.
+   * Whether the generated script may file, stop, discard, reject or redirect a mail away
+   * from the mailbox. The generator knows what it emits: the vacation section does none
+   * of these, nor does the forward or a rule that forwards ({@code redirect :copy} keeps
+   * the mail where it is), nor a rule that only flags; an enabled rule with a filing
+   * action or {@code stop} does. It never emits {@code discard}, {@code reject} or a
+   * plain {@code redirect}.
    *
    * @return true when an enabled rule files the mail or stops
    */
@@ -248,6 +343,7 @@ public final class ExoSieveScript {
       }
       Vacation vacation = null;
       List<ServerRule> rules = null;
+      String forward = null;
       Map<String, JsonNode> other = new LinkedHashMap<>();
       for (Map.Entry<String, JsonNode> entry : header.properties()) {
         switch (entry.getKey()) {
@@ -261,10 +357,16 @@ public final class ExoSieveScript {
           }
           rules = SieveRulesSection.fromJson(array);
         }
+        case KEY_FORWARD -> {
+          if (!(entry.getValue() instanceof ObjectNode node) || !node.path("to").isString()) {
+            return Optional.empty();
+          }
+          forward = ForwardingDestination.normalize(node.path("to").asString());
+        }
         default -> other.put(entry.getKey(), entry.getValue());
         }
       }
-      return Optional.of(new ExoSieveScript(vacation, rules, other));
+      return Optional.of(new ExoSieveScript(vacation, rules, other, forward, null));
     } catch (JacksonException | IllegalArgumentException e) {
       // A header another client edited into something eXo would not write is not
       // interpreted: the script reads as not eXo's, "modified outside eXo".
@@ -303,6 +405,10 @@ public final class ExoSieveScript {
    * @return the Sieve text, CRLF line endings
    */
   public String toScript(ManageSieveCapabilities capabilities) {
+    if (emitsRedirect() && (capabilities == null || !capabilities.hasExtension(SieveRulesSection.COPY_EXTENSION))) {
+      // Without copy a redirect would take the mail out of the mailbox: never written.
+      throw new ForwardingRefusedException(ForwardingRefusedException.COPY_UNSUPPORTED);
+    }
     return toScript(SieveStringEncoding.forCapabilities(capabilities),
                     capabilities != null && capabilities.hasExtension(SieveRulesSection.MAILBOX_EXTENSION));
   }
@@ -332,11 +438,14 @@ public final class ExoSieveScript {
    * @param mailboxGuard whether to guard each {@code fileinto} with {@code mailboxexists}
    * @return the Sieve text, CRLF line endings
    * @throws IllegalStateException when the union would require {@code variables}
+   * @throws ForwardingRefusedException when the forward or a rule forwards to a
+   *           destination this write was not authorized for
    */
   public String toScript(SieveStringEncoding encoding, boolean mailboxGuard) {
     StringBuilder script = new StringBuilder();
     script.append(HEADER_PREFIX).append(headerJson()).append(EOL);
-    SieveRulesSection.Generated generatedRules = SieveRulesSection.generate(rules, encoding, mailboxGuard);
+    SieveRulesSection.Generated generatedRules = SieveRulesSection.generate(rules, encoding, mailboxGuard, authorizedRedirects);
+    String forwardTo = forward == null ? null : SieveRulesSection.authorized(forward, authorizedRedirects);
     List<String> require = new ArrayList<>();
     boolean encodedCharacter = generatedRules.extensions().contains(SieveStringEncoding.EXTENSION);
     if (emitsVacation()) {
@@ -348,8 +457,12 @@ public final class ExoSieveScript {
       }
       encodedCharacter |= encoding.needsExtension(vacation.subject()) || encoding.needsExtension(vacation.text());
     }
+    if (forwardTo != null) {
+      require.add(SieveRulesSection.COPY_EXTENSION);
+      encodedCharacter |= encoding.needsExtension(forwardTo);
+    }
     for (String extension : generatedRules.extensions()) {
-      if (!SieveStringEncoding.EXTENSION.equals(extension)) {
+      if (!SieveStringEncoding.EXTENSION.equals(extension) && !require.contains(extension)) {
         require.add(extension);
       }
     }
@@ -369,6 +482,10 @@ public final class ExoSieveScript {
     if (emitsVacation()) {
       script.append(VACATION_MARKER).append(EOL);
       appendVacation(script, encoding);
+    }
+    if (forwardTo != null) {
+      script.append(FORWARD_MARKER).append(EOL);
+      script.append("redirect :copy ").append(encoding.quote(forwardTo)).append(';').append(EOL);
     }
     script.append(RULES_MARKER).append(EOL);
     script.append(generatedRules.text());
@@ -411,6 +528,9 @@ public final class ExoSieveScript {
     header.put(KEY_VERSION, HEADER_VERSION);
     if (vacation != null) {
       header.set(KEY_VACATION, vacation.toJson());
+    }
+    if (forward != null) {
+      header.putObject(KEY_FORWARD).put("to", forward);
     }
     header.set(KEY_RULES, SieveRulesSection.toJson(rules));
     for (Map.Entry<String, JsonNode> entry : otherKeys.entrySet()) {
