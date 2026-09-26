@@ -22,73 +22,82 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        never here: the server does not report it. Renders nothing when no rule matched,
        and nothing on a mail of a mailbox somebody shared with the user. -->
   <div v-if="matches.length" class="my-2">
+    <!-- Laid out as the platform lists a few items with their actions (the activity
+         stream settings' categories): a section title with its icon, each rule as a
+         dense list item, its actions as subtitles with their Undo as a small text
+         button, errors in the error color. -->
     <div class="d-flex align-center">
-      <v-icon size="14" class="icon-default-color me-2">fa-filter</v-icon>
-      <span class="text-subtitle-2">{{ $t('emailConnector.mailBox.automations.title') }}</span>
+      <v-icon size="16" class="icon-default-color me-2">fas fa-filter</v-icon>
+      <span class="text-header">{{ $t('emailConnector.mailBox.automations.title') }}</span>
       <v-spacer />
       <v-btn
         v-if="undoable.length > 1"
         :loading="busy"
         color="primary"
         text
-        x-small
+        small
         @click="undoAll">
         {{ $t('emailConnector.mailBox.automations.undoAll') }}
       </v-btn>
     </div>
     <div
       v-if="error"
-      class="caption error--text"
+      class="error--text mt-1"
       role="alert">
       {{ error }}
     </div>
-    <div
-      v-for="match in matches"
-      :key="match.id"
-      class="caption text-sub-title mt-1">
-      <div class="text-color">
-        {{ match.filterName || $t('emailConnector.mailBox.automations.deletedRule') }}
-      </div>
-      <div
-        v-for="action in match.actions"
-        :key="`${match.id}-${action.type}`"
-        class="d-flex align-center">
-        <span :class="action.ok ? '' : 'error--text'">
-          {{ actionLabel(action) }}
-        </span>
-        <v-btn
-          v-if="canUndo(action)"
-          :disabled="busy"
-          class="ms-1"
-          color="primary"
-          text
-          x-small
-          @click="undo(match, action.type)">
-          {{ $t('emailConnector.mailBox.automations.undo') }}
-        </v-btn>
-      </div>
-      <div v-if="match.agentStatus && match.agentStatus !== 'NONE'" class="d-flex align-center">
-        <span>{{ $t(`emailConnector.mailBox.automations.agent.${match.agentStatus}`) }}</span>
-        <v-btn
-          v-if="terminal(match)"
-          :disabled="busy"
-          class="ms-1"
-          color="primary"
-          text
-          x-small
-          @click="retry(match)">
-          {{ $t('emailConnector.mailBox.automations.runAgain') }}
-        </v-btn>
-      </div>
-      <template v-if="match.agentNameId">
-        <component
-          :is="extension.vueComponent"
-          v-for="extension in outcomeExtensions"
-          :key="`${match.id}-${extension.id}`"
-          :match="match"
-          :email="email" />
-      </template>
-    </div>
+    <v-list class="pa-0" dense>
+      <v-list-item
+        v-for="match in matches"
+        :key="match.id"
+        class="pa-0"
+        dense>
+        <v-list-item-content class="pa-0">
+          <v-list-item-title class="text-truncate">
+            {{ match.filterName || $t('emailConnector.mailBox.automations.deletedRule') }}
+          </v-list-item-title>
+          <v-list-item-subtitle
+            v-for="action in match.actions"
+            :key="`${match.id}-${action.type}`"
+            class="d-flex align-center">
+            <span :class="action.ok ? '' : 'error--text'">
+              {{ actionLabel(action) }}
+            </span>
+            <v-btn
+              v-if="canUndo(action)"
+              :disabled="busy"
+              class="ms-1"
+              color="primary"
+              text
+              x-small
+              @click="undo(match, action.type)">
+              {{ $t('emailConnector.mailBox.automations.undo') }}
+            </v-btn>
+          </v-list-item-subtitle>
+          <v-list-item-subtitle v-if="match.agentStatus && match.agentStatus !== 'NONE'" class="d-flex align-center">
+            <span>{{ $t(`emailConnector.mailBox.automations.agent.${match.agentStatus}`) }}</span>
+            <v-btn
+              v-if="terminal(match)"
+              :disabled="busy"
+              class="ms-1"
+              color="primary"
+              text
+              x-small
+              @click="retry(match)">
+              {{ $t('emailConnector.mailBox.automations.runAgain') }}
+            </v-btn>
+          </v-list-item-subtitle>
+          <template v-if="match.agentNameId">
+            <component
+              :is="extension.vueComponent"
+              v-for="extension in outcomeExtensions"
+              :key="`${match.id}-${extension.id}`"
+              :match="match"
+              :email="email" />
+          </template>
+        </v-list-item-content>
+      </v-list-item>
+    </v-list>
   </div>
 </template>
 
