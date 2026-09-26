@@ -25,12 +25,16 @@ import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Pattern;
+
+import org.exoplatform.emailConnector.model.ServerRule;
 
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -57,10 +61,13 @@ import tools.jackson.databind.node.ObjectNode;
  * skip it, and a later {@code fileinto} still applies.
  * <p>
  * The vocabulary is a closed allowlist: {@code require}, {@code if allof(currentdate …)}
- * and {@code vacation} with {@code :days}, {@code :subject} and {@code :handle}. Every
- * user string becomes a Sieve quoted string with {@code \} and {@code "} escaped, so it
- * cannot close its string and become a command. The rules section is filled by the
- * filters eXip; this class refuses to serialise rules it has no generator for.
+ * and {@code vacation} with {@code :days}, {@code :subject} and {@code :handle} for the
+ * reply; for the rules, what {@link SieveRulesSection} generates -- address, header,
+ * exists and size tests, {@code addflag}, {@code fileinto}, {@code stop}. Every user
+ * string becomes a Sieve quoted string with {@code \} and {@code "} escaped, so it
+ * cannot close its string and become a command. The {@code require} line is the union of
+ * what the two sections emit; a script without rules is byte for byte what the reply
+ * alone generated before rules existed, so a stored hash stays valid.
  * <p>
  * Immutable.
  */
@@ -94,8 +101,8 @@ public final class ExoSieveScript {
   public static final String        RULES_MARKER      = "# exo-rules";
 
   /**
-   * The user {@code SettingService} key under which the caller keeps {@link #hash()} of
-   * the text it last wrote: one neutral entry, checked by the automatic reply and the
+   * The user {@code SettingService} key under which the caller keeps {@link #sha256(String)}
+   * of the text it last wrote: one neutral entry, checked by the automatic reply and the
    * server rules alike, since both write this one script.
    */
   public static final String        HASH_SETTING_KEY  = "emailSieveScript";
@@ -108,8 +115,8 @@ public final class ExoSieveScript {
   /** The automatic reply, or null when the script has none. */
   private final Vacation            vacation;
 
-  /** The rules, as the filters eXip writes them; kept opaque here. */
-  private final ArrayNode           rules;
+  /** The rules, validated, in the order the server applies them. */
+  private final List<ServerRule>    rules;
 
   /** Every other top-level header key, in its order, written back untouched. */
   private final Map<String, JsonNode> otherKeys;
@@ -121,9 +128,9 @@ public final class ExoSieveScript {
    * @param rules the rules, possibly null for none
    * @param otherKeys the unknown top-level keys, possibly null
    */
-  private ExoSieveScript(Vacation vacation, ArrayNode rules, Map<String, JsonNode> otherKeys) {
+  private ExoSieveScript(Vacation vacation, List<ServerRule> rules, Map<String, JsonNode> otherKeys) {
     this.vacation = vacation;
-    this.rules = rules == null ? JsonNodeFactory.instance.arrayNode() : rules.deepCopy();
+    this.rules = rules == null ? List.of() : List.copyOf(rules);
     this.otherKeys = otherKeys == null ? Map.of() : new LinkedHashMap<>(otherKeys);
   }
 
@@ -147,6 +154,28 @@ public final class ExoSieveScript {
   }
 
   /**
+   * This script with other rules, reply and unknown keys unchanged. Each rule is
+   * validated again and must carry a reference, unique in the list.
+   *
+   * @param newRules the rules, in the order the server applies them
+   * @return the new script
+   * @throws IllegalArgumentException with a message code when a rule is invalid, has no
+   *           reference or shares one
+   */
+  public ExoSieveScript withRules(List<ServerRule> newRules) {
+    List<ServerRule> validated = new ArrayList<>();
+    Set<String> refs = new HashSet<>();
+    for (ServerRule rule : newRules == null ? List.<ServerRule>of() : newRules) {
+      ServerRule clean = rule.validated();
+      if (clean.ref() == null || !refs.add(clean.ref())) {
+        throw new IllegalArgumentException(ServerRule.INVALID);
+      }
+      validated.add(clean);
+    }
+    return new ExoSieveScript(vacation, validated, otherKeys);
+  }
+
+  /**
    * The automatic reply the model holds, enabled or not.
    *
    * @return the reply, or empty
@@ -156,12 +185,21 @@ public final class ExoSieveScript {
   }
 
   /**
-   * The rules the model holds, as JSON; a copy.
+   * The rules the model holds, enabled or not, in order.
    *
-   * @return the rules, never null
+   * @return the rules, unmodifiable, never null
    */
-  public ArrayNode getRules() {
-    return rules.deepCopy();
+  public List<ServerRule> getRules() {
+    return rules;
+  }
+
+  /**
+   * Whether the generated script contains a rules block: at least one enabled rule.
+   *
+   * @return true when the rules section emits Sieve
+   */
+  public boolean emitsRules() {
+    return rules.stream().anyMatch(ServerRule::enabled);
   }
 
   /**
@@ -176,13 +214,15 @@ public final class ExoSieveScript {
 
   /**
    * Whether the generated script may file, stop, discard, reject or redirect a mail. The
-   * generator knows what it emits: the vacation section does none of these, and any
-   * rule is assumed to, until the filters eXip's rules generator answers per rule.
+   * generator knows what it emits: the vacation section does none of these, a rule that
+   * only flags does none of these either, and an enabled rule with a filing action or
+   * {@code stop} does. It never emits {@code discard}, {@code reject} or
+   * {@code redirect}.
    *
-   * @return true when a rule section is emitted
+   * @return true when an enabled rule files the mail or stops
    */
   public boolean filesOrStops() {
-    return !rules.isEmpty();
+    return rules.stream().anyMatch(rule -> rule.enabled() && rule.filesOrStops());
   }
 
   /**
@@ -212,7 +252,7 @@ public final class ExoSieveScript {
         return Optional.empty();
       }
       Vacation vacation = null;
-      ArrayNode rules = null;
+      List<ServerRule> rules = null;
       Map<String, JsonNode> other = new LinkedHashMap<>();
       for (Map.Entry<String, JsonNode> entry : header.properties()) {
         switch (entry.getKey()) {
@@ -224,13 +264,15 @@ public final class ExoSieveScript {
           if (!(entry.getValue() instanceof ArrayNode array)) {
             return Optional.empty();
           }
-          rules = array;
+          rules = SieveRulesSection.fromJson(array);
         }
         default -> other.put(entry.getKey(), entry.getValue());
         }
       }
       return Optional.of(new ExoSieveScript(vacation, rules, other));
     } catch (JacksonException | IllegalArgumentException e) {
+      // A header another client edited into something eXo would not write is not
+      // interpreted: the script reads as not eXo's, "modified outside eXo".
       return Optional.empty();
     }
   }
@@ -239,38 +281,74 @@ public final class ExoSieveScript {
    * Generates the script text with RFC 5228 string escaping.
    *
    * @return the Sieve text, CRLF line endings
-   * @throws IllegalStateException when the model holds rules, which only the filters
-   *           eXip's generator can serialise
    */
   public String toScript() {
     return toScript(SieveStringEncoding.ESCAPED);
   }
 
   /**
-   * Generates the script text: header, {@code require}, vacation section, rules marker,
-   * user strings encoded with the server's strategy.
+   * Generates the script text for a server, from the capabilities it advertised after
+   * TLS: its string encoding, and the {@code mailboxexists} guard where it advertises
+   * {@code mailbox}. What eXo publishes.
+   *
+   * @param capabilities the server's capabilities
+   * @return the Sieve text, CRLF line endings
+   */
+  public String toScript(ManageSieveCapabilities capabilities) {
+    return toScript(SieveStringEncoding.forCapabilities(capabilities),
+                    capabilities != null && capabilities.hasExtension(SieveRulesSection.MAILBOX_EXTENSION));
+  }
+
+  /**
+   * Generates the script text with every {@code fileinto} unguarded.
    *
    * @param encoding how user strings become quoted strings on this server
    * @return the Sieve text, CRLF line endings
-   * @throws IllegalStateException when the model holds rules, which only the filters
-   *           eXip's generator can serialise
    */
   public String toScript(SieveStringEncoding encoding) {
-    if (!rules.isEmpty()) {
-      throw new IllegalStateException("The model holds server rules and no rules generator is available");
-    }
+    return toScript(encoding, false);
+  }
+
+  /**
+   * Generates the script text: header, {@code require}, vacation section, rules marker
+   * and the enabled rules, user strings encoded with the server's strategy.
+   * <p>
+   * The {@code require} list is the union of what the sections emit, in a fixed order:
+   * the reply's extensions, then {@code fileinto} and {@code imap4flags} for the rules,
+   * then {@code encoded-character} when any string of either section needed it. Never
+   * {@code variables}: under it, a {@code $} written {@code ${unicode:24}} decodes to a
+   * {@code ${…}} the server expands, so a value typed as text would be a variable
+   * reference (observed on Pigeonhole).
+   *
+   * @param encoding how user strings become quoted strings on this server
+   * @param mailboxGuard whether to guard each {@code fileinto} with {@code mailboxexists}
+   * @return the Sieve text, CRLF line endings
+   * @throws IllegalStateException when the union would require {@code variables}
+   */
+  public String toScript(SieveStringEncoding encoding, boolean mailboxGuard) {
     StringBuilder script = new StringBuilder();
     script.append(HEADER_PREFIX).append(headerJson()).append(EOL);
+    SieveRulesSection.Generated generatedRules = SieveRulesSection.generate(rules, encoding, mailboxGuard);
     List<String> require = new ArrayList<>();
+    boolean encodedCharacter = generatedRules.extensions().contains(SieveStringEncoding.EXTENSION);
     if (emitsVacation()) {
       require.add("vacation");
       if (vacation.start() != null || vacation.end() != null) {
         require.add("date");
         require.add("relational");
       }
-      if (encoding.needsExtension(vacation.subject()) || encoding.needsExtension(vacation.text())) {
-        require.add(SieveStringEncoding.EXTENSION);
+      encodedCharacter |= encoding.needsExtension(vacation.subject()) || encoding.needsExtension(vacation.text());
+    }
+    for (String extension : generatedRules.extensions()) {
+      if (!SieveStringEncoding.EXTENSION.equals(extension)) {
+        require.add(extension);
       }
+    }
+    if (encodedCharacter) {
+      require.add(SieveStringEncoding.EXTENSION);
+    }
+    if (require.contains(SieveStringEncoding.VARIABLES_EXTENSION)) {
+      throw new IllegalStateException("eXo's script never requires variables: its string encoding relies on it");
     }
     if (!require.isEmpty()) {
       script.append("require [");
@@ -284,27 +362,8 @@ public final class ExoSieveScript {
       appendVacation(script, encoding);
     }
     script.append(RULES_MARKER).append(EOL);
+    script.append(generatedRules.text());
     return script.toString();
-  }
-
-  /**
-   * The SHA-256 of the generated text, the value eXo stores to notice an edit made
-   * outside eXo.
-   *
-   * @return the lower-case hex digest
-   */
-  public String hash() {
-    return sha256(toScript());
-  }
-
-  /**
-   * The SHA-256 of the text generated for a server's encoding.
-   *
-   * @param encoding the server's string encoding
-   * @return the lower-case hex digest
-   */
-  public String hash(SieveStringEncoding encoding) {
-    return sha256(toScript(encoding));
   }
 
   /**
@@ -344,7 +403,7 @@ public final class ExoSieveScript {
     if (vacation != null) {
       header.set(KEY_VACATION, vacation.toJson());
     }
-    header.set(KEY_RULES, rules.deepCopy());
+    header.set(KEY_RULES, SieveRulesSection.toJson(rules));
     for (Map.Entry<String, JsonNode> entry : otherKeys.entrySet()) {
       header.set(entry.getKey(), entry.getValue().deepCopy());
     }

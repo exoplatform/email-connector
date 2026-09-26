@@ -35,13 +35,19 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.ForwardingState;
+import org.exoplatform.emailConnector.model.HopRef;
+import org.exoplatform.emailConnector.model.ReconcileReport;
+import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
+import org.exoplatform.emailConnector.model.ServerRuleSet;
+import org.exoplatform.emailConnector.model.ServerRulesState;
 import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.VacationSetting;
 import org.exoplatform.emailConnector.model.VacationState;
@@ -573,6 +579,358 @@ public class SieveRuleEngineTest {
     String code = SieveTokenScan.withoutComments(script.toScript()).replaceAll("\"(?:[^\"\\\\]|\\\\.)*\"", "\"\"");
     assertFalse(SieveTokenScan.containsWord(code, SieveScriptPolicy.REDIRECT_TOKEN), code);
     assertTrue(SieveTokenScan.containsWord(code, SieveScriptPolicy.VACATION_TOKEN), code);
+  }
+
+  /**
+   * The first rule on an empty account gets reference 1, is published and activated, and
+   * reads back as eXo's own, running, with the hash of the stored text.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheFirstRuleIsPublished() throws Exception {
+    ServerRuleSet written = engine.saveRule(session, ExoSieveScriptTest.acmeInvoices().withRef(null), null);
+    assertEquals("exo-rules", server.getActive());
+    String stored = server.getScripts().get("exo-rules");
+    assertTrue(stored.contains("# exo-rule 1\r\n"), stored);
+    // The fake advertises Stalwart's line, mailbox included: the filing is guarded.
+    assertTrue(stored.contains("  if mailboxexists \"Accounting\" {\r\n    fileinto \"Accounting\";\r\n  }\r\n  stop;\r\n}"), stored);
+    assertTrue(stored.contains("require [\"fileinto\", \"mailbox\", \"imap4flags\", \"encoded-character\"];"), stored);
+    assertEquals(1, server.getCommands("CHECKSCRIPT").size());
+    assertEquals(ServerRulesState.OWN, written.state());
+    assertEquals(List.of("1"), written.rules().stream().map(ServerRule::ref).toList());
+    assertEquals(ExoSieveScript.sha256(stored), written.scriptHash());
+    assertEquals(written, engine.listRules(session));
+  }
+
+  /**
+   * The reply and the rules live in one script: saving a rule keeps the reply, its
+   * handle and its text; writing the reply -- on, edited, off -- keeps the rules section
+   * byte for byte, where the reply's write used to refuse a script holding rules.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheReplyAndTheRulesKeepEachOther() throws Exception {
+    ServerVacation on = engine.writeVacation(session, reply(true, "Away"), 7, null);
+    String handle = handleOf(server.getScripts().get("exo-rules"));
+    ServerRuleSet rules = engine.saveRule(session, ExoSieveScriptTest.acmeInvoices().withRef(null), on.scriptHash());
+    String withRules = server.getScripts().get("exo-rules");
+    assertEquals(handle, handleOf(withRules));
+    assertTrue(withRules.indexOf("# exo-vacation") < withRules.indexOf("# exo-rule 1"), withRules);
+    assertTrue(withRules.contains("require [\"vacation\", \"date\", \"relational\", \"fileinto\", \"mailbox\", \"imap4flags\""), withRules);
+    String section = withRules.substring(withRules.indexOf(ExoSieveScript.RULES_MARKER));
+    ServerVacation edited = engine.writeVacation(session, reply(true, "Away, edited"), 7, rules.scriptHash());
+    String afterEdit = server.getScripts().get("exo-rules");
+    assertEquals(section, afterEdit.substring(afterEdit.indexOf(ExoSieveScript.RULES_MARKER)));
+    assertEquals(VacationState.OWN, edited.state());
+    assertEquals("Away, edited", edited.vacation().getText());
+    engine.writeVacation(session, reply(false, "Away, edited"), 7, edited.scriptHash());
+    String afterOff = server.getScripts().get("exo-rules");
+    assertEquals(section, afterOff.substring(afterOff.indexOf(ExoSieveScript.RULES_MARKER)));
+    assertFalse(afterOff.contains("vacation :days"), afterOff);
+    assertEquals(1, engine.listRules(session).rules().size());
+    assertEquals("exo-rules", server.getActive());
+  }
+
+  /**
+   * A rule saved under its reference keeps its place; a deleted one is gone and the rest
+   * is written back; an unknown reference is not found, and nothing is written.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testReplaceInPlaceAndDelete() throws Exception {
+    engine.saveRule(session, ExoSieveScriptTest.acmeInvoices().withRef(null), null);
+    engine.saveRule(session, ExoSieveScriptTest.listsRead().withRef(null), null);
+    ServerRule renamed = new ServerRule("1",
+                                        "Acme, renamed",
+                                        true,
+                                        true,
+                                        ExoSieveScriptTest.acmeInvoices().conditions(),
+                                        ExoSieveScriptTest.acmeInvoices().actions(),
+                                        false);
+    ServerRuleSet saved = engine.saveRule(session, renamed, null);
+    assertEquals(List.of("Acme, renamed", "Lists read"), saved.rules().stream().map(ServerRule::name).toList());
+    ServerRuleSet deleted = engine.deleteRule(session, "1", null);
+    assertEquals(List.of("2"), deleted.rules().stream().map(ServerRule::ref).toList());
+    assertFalse(server.getScripts().get("exo-rules").contains("fileinto"));
+    int puts = server.getCommands("PUTSCRIPT").size();
+    assertThrows(ObjectNotFoundException.class, () -> engine.deleteRule(session, "7", null));
+    assertEquals(puts, server.getCommands("PUTSCRIPT").size());
+    assertEquals("3", SieveRuleEngine.nextRef(List.of(ExoSieveScriptTest.listsRead())));
+  }
+
+  /**
+   * eXo's script edited outside eXo is not overwritten by a rule's write, unless
+   * re-published; a header eXo cannot read is not either.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testAScriptChangedOutsideRefusesARuleWrite() throws Exception {
+    ServerRuleSet written = engine.saveRule(session, ExoSieveScriptTest.acmeInvoices().withRef(null), null);
+    String edited = server.getScripts().get("exo-rules") + "# edited\r\n";
+    server.script("exo-rules", edited, true);
+    ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class,
+                                                 () -> engine.saveRule(session, ExoSieveScriptTest.listsRead(), written.scriptHash()));
+    assertEquals(ServerRuleConflictException.MODIFIED_OUTSIDE, e.getMessage());
+    assertThrows(ServerRuleConflictException.class, () -> engine.deleteRule(session, "1", written.scriptHash()));
+    assertEquals(edited, server.getScripts().get("exo-rules"));
+    ServerRuleSet republished = engine.publishRules(session, null);
+    assertFalse(server.getScripts().get("exo-rules").contains("# edited"));
+    assertEquals(1, republished.rules().size());
+    server.script("exo-rules", "# exo-managed-v1: {\"v\":1,\"rules\":[{\"id\":1}]}\r\n", true);
+    String unreadableHash = ExoSieveScript.sha256("# exo-managed-v1: {\"v\":1,\"rules\":[{\"id\":1}]}\r\n");
+    assertEquals(ServerRulesState.UNREADABLE, engine.listRules(session).state());
+    assertThrows(ServerRuleConflictException.class, () -> engine.saveRule(session, ExoSieveScriptTest.listsRead(), unreadableHash));
+  }
+
+  /**
+   * Next to another client's script, the wrapper runs theirs first as soon as eXo's
+   * script files or stops, and eXo's first while it only replies or flags -- including
+   * when a filing rule joins a reply that was wrapped first.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheWrapperOrderFollowsWhatTheRulesDo() throws Exception {
+    server.script(FOREIGN, "require [\"fileinto\"];\r\nfileinto \"Lists\";\r\n", true);
+    engine.writeVacation(session, reply(true, "Away"), 7, null);
+    assertEquals("exo-main", server.getActive());
+    assertTrue(server.getScripts().get("exo-main").endsWith("include :personal \"exo-rules\";\r\ninclude :personal \"roundcube\";\r\n"));
+    engine.saveRule(session, ExoSieveScriptTest.listsRead().withRef(null), null);
+    assertTrue(server.getScripts().get("exo-main").endsWith("include :personal \"exo-rules\";\r\ninclude :personal \"roundcube\";\r\n"));
+    ServerRuleSet filing = engine.saveRule(session, ExoSieveScriptTest.acmeInvoices().withRef(null), null);
+    assertTrue(server.getScripts().get("exo-main").endsWith("include :personal \"roundcube\";\r\ninclude :personal \"exo-rules\";\r\n"),
+               server.getScripts().get("exo-main"));
+    assertEquals(ServerRulesState.OWN, filing.state());
+    assertEquals(FOREIGN, filing.foreignScriptName());
+    assertEquals("exo-main", server.getActive());
+  }
+
+  /**
+   * A rule saved disabled while another client's script runs is stored and nothing is
+   * activated; with eXo's script not running, the rules read as inactive, and
+   * "Re-activate" wraps.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testADisabledRuleNeverActivatesAndReactivateWraps() throws Exception {
+    server.script(FOREIGN, "keep;\r\n", true);
+    ServerRule off = new ServerRule(null,
+                                    "Off",
+                                    false,
+                                    true,
+                                    ExoSieveScriptTest.acmeInvoices().conditions(),
+                                    ExoSieveScriptTest.acmeInvoices().actions(),
+                                    true);
+    ServerRuleSet stored = engine.saveRule(session, off, null);
+    assertEquals(FOREIGN, server.getActive());
+    assertTrue(server.getCommands("SETACTIVE").isEmpty());
+    assertFalse(server.getScripts().containsKey("exo-main"));
+    assertEquals(ServerRulesState.INACTIVE, stored.state());
+    assertEquals(FOREIGN, stored.foreignScriptName());
+    ServerRuleSet active = engine.publishRules(session, stored.scriptHash());
+    assertEquals("exo-main", server.getActive());
+    assertEquals(ServerRulesState.OWN, active.state());
+  }
+
+  /**
+   * Another client's active script on a server without {@code include}: an enabled rule
+   * is refused, and nothing is written.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testWithoutIncludeAForeignScriptRefusesARule() throws Exception {
+    server.sieveExtensions("fileinto imap4flags");
+    server.script(FOREIGN, "keep;\r\n", true);
+    ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class,
+                                                 () -> engine.saveRule(session, ExoSieveScriptTest.acmeInvoices().withRef(null), null));
+    assertEquals(ServerRuleConflictException.SERVER_CONFLICT, e.getMessage());
+    assertEquals(FOREIGN, e.getScriptName());
+    assertTrue(server.getCommands("PUTSCRIPT").isEmpty());
+  }
+
+  /**
+   * A server that does not advertise {@code fileinto} cannot hold a move: refused with
+   * the extension's reason, before any write.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testARuleNeedsItsExtensions() throws Exception {
+    server.sieveExtensions("imap4flags include");
+    ServerRuleUnsupportedException e = assertThrows(ServerRuleUnsupportedException.class,
+                                                    () -> engine.saveRule(session, ExoSieveScriptTest.acmeInvoices().withRef(null), null));
+    assertEquals("emailConnector.rules.unsupported.sieveExtension.fileinto", e.getMessage());
+    assertTrue(server.getCommands("PUTSCRIPT").isEmpty());
+    engine.saveRule(session, ExoSieveScriptTest.listsRead().withRef(null), null);
+    assertEquals(1, server.getCommands("PUTSCRIPT").size());
+  }
+
+  /**
+   * Reconciliation keeps exactly the hops it is given: a missing or changed one is
+   * written, one no longer given is removed, a user's rule stays in its place, and nothing
+   * is written when nothing differs.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testReconcileKeepsExactlyTheHops() throws Exception {
+    engine.saveRule(session, ExoSieveScriptTest.listsRead().withRef(null), null);
+    HopRef first = new HopRef("hop-1", "Invoices", true, ExoSieveScriptTest.acmeInvoices().conditions(), "exo-filter-1", false);
+    HopRef second = new HopRef("hop-2", "Reports", false, ExoSieveScriptTest.listsRead().conditions(), "exo-filter-2", true);
+    ReconcileReport added = engine.reconcile(session, List.of(first, second), null);
+    assertEquals(List.of("hop-1", "hop-2"), added.published());
+    assertEquals(List.of(), added.removed());
+    assertEquals(List.of("1", "hop-1", "hop-2"), added.rules().rules().stream().map(ServerRule::ref).toList());
+    assertTrue(server.getScripts().get("exo-rules").contains("addflag \"exo-filter-1\";"));
+    HopRef changed = new HopRef("hop-1", "Invoices", true, ExoSieveScriptTest.acmeInvoices().conditions(), "exo-filter-1", true);
+    ReconcileReport update = engine.reconcile(session, List.of(changed), null);
+    assertEquals(List.of("hop-1"), update.published());
+    assertEquals(List.of("hop-2"), update.removed());
+    assertEquals(List.of("1", "hop-1"), update.rules().rules().stream().map(ServerRule::ref).toList());
+    int puts = server.getCommands("PUTSCRIPT").size();
+    ReconcileReport same = engine.reconcile(session, List.of(changed), update.rules().scriptHash());
+    assertFalse(same.changed());
+    assertEquals(puts, server.getCommands("PUTSCRIPT").size());
+  }
+
+  /**
+   * The user's rules and the hops keep to their own names: a reference the script does
+   * not hold is not found, a hop is neither written nor replaced by a user's save, a
+   * reconciliation never replaces a user's rule, and a hop's name starts with hop-.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testUserRulesAndHopsKeepApart() throws Exception {
+    engine.saveRule(session, ExoSieveScriptTest.listsRead().withRef(null), null);
+    assertThrows(ObjectNotFoundException.class, () -> engine.saveRule(session, ExoSieveScriptTest.acmeInvoices().withRef("7"), null));
+    HopRef hop = new HopRef("hop-1", "Invoices", true, ExoSieveScriptTest.acmeInvoices().conditions(), "exo-filter-1", false);
+    engine.reconcile(session, List.of(hop), null);
+    int puts = server.getCommands("PUTSCRIPT").size();
+    assertThrows(IllegalArgumentException.class, () -> engine.saveRule(session, ExoSieveScriptTest.listsRead().withRef("hop-1"), null));
+    assertThrows(IllegalArgumentException.class, () -> engine.saveRule(session, hop.toRule().withRef(null), null));
+    assertEquals(puts, server.getCommands("PUTSCRIPT").size());
+    assertThrows(IllegalArgumentException.class, () -> new HopRef("2", "x", true, List.of(), "exo-filter-9", false).toRule());
+    server.script("exo-rules",
+                  ExoSieveScript.empty().withRules(List.of(ExoSieveScriptTest.listsRead().withRef("hop-2"))).toScript(),
+                  true);
+    HopRef clash = new HopRef("hop-2", "x", true, ExoSieveScriptTest.listsRead().conditions(), "exo-filter-2", false);
+    assertThrows(IllegalArgumentException.class, () -> engine.reconcile(session, List.of(clash), null));
+    assertEquals(puts, server.getCommands("PUTSCRIPT").size());
+  }
+
+  /**
+   * Rule (5) through the rules path: with eXo's reply on, a rule's save next to another
+   * client's script that carries a vacation is refused, and nothing is written.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testARuleSaveNextToAForeignReplyIsRefused() throws Exception {
+    ServerVacation on = engine.writeVacation(session, reply(true, "Away"), 7, null);
+    server.script(FOREIGN, "require [\"vacation\"];\r\nvacation \"Theirs\";\r\n", true);
+    int puts = server.getCommands("PUTSCRIPT").size();
+    ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class,
+                                                 () -> engine.saveRule(session, ExoSieveScriptTest.acmeInvoices().withRef(null), on.scriptHash()));
+    assertEquals(ServerRuleConflictException.MANAGED_ELSEWHERE, e.getMessage());
+    assertEquals(puts, server.getCommands("PUTSCRIPT").size());
+    assertEquals(FOREIGN, server.getActive());
+  }
+
+  /**
+   * Re-publish never writes an empty script over a header eXo cannot read -- the reply it
+   * may hold would be lost -- and cannot rewrite a wrapper another client changed; both
+   * answer "modified outside" and write nothing.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testRepublishNeverErasesWhatItCannotRead() throws Exception {
+    String unreadable = "# exo-managed-v1: {\"v\":1,\"rules\":[{\"id\":1}]}\r\nrequire [\"vacation\"];\r\nvacation \"x\";\r\n";
+    server.script("exo-rules", unreadable, true);
+    assertEquals(ServerRulesState.UNREADABLE, engine.listRules(session).state());
+    assertThrows(ServerRuleConflictException.class, () -> engine.publishRules(session, null));
+    assertThrows(ServerRuleConflictException.class, () -> engine.saveRule(session, ExoSieveScriptTest.listsRead().withRef(null), null));
+    assertEquals(unreadable, server.getScripts().get("exo-rules"));
+    server.script("exo-rules", ExoSieveScript.empty().withRules(List.of(ExoSieveScriptTest.listsRead())).toScript(), false);
+    server.script(FOREIGN, "keep;\r\n", false);
+    server.script("exo-main", "require [\"include\"];\r\ninclude :personal \"roundcube\";\r\n", true);
+    ServerRuleSet read = engine.listRules(session);
+    assertEquals(ServerRulesState.MODIFIED, read.state());
+    assertEquals("exo-main", read.foreignScriptName());
+    int puts = server.getCommands("PUTSCRIPT").size();
+    ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class, () -> engine.publishRules(session, null));
+    assertEquals("exo-main", e.getScriptName());
+    assertEquals(puts, server.getCommands("PUTSCRIPT").size());
+  }
+
+  /**
+   * A hop is the server half of one of eXo's own rules: deleting it by its reference is
+   * refused like saving it, and nothing is written; a user's rule beside it still goes.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testAHopIsNotDeletedByItsReference() throws Exception {
+    engine.saveRule(session, ExoSieveScriptTest.listsRead().withRef(null), null);
+    HopRef hop = new HopRef("hop-1", "Invoices", true, ExoSieveScriptTest.acmeInvoices().conditions(), "exo-filter-1", false);
+    engine.reconcile(session, List.of(hop), null);
+    int puts = server.getCommands("PUTSCRIPT").size();
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> engine.deleteRule(session, "hop-1", null));
+    assertEquals(ServerRule.INVALID_ACTION, e.getMessage());
+    assertEquals(puts, server.getCommands("PUTSCRIPT").size());
+    assertEquals(List.of("1", "hop-1"), engine.listRules(session).rules().stream().map(ServerRule::ref).toList());
+    engine.deleteRule(session, "1", null);
+    assertEquals(List.of("hop-1"), engine.listRules(session).rules().stream().map(ServerRule::ref).toList());
+  }
+
+  /**
+   * The automatic reply never writes over a header eXo cannot read, not even on
+   * "Re-publish": the rules it may hold would be dropped. The reply reads as changed
+   * outside eXo in eXo's own script, named, so no "Re-publish" is offered, and a write is
+   * refused under its own code, with nothing written.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheReplyNeverWritesOverAnUnreadableScript() throws Exception {
+    String unreadable = "# exo-managed-v1: {\"v\":1,\"rules\":[{\"id\":1}]}\r\nrequire [\"fileinto\"];\r\nif true { fileinto \"Lists\"; }\r\n";
+    server.script("exo-rules", unreadable, true);
+    ServerVacation read = engine.readVacation(session);
+    assertEquals(VacationState.MODIFIED, read.state());
+    assertEquals("exo-rules", read.foreignScriptName());
+    int puts = server.getCommands("PUTSCRIPT").size();
+    ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class,
+                                                 () -> engine.writeVacation(session, reply(true, "Away"), 7, null));
+    assertEquals(ServerRuleConflictException.UNREADABLE, e.getMessage(), "its own code: a readable script changed outside eXo keeps Re-publish");
+    assertEquals("exo-rules", e.getScriptName());
+    assertEquals(puts, server.getCommands("PUTSCRIPT").size());
+    assertEquals(unreadable, server.getScripts().get("exo-rules"));
+  }
+
+  /**
+   * The rules' states, read: none, a header eXo cannot read, and eXo's script not the one
+   * running.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheRulesStates() throws Exception {
+    assertEquals(ServerRuleSet.none(), engine.listRules(session));
+    server.script("exo-rules", "require [\"fileinto\"];\r\n", true);
+    assertEquals(ServerRulesState.UNREADABLE, engine.listRules(session).state());
+    server.script("exo-rules", ExoSieveScript.empty().withRules(List.of(ExoSieveScriptTest.listsRead())).toScript(), false);
+    server.script(FOREIGN, "keep;\r\n", true);
+    ServerRuleSet inactive = engine.listRules(session);
+    assertEquals(ServerRulesState.INACTIVE, inactive.state());
+    assertEquals(FOREIGN, inactive.foreignScriptName());
+    assertEquals(1, inactive.rules().size());
   }
 
   /**
