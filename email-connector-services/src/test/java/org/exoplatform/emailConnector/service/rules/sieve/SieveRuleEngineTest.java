@@ -800,6 +800,32 @@ public class SieveRuleEngineTest {
   }
 
   /**
+   * A filter that changes where it runs is swapped in one write: the write that
+   * publishes a hop removes the user's rule it was, the write that removes a hop appends
+   * the user's rule it becomes under a new reference, and a hop is never added as a
+   * user's rule.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testASwapIsOneWrite() throws Exception {
+    engine.saveRule(session, ExoSieveScriptTest.listsRead().withRef(null), null);
+    HopRef hop = new HopRef("hop-1", "Invoices", true, ExoSieveScriptTest.acmeInvoices().conditions(), "exo-filter-1", false);
+    int puts = server.getCommands("PUTSCRIPT").size();
+    ReconcileReport toHop = engine.reconcile(session, List.of(hop), null, "1", null);
+    assertEquals(puts + 1, server.getCommands("PUTSCRIPT").size(), "one write");
+    assertEquals(List.of("hop-1"), toHop.rules().rules().stream().map(ServerRule::ref).toList());
+    assertEquals(List.of("1"), toHop.removed());
+    ReconcileReport toRule = engine.reconcile(session, List.of(), ExoSieveScriptTest.acmeInvoices().withRef(null), null, null);
+    assertEquals(puts + 2, server.getCommands("PUTSCRIPT").size(), "one write");
+    assertEquals(List.of("1"), toRule.rules().rules().stream().map(ServerRule::ref).toList(), "the next free reference");
+    assertEquals(List.of("1"), toRule.published());
+    assertEquals(List.of("hop-1"), toRule.removed());
+    assertThrows(IllegalArgumentException.class, () -> engine.reconcile(session, List.of(), hop.toRule().withRef(null), null, null));
+    assertEquals(puts + 2, server.getCommands("PUTSCRIPT").size());
+  }
+
+  /**
    * The user's rules and the hops keep to their own names: a reference the script does
    * not hold is not found, a hop is neither written nor replaced by a user's save, a
    * reconciliation never replaces a user's rule, and a hop's name starts with hop-.
