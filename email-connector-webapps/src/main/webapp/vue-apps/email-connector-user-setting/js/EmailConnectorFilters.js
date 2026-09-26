@@ -38,6 +38,64 @@ export const EXO_ACTIONS = ['MOVE_TO_FOLDER', 'ADD_CATEGORY', 'MARK_READ', 'STAR
 export const FILING_ACTIONS = ['MOVE_TO_FOLDER', 'MARK_JUNK', 'DELETE'];
 
 /**
+ * Every condition field of the one filter form, in its order: the server's and the three
+ * only eXo reads. Where a filter runs follows from them and from its actions (routeOf).
+ */
+export const ALL_FIELDS = ['FROM', 'TO', 'CC', 'ANY_RECIPIENT', 'SUBJECT', 'BODY', 'SUBJECT_OR_BODY', 'HEADER', 'MESSAGE_SIZE',
+  'IS_LIST', 'IS_AUTOMATED', 'HAS_ATTACHMENT'];
+
+/** The actions a mail server may run itself, when its capabilities say so. */
+export const SERVER_ACTIONS = ['MOVE_TO_FOLDER', 'MARK_READ', 'STAR', 'MARK_JUNK', 'DELETE'];
+
+/**
+ * Where a filter will run, as the server decides it when it is saved
+ * (EmailFilterService.route): SERVER when the mail server can run every condition and
+ * every action, HOP when it can test every condition and set eXo's keyword but not run
+ * every action, EXO otherwise. Used for the form's hint; the server's answer is the one
+ * that counts.
+ *
+ * @param {object} filter - {conditions, actions}
+ * @param {object} capabilities - the probe's answer, or null
+ * @returns {string} SERVER, HOP or EXO
+ */
+export function routeOf(filter, capabilities) {
+  if (!capabilities?.supported) {
+    return 'EXO';
+  }
+  const conditions = filter?.conditions || [];
+  const serverConditions = conditions.every(condition => !EXO_ONLY_FIELDS.includes(condition.field)
+    && isSupported(capabilities, condition.field));
+  if (!serverConditions) {
+    return 'EXO';
+  }
+  const actions = filter?.actions || [];
+  if (actions.every(action => SERVER_ACTIONS.includes(action.type) && isSupported(capabilities, action.type))) {
+    return 'SERVER';
+  }
+  return isSupported(capabilities, 'TAG') ? 'HOP' : 'EXO';
+}
+
+/**
+ * A server rule as an item of the one list, in the eXo rules' shape: kind SERVER, its
+ * reference, and "stop" as stopProcessing.
+ *
+ * @param {object} rule - the rule, as the server group lists it
+ * @returns {object} the item
+ */
+export function serverItem(rule) {
+  return {
+    kind: 'SERVER',
+    ref: rule.ref,
+    name: rule.name,
+    enabled: !!rule.enabled,
+    matchAll: rule.matchAll !== false,
+    conditions: rule.conditions || [],
+    actions: (rule.actions || []).map(action => ({ type: action.type, folderKey: action.folderKey, folderPath: action.folderPath })),
+    stopProcessing: !!rule.stop,
+  };
+}
+
+/**
  * The extension point of an eXo rule's actions a module adds (the assistant, shipped by
  * the enterprise glue): extensionRegistry.registerExtension('EmailFilter',
  * 'email-filter-action', {id, type, rank, labelKey, vueComponent}). The form renders
