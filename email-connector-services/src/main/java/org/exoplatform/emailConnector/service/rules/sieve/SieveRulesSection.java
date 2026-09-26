@@ -24,6 +24,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
+import org.exoplatform.emailConnector.exception.ForwardingRefusedException;
 import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRule.Action;
 import org.exoplatform.emailConnector.model.ServerRule.Condition;
@@ -41,9 +42,13 @@ import tools.jackson.databind.node.ObjectNode;
  * {@code exists}, {@code size}, under {@code allof}/{@code anyof}/{@code not}, with the
  * {@code :contains}, {@code :is} and {@code :matches} match types and the
  * {@code :domain} address part. Actions: {@code addflag} (imap4flags, never
- * {@code setflag}, which would clear the flags another rule set), {@code fileinto} and
- * {@code stop}. Nothing else is ever written: no {@code redirect}, {@code vacation},
- * {@code discard}, {@code reject}, {@code keep :flags}. Every string, user-typed or not,
+ * {@code setflag}, which would clear the flags another rule set), {@code redirect :copy}
+ * for a forward, {@code fileinto} and {@code stop}. Nothing else is ever written: no
+ * plain {@code redirect}, no {@code vacation}, {@code discard}, {@code reject},
+ * {@code keep :flags}. A forward's {@code redirect :copy} is written only to a
+ * destination the caller passed as authorized -- confirmed and in the connector's
+ * allowed domains, decided by the forwarding checks -- and refused otherwise, whatever
+ * the header holds: a rule read back from the server is never trusted to forward. Every string, user-typed or not,
  * becomes a quoted string through the server's {@link SieveStringEncoding}, so a value
  * cannot close its string, and a {@code :matches} value has its wildcards escaped first,
  * so it matches as typed.
@@ -74,6 +79,9 @@ final class SieveRulesSection {
   /** The extension {@code addflag} needs. */
   static final String         FLAGS_EXTENSION    = "imap4flags";
 
+  /** The extension {@code redirect :copy} needs (RFC 3894). */
+  static final String         COPY_EXTENSION     = "copy";
+
   /** The system flag of a read mail. */
   static final String         SEEN_FLAG          = "\\Seen";
 
@@ -97,8 +105,10 @@ final class SieveRulesSection {
    *
    * @param text the Sieve, CRLF line endings; empty for no enabled rule
    * @param extensions the extensions to require, in a stable order
+   * @param redirects how many {@code redirect}s the rules hold, which one mail may all
+   *          meet
    */
-  record Generated(String text, Set<String> extensions) {
+  record Generated(String text, Set<String> extensions, int redirects) {
   }
 
   /**
@@ -126,9 +136,32 @@ final class SieveRulesSection {
    *           which validation should have refused
    */
   static Generated generate(List<ServerRule> rules, SieveStringEncoding encoding, boolean mailboxGuard) {
+    return generate(rules, encoding, mailboxGuard, Set.of());
+  }
+
+  /**
+   * Generates the Sieve of the enabled rules, in order, each forward checked against the
+   * destinations the caller authorized.
+   *
+   * @param rules the rules, validated
+   * @param encoding how strings become quoted strings on this server
+   * @param mailboxGuard whether to guard each {@code fileinto} with {@code mailboxexists},
+   *          which the server must advertise ({@code mailbox})
+   * @param authorizedRedirects the destinations a forward may go to, normalised
+   * @return the text and what it requires
+   * @throws ForwardingRefusedException {@value ForwardingRefusedException#NOT_AUTHORIZED}
+   *           when an enabled rule forwards to any other destination
+   * @throws IllegalStateException when a rule holds something outside the allowlist,
+   *           which validation should have refused
+   */
+  static Generated generate(List<ServerRule> rules,
+                            SieveStringEncoding encoding,
+                            boolean mailboxGuard,
+                            Set<String> authorizedRedirects) {
     Quoter quoter = new Quoter(encoding);
     boolean files = false;
     boolean flags = false;
+    int redirects = 0;
     StringBuilder text = new StringBuilder();
     for (ServerRule rule : rules) {
       if (!rule.enabled()) {
@@ -142,6 +175,13 @@ final class SieveRulesSection {
           flags = true;
           text.append("  addflag ").append(quoter.quote(flag(action))).append(';').append(EOL);
         }
+      }
+      Action forward = action(rule, ServerRule.FORWARD);
+      if (forward != null) {
+        // The copy goes before the filing: redirect :copy leaves the mail where the rest
+        // of the rule puts it (RFC 3894), and nothing after a stop would run.
+        text.append("  redirect :copy ").append(quoter.quote(authorized(forward.destination(), authorizedRedirects))).append(';').append(EOL);
+        redirects++;
       }
       for (Action action : rule.actions()) {
         if (ServerRule.FILING_ACTIONS.contains(action.type())) {
@@ -173,10 +213,30 @@ final class SieveRulesSection {
     if (flags) {
       extensions.add(FLAGS_EXTENSION);
     }
+    if (redirects > 0) {
+      extensions.add(COPY_EXTENSION);
+    }
     if (quoter.needsExtension) {
       extensions.add(SieveStringEncoding.EXTENSION);
     }
-    return new Generated(text.toString(), extensions);
+    return new Generated(text.toString(), extensions, redirects);
+  }
+
+  /**
+   * A forward's destination, when the caller authorized it: what stands between a rule
+   * or a header read back from the server and a {@code redirect} reaching it.
+   *
+   * @param destination the destination the model holds
+   * @param authorizedRedirects the destinations the caller's forwarding checks allow
+   * @return the destination, unchanged
+   * @throws ForwardingRefusedException {@value ForwardingRefusedException#NOT_AUTHORIZED}
+   *           when it is not one of them
+   */
+  static String authorized(String destination, Set<String> authorizedRedirects) {
+    if (destination == null || authorizedRedirects == null || !authorizedRedirects.contains(destination)) {
+      throw new ForwardingRefusedException(ForwardingRefusedException.NOT_AUTHORIZED);
+    }
+    return destination;
   }
 
   /**
@@ -373,6 +433,7 @@ final class SieveRulesSection {
         putIfPresent(item, "folderKey", action.folderKey());
         putIfPresent(item, "folder", action.folderPath());
         putIfPresent(item, "keyword", action.keyword());
+        putIfPresent(item, "to", action.destination());
       }
       node.put("stop", rule.stop());
     }
@@ -406,7 +467,11 @@ final class SieveRulesSection {
       }
       List<Action> actions = new ArrayList<>();
       for (JsonNode item : node.path("actions")) {
-        actions.add(new Action(string(item, "type"), string(item, "folderKey"), string(item, "folder"), string(item, "keyword")));
+        actions.add(new Action(string(item, "type"),
+                               string(item, "folderKey"),
+                               string(item, "folder"),
+                               string(item, "keyword"),
+                               string(item, "to")));
       }
       rules.add(new ServerRule(ref,
                                string(node, "name"),
