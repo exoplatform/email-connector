@@ -507,9 +507,10 @@ public class EmailFilterService {
                 .stream()
                 .anyMatch(action -> action != null && action.type() != null
                     && FilterAction.FORWARD.equalsIgnoreCase(action.type().trim()));
-    if (forwards) {
+    if (forwards && input.isEnabled()) {
       // Before anything is routed: the connector allows forwarding, and every destination
-      // is in the allowed domains and was confirmed.
+      // is in the allowed domains and was confirmed. A filter saved switched off forwards
+      // nothing, so switching one off is never refused.
       emailForwardingService.requireRuleForwardsAllowed(username, serverRuleOf(input).actions());
     }
     String kind = route(input, capabilitiesFor(username, input, fromRef != null));

@@ -235,7 +235,10 @@ public class EmailServerRuleService {
                                          rule.conditions(),
                                          resolveActions(username, rule.actions()),
                                          rule.stop()).validated();
-    emailForwardingService.requireRuleForwardsAllowed(username, resolved.actions());
+    if (resolved.enabled()) {
+      // A rule saved switched off forwards nothing: switching one off is never refused.
+      emailForwardingService.requireRuleForwardsAllowed(username, resolved.actions());
+    }
     requireConsent(username, consent);
     try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
       ServerRuleSet written = engine.saveRule(session, resolved, republish ? null : storedHash(username));
@@ -400,7 +403,7 @@ public class EmailServerRuleService {
                                                          added.conditions(),
                                                          resolveActions(username, added.actions()),
                                                          added.stop()).validated();
-    if (resolved != null) {
+    if (resolved != null && resolved.enabled()) {
       emailForwardingService.requireRuleForwardsAllowed(username, resolved.actions());
     }
     if (publishing || resolved != null) {
@@ -579,6 +582,7 @@ public class EmailServerRuleService {
                          UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
                          ExoSieveScript.HASH_SETTING_KEY,
                          SettingValue.create(JsonUtils.toJsonString(value)));
+      emailForwardingService.recordScriptHash(username, written.scriptHash());
     }
   }
 

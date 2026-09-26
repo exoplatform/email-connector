@@ -57,8 +57,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 :loading="removing"
                 class="btn"
                 small
-                @click="remove">
-                {{ $t('UserSettings.emailConnector.forwarding.stop') }}
+                @click="remove(removeAnyway)">
+                {{ removeAnyway
+                  ? $t('UserSettings.emailConnector.forwarding.stopAnyway')
+                  : $t('UserSettings.emailConnector.forwarding.stop') }}
               </v-btn>
             </div>
             <div v-else-if="forwarding.manageUrl" class="d-flex justify-end mt-2">
@@ -154,6 +156,9 @@ export default {
     error: null,
     destinationInput: '',
     confirmed: false,
+    // eXo's script changed outside eXo: "Stop forwarding" then rewrites it without the
+    // forward, whatever it holds, as the reply's drawer re-publishes.
+    removeAnyway: false,
   }),
   computed: {
     /**
@@ -269,6 +274,7 @@ export default {
       this.error = null;
       this.destinationInput = '';
       this.confirmed = false;
+      this.removeAnyway = false;
       this.drawer = true;
       this.read();
     },
@@ -336,21 +342,29 @@ export default {
         .finally(() => this.saving = false);
     },
     /**
-     * Removes the forward eXo set.
+     * Removes the forward eXo set; once eXo's script was found changed outside eXo, the
+     * user may remove it anyway.
      *
+     * @param {Boolean} anyway - rewrite eXo's script although it changed outside eXo
      * @returns {void}
      */
-    remove() {
+    remove(anyway) {
       this.removing = true;
       this.error = null;
-      this.$emailConnectorCommonService.removeForwarding()
+      this.$emailConnectorCommonService.removeForwarding(!!anyway)
         .then(() => {
           this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.forwarding.removed'), 'success');
+          this.removeAnyway = false;
           notifyForwardingUpdated();
           notifyAbsenceUpdated();
           this.read();
         })
-        .catch(error => this.error = forwardingMessage(this.$t.bind(this), error))
+        .catch(error => {
+          this.removeAnyway = error?.status === 409 && error?.message === 'emailConnector.absence.modifiedOutside';
+          this.error = this.removeAnyway
+            ? this.$t('UserSettings.emailConnector.forwarding.modifiedOutside')
+            : forwardingMessage(this.$t.bind(this), error);
+        })
         .finally(() => this.removing = false);
     },
   },
