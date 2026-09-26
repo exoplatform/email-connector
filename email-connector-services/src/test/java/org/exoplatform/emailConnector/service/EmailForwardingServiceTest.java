@@ -516,6 +516,107 @@ public class EmailForwardingServiceTest {
     service.requireRuleForwardsAllowed(USERNAME, List.of(new Action(ServerRule.STAR, null, null, null)));
   }
 
+  /**
+   * On an engine without a script (BlueMind), the forward eXo set reads back as eXo's --
+   * no "not set in eXo" notice for it -- while one set in the webmail is another client's,
+   * which removing eXo's forward never switches off.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testABlueMindForwardIsRecognisedAsEXos() throws Exception {
+    guard.confirm(USERNAME, BOB);
+    when(engine.readForwarding(session)).thenReturn(ForwardingSetting.none());
+    when(engine.writeForwarding(session, BOB, null)).thenReturn(new ServerForwarding(ForwardingSetting.serverForward(List.of(BOB), true), null));
+    assertTrue(service.setForwarding(USERNAME, null, BOB, null, false).managedByExo());
+    service.observe(USERNAME, MAILBOX, ForwardingSetting.serverForward(List.of(BOB), true));
+    verify(service, never()).notifyWeb(eq(USERNAME), eq(Change.FOREIGN), any(), any());
+    ForwardingSetting webmail = ForwardingSetting.serverForward(List.of(CAROL), true);
+    assertFalse(service.recognise(USERNAME, webmail).managedByExo());
+    when(engine.readForwarding(session)).thenReturn(webmail);
+    service.removeForwarding(USERNAME, null, false);
+    verify(engine, never()).writeForwarding(session, null, null);
+  }
+
+  /**
+   * A BlueMind forward edited in the webmail not to keep a copy is not eXo's any more,
+   * even to eXo's destination.
+   */
+  @Test
+  public void testAForwardWithoutCopyIsNotEXos() {
+    store(Context.GLOBAL).put("written." + USERNAME, BOB);
+    assertTrue(service.recognise(USERNAME, ForwardingSetting.serverForward(List.of(BOB), true)).managedByExo());
+    assertFalse(service.recognise(USERNAME, ForwardingSetting.serverForward(List.of(BOB), false)).managedByExo());
+  }
+
+  /**
+   * Where forwards eXo did not set are not shown -- display and authoring both off --
+   * none is told or put on the band, and it is told once they are shown; eXo's own
+   * forward stays on the band.
+   */
+  @Test
+  public void testAHiddenForeignForwardIsNotTold() {
+    service.observe(USERNAME, MAILBOX, ForwardingSetting.mayForwardByScript("roundcube"), false);
+    verify(service, never()).notifyWeb(eq(USERNAME), any(), any(), any());
+    assertEquals(ForwardingState.NONE,
+                 EmailForwardingService.visible(ForwardingStatus.of(ForwardingSetting.mayForwardByScript("roundcube"), NOW), false)
+                                       .getState());
+    assertTrue(EmailForwardingService.visible(ForwardingStatus.of(ForwardingSetting.exoForward(BOB, null), NOW), false)
+                                     .isManagedByExo());
+    service.observe(USERNAME, MAILBOX, ForwardingSetting.mayForwardByScript("roundcube"), true);
+    verify(service).notifyWeb(USERNAME, Change.FOREIGN_SCRIPT, null, "roundcube");    // eXo's own forward edited outside eXo is told whatever the switches.
+    service.observe(USERNAME, MAILBOX, ForwardingSetting.exoForward(BOB, "exo-rules"), false);
+    verify(service).notifyWeb(USERNAME, Change.FOREIGN_SCRIPT, null, "exo-rules");
+  }
+
+  /**
+   * The hash of the script a forward's write left is kept where the user cannot write
+   * it, beside the one the reply and the rules compare with.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheWrittenScriptHashIsKeptGlobally() throws Exception {
+    guard.confirm(USERNAME, BOB);
+    when(engine.readForwarding(session)).thenReturn(ForwardingSetting.none());
+    when(engine.writeForwarding(session, BOB, null)).thenReturn(new ServerForwarding(ForwardingSetting.exoForward(BOB, null), "h9"));
+    service.setForwarding(USERNAME, null, BOB, null, false);
+    assertEquals("h9", guard.lastWrittenScriptHash(USERNAME));
+  }
+
+  /**
+   * A rule that starts or stops forwarding is on the band at once, not after the status'
+   * lifetime.
+   */
+  @Test
+  public void testTheBandFollowsTheRulesAtOnce() {
+    service.recordRuleForwards(USERNAME, List.of(forwardRule("1", "Acme", BOB)));
+    assertTrue(store(Context.GLOBAL).get("status." + USERNAME).contains(BOB));
+    service.recordRuleForwards(USERNAME, List.of());
+    assertFalse(store(Context.GLOBAL).get("status." + USERNAME).contains(BOB));
+  }
+
+  /**
+   * With the display and authoring both switched off, a forward eXo set is still read
+   * and shown on the band while it runs.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheBandKeepsEXosForwardWhateverTheSwitches() throws Exception {
+    System.clearProperty(ForwardingGuard.AUTHORING_PROPERTY + "." + CONNECTOR_ID);
+    System.setProperty(EmailAbsenceService.FORWARDING_DISPLAY_PROPERTY, "false");
+    try {
+      service.observe(USERNAME, MAILBOX, ForwardingSetting.exoForward(BOB, null));
+      now += EmailAbsenceService.DEFAULT_TTL_SECONDS * 1000 + 1;
+      when(engine.readForwarding(session)).thenReturn(ForwardingSetting.exoForward(BOB, null));
+      assertTrue(service.getStatus(USERNAME, null).isManagedByExo());
+      verify(engine).readForwarding(session);
+    } finally {
+      System.clearProperty(EmailAbsenceService.FORWARDING_DISPLAY_PROPERTY);
+    }
+  }
+
   // ---------------------------------------------------------------------------------
   // (h) the band's status, and (g)'s hook
   // ---------------------------------------------------------------------------------
