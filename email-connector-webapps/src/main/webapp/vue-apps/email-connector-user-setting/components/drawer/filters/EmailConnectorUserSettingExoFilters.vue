@@ -40,37 +40,48 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       indeterminate
       color="primary"
       class="mb-4" />
-    <v-list v-else-if="filters && filters.length" dense>
+    <!-- Each rule as the platform's settings lists show an ordered row with actions (the
+         activity stream settings' categories): its name over what it does, its badges
+         as the version history's, then its switch and its icon buttons; the arrows that
+         cannot move it are kept in place, invisible, so the columns stay aligned. -->
+    <v-list
+      v-else-if="filters && filters.length"
+      class="pa-0"
+      dense>
       <template v-for="(filter, index) in filters">
         <v-list-item
           :key="filter.id"
-          class="px-0">
-          <v-list-item-content>
-            <v-list-item-title class="text-color">{{ filter.name }}</v-list-item-title>
+          class="pa-0"
+          dense>
+          <v-list-item-content class="me-2 pa-0">
+            <v-list-item-title class="text-truncate">{{ filter.name }}</v-list-item-title>
             <v-list-item-subtitle class="text-wrap">{{ summary(filter) }}</v-list-item-subtitle>
-            <v-list-item-subtitle class="text-wrap caption">
+            <v-list-item-subtitle class="text-wrap">
               {{ $t('UserSettings.emailConnector.filters.exo.matches', { 0: filter.matchCount || 0 }) }}
             </v-list-item-subtitle>
-            <div class="d-flex flex-wrap mt-1">
+            <div v-if="filter.kind === 'HOP' || filter.lastError" class="d-flex flex-wrap mt-1">
               <v-chip
                 v-if="filter.kind === 'HOP'"
-                class="me-1 mb-1"
+                class="ma-0 me-1 px-2 text-subtitle"
+                color="primary"
                 x-small
+                label
                 outlined>
                 {{ $t('UserSettings.emailConnector.filters.exo.badge.atDelivery') }}
               </v-chip>
               <v-chip
                 v-if="filter.lastError"
-                class="me-1 mb-1"
+                class="ma-0 me-1 px-2 text-subtitle"
                 color="error"
                 x-small
+                label
                 outlined>
                 {{ $t('UserSettings.emailConnector.filters.exo.badge.error') }}
               </v-chip>
             </div>
             <div
               v-if="isOrphanHop(filter)"
-              class="caption warning--text text-wrap">
+              class="text-subtitle warning--text text-wrap mt-1">
               {{ $t('UserSettings.emailConnector.filters.exo.orphan') }}
               <v-btn
                 :loading="saving"
@@ -83,73 +94,88 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               </v-btn>
             </div>
           </v-list-item-content>
-          <v-list-item-action class="d-flex flex-row align-center">
+          <v-list-item-action class="mx-0 my-auto">
             <v-switch
               :input-value="filter.enabled"
               :disabled="saving"
               :aria-label="$t('UserSettings.emailConnector.filters.form.enabled')"
-              class="mt-0 me-1"
+              :ripple="false"
+              class="ma-0 width-fit-content"
               hide-details
               @change="toggle(filter, $event)" />
+          </v-list-item-action>
+          <v-list-item-action :class="index === 0 && 'invisible'" class="mx-0 my-auto">
             <v-btn
               :disabled="saving || index === 0"
               :title="$t('UserSettings.emailConnector.filters.exo.up')"
               :aria-label="$t('UserSettings.emailConnector.filters.exo.up')"
               icon
-              small
               @click="move(index, -1)">
-              <v-icon size="14" class="icon-default-color">fa-arrow-up</v-icon>
+              <v-icon size="18">fas fa-arrow-up</v-icon>
             </v-btn>
+          </v-list-item-action>
+          <v-list-item-action :class="index === filters.length - 1 && 'invisible'" class="mx-0 my-auto">
             <v-btn
               :disabled="saving || index === filters.length - 1"
               :title="$t('UserSettings.emailConnector.filters.exo.down')"
               :aria-label="$t('UserSettings.emailConnector.filters.exo.down')"
               icon
-              small
               @click="move(index, 1)">
-              <v-icon size="14" class="icon-default-color">fa-arrow-down</v-icon>
+              <v-icon size="18">fas fa-arrow-down</v-icon>
             </v-btn>
+          </v-list-item-action>
+          <v-list-item-action class="mx-0 my-auto">
             <v-btn
               :title="$t('UserSettings.emailConnector.filters.exo.log')"
               :aria-label="$t('UserSettings.emailConnector.filters.exo.log')"
               icon
-              small
               @click="toggleLog(filter)">
-              <v-icon size="14" class="icon-default-color">fa-history</v-icon>
+              <v-icon size="18">fas fa-history</v-icon>
             </v-btn>
+          </v-list-item-action>
+          <v-list-item-action class="mx-0 my-auto">
             <v-btn
               :title="$t('UserSettings.emailConnector.filters.edit')"
               :aria-label="$t('UserSettings.emailConnector.filters.edit')"
               icon
-              small
               @click="$emit('edit', filter)">
-              <v-icon size="14" class="icon-default-color">fa-edit</v-icon>
+              <v-icon size="18">fas fa-edit</v-icon>
             </v-btn>
+          </v-list-item-action>
+          <v-list-item-action class="mx-0 my-auto">
             <v-btn
               :title="$t('UserSettings.emailConnector.filters.delete')"
               :aria-label="$t('UserSettings.emailConnector.filters.delete')"
               icon
-              small
               @click="askDelete(filter)">
-              <v-icon size="14" class="icon-default-color">fa-trash</v-icon>
+              <v-icon size="18" color="error">fas fa-trash</v-icon>
             </v-btn>
           </v-list-item-action>
         </v-list-item>
-        <div
+        <v-list
           v-if="logOf === filter.id"
           :key="`log-${filter.id}`"
-          class="caption text-sub-title ps-2 pb-2">
-          <div v-if="!log.length">{{ $t('UserSettings.emailConnector.filters.exo.log.empty') }}</div>
-          <div
+          class="pa-0 ps-4 pb-2"
+          dense>
+          <div v-if="!log.length" class="text-subtitle">{{ $t('UserSettings.emailConnector.filters.exo.log.empty') }}</div>
+          <v-list-item
             v-for="match in log"
             :key="match.id"
-            class="text-truncate">
-            {{ formatDate(match.matchedDate) }} -- {{ match.subject || $t('UserSettings.emailConnector.filters.exo.noSubject') }}
-            <span v-if="match.agentStatus && match.agentStatus !== 'NONE'">
-              ({{ $t(`UserSettings.emailConnector.filters.exo.agent.${match.agentStatus}`) }})
-            </span>
-          </div>
-        </div>
+            class="pa-0"
+            dense>
+            <v-list-item-content class="pa-0">
+              <v-list-item-title class="text-truncate">
+                {{ match.subject || $t('UserSettings.emailConnector.filters.exo.noSubject') }}
+              </v-list-item-title>
+              <v-list-item-subtitle class="text-truncate">
+                {{ formatDate(match.matchedDate) }}
+                <span v-if="match.agentStatus && match.agentStatus !== 'NONE'">
+                  -- {{ $t(`UserSettings.emailConnector.filters.exo.agent.${match.agentStatus}`) }}
+                </span>
+              </v-list-item-subtitle>
+            </v-list-item-content>
+          </v-list-item>
+        </v-list>
       </template>
     </v-list>
     <div v-else-if="filters" class="text-sub-title mb-2">
