@@ -48,8 +48,9 @@ public record ManageSieveCapabilities(String implementation,
                                       Integer maxRedirects) {
 
   /**
-   * The redirects one run may execute when the server does not say: one, the default of
-   * Pigeonhole and the value Stalwart advertises -- never more than eXo can prove.
+   * The redirects one run may execute when the server does not say: one, the most eXo
+   * can prove -- Stalwart advertises one, Pigeonhole advertises nothing while its own
+   * default is four.
    */
   public static final int DEFAULT_MAX_REDIRECTS = 1;
 
