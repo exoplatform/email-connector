@@ -20,8 +20,9 @@ import java.util.Set;
 
 /**
  * BlueMind's {@code MailFilter.Forwarding}, member for member (core API javadoc
- * 5.0.7563: {@code boolean enabled; boolean localCopy; Set<String> emails}). Read only in
- * this add-on.
+ * 5.0.7563: {@code boolean enabled; boolean localCopy; Set<String> emails}). Written by
+ * this add-on only with {@code localCopy} true, to a destination the forwarding checks
+ * allow.
  *
  * @param enabled whether mail is forwarded
  * @param localCopy whether a copy is kept in the mailbox

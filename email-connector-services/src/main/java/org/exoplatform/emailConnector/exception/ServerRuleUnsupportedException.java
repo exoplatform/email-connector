@@ -33,6 +33,16 @@ public class ServerRuleUnsupportedException extends Exception {
   /** Server rules cannot be managed by this engine. */
   public static final String RULES_UNSUPPORTED    = "emailConnector.rules.unsupported";
 
+  /** This engine or server cannot hold a forward eXo sets. */
+  public static final String FORWARDING_UNSUPPORTED = "emailConnector.forwarding.unsupported";
+
+  /**
+   * One mail could be forwarded more times than the server allows in one run
+   * ({@code MAXREDIRECTS}, one when not advertised): the forward and the rules that
+   * forward together.
+   */
+  public static final String TOO_MANY_REDIRECTS   = "emailConnector.forwarding.tooManyRedirects";
+
   /**
    * An unsupported request.
    *
