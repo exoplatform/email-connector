@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -113,6 +114,9 @@ public class EmailAbsenceServiceTest {
   @Mock
   private ServerRuleEngine         engine;
 
+  @Mock
+  private EmailForwardingService   emailForwardingService;
+
   @InjectMocks
   private EmailAbsenceService      service;
 
@@ -143,6 +147,9 @@ public class EmailAbsenceServiceTest {
     lenient().when(serverRuleEngineRegistry.engineFor(connector)).thenReturn(engine);
     lenient().when(emailDelegationService.openOwnSession(USERNAME)).thenReturn(session);
     lenient().when(engine.getName()).thenReturn("sieve");
+    lenient().when(emailForwardingService.narrowed(any(), any())).thenAnswer(invocation -> invocation.getArgument(0));
+    // The one-pass read is the SPI's default: the reply's read, then the forward's.
+    lenient().when(engine.readAbsence(any(), any(), anyBoolean())).thenCallRealMethod();
     lenient().when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenAnswer(invocation -> {
       String value = store(invocation.getArgument(0, Context.class)).get(invocation.getArgument(2, String.class));
       return value == null ? null : SettingValue.create(value);
@@ -451,6 +458,8 @@ public class EmailAbsenceServiceTest {
     assertEquals("roundcube", forwarding.scriptName());
     assertEquals("https://webmail.example.org/", forwarding.manageUrl());
     verify(engine).probe(session);
+    // The reply and the forward are asked for together, in one pass.
+    verify(engine).readAbsence(eq(session), any(), eq(true));
     verify(engine).readVacation(eq(session), any());
     verify(engine).readForwarding(session);
     verify(engine).getName();

@@ -30,8 +30,13 @@ import java.util.regex.Pattern;
  * <p>
  * The vocabulary is a <b>closed allowlist</b>, the same for every engine: an engine
  * serialises nothing outside it. The actions are the ones a mail survives -- a move, a
- * move to Junk or Trash, a flag, the keyword eXo's own rules pick up at sync; never a
- * forward, a reply, a discard or a rejection. {@link #validated()} is what every write
+ * move to Junk or Trash, a flag, the keyword eXo's own rules pick up at sync, and a
+ * forward of a <b>copy</b> to one plain address ({@link #FORWARD}), the mail itself
+ * kept; never a plain forward, a reply, a discard or a rejection. A forward's
+ * destination is only checked for its shape here: whether it may be written at all --
+ * the connector allows forwarding, its domain is allowed, it was confirmed -- is decided
+ * by the service that saves the rule and checked again by the generator that writes it.
+ * {@link #validated()} is what every write
  * goes through, and what an engine reading its own rules back goes through again: a
  * value that would not pass on the way in is not read on the way back either.
  *
@@ -127,6 +132,9 @@ public record ServerRule(String ref,
   /** Action: set the keyword eXo's own rules pick up at sync. */
   public static final String       TAG              = ServerRuleCapabilities.TAG;
 
+  /** Action: forward a copy of the mail to one confirmed address, the mail kept. */
+  public static final String       FORWARD          = ServerRuleCapabilities.FORWARD;
+
   /** The prefix every keyword eXo sets begins with. */
   public static final String       TAG_PREFIX       = "exo-filter-";
 
@@ -181,7 +189,7 @@ public record ServerRule(String ref,
   public static final List<String> TEXT_OPERATORS   = List.of(CONTAINS, NOT_CONTAINS, EQUALS, STARTS_WITH, ENDS_WITH);
 
   /** Every action type, in the form's order. */
-  public static final List<String> ACTION_TYPES     = List.of(MOVE_TO_FOLDER, MARK_JUNK, DELETE, MARK_READ, STAR, TAG);
+  public static final List<String> ACTION_TYPES     = List.of(MOVE_TO_FOLDER, MARK_JUNK, DELETE, MARK_READ, STAR, TAG, FORWARD);
 
   /** The actions that file the mail somewhere, of which a rule has at most one. */
   public static final Set<String>  FILING_ACTIONS   = Set.of(MOVE_TO_FOLDER, MARK_JUNK, DELETE);
@@ -234,8 +242,22 @@ public record ServerRule(String ref,
    *          resolved by eXo from its mirrored folders, never taken from the user
    * @param keyword the keyword a {@link #TAG} sets, {@value #TAG_PREFIX} followed by
    *          letters, digits, dots, underscores or dashes
+   * @param destination the address a {@link #FORWARD} sends its copy to, in
+   *          {@link ForwardingDestination}'s one form
    */
-  public record Action(String type, String folderKey, String folderPath, String keyword) {
+  public record Action(String type, String folderKey, String folderPath, String keyword, String destination) {
+
+    /**
+     * An action that forwards nothing: every type but {@link #FORWARD}.
+     *
+     * @param type the type
+     * @param folderKey the folder's eXo key
+     * @param folderPath the folder's name on the mail server
+     * @param keyword the keyword
+     */
+    public Action(String type, String folderKey, String folderPath, String keyword) {
+      this(type, folderKey, folderPath, keyword, null);
+    }
   }
 
   /**
@@ -266,6 +288,15 @@ public record ServerRule(String ref,
    */
   public boolean filesOrStops() {
     return stop || actions.stream().anyMatch(action -> FILING_ACTIONS.contains(action.type()));
+  }
+
+  /**
+   * The addresses this rule forwards a copy to.
+   *
+   * @return the destinations of its {@link #FORWARD} actions, never null
+   */
+  public List<String> forwardDestinations() {
+    return actions.stream().filter(action -> FORWARD.equals(action.type())).map(Action::destination).toList();
   }
 
   /**
@@ -422,6 +453,9 @@ public record ServerRule(String ref,
         throw new IllegalArgumentException(INVALID_ACTION);
       }
       return new Action(type, null, null, action.keyword());
+    }
+    if (FORWARD.equals(type)) {
+      return new Action(type, null, null, null, ForwardingDestination.normalize(action.destination()));
     }
     return new Action(type, null, null, null);
   }

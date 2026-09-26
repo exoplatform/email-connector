@@ -36,6 +36,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.exception.ForwardingRefusedException;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
@@ -120,7 +121,7 @@ public class EmailFilterRest {
           + "{supported, reasonKey}. On Sieve the elements follow the SIEVE capability line the server re-issues after "
           + "STARTTLS. Own mailbox only: with delegationId the answer is 403.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.rules.ownMailboxOnly), or the connector may not be used"),
+      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.rules.ownMailboxOnly), the connector may not be used, or a forward the forwarding checks refuse (emailConnector.forwarding.*)"),
       @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected"),
       @ApiResponse(responseCode = "502", description = UNAVAILABLE_DESCRIPTION) })
   public ServerRuleCapabilities getCapabilities(HttpServletRequest request,
@@ -154,7 +155,7 @@ public class EmailFilterRest {
           + "whether the caller already agreed that eXo manages rules on their server. On Sieve only eXo's own rules are "
           + "listed. Own mailbox only.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.rules.ownMailboxOnly), or the connector may not be used"),
+      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.rules.ownMailboxOnly), the connector may not be used, or a forward the forwarding checks refuse (emailConnector.forwarding.*)"),
       @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected"),
       @ApiResponse(responseCode = "502", description = UNAVAILABLE_DESCRIPTION) })
   public ServerRulesSettings getServerRules(HttpServletRequest request,
@@ -189,12 +190,13 @@ public class EmailFilterRest {
       description = "Conditions FROM, TO, CC, ANY_RECIPIENT (CONTAINS, NOT_CONTAINS, EQUALS, STARTS_WITH, ENDS_WITH, "
           + "MATCHES_DOMAIN), SUBJECT and HEADER (the text operators), MESSAGE_SIZE (GT, LT, in kilobytes), IS_LIST and "
           + "IS_AUTOMATED (IS_TRUE, IS_FALSE); actions MOVE_TO_FOLDER (folderKey: one of the caller's mirrored CUSTOM:<id> "
-          + "folders, or ARCHIVE), MARK_JUNK, DELETE (moves to Trash), MARK_READ, STAR; stop. Nothing else: no forward, "
-          + "reply, discard or rejection. The first write needs consent=true, recorded once. Nothing another client wrote "
+          + "folders, or ARCHIVE), MARK_JUNK, DELETE (moves to Trash), MARK_READ, STAR, FORWARD (destination: a copy to a "
+          + "confirmed address in the connector's allowed domains, where forwarding is enabled; the mail kept); stop. Nothing "
+          + "else: no plain forward, reply, discard or rejection. The first write needs consent=true, recorded once. Nothing another client wrote "
           + "is ever replaced: when it would be, the answer is 409. Own mailbox only.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Written; the group after the write, capabilities not re-read"),
       @ApiResponse(responseCode = "400", description = "An invalid value (emailConnector.rules.invalid, .name.invalid, .condition.invalid, .action.invalid), a folder that is not one of the caller's mirrored folders (emailConnector.folder.unknown, .notMirrored, emailConnector.rules.folder.unresolved), no consent yet (emailConnector.rules.consentRequired), or an element this server cannot run (emailConnector.rules.unsupported.*)"),
-      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.rules.ownMailboxOnly), or the connector may not be used"),
+      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.rules.ownMailboxOnly), the connector may not be used, or a forward the forwarding checks refuse (emailConnector.forwarding.*)"),
       @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected"),
       @ApiResponse(responseCode = "409", description = CONFLICT_DESCRIPTION),
       @ApiResponse(responseCode = "502", description = UNAVAILABLE_DESCRIPTION) })
@@ -232,7 +234,7 @@ public class EmailFilterRest {
           + "An unknown reference is 404 (emailConnector.rules.notFound).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Written; the group after the write, capabilities not re-read"),
       @ApiResponse(responseCode = "400", description = "An invalid value, folder or consent, as for the creation"),
-      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.rules.ownMailboxOnly), or the connector may not be used"),
+      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.rules.ownMailboxOnly), the connector may not be used, or a forward the forwarding checks refuse (emailConnector.forwarding.*)"),
       @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected"),
       @ApiResponse(responseCode = "409", description = CONFLICT_DESCRIPTION),
       @ApiResponse(responseCode = "502", description = UNAVAILABLE_DESCRIPTION) })
@@ -270,7 +272,7 @@ public class EmailFilterRest {
           + "A hop -- the server half of a filter eXo runs -- is not deleted here: deleting that filter removes it.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Deleted; the group after the write, capabilities not re-read"),
       @ApiResponse(responseCode = "400", description = "The reference names a hop (emailConnector.rules.action.invalid)"),
-      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.rules.ownMailboxOnly), or the connector may not be used"),
+      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.rules.ownMailboxOnly), the connector may not be used, or a forward the forwarding checks refuse (emailConnector.forwarding.*)"),
       @ApiResponse(responseCode = "404", description = "The feature is off, no mailbox is connected, or no such rule (emailConnector.rules.notFound)"),
       @ApiResponse(responseCode = "409", description = CONFLICT_DESCRIPTION),
       @ApiResponse(responseCode = "502", description = UNAVAILABLE_DESCRIPTION) })
@@ -302,7 +304,7 @@ public class EmailFilterRest {
           + "through the one-active-script policy. Re-publish (republish=true): eXo's script was edited outside eXo, eXo "
           + "writes it back from its own header.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Written; the group after the write, capabilities not re-read"),
-      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.rules.ownMailboxOnly), or the connector may not be used"),
+      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.rules.ownMailboxOnly), the connector may not be used, or a forward the forwarding checks refuse (emailConnector.forwarding.*)"),
       @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected"),
       @ApiResponse(responseCode = "409", description = CONFLICT_DESCRIPTION),
       @ApiResponse(responseCode = "502", description = UNAVAILABLE_DESCRIPTION) })
@@ -784,7 +786,9 @@ public class EmailFilterRest {
   }
 
   /**
-   * Runs a write and maps its refusals to statuses.
+   * Runs a write and maps its refusals to statuses: a forward the generator refuses to
+   * write ({@code emailConnector.forwarding.notAuthorized}) is a refusal, 403, not a bad
+   * value.
    *
    * @param write the write
    * @return 200 with the group, or 409 with the conflict
@@ -799,7 +803,7 @@ public class EmailFilterRest {
       return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
-    } catch (IllegalAccessException e) {
+    } catch (IllegalAccessException | ForwardingRefusedException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
     } catch (IllegalArgumentException | ServerRuleUnsupportedException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
