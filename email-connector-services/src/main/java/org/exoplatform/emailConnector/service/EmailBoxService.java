@@ -267,7 +267,6 @@ public class EmailBoxService {
   // into this PR's new code. New code uses the constants.
   private static final String     STORE_CLOSE_ERROR_MESSAGE                                   = "Error when closing store";
 
-
   private static final String     STORE_CONNECT_ERROR_MESSAGE                                 =
                                                                                               "Error when connecting store for user {}";
 
