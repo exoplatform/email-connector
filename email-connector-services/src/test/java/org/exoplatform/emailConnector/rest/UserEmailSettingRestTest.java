@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -69,6 +70,7 @@ import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
+import org.exoplatform.emailConnector.exception.ForwardingRefusedException;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
@@ -106,6 +108,7 @@ import org.exoplatform.emailConnector.rest.model.DelegationSendModeRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationInviteRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationPreferencesRequest;
 import org.exoplatform.emailConnector.service.EmailAbsenceService;
+import org.exoplatform.emailConnector.service.EmailForwardingService;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
@@ -159,6 +162,9 @@ public class UserEmailSettingRestTest {
 
   @MockitoBean
   private EmailAbsenceService     emailAbsenceService;
+
+  @MockitoBean
+  private EmailForwardingService  emailForwardingService;
 
   @Autowired
   private SecurityFilterChain     filterChain;
@@ -1056,5 +1062,62 @@ public class UserEmailSettingRestTest {
     when(emailAbsenceService.getStatus(SIMPLE_USER, null)).thenThrow(new ObjectNotFoundException(EmailAbsenceService.DISABLED));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/status").with(testSimpleUser()))
            .andExpect(status().isNotFound());
+  }
+
+  /**
+   * The forwarding endpoints answer their refusals as the add-on does: forwarding off, a
+   * domain not allowed, a destination not confirmed, a refusal of the generator, too many
+   * codes or wrong tries -- 403; a destination that is not an address, a wrong or expired
+   * code, a server that cannot keep a copy -- 400; another client's forward or an outside
+   * edit -- 409 with the script; an unreachable server or relay -- 502.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void forwardingRefusalsAnswerTheirStatuses() throws Exception {
+    String body = "{\"destination\":\"bob@example.org\",\"code\":\"123456\"}";
+    when(emailForwardingService.sendCode(SIMPLE_USER, null, "bob@example.org"))
+        .thenThrow(new IllegalAccessException("emailConnector.forwarding.disabled"));
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/absence/forwarding/code").with(testSimpleUser())
+                                                                             .contentType(MediaType.APPLICATION_JSON)
+                                                                             .content(body))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason("emailConnector.forwarding.disabled"));
+    when(emailForwardingService.confirm(SIMPLE_USER, null, "bob@example.org", "123456"))
+        .thenThrow(new IllegalArgumentException("emailConnector.forwarding.code.invalid"));
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/absence/forwarding/confirm").with(testSimpleUser())
+                                                                                .contentType(MediaType.APPLICATION_JSON)
+                                                                                .content(body))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.forwarding.code.invalid"));
+    when(emailForwardingService.setForwarding(SIMPLE_USER, null, "bob@example.org", "123456", false))
+        .thenThrow(new ForwardingRefusedException(ForwardingRefusedException.NOT_AUTHORIZED));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/forwarding").with(testSimpleUser())
+                                                                       .contentType(MediaType.APPLICATION_JSON)
+                                                                       .content(body))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason(ForwardingRefusedException.NOT_AUTHORIZED));
+    when(emailForwardingService.setForwarding(SIMPLE_USER, null, "bob@example.org", "123456", true))
+        .thenThrow(new ServerRuleConflictException(ServerRuleConflictException.FORWARDED_ELSEWHERE, "roundcube"));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/forwarding?republish=true").with(testSimpleUser())
+                                                                                        .contentType(MediaType.APPLICATION_JSON)
+                                                                                        .content(body))
+           .andExpect(status().isConflict())
+           .andExpect(jsonPath("$.message").value(ServerRuleConflictException.FORWARDED_ELSEWHERE))
+           .andExpect(jsonPath("$.scriptName").value("roundcube"));
+    doThrow(new ServerRuleUnsupportedException(ServerRuleUnsupportedException.FORWARDING_UNSUPPORTED)).when(emailForwardingService)
+                                                                                                   .removeForwarding(SIMPLE_USER, null, false);
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/absence/forwarding").with(testSimpleUser()))
+           .andExpect(status().isBadRequest());
+    when(emailForwardingService.getStatus(SIMPLE_USER, 4L)).thenThrow(new IllegalAccessException(EmailAbsenceService.OWN_MAILBOX_ONLY));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/absence/forwarding/status?delegationId=4").with(testSimpleUser()))
+           .andExpect(status().isForbidden());
+    // The reply's write answers a forward the generator refuses as a refusal too.
+    when(emailAbsenceService.setVacation(eq(SIMPLE_USER), isNull(), any(), eq(false)))
+        .thenThrow(new ForwardingRefusedException(ForwardingRefusedException.NOT_AUTHORIZED));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/absence/vacation").with(testSimpleUser())
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .content("{\"enabled\":true,\"subject\":\"s\",\"text\":\"t\"}"))
+           .andExpect(status().isForbidden());
   }
 }

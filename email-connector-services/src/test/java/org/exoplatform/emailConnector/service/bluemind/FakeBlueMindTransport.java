@@ -36,9 +36,10 @@ import org.exoplatform.emailConnector.service.bluemind.BlueMindTransportExceptio
  * javadoc 5.0.7563 ({@code MailFilter.Vacation}), with instants in epoch milliseconds --
  * to verify live (the vacation plan's V0 list of BlueMind checks).
  * <p>
- * The port has no write of {@code _filter} or {@code _forwarding}: this fake keeps the
- * forward the account holds and a test asserts it is the same object at the end, and
- * that the call log names only the port's own calls.
+ * The port has no write of {@code _filter}, and writes {@code _forwarding} only through
+ * {@code setForwarding}, which this fake records: a test of the reply asserts the
+ * forward the account holds is the same object at the end, and that the call log names
+ * only the port's own calls.
  */
 public final class FakeBlueMindTransport implements BlueMindMailboxTransport {
 
@@ -93,6 +94,8 @@ public final class FakeBlueMindTransport implements BlueMindMailboxTransport {
   private volatile BlueMindSession                   answer;
 
   private volatile BlueMindForwarding                forwarding = FORWARD;
+
+  private final List<BlueMindForwarding>            postedForwardings = Collections.synchronizedList(new ArrayList<>());
 
   /**
    * Makes one call fail, every time, until cleared.
@@ -243,6 +246,30 @@ public final class FakeBlueMindTransport implements BlueMindMailboxTransport {
     throwIfFailing("setVacation");
     posted.add(newVacation);
     vacation = newVacation;
+  }
+
+  /**
+   * Replaces the forward held, as {@code POST _forwarding} does, and records it.
+   *
+   * @param session the session
+   * @param newForwarding the forward
+   * @throws BlueMindTransportException when a test made it fail
+   */
+  @Override
+  public void setForwarding(BlueMindSession session, BlueMindForwarding newForwarding) throws BlueMindTransportException {
+    calls.add(new Call("setForwarding", null, null, session));
+    throwIfFailing("setForwarding");
+    postedForwardings.add(newForwarding);
+    forwarding = newForwarding;
+  }
+
+  /**
+   * Every forward written, in order.
+   *
+   * @return the forwards
+   */
+  public List<BlueMindForwarding> postedForwardings() {
+    return new ArrayList<>(postedForwardings);
   }
 
   /**

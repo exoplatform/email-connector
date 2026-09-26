@@ -44,6 +44,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
+import org.exoplatform.emailConnector.exception.ForwardingRefusedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
@@ -57,6 +58,10 @@ import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.FolderAccessUpdate;
+import org.exoplatform.emailConnector.model.ForwardingAuthoring;
+import org.exoplatform.emailConnector.model.ForwardingCodeSent;
+import org.exoplatform.emailConnector.model.ForwardingSetting;
+import org.exoplatform.emailConnector.model.ForwardingStatus;
 import org.exoplatform.emailConnector.model.GrantedDelegations;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
@@ -66,8 +71,10 @@ import org.exoplatform.emailConnector.rest.model.DelegationFoldersRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationInviteRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationPreferencesRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationSendModeRequest;
+import org.exoplatform.emailConnector.rest.model.ForwardingRequest;
 import org.exoplatform.emailConnector.service.EmailAbsenceService;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
+import org.exoplatform.emailConnector.service.EmailForwardingService;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
@@ -107,6 +114,9 @@ public class UserEmailSettingRest {
 
   @Autowired
   private EmailAbsenceService     emailAbsenceService;
+
+  @Autowired
+  private EmailForwardingService  emailForwardingService;
 
   /**
    * Connects the caller to a connector whose provider asks them for nothing - the
@@ -991,7 +1001,7 @@ public class UserEmailSettingRest {
       return conflict(e);
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
-    } catch (IllegalAccessException e) {
+    } catch (IllegalAccessException | ForwardingRefusedException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
     } catch (IllegalArgumentException | ServerRuleUnsupportedException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
@@ -1029,12 +1039,244 @@ public class UserEmailSettingRest {
       return conflict(e);
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
-    } catch (IllegalAccessException e) {
+    } catch (IllegalAccessException | ForwardingRefusedException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
     } catch (ServerRuleUnsupportedException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (ServerRuleUnavailableException e) {
       throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getMessage());
+    }
+  }
+
+  /**
+   * Whether the caller may set a forward from eXo, and within which bounds.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param delegationId the share the request is made from; any value is refused
+   * @return {enabled, reasonCode, allowedDomains, confirmedDestinations}
+   */
+  @GetMapping("/absence/forwarding/authoring")
+  @Secured("users")
+  @Operation(summary = "Reads whether the caller may set a forward from eXo", method = "GET",
+      description = "enabled only where the deployment switched email.connector.forwarding.authoring.enabled[.<connectorId>] on "
+          + "(reasonCode emailConnector.forwarding.disabled otherwise); allowedDomains from "
+          + "email.connector.forwarding.allowedDomains[.<connectorId>], by default the domain of the caller's mailbox; "
+          + "confirmedDestinations, the addresses the caller already confirmed with a code. Shapes the form only: every write "
+          + "checks the same again. Own mailbox only.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox, or the connector may not be used"),
+      @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected") })
+  public ForwardingAuthoring getForwardingAuthoring(HttpServletRequest request,
+                                                    @Parameter(description = "The share the request is made from; refused")
+                                                    @RequestParam(name = "delegationId", required = false)
+                                                    Long delegationId) {
+    try {
+      return emailForwardingService.getAuthoring(request.getRemoteUser(), delegationId);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    }
+  }
+
+  /**
+   * Sends a confirmation code to a destination the caller wants to forward to.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param delegationId the share the request is made from; any value is refused
+   * @param body the destination
+   * @return {destination, expiresAt}
+   */
+  @PostMapping("/absence/forwarding/code")
+  @Secured("users")
+  @Operation(summary = "Sends a confirmation code to a forwarding destination", method = "POST",
+      description = "The platform's own mail service sends a six-digit code to the destination, valid "
+          + "email.connector.forwarding.code.ttlSeconds seconds (900 by default); a new one replaces the one waiting. At most "
+          + "email.connector.forwarding.code.maxPerHour codes an hour (3 by default), one a minute. The destination must be a "
+          + "plain address, not the mailbox itself, in an allowed domain, and forwarding enabled for the connector. Own mailbox "
+          + "only.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Sent"),
+      @ApiResponse(responseCode = "400", description = "Not a plain address (emailConnector.forwarding.destination.invalid), or the mailbox itself (.destination.own)"),
+      @ApiResponse(responseCode = "403", description = "Forwarding is off (emailConnector.forwarding.disabled), the domain is not allowed (.destination.notAllowed), too many codes (.code.tooMany), or asked from someone else's mailbox"),
+      @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected"),
+      @ApiResponse(responseCode = "502", description = "The platform could not send the mail (emailConnector.forwarding.code.notSent)") })
+  public ForwardingCodeSent sendForwardingCode(HttpServletRequest request,
+                                               @Parameter(description = "The share the request is made from; refused")
+                                               @RequestParam(name = "delegationId", required = false)
+                                               Long delegationId,
+                                               @RequestBody
+                                               ForwardingRequest body) {
+    try {
+      return emailForwardingService.sendCode(request.getRemoteUser(), delegationId, body == null ? null : body.getDestination());
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (ServerRuleUnavailableException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getMessage());
+    }
+  }
+
+  /**
+   * Confirms a forwarding destination with the code sent to it.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param delegationId the share the request is made from; any value is refused
+   * @param body the destination and the code
+   * @return {destination}
+   */
+  @PostMapping("/absence/forwarding/confirm")
+  @Secured("users")
+  @Operation(summary = "Confirms a forwarding destination with the code sent to it", method = "POST",
+      description = "A code works once, for the destination it was sent to, before it expires; each wrong one counts, and "
+          + "after email.connector.forwarding.code.maxAttempts (5 by default) the code is thrown away. A confirmed "
+          + "destination can then be used by the forward and by filters that forward, without a new code. Own mailbox only.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Confirmed"),
+      @ApiResponse(responseCode = "400", description = "A wrong code or none waiting (emailConnector.forwarding.code.invalid), an expired one (.code.expired), or an invalid destination"),
+      @ApiResponse(responseCode = "403", description = "Too many wrong codes (emailConnector.forwarding.code.tooManyAttempts), forwarding is off, the domain is not allowed, or asked from someone else's mailbox"),
+      @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected") })
+  public Map<String, String> confirmForwarding(HttpServletRequest request,
+                                               @Parameter(description = "The share the request is made from; refused")
+                                               @RequestParam(name = "delegationId", required = false)
+                                               Long delegationId,
+                                               @RequestBody
+                                               ForwardingRequest body) {
+    try {
+      return Map.of("destination",
+                    emailForwardingService.confirm(request.getRemoteUser(),
+                                                   delegationId,
+                                                   body == null ? null : body.getDestination(),
+                                                   body == null ? null : body.getCode()));
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Sets or changes the caller's forward.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param delegationId the share the request is made from; any value is refused
+   * @param republish true to overwrite eXo's own script although it changed outside eXo
+   * @param body the destination, and the code when it is not confirmed yet
+   * @return the forward as the server holds it, or the conflict
+   */
+  @PutMapping("/absence/forwarding")
+  @Secured("users")
+  @Operation(summary = "Sets the caller's mail forward", method = "PUT",
+      description = "Every mail a copy to one confirmed address, the mail always kept (Sieve redirect :copy, BlueMind "
+          + "localCopy). The destination must be confirmed, or confirmed by the code this request carries, be in an allowed "
+          + "domain, and forwarding enabled for the connector. Refused when another client's script may forward too. The "
+          + "owner is notified and a mail is dropped into the mailbox. Own mailbox only.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Set; the forward as the server holds it"),
+      @ApiResponse(responseCode = "400", description = "An invalid destination or code, or a server that cannot keep a copy (emailConnector.forwarding.unsupported, .tooManyRedirects)"),
+      @ApiResponse(responseCode = "403", description = "Forwarding is off (emailConnector.forwarding.disabled), the domain is not allowed (.destination.notAllowed), not confirmed (.destination.notConfirmed), refused by the generator (.notAuthorized), or asked from someone else's mailbox"),
+      @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected"),
+      @ApiResponse(responseCode = "409", description = "{message, scriptName}: another client's script may forward (emailConnector.forwarding.managedElsewhere), or eXo's script changed outside eXo (emailConnector.absence.modifiedOutside, re-send with republish=true)"),
+      @ApiResponse(responseCode = "502", description = "The mail server could not be used (emailConnector.absence.*)") })
+  public ResponseEntity<Object> setForwarding(HttpServletRequest request,
+                                              @Parameter(description = "The share the request is made from; refused")
+                                              @RequestParam(name = "delegationId", required = false)
+                                              Long delegationId,
+                                              @Parameter(description = "Overwrite eXo's own script although it changed outside eXo")
+                                              @RequestParam(name = "republish", required = false, defaultValue = "false")
+                                              boolean republish,
+                                              @RequestBody
+                                              ForwardingRequest body) {
+    try {
+      ForwardingSetting written = emailForwardingService.setForwarding(request.getRemoteUser(),
+                                                                       delegationId,
+                                                                       body == null ? null : body.getDestination(),
+                                                                       body == null ? null : body.getCode(),
+                                                                       republish);
+      return ResponseEntity.ok(written);
+    } catch (ServerRuleConflictException e) {
+      return conflict(e);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException | ForwardingRefusedException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (IllegalArgumentException | ServerRuleUnsupportedException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (ServerRuleUnavailableException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getMessage());
+    }
+  }
+
+  /**
+   * Removes the forward eXo set for the caller.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param delegationId the share the request is made from; any value is refused
+   * @param republish true to overwrite eXo's own script although it changed outside eXo
+   * @return 204, or the conflict
+   */
+  @DeleteMapping("/absence/forwarding")
+  @Secured("users")
+  @Operation(summary = "Removes the caller's mail forward set from eXo", method = "DELETE",
+      description = "Allowed even when forwarding is switched off for the connector: removing a forward only keeps more mail "
+          + "in. Nothing is written when eXo set none. The owner is notified. Own mailbox only.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Removed, or there was none"),
+      @ApiResponse(responseCode = "400", description = "A connector that cannot hold a forward (emailConnector.forwarding.unsupported)"),
+      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox, or the connector may not be used"),
+      @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected"),
+      @ApiResponse(responseCode = "409", description = "{message, scriptName}: eXo's script changed outside eXo (emailConnector.absence.modifiedOutside)"),
+      @ApiResponse(responseCode = "502", description = "The mail server could not be used (emailConnector.absence.*)") })
+  public ResponseEntity<Object> removeForwarding(HttpServletRequest request,
+                                                 @Parameter(description = "The share the request is made from; refused")
+                                                 @RequestParam(name = "delegationId", required = false)
+                                                 Long delegationId,
+                                                 @Parameter(description = "Overwrite eXo's own script although it changed outside eXo")
+                                                 @RequestParam(name = "republish", required = false, defaultValue = "false")
+                                                 boolean republish) {
+    try {
+      emailForwardingService.removeForwarding(request.getRemoteUser(), delegationId, republish);
+      return ResponseEntity.noContent().build();
+    } catch (ServerRuleConflictException e) {
+      return conflict(e);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException | ForwardingRefusedException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (IllegalArgumentException | ServerRuleUnsupportedException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (ServerRuleUnavailableException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getMessage());
+    }
+  }
+
+  /**
+   * What the mailbox band says about the caller's forward.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param delegationId the share the request is made from; any value is refused
+   * @return the cached status
+   */
+  @GetMapping("/absence/forwarding/status")
+  @Secured("users")
+  @Operation(summary = "Reads the status of the caller's mail forward, for the mailbox band", method = "GET",
+      description = "{state, destinations, keepCopy, managedByExo, scriptName, ruleForwards, lastServerReadDate}, cached by "
+          + "eXo and read again from the mail server when older than email.connector.absence.status.ttlSeconds; a server that "
+          + "cannot be read leaves the cached one. Own mailbox only.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox"),
+      @ApiResponse(responseCode = "404", description = "The feature is off") })
+  public ForwardingStatus getForwardingStatus(HttpServletRequest request,
+                                              @Parameter(description = "The share the request is made from; refused")
+                                              @RequestParam(name = "delegationId", required = false)
+                                              Long delegationId) {
+    try {
+      return emailForwardingService.getStatus(request.getRemoteUser(), delegationId);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
     }
   }
 
