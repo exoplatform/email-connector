@@ -37,12 +37,21 @@ import java.util.Set;
  * @param starttls whether {@code STARTTLS} was advertised
  * @param version the {@code VERSION} string, null when absent (a pre-RFC 5804 server,
  *          which has no {@code CHECKSCRIPT})
+ * @param maxRedirects the {@code MAXREDIRECTS} value, how many {@code redirect}s one run
+ *          may execute; null when not advertised or not a number
  */
 public record ManageSieveCapabilities(String implementation,
                                       Set<String> saslMechanisms,
                                       Set<String> sieveExtensions,
                                       boolean starttls,
-                                      String version) {
+                                      String version,
+                                      Integer maxRedirects) {
+
+  /**
+   * The redirects one run may execute when the server does not say: one, the default of
+   * Pigeonhole and the value Stalwart advertises -- never more than eXo can prove.
+   */
+  public static final int DEFAULT_MAX_REDIRECTS = 1;
 
   /**
    * Keeps the sets unmodifiable.
@@ -52,10 +61,37 @@ public record ManageSieveCapabilities(String implementation,
    * @param sieveExtensions the {@code SIEVE} extensions
    * @param starttls whether {@code STARTTLS} was advertised
    * @param version the {@code VERSION} string
+   * @param maxRedirects the {@code MAXREDIRECTS} value
    */
   public ManageSieveCapabilities {
     saslMechanisms = saslMechanisms == null ? Set.of() : Collections.unmodifiableSet(new LinkedHashSet<>(saslMechanisms));
     sieveExtensions = sieveExtensions == null ? Set.of() : Collections.unmodifiableSet(new LinkedHashSet<>(sieveExtensions));
+  }
+
+  /**
+   * Capabilities that do not advertise {@code MAXREDIRECTS}.
+   *
+   * @param implementation the server's {@code IMPLEMENTATION} string
+   * @param saslMechanisms the {@code SASL} mechanisms
+   * @param sieveExtensions the {@code SIEVE} extensions
+   * @param starttls whether {@code STARTTLS} was advertised
+   * @param version the {@code VERSION} string
+   */
+  public ManageSieveCapabilities(String implementation,
+                                 Set<String> saslMechanisms,
+                                 Set<String> sieveExtensions,
+                                 boolean starttls,
+                                 String version) {
+    this(implementation, saslMechanisms, sieveExtensions, starttls, version, null);
+  }
+
+  /**
+   * How many {@code redirect}s one run may execute on this server.
+   *
+   * @return the advertised value, {@value #DEFAULT_MAX_REDIRECTS} when not advertised
+   */
+  public int redirectLimit() {
+    return maxRedirects == null ? DEFAULT_MAX_REDIRECTS : Math.max(0, maxRedirects);
   }
 
   /**
@@ -71,6 +107,7 @@ public record ManageSieveCapabilities(String implementation,
     Set<String> sieve = new LinkedHashSet<>();
     boolean starttls = false;
     String version = null;
+    Integer maxRedirects = null;
     for (List<String> line : lines) {
       if (line.isEmpty()) {
         continue;
@@ -83,12 +120,27 @@ public record ManageSieveCapabilities(String implementation,
       case "SIEVE" -> sieve.addAll(split(value, false));
       case "STARTTLS" -> starttls = true;
       case "VERSION" -> version = value;
+      case "MAXREDIRECTS" -> maxRedirects = number(value);
       default -> {
-        // NOTIFY, MAXREDIRECTS, OWNER, LANGUAGE and future capabilities are not used.
+        // NOTIFY, OWNER, LANGUAGE and future capabilities are not used.
       }
       }
     }
-    return new ManageSieveCapabilities(implementation, sasl, sieve, starttls, version);
+    return new ManageSieveCapabilities(implementation, sasl, sieve, starttls, version, maxRedirects);
+  }
+
+  /**
+   * A capability's numeric value.
+   *
+   * @param value the value, possibly null
+   * @return the number, or null when it is not one
+   */
+  private static Integer number(String value) {
+    try {
+      return value == null ? null : Integer.valueOf(value.trim());
+    } catch (NumberFormatException e) {
+      return null;
+    }
   }
 
   /**
