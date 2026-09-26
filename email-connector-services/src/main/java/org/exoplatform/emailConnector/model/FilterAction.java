@@ -33,6 +33,7 @@ import java.util.Set;
  *          {@link #AGENT_OUTPUTS}
  * @param when {@link #IMMEDIATE} or {@link #AFTER_AGENT}; decided by the service, not
  *          the form: every post-action of a rule with an assistant waits for it
+ * @param destination for {@link #FORWARD}: the confirmed address a copy is forwarded to
  */
 public record FilterAction(String type,
                            String folderKey,
@@ -40,7 +41,8 @@ public record FilterAction(String type,
                            String agentNameId,
                            String instruction,
                            List<String> outputs,
-                           String when) {
+                           String when,
+                           String destination) {
 
   /** Runs an assistant on the mail; its answer is applied by the enterprise glue. */
   public static final String      AGENT          = "AGENT";
@@ -66,6 +68,12 @@ public record FilterAction(String type,
   /** Notifies the owner. */
   public static final String      NOTIFY         = "NOTIFY";
 
+  /**
+   * Forwards a copy of the mail to a confirmed address, the mail kept: run by the mail
+   * server only, never by eXo.
+   */
+  public static final String      FORWARD        = ServerRule.FORWARD;
+
   /** Applied in the pass that matched the mail. */
   public static final String      IMMEDIATE      = "IMMEDIATE";
 
@@ -80,7 +88,8 @@ public record FilterAction(String type,
                                                             STAR,
                                                             MARK_JUNK,
                                                             DELETE,
-                                                            NOTIFY);
+                                                            NOTIFY,
+                                                            FORWARD);
 
   /** The actions that take the mail out of the inbox; a rule has at most one. */
   public static final Set<String>  FILING        = Set.of(MOVE_TO_FOLDER, MARK_JUNK, DELETE);
@@ -104,13 +113,34 @@ public record FilterAction(String type,
   }
 
   /**
+   * An action that forwards nothing: every type but {@link #FORWARD}.
+   *
+   * @param type the type
+   * @param folderKey the folder
+   * @param categoryId the category
+   * @param agentNameId the assistant
+   * @param instruction the instruction
+   * @param outputs the outputs
+   * @param when when it applies
+   */
+  public FilterAction(String type,
+                      String folderKey,
+                      Long categoryId,
+                      String agentNameId,
+                      String instruction,
+                      List<String> outputs,
+                      String when) {
+    this(type, folderKey, categoryId, agentNameId, instruction, outputs, when, null);
+  }
+
+  /**
    * The same action, applied at another moment.
    *
    * @param newWhen {@link #IMMEDIATE} or {@link #AFTER_AGENT}
    * @return the action
    */
   public FilterAction withWhen(String newWhen) {
-    return new FilterAction(type, folderKey, categoryId, agentNameId, instruction, outputs, newWhen);
+    return new FilterAction(type, folderKey, categoryId, agentNameId, instruction, outputs, newWhen, destination);
   }
 
   /**

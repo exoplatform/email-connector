@@ -127,6 +127,13 @@ public record ServerRuleCapabilities(boolean supported,
   /** Rule action: set the keyword eXo's own rules pick up at sync. */
   public static final String       TAG                    = "TAG";
 
+  /**
+   * Rule action: forward a copy of the mail to a confirmed address, the mail itself kept
+   * ({@code redirect :copy}). Offered only where the administrator enabled forwarding for
+   * the connector and the server keeps a copy.
+   */
+  public static final String       FORWARD                = "FORWARD";
+
   /** Every element this record knows, in the form's order. */
   public static final List<String> ALL_ELEMENTS           = List.of(VACATION,
                                                                     VACATION_DATE_WINDOW,
@@ -153,7 +160,8 @@ public record ServerRuleCapabilities(boolean supported,
                                                                     STAR,
                                                                     MARK_JUNK,
                                                                     DELETE,
-                                                                    TAG);
+                                                                    TAG,
+                                                                    FORWARD);
 
   /**
    * Keeps the element map unmodifiable and in insertion order.
@@ -203,5 +211,19 @@ public record ServerRuleCapabilities(boolean supported,
    */
   public ServerRuleCapabilities withPublishConflict(boolean conflict) {
     return new ServerRuleCapabilities(supported, reasonCode, readsForeignRules, conflict, vocabularySource, elements);
+  }
+
+  /**
+   * The same capabilities with one element answered otherwise: what a deployment decides
+   * over what the server can do, such as forwarding switched off for a connector.
+   *
+   * @param element one of the element constants
+   * @param support the element's answer
+   * @return the new capabilities
+   */
+  public ServerRuleCapabilities withElement(String element, ElementSupport support) {
+    Map<String, ElementSupport> changed = new LinkedHashMap<>(elements);
+    changed.put(element, support);
+    return new ServerRuleCapabilities(supported, reasonCode, readsForeignRules, publishConflict, vocabularySource, changed);
   }
 }
