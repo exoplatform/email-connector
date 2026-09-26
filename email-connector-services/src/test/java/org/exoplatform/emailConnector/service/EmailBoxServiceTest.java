@@ -1220,6 +1220,31 @@ public class EmailBoxServiceTest {
     assertEquals(2, failed);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L, 1313L), TEST_USER, true, "CUSTOM:9");
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L, 1313L), TEST_USER, false, "CUSTOM:9");
+    // The early return skips the reconciliation at the end of the method: it runs here.
+    verify(emailFavoriteService).reconcileFavorites(TEST_USER);
+  }
+
+  /**
+   * No folder from the caller is the INBOX, which is what every caller written before the
+   * mailbox held other folders meant.
+   */
+  @Test
+  @SneakyThrows
+  void aStarWithNoFolderIsPushedToTheInbox() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    Message message = mock(Message.class);
+    when(((UIDFolder) inbox).getMessageByUID(1212L)).thenReturn(message);
+
+    int failed = emailBoxService.updateEmailStarredStatus(List.of(1212L), TEST_USER, null, true, true);
+
+    assertEquals(0, failed);
+    verify(message).setFlag(Flags.Flag.FLAGGED, true);
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L), TEST_USER, true, "INBOX");
   }
 
   @Test
