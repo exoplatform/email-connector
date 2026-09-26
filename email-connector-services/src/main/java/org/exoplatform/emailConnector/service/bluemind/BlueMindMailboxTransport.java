@@ -101,4 +101,15 @@ public interface BlueMindMailboxTransport {
    * @throws BlueMindTransportException when the server refuses or fails
    */
   BlueMindForwarding getForwarding(BlueMindSession session) throws BlueMindTransportException;
+
+  /**
+   * Replaces the forward of the session's own mailbox ({@code POST _forwarding}). Touches
+   * neither the rules nor the automatic reply, and never goes through {@code _filter}.
+   * The engine sends only a forward that keeps a copy in the mailbox.
+   *
+   * @param session the session
+   * @param forwarding the forward
+   * @throws BlueMindTransportException when the server refuses or fails
+   */
+  void setForwarding(BlueMindSession session, BlueMindForwarding forwarding) throws BlueMindTransportException;
 }
