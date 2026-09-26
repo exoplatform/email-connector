@@ -342,12 +342,71 @@ public class EmailServerRuleService {
                                                            ServerRuleUnavailableException,
                                                            ServerRuleConflictException,
                                                            ServerRuleUnsupportedException {
+    return reconcileHops(username, hops, null, null, republish, consent, publishing);
+  }
+
+  /**
+   * Makes the caller's mail server hold exactly the given hops, as
+   * {@link #reconcileHops(String, List, boolean, boolean, boolean)} does, and in the same
+   * one write turns a filter that changes where it runs: appends the user's rule it
+   * becomes, or removes the user's rule it was. The server never holds both, nor neither.
+   *
+   * @param username the caller, from the request's session
+   * @param hops every hop the caller's eXo rules need
+   * @param added the user's rule to append, folders as eXo keys, or null; its folders are
+   *          resolved and it is validated as a save would, and it needs the consent
+   * @param droppedRef the reference of the user's rule to remove, or null
+   * @param republish true to overwrite eXo's script although it changed outside eXo
+   * @param consent true when the caller agreed, in this request, that eXo manages rules
+   *          on their mail server
+   * @param publishing true when this write adds or changes a hop, which needs the
+   *          consent; a write that only removes does not
+   * @return what was done, and the rules afterwards
+   * @throws ObjectNotFoundException when the feature is off, or no mailbox is connected
+   * @throws IllegalAccessException when the caller may not use their connector
+   * @throws IllegalArgumentException {@value #CONSENT_REQUIRED} without the consent, or a
+   *           message code for an invalid added rule
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when another client's script is in the way, or
+   *           eXo's script changed outside eXo; nothing was written
+   * @throws ServerRuleUnsupportedException when this connector cannot hold a hop or the
+   *           added rule
+   */
+  public ReconcileReport reconcileHops(String username,
+                                       List<HopRef> hops,
+                                       ServerRule added,
+                                       String droppedRef,
+                                       boolean republish,
+                                       boolean consent,
+                                       boolean publishing) throws ObjectNotFoundException,
+                                                           IllegalAccessException,
+                                                           ServerRuleUnavailableException,
+                                                           ServerRuleConflictException,
+                                                           ServerRuleUnsupportedException {
     ServerRuleEngine engine = engineOf(username, null);
-    if (publishing) {
+    if (droppedRef != null && !ServerRule.isValidRef(droppedRef)) {
+      throw new IllegalArgumentException(ServerRule.INVALID);
+    }
+    ServerRule resolved = added == null ? null
+                                        : new ServerRule(null,
+                                                         added.name(),
+                                                         added.enabled(),
+                                                         added.matchAll(),
+                                                         added.conditions(),
+                                                         resolveActions(username, added.actions()),
+                                                         added.stop()).validated();
+    if (publishing || resolved != null) {
       requireConsent(username, consent);
     }
     try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
-      ReconcileReport report = engine.reconcile(session, hops == null ? List.of() : hops, republish ? null : storedHash(username));
+      List<HopRef> wanted = hops == null ? List.of() : hops;
+      String expectedHash = republish ? null : storedHash(username);
+      ReconcileReport report = resolved == null && droppedRef == null ? engine.reconcile(session, wanted, expectedHash)
+                                                                      : engine.reconcile(session,
+                                                                                         wanted,
+                                                                                         resolved,
+                                                                                         droppedRef,
+                                                                                         expectedHash);
       recordWrite(username, report.rules());
       if (report.changed()) {
         LOG.info("Server hops of user {} reconciled on connector {}: published {}, removed {}",
