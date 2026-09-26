@@ -238,8 +238,10 @@ public class EmailFilterRest {
   @DeleteMapping("/server/{ref}")
   @Secured("users")
   @Operation(summary = "Deletes a filter the caller's mail server runs at delivery", method = "DELETE",
-      description = "Everything else eXo's script holds -- the other rules, the automatic reply -- is written back as it was.")
+      description = "Everything else eXo's script holds -- the other rules, the automatic reply -- is written back as it was. "
+          + "A hop -- the server half of a filter eXo runs -- is not deleted here: deleting that filter removes it.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Deleted; the group after the write, capabilities not re-read"),
+      @ApiResponse(responseCode = "400", description = "The reference names a hop (emailConnector.rules.action.invalid)"),
       @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.rules.ownMailboxOnly), or the connector may not be used"),
       @ApiResponse(responseCode = "404", description = "The feature is off, no mailbox is connected, or no such rule (emailConnector.rules.notFound)"),
       @ApiResponse(responseCode = "409", description = CONFLICT_DESCRIPTION),
