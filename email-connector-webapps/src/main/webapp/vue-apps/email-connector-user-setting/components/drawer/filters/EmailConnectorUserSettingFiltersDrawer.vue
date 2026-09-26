@@ -81,38 +81,48 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               class="caption text-sub-title mb-4">
               {{ foreignMessage }}
             </div>
-            <v-list v-if="rules.length" dense>
+            <!-- Each filter as the platform's settings lists show a row with actions (the
+                 activity stream settings' categories): its name over what it does, then
+                 its switch and its icon buttons, the delete one in the error color. -->
+            <v-list
+              v-if="rules.length"
+              class="pa-0"
+              dense>
               <v-list-item
                 v-for="rule in rules"
                 :key="rule.ref"
-                class="px-0">
-                <v-list-item-content>
-                  <v-list-item-title class="text-color">{{ rule.name }}</v-list-item-title>
+                class="pa-0"
+                dense>
+                <v-list-item-content class="me-2 pa-0">
+                  <v-list-item-title class="text-truncate">{{ rule.name }}</v-list-item-title>
                   <v-list-item-subtitle class="text-wrap">{{ ruleSummary(rule) }}</v-list-item-subtitle>
                 </v-list-item-content>
-                <v-list-item-action class="d-flex flex-row align-center">
+                <v-list-item-action class="mx-0 my-auto">
                   <v-switch
                     :input-value="rule.enabled"
                     :disabled="saving"
                     :aria-label="$t('UserSettings.emailConnector.filters.form.enabled')"
-                    class="mt-0 me-1"
+                    :ripple="false"
+                    class="ma-0 width-fit-content"
                     hide-details
                     @change="toggle(rule, $event)" />
+                </v-list-item-action>
+                <v-list-item-action class="mx-0 my-auto">
                   <v-btn
                     :title="$t('UserSettings.emailConnector.filters.edit')"
                     :aria-label="$t('UserSettings.emailConnector.filters.edit')"
                     icon
-                    small
                     @click="edit(rule)">
-                    <v-icon size="16" class="icon-default-color">fa-edit</v-icon>
+                    <v-icon size="18">fas fa-edit</v-icon>
                   </v-btn>
+                </v-list-item-action>
+                <v-list-item-action class="mx-0 my-auto">
                   <v-btn
                     :title="$t('UserSettings.emailConnector.filters.delete')"
                     :aria-label="$t('UserSettings.emailConnector.filters.delete')"
                     icon
-                    small
                     @click="askDelete(rule)">
-                    <v-icon size="16" class="icon-default-color">fa-trash</v-icon>
+                    <v-icon size="18" color="error">fas fa-trash</v-icon>
                   </v-btn>
                 </v-list-item-action>
               </v-list-item>
