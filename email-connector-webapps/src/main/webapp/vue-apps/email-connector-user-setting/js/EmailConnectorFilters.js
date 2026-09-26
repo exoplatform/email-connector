@@ -24,6 +24,94 @@ export const FILTERS_UPDATED_EVENT = 'email-filters-updated';
 /** The condition fields, in the form's order. */
 export const FIELDS = ['FROM', 'TO', 'CC', 'ANY_RECIPIENT', 'SUBJECT', 'HEADER', 'MESSAGE_SIZE', 'IS_LIST', 'IS_AUTOMATED'];
 
+/** The condition fields of a rule eXo alone runs: the server's but the size, plus three only eXo reads. */
+export const EXO_FIELDS = ['FROM', 'TO', 'CC', 'ANY_RECIPIENT', 'SUBJECT', 'BODY', 'SUBJECT_OR_BODY', 'HEADER', 'IS_LIST',
+  'IS_AUTOMATED', 'HAS_ATTACHMENT'];
+
+/** The fields only eXo evaluates: a rule that also runs at delivery cannot use them. */
+export const EXO_ONLY_FIELDS = ['BODY', 'SUBJECT_OR_BODY', 'HAS_ATTACHMENT'];
+
+/** The post-actions eXo applies itself, in the form's order; the assistant comes through the extension point. */
+export const EXO_ACTIONS = ['MOVE_TO_FOLDER', 'ADD_CATEGORY', 'MARK_READ', 'STAR', 'MARK_JUNK', 'DELETE', 'NOTIFY'];
+
+/** The filing actions: a rule has one at most. */
+export const FILING_ACTIONS = ['MOVE_TO_FOLDER', 'MARK_JUNK', 'DELETE'];
+
+/**
+ * Every condition field of the one filter form, in its order: the server's and the three
+ * only eXo reads. Where a filter runs follows from them and from its actions (routeOf).
+ */
+export const ALL_FIELDS = ['FROM', 'TO', 'CC', 'ANY_RECIPIENT', 'SUBJECT', 'BODY', 'SUBJECT_OR_BODY', 'HEADER', 'MESSAGE_SIZE',
+  'IS_LIST', 'IS_AUTOMATED', 'HAS_ATTACHMENT'];
+
+/** The actions a mail server may run itself, when its capabilities say so. */
+export const SERVER_ACTIONS = ['MOVE_TO_FOLDER', 'MARK_READ', 'STAR', 'MARK_JUNK', 'DELETE'];
+
+/**
+ * Where a filter will run, as the server decides it when it is saved
+ * (EmailFilterService.route): SERVER when the mail server can run every condition and
+ * every action, HOP when it can test every condition and set eXo's keyword but not run
+ * every action, EXO otherwise. Used for the form's hint; the server's answer is the one
+ * that counts.
+ *
+ * @param {object} filter - {conditions, actions}
+ * @param {object} capabilities - the probe's answer, or null
+ * @returns {string} SERVER, HOP or EXO
+ */
+export function routeOf(filter, capabilities) {
+  if (!capabilities?.supported) {
+    return 'EXO';
+  }
+  const conditions = filter?.conditions || [];
+  const serverConditions = conditions.every(condition => !EXO_ONLY_FIELDS.includes(condition.field)
+    && isSupported(capabilities, condition.field));
+  if (!serverConditions) {
+    return 'EXO';
+  }
+  const actions = filter?.actions || [];
+  if (actions.every(action => SERVER_ACTIONS.includes(action.type) && isSupported(capabilities, action.type))) {
+    return 'SERVER';
+  }
+  return isSupported(capabilities, 'TAG') ? 'HOP' : 'EXO';
+}
+
+/**
+ * A server rule as an item of the one list, in the eXo rules' shape: kind SERVER, its
+ * reference, and "stop" as stopProcessing.
+ *
+ * @param {object} rule - the rule, as the server group lists it
+ * @returns {object} the item
+ */
+export function serverItem(rule) {
+  return {
+    kind: 'SERVER',
+    ref: rule.ref,
+    name: rule.name,
+    enabled: !!rule.enabled,
+    matchAll: rule.matchAll !== false,
+    conditions: rule.conditions || [],
+    actions: (rule.actions || []).map(action => ({ type: action.type, folderKey: action.folderKey, folderPath: action.folderPath })),
+    stopProcessing: !!rule.stop,
+  };
+}
+
+/**
+ * The extension point of an eXo rule's actions a module adds (the assistant, shipped by
+ * the enterprise glue): extensionRegistry.registerExtension('EmailFilter',
+ * 'email-filter-action', {id, type, rank, labelKey, vueComponent}). The form renders
+ * each one's vueComponent with v-model on the action object {type, ...} it owns -- for
+ * type AGENT {agentNameId, instruction, outputs} -- and a `capabilities` prop.
+ */
+export const FILTER_ACTION_EXTENSION = { app: 'EmailFilter', type: 'email-filter-action' };
+
+/**
+ * The extension point of what an assistant made of one mail, in its Automations panel:
+ * extensionRegistry.registerExtension('EmailFilter', 'email-filter-outcome', {id, rank,
+ * vueComponent}); rendered per match that has an assistant, with the match as its
+ * `match` prop and the mail as its `email` prop.
+ */
+export const FILTER_OUTCOME_EXTENSION = { app: 'EmailFilter', type: 'email-filter-outcome' };
+
 /** The operators on text. */
 const TEXT_OPERATORS = ['CONTAINS', 'NOT_CONTAINS', 'EQUALS', 'STARTS_WITH', 'ENDS_WITH'];
 
@@ -44,6 +132,7 @@ export function operatorsOf(field) {
     return ['GT', 'LT'];
   case 'IS_LIST':
   case 'IS_AUTOMATED':
+  case 'HAS_ATTACHMENT':
     return ['IS_TRUE', 'IS_FALSE'];
   default:
     return TEXT_OPERATORS;
@@ -57,7 +146,31 @@ export function operatorsOf(field) {
  * @returns {boolean} true for a flag field
  */
 export function isFlagField(field) {
-  return field === 'IS_LIST' || field === 'IS_AUTOMATED';
+  return field === 'IS_LIST' || field === 'IS_AUTOMATED' || field === 'HAS_ATTACHMENT';
+}
+
+/**
+ * The rule a mail suggests, for "Create a filter from this mail": its sender's domain
+ * for a list or automated mail, its sender otherwise, and a subject condition with the
+ * numbers taken out, left out of the rule until the user keeps it.
+ *
+ * @param {object} email - the mail, as the mailbox lists it
+ * @returns {object} {name, matchAll, conditions, subjectSuggestion}
+ */
+export function ruleFromMail(email) {
+  const address = (email?.sender?.address || '').trim().toLowerCase();
+  const domain = address.includes('@') ? address.substring(address.lastIndexOf('@') + 1) : '';
+  const bulk = !!(email?.hasListId || email?.hasListPost || email?.hasListUnsubscribe || email?.autoSubmitted);
+  const byDomain = bulk && domain;
+  const subject = (email?.subject || '').replace(/[0-9]+/g, '').replace(/\s+/g, ' ').trim();
+  return {
+    name: (byDomain ? domain : (email?.sender?.name || address)).substring(0, 100),
+    matchAll: true,
+    conditions: [byDomain
+      ? { field: 'FROM', operator: 'MATCHES_DOMAIN', value: domain }
+      : { field: 'FROM', operator: 'EQUALS', value: address }],
+    subjectSuggestion: subject ? { field: 'SUBJECT', operator: 'CONTAINS', value: subject.substring(0, 500) } : null,
+  };
 }
 
 /** A size in kilobytes, as the form takes it. */

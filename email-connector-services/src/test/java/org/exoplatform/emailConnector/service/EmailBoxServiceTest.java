@@ -19,6 +19,8 @@ package org.exoplatform.emailConnector.service;
 import com.sun.mail.smtp.SMTPAddressFailedException;
 import com.sun.mail.smtp.SMTPSendFailedException;
 import com.sun.mail.smtp.SMTPSenderFailedException;
+import org.exoplatform.emailConnector.event.NewInboxMailEvent;
+import org.exoplatform.emailConnector.service.filters.FilterRunContext;
 import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.model.SendIdentity;
@@ -4192,6 +4194,50 @@ public class EmailBoxServiceTest {
     verify(listenerService).broadcast(eq(EmailConnectorUtils.MAILBOX_SYNC_COMPLETED), eq(TEST_USER), any());
     assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
     verify(emailBoxStorage, times(3)).createEmail(any(Email.class));
+  }
+
+  /**
+   * EXO-90654 -- the owner's filters run on the inbox's new mail before it is announced:
+   * the sync publishes one {@link NewInboxMailEvent} for the owner's own inbox, with each
+   * new mail's UID and the keywords its flags carry, and a mail a filter filed away is
+   * left out of {@code NEW_EMAILS_SYNCED}. A sync with no filter filing anything
+   * announces every mail, as {@link #synchronizeSkipsBodyPrefetchForSmallSync} pins.
+   */
+  @Test
+  @SneakyThrows
+  void synchronizeRunsTheInboxFiltersBeforeTheAnnouncement() {
+    if (realEventPublisher == null) {
+      realEventPublisher = ReflectionTestUtils.getField(emailBoxService, "eventPublisher");
+    }
+    ReflectionTestUtils.setField(emailBoxService, "eventPublisher", eventPublisher);
+    List<NewInboxMailEvent> published = new ArrayList<>();
+    doAnswer(invocation -> {
+      if (invocation.getArgument(0) instanceof NewInboxMailEvent event) {
+        published.add(event);
+        event.getFiledUids().add(2L);
+      }
+      return null;
+    }).when(eventPublisher).publishEvent(any(Object.class));
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    Folder inbox = mockInboxForSync(userEmailSetting, 3);
+    Message tagged = inbox.getMessages(1, 3)[0];
+    Flags flags = new Flags();
+    flags.add("exo-filter-7");
+    when(tagged.getFlags()).thenReturn(flags);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    assertEquals(1, published.size(), "one run, for the inbox only");
+    NewInboxMailEvent event = published.get(0);
+    assertEquals(TEST_USER, event.getUsername());
+    assertEquals(FilterRunContext.OWN_INBOX, event.getContext(), "the owner's own inbox");
+    assertEquals(List.of(1L, 2L, 3L), event.getMails().stream().map(NewInboxMailEvent.InboxMail::uid).sorted().toList());
+    assertEquals(Set.of("exo-filter-7"),
+                 event.getMails().stream().filter(mail -> mail.uid() == 1L).findFirst().orElseThrow().keywords(),
+                 "the keywords come from the flags the sync fetched");
+    verify(listenerService).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNCED),
+                                      eq(TEST_USER),
+                                      argThat((List<Long> group) -> group.size() == 2 && !group.contains(2L)));
   }
 
   @Test

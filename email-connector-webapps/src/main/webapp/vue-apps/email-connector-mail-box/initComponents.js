@@ -41,6 +41,7 @@ import EmailConnectorMailBoxDrawerListItemDetailAttachments from './components/d
 import EmailConnectorMailBoxDrawerListItemDetailBody from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailBody.vue';
 import EmailConnectorMailBoxDrawerListItemDetailContent from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailContent.vue';
 import EmailConnectorMailBoxDrawerThreadContent from './components/drawer/EmailConnectorMailBoxDrawerThreadContent.vue';
+import EmailConnectorMailBoxDrawerAutomations from './components/drawer/EmailConnectorMailBoxDrawerAutomations.vue';
 import EmailConnectorMailBoxDrawerThreadMessage from './components/drawer/EmailConnectorMailBoxDrawerThreadMessage.vue';
 import EmailConnectorMailBoxDrawerThreadDraft from './components/drawer/EmailConnectorMailBoxDrawerThreadDraft.vue';
 import EmailConnectorMailBoxDrawerCategoryBar from './components/drawer/EmailConnectorMailBoxDrawerCategoryBar.vue';
@@ -101,6 +102,7 @@ const components = {
   'email-connector-mail-box-drawer-list-item-detail-body': EmailConnectorMailBoxDrawerListItemDetailBody,
   'email-connector-mail-box-drawer-list-item-detail-content': EmailConnectorMailBoxDrawerListItemDetailContent,
   'email-connector-mail-box-drawer-thread-content': EmailConnectorMailBoxDrawerThreadContent,
+  'email-connector-mail-box-drawer-automations': EmailConnectorMailBoxDrawerAutomations,
   'email-connector-mail-box-drawer-thread-message': EmailConnectorMailBoxDrawerThreadMessage,
   'email-connector-mail-box-drawer-thread-draft': EmailConnectorMailBoxDrawerThreadDraft,
   'email-connector-mail-box-drawer-category-bar': EmailConnectorMailBoxDrawerCategoryBar,
