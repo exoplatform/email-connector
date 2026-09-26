@@ -239,6 +239,21 @@ public final class ExoSieveScript {
   }
 
   /**
+   * Every destination the generated script forwards to: the forward's and each enabled
+   * rule's.
+   *
+   * @return the destinations, normalised, never null
+   */
+  public Set<String> redirectDestinations() {
+    Set<String> destinations = new HashSet<>();
+    if (forward != null) {
+      destinations.add(forward);
+    }
+    rules.stream().filter(ServerRule::enabled).forEach(rule -> destinations.addAll(rule.forwardDestinations()));
+    return destinations;
+  }
+
+  /**
    * Whether the generated script forwards anything.
    *
    * @return true when it holds a {@code redirect}
