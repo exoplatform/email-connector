@@ -25,6 +25,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -256,7 +257,8 @@ public class SieveRuleEngine implements ServerRuleEngine {
       }
       ExoSieveScript script = authorize(session,
                                         client,
-                                        base.withVacation(toVacation(vacation, days, base.getVacation().orElse(null))));
+                                        base.withVacation(toVacation(vacation, days, base.getVacation().orElse(null))),
+                                        hasExo ? vouched(session, client, base) : null);
       String active = SieveScriptPolicy.activeScript(scripts);
       if (vacation.isEnabled() || SCRIPT_NAME.equals(active) || WRAPPER_NAME.equals(active)) {
         policy.publish(client, script);
@@ -338,7 +340,7 @@ public class SieveRuleEngine implements ServerRuleEngine {
       } else {
         rules.set(index, validated.withRef(ref));
       }
-      writeRules(session, client, scripts, base.withRules(rules));
+      writeRules(session, client, scripts, base.withRules(rules), vouched(session, client, base));
       return readRules(client);
     } catch (ManageSieveException e) {
       throw unavailable(e);
@@ -382,7 +384,7 @@ public class SieveRuleEngine implements ServerRuleEngine {
         throw new IllegalArgumentException(ServerRule.INVALID_ACTION);
       }
       rules.remove(index);
-      writeRules(session, client, scripts, base.withRules(rules));
+      writeRules(session, client, scripts, base.withRules(rules), vouched(session, client, base));
       return readRules(client);
     } catch (ManageSieveException e) {
       throw unavailable(e);
@@ -410,7 +412,7 @@ public class SieveRuleEngine implements ServerRuleEngine {
     try {
       List<SieveScriptInfo> scripts = client.listScripts();
       ExoSieveScript base = current(client, scripts, expectedScriptHash);
-      policy.publish(client, authorize(session, client, base));
+      policy.publish(client, authorize(session, client, base, vouched(session, client, base)));
       return readRules(client);
     } catch (ManageSieveException e) {
       throw unavailable(e);
@@ -523,7 +525,7 @@ public class SieveRuleEngine implements ServerRuleEngine {
         published.add(ref);
       }
       if (!published.isEmpty() || !removed.isEmpty()) {
-        writeRules(session, client, scripts, base.withRules(rules));
+        writeRules(session, client, scripts, base.withRules(rules), vouched(session, client, base));
       }
       return new ReconcileReport(published, removed, readRules(client));
     } catch (ManageSieveException e) {
@@ -531,6 +533,25 @@ public class SieveRuleEngine implements ServerRuleEngine {
     } finally {
       client.logout();
     }
+  }
+
+  /**
+   * eXo's script as the server holds it, when eXo can vouch for it: its text is exactly
+   * the one eXo last wrote, by the hash the {@link ForwardingGuard} keeps in the global
+   * settings. Only then may a write carry its forwards on. Read only when it forwards.
+   *
+   * @param session the caller's own session
+   * @param client the client
+   * @param base the model read from eXo's script
+   * @return the model, or null when it forwards nothing or eXo cannot vouch for it
+   * @throws ManageSieveException when the script cannot be read
+   */
+  private ExoSieveScript vouched(MailboxAclSession session, ManageSieveClient client, ExoSieveScript base) throws ManageSieveException {
+    if (base == null || !base.emitsRedirect() || forwardingGuard == null) {
+      return null;
+    }
+    String written = forwardingGuard.lastWrittenScriptHash(session.username());
+    return written != null && written.equals(ExoSieveScript.sha256(client.getScript(SCRIPT_NAME))) ? base : null;
   }
 
   /**
@@ -571,6 +592,8 @@ public class SieveRuleEngine implements ServerRuleEngine {
    * @param client the client
    * @param scripts the account's scripts, as read before the write
    * @param script the script to write
+   * @param verifiedBase eXo's script as the server holds it, when it is the one eXo last
+   *          wrote ({@link #vouched}); null otherwise
    * @throws ManageSieveException when a command fails
    * @throws ServerRuleConflictException when the policy refuses; nothing was written
    * @throws ServerRuleUnsupportedException when the script forwards and the server would
@@ -579,10 +602,11 @@ public class SieveRuleEngine implements ServerRuleEngine {
   private void writeRules(MailboxAclSession session,
                           ManageSieveClient client,
                           List<SieveScriptInfo> scripts,
-                          ExoSieveScript script) throws ManageSieveException,
-                                                 ServerRuleConflictException,
-                                                 ServerRuleUnsupportedException {
-    ExoSieveScript authorized = authorize(session, client, script);
+                          ExoSieveScript script,
+                          ExoSieveScript verifiedBase) throws ManageSieveException,
+                                                       ServerRuleConflictException,
+                                                       ServerRuleUnsupportedException {
+    ExoSieveScript authorized = authorize(session, client, script, verifiedBase);
     String active = SieveScriptPolicy.activeScript(scripts);
     if (authorized.emitsRules() || authorized.emitsVacation() || authorized.emitsRedirect() || SieveScriptPolicy.isOwn(active)) {
       policy.publish(client, authorized);
@@ -597,11 +621,22 @@ public class SieveRuleEngine implements ServerRuleEngine {
    * generator writes must be one of them -- after checking that the server keeps a copy
    * of a forwarded mail and allows as many redirects in one run as one mail could meet.
    * A script that forwards nothing is returned as it is.
+   * <p>
+   * A destination the script already held, when that script is exactly the one eXo last
+   * wrote, stays allowed: a write that only keeps, switches off or removes a forward --
+   * the reply's save, a rule's deletion, the forward's removal -- never fails because the
+   * destination has since left the allowed domains or the confirmed ones, which would
+   * leave the forward running and nothing able to remove it. Whether eXo wrote it is the
+   * hash the {@link ForwardingGuard} keeps where the user cannot write, never the one the
+   * reply and the rules compare with.
    *
    * @param session the caller's own session
    * @param client the client, its capabilities read after TLS
    * @param script the script
-   * @return the script, allowed to forward to the caller's authorized destinations only
+   * @param verifiedBase eXo's script as the server holds it, when it is the one eXo last
+   *          wrote ({@link #vouched}); null otherwise
+   * @return the script, allowed to forward to the caller's authorized destinations, and
+   *         those the verified script already held, only
    * @throws ServerRuleUnsupportedException {@value ServerRuleUnsupportedException#FORWARDING_UNSUPPORTED}
    *           without {@code copy},
    *           {@value ServerRuleUnsupportedException#TOO_MANY_REDIRECTS} beyond the
@@ -609,7 +644,8 @@ public class SieveRuleEngine implements ServerRuleEngine {
    */
   ExoSieveScript authorize(MailboxAclSession session,
                            ManageSieveClient client,
-                           ExoSieveScript script) throws ServerRuleUnsupportedException {
+                           ExoSieveScript script,
+                           ExoSieveScript verifiedBase) throws ServerRuleUnsupportedException {
     if (!script.emitsRedirect()) {
       return script;
     }
@@ -620,7 +656,11 @@ public class SieveRuleEngine implements ServerRuleEngine {
     if (script.redirectCount() > capabilities.redirectLimit()) {
       throw new ServerRuleUnsupportedException(ServerRuleUnsupportedException.TOO_MANY_REDIRECTS);
     }
-    return script.withAuthorizedRedirects(forwardingGuard == null ? Set.of() : forwardingGuard.authorizedDestinations(session));
+    Set<String> allowed = new HashSet<>(forwardingGuard == null ? Set.of() : forwardingGuard.authorizedDestinations(session));
+    if (verifiedBase != null) {
+      allowed.addAll(verifiedBase.redirectDestinations());
+    }
+    return script.withAuthorizedRedirects(allowed);
   }
 
   /**
@@ -654,11 +694,14 @@ public class SieveRuleEngine implements ServerRuleEngine {
       }
       List<SieveScriptInfo> scripts = client.listScripts();
       ExoSieveScript base = current(client, scripts, expectedScriptHash);
-      if (destination != null || base.getForward().isPresent()) {
-        writeRules(session, client, scripts, base.withForward(destination));
+      boolean wrote = destination != null || base.getForward().isPresent();
+      if (wrote) {
+        writeRules(session, client, scripts, base.withForward(destination), vouched(session, client, base));
       }
       Lookup lookup = lookup(client, client.listScripts());
-      return new ServerForwarding(forwarding(client, lookup), lookup.exoHash());
+      // Read back in the same conversation, the text is the one eXo just wrote: the
+      // caller records its hash once this answer is back.
+      return new ServerForwarding(forwarding(session, client, lookup, wrote ? lookup.exoHash() : null), lookup.exoHash());
     } catch (ManageSieveException e) {
       throw unavailable(e);
     } finally {
@@ -780,7 +823,7 @@ public class SieveRuleEngine implements ServerRuleEngine {
   public ForwardingSetting readForwarding(MailboxAclSession session) throws ServerRuleUnavailableException {
     ManageSieveClient client = open(session);
     try {
-      return forwarding(client, lookup(client, client.listScripts()));
+      return forwarding(session, client, lookup(client, client.listScripts()), null);
     } catch (ManageSieveException e) {
       throw unavailable(e);
     } finally {
@@ -805,7 +848,7 @@ public class SieveRuleEngine implements ServerRuleEngine {
     ManageSieveClient client = open(session);
     try {
       Lookup lookup = lookup(client, client.listScripts());
-      return new ServerAbsence(vacation(client, lookup), withForwarding ? forwarding(client, lookup) : null);
+      return new ServerAbsence(vacation(client, lookup), withForwarding ? forwarding(session, client, lookup, null) : null);
     } catch (ManageSieveException e) {
       throw unavailable(e);
     } finally {
@@ -816,15 +859,26 @@ public class SieveRuleEngine implements ServerRuleEngine {
   /**
    * The forward on an open conversation, from one lookup of the account.
    *
+   * @param session the caller's own session
    * @param client the client
    * @param lookup what runs at delivery
+   * @param justWritten the hash of the text eXo wrote in this conversation, or null
    * @return the forward
    * @throws ManageSieveException when a script cannot be read
    */
-  private ForwardingSetting forwarding(ManageSieveClient client, Lookup lookup) throws ManageSieveException {
+  private ForwardingSetting forwarding(MailboxAclSession session,
+                                       ManageSieveClient client,
+                                       Lookup lookup,
+                                       String justWritten) throws ManageSieveException {
     String foreign = lookup.forwardScanTarget();
     boolean foreignMayForward = foreign != null && policy.mayCarryRedirect(client, lookup.scripts(), foreign);
     ExoSieveScript exo = lookup.exo().orElse(null);
+    if (lookup.exoRuns() && !lookup.exoHash().equals(justWritten) && exoEditedToForward(session, client, lookup)) {
+      // eXo's own script was edited outside eXo and may send mail elsewhere: a forward
+      // eXo did not set, named after eXo's script.
+      return exo != null && exo.getForward().isPresent() ? ForwardingSetting.exoForward(exo.getForward().get(), SCRIPT_NAME)
+                                                         : ForwardingSetting.mayForwardByScript(SCRIPT_NAME);
+    }
     if (exo == null || !lookup.exoRuns()) {
       return foreignMayForward ? ForwardingSetting.mayForwardByScript(foreign) : ForwardingSetting.none();
     }
@@ -842,6 +896,48 @@ public class SieveRuleEngine implements ServerRuleEngine {
     }
     return answer.withRuleForwards(ruleForwards);
   }
+
+  /**
+   * Whether eXo's own script was edited outside eXo into something that may send mail
+   * elsewhere: its text is not the one eXo last wrote -- by the hash the
+   * {@link ForwardingGuard} keeps in the global settings, which the user cannot write --
+   * and the script, or a personal script it includes, holds {@code redirect} or
+   * {@code notify}. The header alone is never trusted to say what the script forwards: a
+   * header forged to forward, over the text eXo would generate from it, is not the text
+   * eXo wrote. A script without that record -- eXo never wrote it since it can forward --
+   * is not eXo's when its header forwards, and is compared with what its header
+   * generates otherwise.
+   *
+   * @param session the caller's own session
+   * @param client the client
+   * @param lookup what runs at delivery
+   * @return true when eXo's script may forward where eXo did not set
+   * @throws ManageSieveException when a script cannot be read
+   */
+  private boolean exoEditedToForward(MailboxAclSession session, ManageSieveClient client, Lookup lookup) throws ManageSieveException {
+    if (lookup.exoText() == null) {
+      return false;
+    }
+    String written = forwardingGuard == null ? null : forwardingGuard.lastWrittenScriptHash(session.username());
+    if (written != null) {
+      if (written.equals(lookup.exoHash())) {
+        return false;
+      }
+    } else if (lookup.exo().isPresent() && !lookup.exo().get().emitsRedirect()) {
+      // No record: eXo never wrote this script since it forwards, so a header that
+      // forwards is not eXo's; one that forwards nothing is compared with its text.
+      ExoSieveScript exo = lookup.exo().get();
+      try {
+        if (exo.withAuthorizedRedirects(exo.redirectDestinations()).toScript(client.getCapabilities()).equals(lookup.exoText())) {
+          return false;
+        }
+      } catch (RuntimeException e) {
+        LOG.debug("eXo's script cannot be generated again from its header: {}", e.getMessage());
+      }
+    }
+    return policy.mayCarryRedirect(client, lookup.scripts(), SCRIPT_NAME);
+  }
+
 
   /**
    * What runs at delivery for the caller, read once per conversation: the scripts, eXo's

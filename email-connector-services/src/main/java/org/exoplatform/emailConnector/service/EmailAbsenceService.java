@@ -84,7 +84,7 @@ import io.meeds.social.util.JsonUtils;
  * (default 7, the minimum interval between two replies to one sender, on a Sieve
  * server; BlueMind applies its own), {@code email.connector.absence.status.ttlSeconds}
  * (default 900), {@code email.connector.forwarding.display.enabled} (default true; false
- * neither reads nor shows a forward).
+ * shows no forward but the ones eXo set).
  * <p>
  * <b>This service only reads the forward.</b> The section shows whether the caller's own
  * mailbox forwards mail, as the server holds it, with where to manage it, read in the
@@ -101,8 +101,8 @@ public class EmailAbsenceService {
   public static final String       ENABLED_PROPERTY    = "email.connector.absence.enabled";
 
   /**
-   * Whether an existing forward of the mailbox is read and shown, read-only; false reads
-   * and shows nothing.
+   * Whether an existing forward of the mailbox is shown, read-only; false shows none but
+   * the forward eXo set and eXo's rules that forward, which stay shown while they run.
    */
   public static final String       FORWARDING_DISPLAY_PROPERTY = "email.connector.forwarding.display.enabled";
 
@@ -265,9 +265,10 @@ public class EmailAbsenceService {
     ServerRuleEngine engine = engineOf(username, delegationId);
     try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
       ServerRuleCapabilities capabilities = emailForwardingService.narrowed(engine.probe(session), session.connector());
-      // A deployment that lets users set a forward shows it, whatever the display switch.
+      // Read in the same conversation as the reply; shown when the deployment shows
+      // forwards or lets users set one, and a forward eXo set whatever the switches.
       boolean shown = forwardingDisplayed() || ForwardingGuard.authoringEnabled(session.connector());
-      boolean readForward = withForwarding && shown && capabilities.isSupported(ServerRuleCapabilities.FORWARDING_READ);
+      boolean readForward = withForwarding && capabilities.isSupported(ServerRuleCapabilities.FORWARDING_READ);
       ServerVacation vacation;
       ForwardingSetting forwarding = null;
       if (capabilities.isSupported(ServerRuleCapabilities.VACATION)) {
@@ -280,10 +281,12 @@ public class EmailAbsenceService {
         forwarding = readForward ? readForwardingQuietly(engine, session) : null;
       }
       AbsenceSettings settings = settings(capabilities, engine, vacation);
+      forwarding = emailForwardingService.recognise(username, forwarding);
+      boolean exoForwards = forwarding != null && (forwarding.managedByExo() || !forwarding.ruleForwards().isEmpty());
       if (withForwarding) {
-        settings.setForwarding(shown ? forwarding(session, forwarding) : null);
+        settings.setForwarding(shown || exoForwards ? forwarding(session, forwarding) : null);
         String mailboxAddress = userEmailSettingService.getUserEmailSetting(username).getEmailAddress();
-        emailForwardingService.observe(username, mailboxAddress, forwarding);
+        emailForwardingService.observe(username, mailboxAddress, forwarding, shown);
         settings.setForwardingAuthoring(emailForwardingService.authoring(username, session.connector(), mailboxAddress, capabilities));
       }
       return settings;
@@ -583,6 +586,7 @@ public class EmailAbsenceService {
                          UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
                          SCRIPT_SETTING_KEY,
                          SettingValue.create(JsonUtils.toJsonString(value)));
+      emailForwardingService.recordScriptHash(username, written.scriptHash());
     }
     AbsenceStatus status = summary(written);
     status.setUpdatedDate(clock.millis());
