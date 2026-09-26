@@ -127,9 +127,9 @@ public class EmailFavoriteService {
   /**
    * The ids of the mails this user has flagged, as favorites object ids.
    * <p>
-   * Only the INBOX is read, because that is the only folder whose flag this
-   * add-on pushes: a Sent or Archive copy shows its flag read-only, and
-   * favoriting it would offer the user a star they cannot take back.
+   * Only the INBOX is read: the Favorites drawer lists the inbox's flagged
+   * mails, while the star itself can be set and cleared in any folder of the
+   * mailbox.
    *
    * @param username the mailbox owner
    * @return the flagged mails' ids, as strings
