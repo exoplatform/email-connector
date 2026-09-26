@@ -398,6 +398,9 @@ export default {
           const folder = this.folders.find(candidate => candidate.key === action.folderKey);
           return this.$t('UserSettings.emailConnector.filters.summary.move', { 0: folder?.label || action.folderPath || action.folderKey });
         }
+        if (action.type === 'FORWARD') {
+          return this.$t('UserSettings.emailConnector.filters.summary.forward', { 0: action.destination || '' });
+        }
         return this.$t(`UserSettings.emailConnector.filters.exo.summary.${action.type}`);
       });
       if (item.stopProcessing) {
