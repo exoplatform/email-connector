@@ -756,6 +756,27 @@ public class EmailFilterServiceTest {
   }
 
   /**
+   * A match whose assistant could not be reached is parked: PENDING again, no attempt
+   * counted, its post-actions still held.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anUnreachableAssistantParksTheMatchWithoutCountingAnAttempt() throws Exception {
+    EmailFilterMatch match = storedMatch();
+    match.setAgentStatus(EmailFilterMatch.AGENT_RUNNING);
+    match.setAgentAttempts(1);
+    match.setPostActionsState(EmailFilterMatch.POST_PENDING_AGENT);
+
+    EmailFilterMatch parked = service.parkAgentMatch(match.getId(), USERNAME, "emailConnector.filters.agent.unavailable");
+
+    assertEquals(EmailFilterMatch.AGENT_PENDING, parked.getAgentStatus());
+    assertEquals(1, parked.getAgentAttempts(), "no attempt counted");
+    assertEquals("emailConnector.filters.agent.unavailable", parked.getLastError());
+    assertEquals(EmailFilterMatch.POST_PENDING_AGENT, parked.getPostActionsState());
+  }
+
+  /**
    * The handler's read asks the storage for the waiting matches and the running ones
    * last written before the given date, bounded.
    */

@@ -1089,6 +1089,26 @@ public class EmailFilterService {
   }
 
   /**
+   * Puts a match back to {@code PENDING} without counting an attempt: its assistant could
+   * not be reached (the provider's error or timeout, the AI add-on not up), which says
+   * nothing about the mail. Its post-actions stay held; its error is kept for the
+   * Automations panel.
+   *
+   * @param matchId the match
+   * @param username the rule's owner
+   * @param error why it waits
+   * @return the match
+   * @throws ObjectNotFoundException when the match is not this user's
+   */
+  public EmailFilterMatch parkAgentMatch(long matchId, String username, String error) throws ObjectNotFoundException {
+    EmailFilterMatch match = ownMatch(username, matchId);
+    match.setAgentStatus(EmailFilterMatch.AGENT_PENDING);
+    match.setAgentDate(clock.millis());
+    match.setLastError(error);
+    return named(username, emailFilterStorage.updateMatch(match, username));
+  }
+
+  /**
    * The owner's matches waiting for the assistant, oldest first: what its handler takes
    * up in one run.
    *
