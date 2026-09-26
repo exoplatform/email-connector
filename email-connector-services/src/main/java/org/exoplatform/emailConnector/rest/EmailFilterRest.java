@@ -382,6 +382,56 @@ public class EmailFilterRest {
   }
 
   /**
+   * Saves a filter of the drawer's one list, wherever it runs: eXo decides.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param delegationId the share the request is made from; refused
+   * @param ref the server filter it replaces, by its reference; none otherwise
+   * @param id the eXo filter it replaces, by its id; none otherwise
+   * @param consent true when the caller agreed that eXo manages rules on their server
+   * @param republish true to overwrite eXo's own script although it changed outside eXo
+   * @param filter the filter; its kind is ignored
+   * @return the filter as saved, or the conflict with the script it is about
+   */
+  @PostMapping("/routed")
+  @Secured("users")
+  @Operation(summary = "Saves a mail filter and decides where it runs", method = "POST",
+      description = "The filter drawer's one entry point. Kind SERVER when the mail server can run every condition and every "
+          + "action (the capabilities' answer): the server runs it at delivery and eXo keeps no copy. Kind HOP when the server can "
+          + "test every condition and set eXo's keyword but not run every action (ADD_CATEGORY, NOTIFY, AGENT, or a flag it "
+          + "cannot set): the server marks the mail at delivery, eXo applies every action after its sync. Kind EXO otherwise: a "
+          + "condition only eXo reads (BODY, SUBJECT_OR_BODY, HAS_ATTACHMENT), or no rules on the server. With ref (a server "
+          + "filter) or id (an eXo filter), the filter it was is replaced, moving between the server and eXo server first: the "
+          + "server never holds both, and a refusal changes nothing. Answers the eXo filter as stored, or for a server filter its "
+          + "kind and content, with its reference when it had one. Own mailbox only.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Saved"),
+      @ApiResponse(responseCode = "400", description = FILTER_BAD_REQUEST),
+      @ApiResponse(responseCode = "403", description = FORBIDDEN_DESCRIPTION),
+      @ApiResponse(responseCode = "404", description = "A feature the filter needs is off, no mailbox is connected, or no such filter"),
+      @ApiResponse(responseCode = "409", description = CONFLICT_DESCRIPTION),
+      @ApiResponse(responseCode = "502", description = UNAVAILABLE_DESCRIPTION) })
+  public ResponseEntity<Object> saveRoutedFilter(HttpServletRequest request,
+                                                 @Parameter(description = DELEGATION_DESCRIPTION)
+                                                 @RequestParam(name = "delegationId", required = false)
+                                                 Long delegationId,
+                                                 @Parameter(description = "The server filter it replaces")
+                                                 @RequestParam(name = "ref", required = false)
+                                                 String ref,
+                                                 @Parameter(description = "The eXo filter it replaces")
+                                                 @RequestParam(name = "id", required = false)
+                                                 Long id,
+                                                 @Parameter(description = "The caller agrees that eXo manages rules on their mail server")
+                                                 @RequestParam(name = "consent", required = false, defaultValue = "false")
+                                                 boolean consent,
+                                                 @Parameter(description = REPUBLISH_DESCRIPTION)
+                                                 @RequestParam(name = "republish", required = false, defaultValue = "false")
+                                                 boolean republish,
+                                                 @RequestBody
+                                                 EmailFilter filter) {
+    return write(() -> emailFilterService.saveRouted(request.getRemoteUser(), delegationId, filter, ref, id, consent, republish));
+  }
+
+  /**
    * Replaces an eXo rule.
    *
    * @param request the HTTP request, carrying the authenticated user
