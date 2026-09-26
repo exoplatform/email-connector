@@ -148,7 +148,8 @@ export default {
       if (code === 'emailConnector.absence.modifiedOutside' && error.scriptName === 'exo-main') {
         return this.$t('UserSettings.emailConnector.absence.state.wrapperModified', { 0: error.scriptName });
       }
-      if (code.startsWith('emailConnector.absence.')) {
+      // A reply's write that would carry on a forward the checks no longer allow says so.
+      if (code.startsWith('emailConnector.absence.') || code.startsWith('emailConnector.forwarding.')) {
         const key = `UserSettings.${code}`;
         const text = this.$t(key, { 0: error.scriptName || '' });
         if (text !== key) {
