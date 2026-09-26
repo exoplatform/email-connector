@@ -188,6 +188,38 @@ public class EmailForwardingServiceTest {
     ReflectionTestUtils.setField(guard, "settingService", settingService);
     ReflectionTestUtils.setField(guard, "userEmailSettingService", userEmailSettingService);
     ReflectionTestUtils.setField(service, "forwardingGuard", guard);
+    guard.setClock(new Clock() {
+      /**
+       * UTC.
+       *
+       * @return UTC
+       */
+      @Override
+      public ZoneOffset getZone() {
+        return ZoneOffset.UTC;
+      }
+
+      /**
+       * This clock.
+       *
+       * @param zone ignored
+       * @return this clock
+       */
+      @Override
+      public Clock withZone(java.time.ZoneId zone) {
+        return this;
+      }
+
+      /**
+       * The test's instant.
+       *
+       * @return the instant
+       */
+      @Override
+      public Instant instant() {
+        return Instant.ofEpochMilli(now);
+      }
+    });
     UserEmailSetting setting = new UserEmailSetting();
     setting.setEmailConnectorId(String.valueOf(CONNECTOR_ID));
     setting.setEmailAddress(MAILBOX);
@@ -226,6 +258,7 @@ public class EmailForwardingServiceTest {
     System.clearProperty(ForwardingGuard.ALLOWED_DOMAINS_PROPERTY);
     System.clearProperty(ForwardingGuard.ALLOWED_DOMAINS_PROPERTY + "." + CONNECTOR_ID);
     System.clearProperty(EmailForwardingService.CODE_MAX_SENDS_PROPERTY);
+    System.clearProperty(ForwardingGuard.CONFIRMATION_TTL_PROPERTY);
   }
 
   // ---------------------------------------------------------------------------------
@@ -536,6 +569,55 @@ public class EmailForwardingServiceTest {
     when(engine.readForwarding(session)).thenReturn(webmail);
     service.removeForwarding(USERNAME, null, false);
     verify(engine, never()).writeForwarding(session, null, null);
+  }
+
+  /**
+   * A confirmation counts 90 days by default, the property's number otherwise: after it,
+   * a new forward and a new forwarding filter to that address need a new code; the
+   * forward already on is still read and shown, the band included.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testAConfirmationExpires() throws Exception {
+    guard.confirm(USERNAME, BOB);
+    now += 89L * 86_400_000L;
+    assertTrue(guard.confirmedDestinations(USERNAME).contains(BOB));
+    service.requireRuleForwardsAllowed(USERNAME, List.of(forward(BOB)));
+    now += 2L * 86_400_000L;
+    assertFalse(guard.confirmedDestinations(USERNAME).contains(BOB));
+    assertTrue(guard.authorizedDestinations(session).isEmpty());
+    assertRefused(ForwardingGuard.NOT_CONFIRMED, () -> service.setForwarding(USERNAME, null, BOB, null, false));
+    assertRefused(ForwardingGuard.NOT_CONFIRMED, () -> service.requireRuleForwardsAllowed(USERNAME, List.of(forward(BOB))));
+    verify(engine, never()).writeForwarding(any(), any(), any());
+    when(engine.readForwarding(session)).thenReturn(ForwardingSetting.exoForward(BOB, null));
+    ForwardingStatus band = service.getStatus(USERNAME, null);
+    assertTrue(band.isManagedByExo());
+    assertEquals(List.of(BOB), band.getDestinations());
+    System.setProperty(ForwardingGuard.CONFIRMATION_TTL_PROPERTY, "365");
+    assertTrue(guard.confirmedDestinations(USERNAME).contains(BOB));
+    System.setProperty(ForwardingGuard.CONFIRMATION_TTL_PROPERTY, String.valueOf(Long.MAX_VALUE));
+    assertTrue(guard.confirmedDestinations(USERNAME).contains(BOB), "an absurd period is capped, never overflows");
+    // A new code confirms it again, for another period.
+    System.clearProperty(ForwardingGuard.CONFIRMATION_TTL_PROPERTY);
+    guard.confirm(USERNAME, BOB);
+    assertTrue(guard.confirmedDestinations(USERNAME).contains(BOB));
+  }
+
+  /**
+   * A confirmation stored without a date, the format before expiry, counts as never
+   * confirmed; the next confirmation stores only dated entries.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testAnUndatedConfirmationCountsForNothing() throws Exception {
+    store(Context.GLOBAL).put("confirmed." + USERNAME, "[\"" + BOB + "\"]");
+    assertTrue(guard.confirmedDestinations(USERNAME).isEmpty());
+    assertRefused(ForwardingGuard.NOT_CONFIRMED, () -> service.setForwarding(USERNAME, null, BOB, null, false));
+    guard.confirm(USERNAME, CAROL);
+    assertEquals(java.util.Set.of(CAROL), guard.confirmedDestinations(USERNAME));
+    assertFalse(store(Context.GLOBAL).get("confirmed." + USERNAME).contains("\"" + BOB + "\""));
   }
 
   /**
