@@ -251,4 +251,38 @@ public interface ServerRuleEngine {
                                                                ServerRuleUnsupportedException {
     throw new ServerRuleUnsupportedException(ServerRuleUnsupportedException.RULES_UNSUPPORTED);
   }
+
+  /**
+   * Makes the server hold exactly the given hops, as {@link #reconcile(MailboxAclSession,
+   * List, String)} does, and in the same single write turns one of the user's rules into
+   * a hop or a hop into one of the user's rules: when a filter changes where it runs, the
+   * server never holds both halves, nor neither, whatever fails.
+   *
+   * @param session the caller's own session
+   * @param hops the hops to keep
+   * @param added a user's rule to append under a new reference, its folders resolved;
+   *          null for none
+   * @param droppedRef the reference of a user's rule to remove; null for none. A
+   *          reference the script no longer holds removes nothing
+   * @param expectedScriptHash as for {@link #saveRule}
+   * @return what was done -- the added rule's reference among the published ones, the
+   *         dropped one among the removed ones -- and the rules afterwards
+   * @throws ServerRuleUnavailableException when the server cannot be used
+   * @throws ServerRuleConflictException when another client's active state is in the way,
+   *           or eXo's script changed outside eXo; nothing was written
+   * @throws ServerRuleUnsupportedException when this engine or server cannot express a
+   *           hop or the added rule
+   */
+  default ReconcileReport reconcile(MailboxAclSession session,
+                                    List<HopRef> hops,
+                                    ServerRule added,
+                                    String droppedRef,
+                                    String expectedScriptHash) throws ServerRuleUnavailableException,
+                                                               ServerRuleConflictException,
+                                                               ServerRuleUnsupportedException {
+    if (added == null && droppedRef == null) {
+      return reconcile(session, hops, expectedScriptHash);
+    }
+    throw new ServerRuleUnsupportedException(ServerRuleUnsupportedException.RULES_UNSUPPORTED);
+  }
 }
