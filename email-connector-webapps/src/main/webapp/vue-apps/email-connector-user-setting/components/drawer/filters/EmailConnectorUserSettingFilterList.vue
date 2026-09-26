@@ -60,26 +60,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             <v-list-item-subtitle v-if="item.kind !== 'SERVER'" class="text-wrap">
               {{ $t('UserSettings.emailConnector.filters.exo.matches', { 0: item.matchCount || 0 }) }}
             </v-list-item-subtitle>
-            <div class="d-flex flex-wrap mt-1">
+            <div v-if="item.lastError" class="d-flex flex-wrap mt-1">
               <v-chip
-                class="ma-0 me-1 px-2 text-subtitle"
-                color="primary"
-                x-small
-                label
-                outlined>
-                {{ $t(item.kind === 'SERVER' ? 'UserSettings.emailConnector.filters.badge.server' : 'UserSettings.emailConnector.filters.badge.exo') }}
-              </v-chip>
-              <v-chip
-                v-if="item.kind === 'HOP'"
-                class="ma-0 me-1 px-2 text-subtitle"
-                color="primary"
-                x-small
-                label
-                outlined>
-                {{ $t('UserSettings.emailConnector.filters.exo.badge.atDelivery') }}
-              </v-chip>
-              <v-chip
-                v-if="item.lastError"
                 class="ma-0 me-1 px-2 text-subtitle"
                 color="error"
                 x-small
