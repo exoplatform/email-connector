@@ -354,6 +354,22 @@ public class EmailServerRuleServiceTest {
   }
 
   /**
+   * A rule that forwards, saved switched off, forwards nothing: switching it off is never
+   * refused, whatever the forwarding checks say.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testSwitchingAForwardingRuleOffIsNeverRefused() throws Exception {
+    settings.put(EmailServerRuleService.CONSENT_SETTING_KEY, "1");
+    ServerRule on = rule(List.of(new Action(ServerRule.FORWARD, null, null, null, "bob@example.org")));
+    ServerRule off = new ServerRule("1", on.name(), false, true, on.conditions(), on.actions(), false);
+    when(engine.saveRule(eq(session), any(), isNull())).thenReturn(written("h1"));
+    service.saveRule(USERNAME, null, "1", off, false, true);
+    verify(emailForwardingService, never()).requireRuleForwardsAllowed(any(), any());
+  }
+
+  /**
    * A rule from acme.com with the given actions.
    *
    * @param actions the actions
