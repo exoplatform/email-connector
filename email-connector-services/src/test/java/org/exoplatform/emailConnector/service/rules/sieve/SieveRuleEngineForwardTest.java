@@ -388,6 +388,23 @@ public class SieveRuleEngineForwardTest {
   }
 
   /**
+   * A server that advertises more redirects per run -- Pigeonhole's own default is four
+   * -- is taken at its word: the forward and a rule that forwards are written together.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheServersOwnRedirectLimitApplies() throws Exception {
+    server.maxRedirects(4);
+    authorized.add("carol@stalwart.local");
+    writtenHash = engine.writeForwarding(session, BOB, null).scriptHash();
+    engine.saveRule(session, forwardRule("carol@stalwart.local"), writtenHash);
+    String stored = server.getScripts().get(ExoSieveScript.SCRIPT_NAME);
+    assertTrue(stored.contains("redirect :copy \"" + BOB + "\";"), stored);
+    assertTrue(stored.contains("redirect :copy \"carol@stalwart.local\";"), stored);
+  }
+
+  /**
    * A rule that forwards is written as {@code redirect :copy} to its authorized
    * destination, and read back among the rules that forward; an unauthorized one is
    * refused by the generator and nothing is written.
