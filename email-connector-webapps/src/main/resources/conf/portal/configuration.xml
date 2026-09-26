@@ -395,8 +395,9 @@
       </init-params>
     </component-plugin>
     <!-- Where the user's mail goes changed, or a forward eXo did not set was found
-         (EXO-90656): a safeguard, so it cannot be switched off by the user: a session
-         that set a forward could otherwise silence its own report. -->
+         (EXO-90656): not mutable in the settings, on by default for every user. A
+         session can still mute it through the notification settings REST; the mail eXo
+         drops into the mailbox itself is the channel it cannot switch off. -->
     <component-plugin>
       <name>notification.plugins</name>
       <set-method>addPlugin</set-method>

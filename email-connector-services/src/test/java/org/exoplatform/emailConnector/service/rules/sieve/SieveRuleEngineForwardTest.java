@@ -44,6 +44,7 @@ import org.exoplatform.emailConnector.model.ForwardingState;
 import org.exoplatform.emailConnector.model.ServerAbsence;
 import org.exoplatform.emailConnector.model.ServerForwarding;
 import org.exoplatform.emailConnector.model.ServerRule;
+import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.ServerRule.Action;
 import org.exoplatform.emailConnector.model.ServerRule.Condition;
 import org.exoplatform.emailConnector.model.VacationSetting;
@@ -79,6 +80,9 @@ public class SieveRuleEngineForwardTest {
   /** The destinations the guard authorizes, which a test changes. */
   private final Set<String>     authorized   = new HashSet<>(Set.of(BOB));
 
+  /** The hash of the script eXo last wrote, as the guard keeps it; null for none. */
+  private String                writtenHash;
+
   /**
    * A server that advertises {@code copy}, as the live Stalwart does, and an engine whose
    * guard authorizes the test's destinations.
@@ -94,6 +98,7 @@ public class SieveRuleEngineForwardTest {
     connector.configure(FakeManageSieveServer.clientTlsFactory(), 5000, 5000, 10000);
     ForwardingGuard guard = mock(ForwardingGuard.class);
     when(guard.authorizedDestinations(any())).thenAnswer(invocation -> Set.copyOf(authorized));
+    when(guard.lastWrittenScriptHash(any())).thenAnswer(invocation -> writtenHash);
     engine = new SieveRuleEngine(connector, new SieveScriptPolicy(), guard);
     EmailConnector preset = new EmailConnector();
     preset.setId(CONNECTOR_ID);
@@ -126,6 +131,11 @@ public class SieveRuleEngineForwardTest {
   @Test
   public void testAnAuthorizedForwardIsARedirectCopy() throws Exception {
     ServerForwarding written = engine.writeForwarding(session, BOB, null);
+    // The answer of the write itself is eXo's forward, before any hash is recorded.
+    assertTrue(written.forwarding().managedByExo());
+    assertNull(written.forwarding().scriptName());
+    // What the service records after the write.
+    writtenHash = written.scriptHash();
     String stored = server.getScripts().get(ExoSieveScript.SCRIPT_NAME);
     assertTrue(stored.contains("# exo-forward\r\nredirect :copy \"" + BOB + "\";\r\n"), stored);
     assertFalse(stored.replace("redirect :copy", "").contains("redirect"), stored);
@@ -225,7 +235,7 @@ public class SieveRuleEngineForwardTest {
   @Test
   public void testNextToAForeignScriptTheForwardRunsFirst() throws Exception {
     server.script(FOREIGN, "require [\"fileinto\"];\r\nfileinto \"Lists\";\r\nstop;\r\n", true);
-    engine.writeForwarding(session, BOB, null);
+    writtenHash = engine.writeForwarding(session, BOB, null).scriptHash();
     assertEquals(ExoSieveScript.WRAPPER_NAME, server.getActive());
     assertEquals(SieveScriptPolicy.wrapper(FOREIGN, true), server.getScripts().get(ExoSieveScript.WRAPPER_NAME));
     ForwardingSetting read = engine.readForwarding(session);
@@ -278,6 +288,77 @@ public class SieveRuleEngineForwardTest {
   }
 
   /**
+   * eXo's own running script edited outside eXo to forward elsewhere is a forward eXo did
+   * not set, named after eXo's script: a body edited under a header that still reads, a
+   * header that no longer reads, and a header forged to forward over exactly the text
+   * eXo would generate from it -- none is the text eXo last wrote. The script eXo wrote,
+   * forward included, is eXo's own.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testEXosScriptEditedToForwardIsNotEXos() throws Exception {
+    writtenHash = engine.writeForwarding(session, BOB, null).scriptHash();
+    ForwardingSetting own = engine.readForwarding(session);
+    assertTrue(own.managedByExo());
+    assertNull(own.scriptName());
+    String stored = server.getScripts().get(ExoSieveScript.SCRIPT_NAME);
+    server.script(ExoSieveScript.SCRIPT_NAME, stored + "redirect \"mallory@elsewhere.example\";\r\n", true);
+    assertEquals(ExoSieveScript.SCRIPT_NAME, engine.readForwarding(session).scriptName());
+    server.script(ExoSieveScript.SCRIPT_NAME, "require [\"copy\"];\r\nredirect :copy \"mallory@elsewhere.example\";\r\n", true);
+    ForwardingSetting broken = engine.readForwarding(session);
+    assertEquals(ForwardingState.MAY_FORWARD_BY_SCRIPT, broken.state());
+    assertEquals(ExoSieveScript.SCRIPT_NAME, broken.scriptName());
+    server.script(ExoSieveScript.SCRIPT_NAME, forged("mallory@elsewhere.example"), true);
+    ForwardingSetting forgedRead = engine.readForwarding(session);
+    assertEquals(List.of("mallory@elsewhere.example"), forgedRead.destinations());
+    assertEquals(ExoSieveScript.SCRIPT_NAME, forgedRead.scriptName());    // Without any record of what eXo wrote, a forged forward is not eXo's either.
+    writtenHash = null;
+    assertEquals(ExoSieveScript.SCRIPT_NAME, engine.readForwarding(session).scriptName());
+    // A script that forwards nothing, as eXo generates it, is eXo's.
+    server.script(ExoSieveScript.SCRIPT_NAME, ExoSieveScript.empty().toScript(SieveStringEncoding.ENCODED_CHARACTER), true);
+    assertEquals(ForwardingState.NONE, engine.readForwarding(session).state());
+  }
+
+  /**
+   * A write of the script eXo last wrote -- by the hash the guard keeps where the user
+   * cannot write -- carries its forward on even once the destination is no longer
+   * authorized, so a reply's save or the forward's removal never fails for it. A header
+   * forged to forward elsewhere is carried nowhere, even with the hash the reply compares
+   * with forged to match it.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testOnlyTheScriptEXoWroteCarriesItsForwardOn() throws Exception {
+    writtenHash = engine.writeForwarding(session, BOB, null).scriptHash();
+    authorized.clear();
+    ServerVacation written = engine.writeVacation(session, reply("Back soon"), 7, writtenHash);
+    writtenHash = written.scriptHash();
+    assertTrue(server.getScripts().get(ExoSieveScript.SCRIPT_NAME).contains("redirect :copy \"" + BOB + "\";"));
+    String forged = forged("mallory@elsewhere.example");
+    server.script(ExoSieveScript.SCRIPT_NAME, forged, true);
+    int writes = writeCount();
+    assertThrows(ForwardingRefusedException.class,
+                 () -> engine.writeVacation(session, reply("Later"), 7, ExoSieveScript.sha256(forged)));
+    assertEquals(writes, writeCount());
+  }
+
+  /**
+   * eXo's script, forged to forward to a destination eXo never wrote: the header says it,
+   * and the body is exactly what eXo would generate from it.
+   *
+   * @param destination the forged destination
+   * @return the script text
+   */
+  private static String forged(String destination) {
+    return ExoSieveScript.empty()
+                         .withForward(destination)
+                         .withAuthorizedRedirects(Set.of(destination))
+                         .toScript(SieveStringEncoding.ENCODED_CHARACTER);
+  }
+
+  /**
    * Removing a forward that is not there writes nothing.
    *
    * @throws Exception on failure
@@ -315,7 +396,7 @@ public class SieveRuleEngineForwardTest {
    */
   @Test
   public void testARuleForwardsOnlyWhereAuthorized() throws Exception {
-    engine.saveRule(session, forwardRule(BOB), null);
+    writtenHash = engine.saveRule(session, forwardRule(BOB), null).scriptHash();
     String stored = server.getScripts().get(ExoSieveScript.SCRIPT_NAME);
     assertTrue(stored.contains("  redirect :copy \"" + BOB + "\";\r\n"), stored);
     ForwardingSetting read = engine.readForwarding(session);
