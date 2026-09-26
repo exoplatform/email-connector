@@ -716,6 +716,80 @@ public class EmailFilterServiceTest {
   }
 
   /**
+   * The handler's writes: RUNNING counts nothing; a failed attempt given back as PENDING
+   * counts one and keeps its error, and is not an end -- no output, post-actions still
+   * held; SKIPPED_DISABLED ends the run like DONE; a status the handler never writes is
+   * refused.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theAssistantsAttemptsAreCountedAcrossRuns() throws Exception {
+    EmailFilterMatch match = storedMatch();
+    match.setAgentStatus(EmailFilterMatch.AGENT_PENDING);
+    match.setPostActionsState(EmailFilterMatch.POST_PENDING_AGENT);
+
+    EmailFilterMatch running = service.saveAgentOutcome(match.getId(), USERNAME, EmailFilterMatch.AGENT_RUNNING, "c-1", null, null);
+    assertEquals(0, running.getAgentAttempts());
+    assertEquals("c-1", running.getAgentConversationId());
+
+    EmailFilterMatch givenBack = service.saveAgentOutcome(match.getId(), USERNAME, EmailFilterMatch.AGENT_PENDING, null, "{}", "timeout");
+    assertEquals(EmailFilterMatch.AGENT_PENDING, givenBack.getAgentStatus());
+    assertEquals(1, givenBack.getAgentAttempts());
+    assertEquals("timeout", givenBack.getLastError());
+    assertNull(givenBack.getAgentOutput(), "an attempt given back has no answer");
+    assertEquals(EmailFilterMatch.POST_PENDING_AGENT, givenBack.getPostActionsState());
+
+    EmailFilterMatch skipped = service.saveAgentOutcome(match.getId(),
+                                                        USERNAME,
+                                                        EmailFilterMatch.AGENT_SKIPPED_DISABLED,
+                                                        null,
+                                                        null,
+                                                        "emailConnector.filters.agent.disabled");
+    assertEquals(2, skipped.getAgentAttempts());
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_DISABLED, skipped.getAgentStatus());
+
+    assertThrows(IllegalArgumentException.class,
+                 () -> service.saveAgentOutcome(match.getId(), USERNAME, EmailFilterMatch.AGENT_SKIPPED_CAP, null, null, null));
+    assertThrows(IllegalArgumentException.class,
+                 () -> service.saveAgentOutcome(match.getId(), USERNAME, EmailFilterMatch.AGENT_NONE, null, null, null));
+  }
+
+  /**
+   * A match whose assistant could not be reached is parked: PENDING again, no attempt
+   * counted, its post-actions still held.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anUnreachableAssistantParksTheMatchWithoutCountingAnAttempt() throws Exception {
+    EmailFilterMatch match = storedMatch();
+    match.setAgentStatus(EmailFilterMatch.AGENT_RUNNING);
+    match.setAgentAttempts(1);
+    match.setPostActionsState(EmailFilterMatch.POST_PENDING_AGENT);
+
+    EmailFilterMatch parked = service.parkAgentMatch(match.getId(), USERNAME, "emailConnector.filters.agent.unavailable");
+
+    assertEquals(EmailFilterMatch.AGENT_PENDING, parked.getAgentStatus());
+    assertEquals(1, parked.getAgentAttempts(), "no attempt counted");
+    assertEquals("emailConnector.filters.agent.unavailable", parked.getLastError());
+    assertEquals(EmailFilterMatch.POST_PENDING_AGENT, parked.getPostActionsState());
+  }
+
+  /**
+   * The handler's read asks the storage for the waiting matches and the running ones
+   * last written before the given date, bounded.
+   */
+  @Test
+  void theHandlerReadsWaitingAndAbandonedMatches() {
+    EmailFilterMatch due = storedMatch();
+    when(emailFilterStorage.getMatchesDueForAgent(USERNAME, new Date(NOW - 1_800_000L), EmailFilterService.MAX_LOG)).thenReturn(List.of(due));
+
+    assertEquals(List.of(due), service.listPendingAgentMatches(USERNAME, 1_000, NOW - 1_800_000L));
+    verify(emailFilterStorage).getMatchesDueForAgent(USERNAME, new Date(NOW - 1_800_000L), EmailFilterService.MAX_LOG);
+  }
+
+  /**
    * Stores a match with actions, of a rule that still exists.
    *
    * @param actions what it did

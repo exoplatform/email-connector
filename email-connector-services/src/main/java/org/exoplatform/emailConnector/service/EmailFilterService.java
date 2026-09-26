@@ -216,6 +216,13 @@ public class EmailFilterService {
                                                                            EmailFilterMatch.AGENT_DONE,
                                                                            EmailFilterMatch.AGENT_FAILED);
 
+  /** The statuses the assistant's handler writes. */
+  private static final List<String>   AGENT_OUTCOME_STATUSES     = List.of(EmailFilterMatch.AGENT_RUNNING,
+                                                                           EmailFilterMatch.AGENT_PENDING,
+                                                                           EmailFilterMatch.AGENT_DONE,
+                                                                           EmailFilterMatch.AGENT_FAILED,
+                                                                           EmailFilterMatch.AGENT_SKIPPED_DISABLED);
+
   private static final Pattern        AGENT_NAME                 = Pattern.compile("[A-Za-z0-9._-]{1,200}");
 
   @Autowired
@@ -1036,12 +1043,20 @@ public class EmailFilterService {
 
   /**
    * Records what the assistant made of a match: its handler's write, as the owner.
+   * <p>
+   * {@code RUNNING} marks the start of an attempt and counts nothing. Every other status
+   * counts one attempt: {@code DONE}, {@code FAILED} and {@code SKIPPED_DISABLED} end the
+   * run -- the handler then applies the post-actions --, while {@code PENDING} gives a
+   * failed attempt back for another one, its error kept, so the attempts a mail has
+   * spent survive the run and the node that made them.
    *
    * @param matchId the match
    * @param username the rule's owner
-   * @param status {@code RUNNING}, {@code DONE} or {@code FAILED}
+   * @param status {@code RUNNING}, {@code PENDING}, {@code DONE}, {@code FAILED} or
+   *          {@code SKIPPED_DISABLED}
    * @param conversationId the assistant's conversation, to open it in the chat
-   * @param output the assistant's answer as the handler applied it
+   * @param output the assistant's answer as the handler applied it; ignored for
+   *          {@code RUNNING} and {@code PENDING}
    * @param error the reason of a failure
    * @return the match
    * @throws ObjectNotFoundException when the match is not this user's
@@ -1053,7 +1068,7 @@ public class EmailFilterService {
                                            String conversationId,
                                            String output,
                                            String error) throws ObjectNotFoundException {
-    if (!List.of(EmailFilterMatch.AGENT_RUNNING, EmailFilterMatch.AGENT_DONE, EmailFilterMatch.AGENT_FAILED).contains(status)) {
+    if (!AGENT_OUTCOME_STATUSES.contains(status)) {
       throw new IllegalArgumentException(ServerRule.INVALID);
     }
     EmailFilterMatch match = ownMatch(username, matchId);
@@ -1062,11 +1077,34 @@ public class EmailFilterService {
     if (conversationId != null) {
       match.setAgentConversationId(StringUtils.left(conversationId, 64));
     }
-    if (!EmailFilterMatch.AGENT_RUNNING.equals(status)) {
+    if (EmailFilterMatch.AGENT_PENDING.equals(status)) {
+      match.setAgentAttempts(match.getAgentAttempts() + 1);
+      match.setLastError(error);
+    } else if (!EmailFilterMatch.AGENT_RUNNING.equals(status)) {
       match.setAgentAttempts(match.getAgentAttempts() + 1);
       match.setAgentOutput(StringUtils.left(output, MAX_AGENT_OUTPUT_LENGTH));
       match.setLastError(error);
     }
+    return named(username, emailFilterStorage.updateMatch(match, username));
+  }
+
+  /**
+   * Puts a match back to {@code PENDING} without counting an attempt: its assistant could
+   * not be reached (the provider's error or timeout, the AI add-on not up), which says
+   * nothing about the mail. Its post-actions stay held; its error is kept for the
+   * Automations panel.
+   *
+   * @param matchId the match
+   * @param username the rule's owner
+   * @param error why it waits
+   * @return the match
+   * @throws ObjectNotFoundException when the match is not this user's
+   */
+  public EmailFilterMatch parkAgentMatch(long matchId, String username, String error) throws ObjectNotFoundException {
+    EmailFilterMatch match = ownMatch(username, matchId);
+    match.setAgentStatus(EmailFilterMatch.AGENT_PENDING);
+    match.setAgentDate(clock.millis());
+    match.setLastError(error);
     return named(username, emailFilterStorage.updateMatch(match, username));
   }
 
@@ -1082,6 +1120,22 @@ public class EmailFilterService {
     return emailFilterStorage.getMatchesByAgentStatus(username,
                                                       EmailFilterMatch.AGENT_PENDING,
                                                       Math.max(1, Math.min(limit, MAX_LOG)));
+  }
+
+  /**
+   * The owner's matches the assistant's handler takes up, oldest first: those waiting,
+   * and those a run left {@code RUNNING} and that no live run can still be writing --
+   * their last write is older than {@code runningBefore}, which the handler sets from
+   * the queue's run ceiling. Without them, a mail whose run died with its node would
+   * wait for ever with its post-actions held.
+   *
+   * @param username the owner
+   * @param limit how many, at most {@value #MAX_LOG}
+   * @param runningBefore the epoch millis before which a running match is abandoned
+   * @return the matches
+   */
+  public List<EmailFilterMatch> listPendingAgentMatches(String username, int limit, long runningBefore) {
+    return emailFilterStorage.getMatchesDueForAgent(username, new Date(runningBefore), Math.max(1, Math.min(limit, MAX_LOG)));
   }
 
   /**

@@ -100,7 +100,8 @@ export function serverItem(rule) {
  * the enterprise glue): extensionRegistry.registerExtension('EmailFilter',
  * 'email-filter-action', {id, type, rank, labelKey, vueComponent}). The form renders
  * each one's vueComponent with v-model on the action object {type, ...} it owns -- for
- * type AGENT {agentNameId, instruction, outputs} -- and a `capabilities` prop.
+ * type AGENT {agentNameId, instruction, outputs} --, a `capabilities` prop and a
+ * `sample-email-id` prop: the id of the mail the rule is made from, or null.
  */
 export const FILTER_ACTION_EXTENSION = { app: 'EmailFilter', type: 'email-filter-action' };
 
@@ -170,6 +171,8 @@ export function ruleFromMail(email) {
       ? { field: 'FROM', operator: 'MATCHES_DOMAIN', value: domain }
       : { field: 'FROM', operator: 'EQUALS', value: address }],
     subjectSuggestion: subject ? { field: 'SUBJECT', operator: 'CONTAINS', value: subject.substring(0, 500) } : null,
+    // The mail the rule is made from: an action extension may try itself on it.
+    sampleEmailId: email?.id || null,
   };
 }
 

@@ -143,6 +143,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :key="extension.id"
       v-model="extensionActions[extension.type]"
       :capabilities="capabilities"
+      :sample-email-id="filter && filter.sampleEmailId || null"
       class="mb-4" />
     <div class="mb-2">
       {{ $t('UserSettings.emailConnector.filters.form.moveTo') }}
@@ -239,8 +240,8 @@ let nextKey = 1;
 export default {
   props: {
     // The filter to edit -- an item of the one list, a server one or an eXo one -- or a
-    // prefilled new one ({name, matchAll, conditions, subjectSuggestion}); null for a
-    // blank new one.
+    // prefilled new one ({name, matchAll, conditions, subjectSuggestion,
+    // sampleEmailId}); null for a blank new one.
     filter: {
       type: Object,
       default: null,
