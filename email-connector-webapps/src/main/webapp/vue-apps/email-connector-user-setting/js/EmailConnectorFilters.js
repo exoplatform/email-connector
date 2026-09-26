@@ -15,6 +15,8 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+import { notifyForwardingUpdated } from './EmailConnectorForwarding.js';
+
 /** The root event the Settings row opens the filters drawer with. */
 export const OPEN_FILTERS_DRAWER_EVENT = 'open-email-filters-drawer';
 
@@ -251,12 +253,14 @@ export function holdsFilters(capabilities) {
 }
 
 /**
- * Notifies the Settings row that the filters changed.
+ * Notifies the Settings row that the filters changed, and the views of the forward.
  *
  * @returns {void}
  */
 export function notifyFiltersUpdated() {
   document.dispatchEvent(new CustomEvent(FILTERS_UPDATED_EVENT));
+  // A filter may forward: the forward's band and row read the server again too.
+  notifyForwardingUpdated();
 }
 
 /**
