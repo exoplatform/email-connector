@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -33,6 +34,7 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
+import org.exoplatform.emailConnector.model.ConnectorForwarding;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.ForwardingDestination;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -49,16 +51,18 @@ import io.meeds.social.util.JsonUtils;
  * forwarding service (before anything is written) and the rules engines (when the Sieve
  * is generated, or a forward sent to the server) ask, so the two checks cannot drift.
  * <p>
- * <b>The switch</b>, {@value #AUTHORING_PROPERTY}{@code [.<connectorId>]}, default
- * false: the per-connector key wins over the deployment-wide one, except that the
- * deployment-wide key set to {@code false} switches authoring off everywhere at once,
- * whatever the per-connector keys say -- the kill switch. Off, eXo sets no new forward
+ * <b>The switch</b>, resolved in one place ({@link #resolve}): the deployment-wide key
+ * {@value #AUTHORING_PROPERTY} set to {@code false} switches authoring off everywhere at
+ * once -- the kill switch; else what the connector administration screen saved for the
+ * connector; else, while it was never saved, {@value #AUTHORING_PROPERTY}{@code
+ * [.<connectorId>]}, the per-connector key winning, default false. Off, eXo sets no new forward
  * and no new forwarding rule; a forward eXo set before stays on the server, shown with
  * its band, and can be removed.
  * <p>
- * <b>The allowed domains</b>, {@value #ALLOWED_DOMAINS_PROPERTY}{@code [.<connectorId>]},
- * a comma- or space-separated list of domains, matched exactly; when empty, the domain
- * of the user's own mailbox address -- mail stays in the organisation.
+ * <b>The allowed domains</b>, matched exactly: the administration screen's list, else
+ * {@value #ALLOWED_DOMAINS_PROPERTY}{@code [.<connectorId>]}, a comma- or space-separated
+ * list; when empty, the domain of the user's own mailbox address -- mail stays in the
+ * organisation.
  * <p>
  * <b>The confirmed destinations</b> count for {@value #CONFIRMATION_TTL_PROPERTY} days
  * (90 by default) for a new forward or a new forwarding filter; a forward already on
@@ -109,6 +113,19 @@ public class ForwardingGuard {
   /** The longest a confirmation may count, in days: a hundred years. */
   static final long            MAX_CONFIRMATION_TTL_DAYS = 36_500;
 
+  /** A domain the administration screen refused. */
+  public static final String   INVALID_DOMAIN           = "emailConnector.forwarding.domain.invalid";
+
+  /** The key prefix of what the administration screen saved, followed by the connector id. */
+  public static final String   CONNECTOR_KEY_PREFIX     = "connector.";
+
+  /** The most allowed domains a connector may list. */
+  static final int             MAX_DOMAINS              = 50;
+
+  /** A plain domain: dot-separated labels, at least two. */
+  private static final Pattern DOMAIN                   = Pattern.compile(
+      "(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?");
+
   /** The most confirmed destinations kept per user; the oldest goes first. */
   static final int             MAX_CONFIRMED            = 10;
 
@@ -122,29 +139,154 @@ public class ForwardingGuard {
   private Clock                   clock = Clock.systemUTC();
 
   /**
-   * Whether eXo may set a forward, or a rule that forwards, on a connector.
+   * Whether eXo may set a forward, or a filter that forwards, on a connector -- the one
+   * resolver every check reads, in this order: the deployment-wide key set to
+   * {@code false} switches it off everywhere, whatever else says; then what the connector
+   * administration screen saved for the connector; then, while the screen was never
+   * saved, the per-connector key, else the deployment-wide one, default false. Read at
+   * each call: a save applies at once.
    *
    * @param connector the connector, possibly null
-   * @return true only when the deployment enabled it for this connector and did not
-   *         switch it off everywhere
+   * @return true when users of the connector may author a forward
    */
-  public static boolean authoringEnabled(EmailConnector connector) {
-    String global = StringUtils.trimToNull(System.getProperty(AUTHORING_PROPERTY));
-    if ("false".equalsIgnoreCase(global) || connector == null || connector.getId() == null) {
-      return false;
-    }
-    String own = StringUtils.trimToNull(System.getProperty(AUTHORING_PROPERTY + "." + connector.getId()));
-    return Boolean.parseBoolean(own == null ? global : own);
+  public boolean authoringEnabled(EmailConnector connector) {
+    ConnectorForwarding resolved = resolve(settingService, connector);
+    return resolved.isAuthoringEnabled() && !resolved.isKillSwitch();
   }
 
   /**
-   * The domains a forward may go to on a connector.
+   * The domains a forward may go to on a connector: what the administration screen
+   * saved, else the properties; when that is empty, the domain of the user's own mailbox.
    *
    * @param connector the connector
    * @param mailboxAddress the user's own mailbox address, whose domain is the default
    * @return the domains, lower-case, never null; empty when nothing is allowed
    */
-  public static List<String> allowedDomains(EmailConnector connector, String mailboxAddress) {
+  public List<String> allowedDomains(EmailConnector connector, String mailboxAddress) {
+    List<String> domains = resolve(settingService, connector).getAllowedDomains();
+    if (!domains.isEmpty()) {
+      return new ArrayList<>(domains);
+    }
+    List<String> own = new ArrayList<>();
+    if (StringUtils.contains(mailboxAddress, '@')) {
+      own.add(ForwardingDestination.domainOf(mailboxAddress.trim().toLowerCase(Locale.ROOT)));
+    }
+    return own;
+  }
+
+  /**
+   * Whether a destination's domain is allowed on a connector.
+   *
+   * @param destination a normalised destination
+   * @param connector the connector
+   * @param mailboxAddress the user's own mailbox address
+   * @return true when its domain is exactly one of the allowed ones
+   */
+  public boolean isAllowedDomain(String destination, EmailConnector connector, String mailboxAddress) {
+    return destination != null && allowedDomains(connector, mailboxAddress).contains(ForwardingDestination.domainOf(destination));
+  }
+
+  /**
+   * How forwarding is set for a connector: the administration screen's saved value, else
+   * the properties. The kill switch is reported beside it and never folded into it, so
+   * the screen shows -- and a save keeps -- what the administrator set, and it applies
+   * again once the kill switch is removed; {@link #authoringEnabled} applies it. The
+   * allowed domains are the configured ones, empty when none (each user's own mailbox
+   * domain then applies).
+   *
+   * @param settingService the settings, where the screen's value is kept
+   * @param connector the connector, possibly null
+   * @return the settings as set; {@code saved} says where they came from, and
+   *         {@code killSwitch} whether the deployment overrides them
+   */
+  public static ConnectorForwarding resolve(SettingService settingService, EmailConnector connector) {
+    String global = StringUtils.trimToNull(System.getProperty(AUTHORING_PROPERTY));
+    boolean killSwitch = "false".equalsIgnoreCase(global);
+    ConnectorForwarding saved = connector == null || connector.getId() == null ? null : saved(settingService, connector.getId());
+    ConnectorForwarding resolved = new ConnectorForwarding();
+    resolved.setKillSwitch(killSwitch);
+    if (saved != null) {
+      resolved.setSaved(true);
+      resolved.setAuthoringEnabled(saved.isAuthoringEnabled());
+      resolved.setAllowedDomains(saved.getAllowedDomains());
+    } else {
+      String own = connector == null || connector.getId() == null ? null
+                                                                  : StringUtils.trimToNull(System.getProperty(AUTHORING_PROPERTY + "."
+                                                                      + connector.getId()));
+      resolved.setAuthoringEnabled(Boolean.parseBoolean(own == null ? global : own));
+      resolved.setAllowedDomains(propertyDomains(connector));
+    }
+    if (connector == null || connector.getId() == null) {
+      resolved.setAuthoringEnabled(false);
+    }
+    return resolved;
+  }
+
+  /**
+   * Saves what the connector administration screen sets for a connector, in the global
+   * settings, which only administrators can write. The caller checked the administrator.
+   *
+   * @param settingService the settings
+   * @param connectorId the connector
+   * @param authoringEnabled whether users may forward
+   * @param allowedDomains the domains, each a plain domain
+   * @throws IllegalArgumentException {@value #INVALID_DOMAIN} for anything but a plain
+   *           domain
+   */
+  public static void save(SettingService settingService, long connectorId, boolean authoringEnabled, List<String> allowedDomains) {
+    Set<String> domains = new LinkedHashSet<>();
+    for (String item : allowedDomains == null ? List.<String> of() : allowedDomains) {
+      String domain = StringUtils.removeStart(StringUtils.trimToEmpty(item).toLowerCase(Locale.ROOT), "@");
+      if (!DOMAIN.matcher(domain).matches() || domain.length() > 253) {
+        throw new IllegalArgumentException(INVALID_DOMAIN);
+      }
+      domains.add(domain);
+    }
+    if (domains.size() > MAX_DOMAINS) {
+      throw new IllegalArgumentException(INVALID_DOMAIN);
+    }
+    Map<String, Object> value = new LinkedHashMap<>();
+    value.put("enabled", authoringEnabled);
+    value.put("allowedDomains", new ArrayList<>(domains));
+    settingService.set(Context.GLOBAL, FORWARDING_SCOPE, CONNECTOR_KEY_PREFIX + connectorId, SettingValue.create(JsonUtils.toJsonString(value)));
+  }
+
+  /**
+   * What the administration screen saved for a connector.
+   *
+   * @param settingService the settings
+   * @param connectorId the connector
+   * @return the saved settings, or null when never saved or unreadable
+   */
+  @SuppressWarnings("unchecked")
+  private static ConnectorForwarding saved(SettingService settingService, long connectorId) {
+    SettingValue<?> value = settingService.get(Context.GLOBAL, FORWARDING_SCOPE, CONNECTOR_KEY_PREFIX + connectorId);
+    if (value == null || value.getValue() == null) {
+      return null;
+    }
+    try {
+      Map<String, Object> stored = JsonUtils.fromJsonString(value.getValue().toString(), Map.class);
+      if (stored == null || !(stored.get("enabled") instanceof Boolean enabled)) {
+        return null;
+      }
+      List<String> domains = new ArrayList<>();
+      if (stored.get("allowedDomains") instanceof List<?> list) {
+        list.forEach(item -> domains.add(String.valueOf(item).toLowerCase(Locale.ROOT)));
+      }
+      return new ConnectorForwarding(enabled, domains, true, false);
+    } catch (RuntimeException e) {
+      LOG.warn("The forwarding settings saved for connector {} could not be read: the properties apply", connectorId, e);
+      return null;
+    }
+  }
+
+  /**
+   * The allowed domains the properties configure for a connector.
+   *
+   * @param connector the connector, possibly null
+   * @return the domains, lower-case; empty when none is configured
+   */
+  private static List<String> propertyDomains(EmailConnector connector) {
     String configured = null;
     if (connector != null && connector.getId() != null) {
       configured = StringUtils.trimToNull(System.getProperty(ALLOWED_DOMAINS_PROPERTY + "." + connector.getId()));
@@ -160,23 +302,10 @@ public class ForwardingGuard {
           domains.add(domain);
         }
       }
-    } else if (StringUtils.contains(mailboxAddress, '@')) {
-      domains.add(ForwardingDestination.domainOf(mailboxAddress.trim().toLowerCase(Locale.ROOT)));
     }
     return new ArrayList<>(domains);
   }
 
-  /**
-   * Whether a destination's domain is allowed on a connector.
-   *
-   * @param destination a normalised destination
-   * @param connector the connector
-   * @param mailboxAddress the user's own mailbox address
-   * @return true when its domain is exactly one of the allowed ones
-   */
-  public static boolean isAllowedDomain(String destination, EmailConnector connector, String mailboxAddress) {
-    return destination != null && allowedDomains(connector, mailboxAddress).contains(ForwardingDestination.domainOf(destination));
-  }
 
   /**
    * The destinations a user confirmed, by entering the code sent to each, less than
