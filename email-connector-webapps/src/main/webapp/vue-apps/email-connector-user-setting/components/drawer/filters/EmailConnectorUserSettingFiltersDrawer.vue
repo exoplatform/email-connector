@@ -57,12 +57,21 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               dense
               text>
               <div>{{ $t('UserSettings.emailConnector.filters.exo.apply.message') }}</div>
+              <!-- The info alert makes its content dark-themed (a white label) and the
+                   platform paints every input slot of a drawer white: the checkbox is
+                   forced light, on the alert's own background. -->
               <v-checkbox
                 v-if="createdHasAgent"
                 v-model="applyWithAgent"
-                :label="$t('UserSettings.emailConnector.filters.exo.apply.withAgent')"
+                background-color="transparent"
                 class="mt-2"
-                hide-details />
+                light
+                dense
+                hide-details>
+                <template #label>
+                  <span class="text-body-2 text-color">{{ $t('UserSettings.emailConnector.filters.exo.apply.withAgent') }}</span>
+                </template>
+              </v-checkbox>
               <div class="d-flex justify-end mt-2">
                 <v-btn
                   class="me-2"
