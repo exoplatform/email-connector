@@ -186,10 +186,12 @@ public class EmailConnectorUtils {
 
   // A REQUEST, as THREAD_AI_SUMMARY_REQUESTED is (EXO-90654): the owner's mail filters
   // queued matches for an assistant. Source = the owner's username, data = the ids of
-  // the EMAIL_FILTER_MATCH rows now PENDING. A deployment with no assistant glue leaves
-  // them pending, which the mail's Automations panel says, and the rule's other actions
-  // wait with them: they run when the glue reports the assistant done, through
-  // EmailFilterService.applyPostActions.
+  // the EMAIL_FILTER_MATCH rows now PENDING. The rule's other actions wait with them:
+  // they run when the glue reports the assistant done, through
+  // EmailFilterService.applyPostActions. Only broadcast when the glue declared itself
+  // as an EmailFilterAgentHandler bean; a deployment without one never queues a match
+  // (it is recorded SKIPPED_DISABLED and its actions run at once), and the matches a
+  // removed glue left waiting are released by EmailFilterAgentSweepJob after boot.
   public static final String   FILTER_AGENT_REQUESTED      = "exo.email.filterAgentRequested";
 
   public static final String   EMAIL_FEATURE           = "email";

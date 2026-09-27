@@ -35,6 +35,7 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -61,12 +62,14 @@ import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.notification.plugin.EmailFilterNotificationPlugin;
+import org.exoplatform.emailConnector.plugin.EmailFilterAgentHandler;
 import org.exoplatform.emailConnector.service.filters.EmailFilterMail;
 import org.exoplatform.emailConnector.service.filters.FilterConditionEvaluator;
 import org.exoplatform.emailConnector.service.filters.FilterConditionEvaluator.Result;
 import org.exoplatform.emailConnector.service.filters.FilterRunContext;
 import org.exoplatform.emailConnector.service.rules.sieve.SieveRuleEngine;
 import org.exoplatform.emailConnector.storage.EmailFilterStorage;
+import org.exoplatform.emailConnector.storage.EmailFilterStorage.OwnedMatch;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
 import org.exoplatform.services.listener.ListenerService;
@@ -95,7 +98,7 @@ import org.exoplatform.services.log.Log;
  * since anyone who may flag the mailbox's mail -- a delegate with {@code w} -- may set the
  * keyword too. A match is recorded once per rule and mail (the unique key); its
  * post-actions run in the same pass, batched per rule, or wait for the assistant when the
- * rule has one. A rule that files the mail stops the rules after it, and the mail is left
+ * rule has one and the deployment has something to run it ({@link EmailFilterAgentHandler}). A rule that files the mail stops the rules after it, and the mail is left
  * out of the new-mail announcement.
  * <p>
  * Every verb acts as the owner, on their own mailbox, through the mailbox's own
@@ -217,6 +220,13 @@ public class EmailFilterService {
                                                                            EmailFilterMatch.AGENT_DONE,
                                                                            EmailFilterMatch.AGENT_FAILED);
 
+  /** The assistant statuses of a match still waiting for an answer. */
+  private static final List<String>   WAITING_STATUSES           = List.of(EmailFilterMatch.AGENT_PENDING,
+                                                                           EmailFilterMatch.AGENT_RUNNING);
+
+  /** How many waiting matches the startup sweep reads at once. */
+  private static final int            SWEEP_BATCH                = 200;
+
   private static final Pattern        AGENT_NAME                 = Pattern.compile("[A-Za-z0-9._-]{1,200}");
 
   @Autowired
@@ -236,6 +246,12 @@ public class EmailFilterService {
 
   @Autowired
   private ListenerService             listenerService;
+
+  // Resolved at each call rather than injected as a bean: the handler is optional (the
+  // enterprise glue, hosted by this context under the ai-agent profile), and a lookup
+  // at call time does not depend on the order the beans are built in.
+  @Autowired
+  private ObjectProvider<EmailFilterAgentHandler> agentHandlers;
 
   private Clock                       clock                      = Clock.systemUTC();
 
@@ -1007,8 +1023,9 @@ public class EmailFilterService {
   /**
    * Runs the post-actions a match kept for after its assistant: called by the assistant's
    * handler once the run is over, whatever its outcome, so a rule's deterministic half is
-   * never lost to a failed or capped assistant. Idempotent: a match whose post-actions ran
-   * is answered as it is.
+   * never lost to a failed or capped assistant -- and by {@link #retry} and
+   * {@link #releaseUnansweredAgentMatches} when nothing runs the assistant any more.
+   * Idempotent: a match whose post-actions ran is answered as it is.
    *
    * @param matchId the match
    * @param username the rule's owner, the handler's acting user
@@ -1178,6 +1195,10 @@ public class EmailFilterService {
   /**
    * Queues the assistant again on a match whose run is over: "Run again", the one way an
    * assistant runs twice on one mail. Its post-actions, when they ran, do not run again.
+   * <p>
+   * On a deployment where nothing runs the assistant ({@link #isAgentHandled()} false), the
+   * match is not queued -- it would wait for ever -- but recorded skipped again, and its
+   * post-actions, if they still wait, run now.
    *
    * @param username the caller, from the request's session
    * @param delegationId the share the request was made from; any value is refused
@@ -1197,12 +1218,98 @@ public class EmailFilterService {
     if (StringUtils.isBlank(match.getAgentNameId()) || !EmailFilterMatch.AGENT_TERMINAL.contains(match.getAgentStatus())) {
       throw new IllegalArgumentException(INVALID_AGENT);
     }
+    if (!isAgentHandled()) {
+      match.setAgentStatus(EmailFilterMatch.AGENT_SKIPPED_DISABLED);
+      match.setLastError(null);
+      EmailFilterMatch skipped = emailFilterStorage.updateMatch(match, username);
+      return EmailFilterMatch.POST_PENDING_AGENT.equals(skipped.getPostActionsState()) ? applyPostActions(skipped.getId(), username)
+                                                                                        : named(username, skipped);
+    }
     match.setAgentStatus(EmailFilterMatch.AGENT_PENDING);
     match.setAgentAttempts(0);
     match.setLastError(null);
     EmailFilterMatch queued = emailFilterStorage.updateMatch(match, username);
     requestAgent(username, List.of(queued.getId()));
     return named(username, queued);
+  }
+
+  /**
+   * Whether something on this deployment runs the filters' assistant: a bean of the
+   * email-connector Spring context declared as an {@link EmailFilterAgentHandler}. Read at
+   * each call, so the answer never depends on the order the beans were built in.
+   *
+   * @return true when at least one handler is present
+   */
+  public boolean isAgentHandled() {
+    return agentHandlers != null && agentHandlers.stream().findAny().isPresent();
+  }
+
+  /**
+   * Releases, once after boot, the matches left waiting for an assistant that nothing on
+   * this deployment runs -- every user's matches {@code PENDING} or {@code RUNNING}, queued
+   * before the AI add-on was removed or its profile switched off: each is recorded
+   * {@code SKIPPED_DISABLED}, as a match made now would be, and the post-actions it held
+   * run through {@link #applyPostActions}. A no-op when a handler is present.
+   * <p>
+   * Every node of a cluster runs it. A match is claimed first, by moving its status from
+   * the one read to {@code SKIPPED_DISABLED} in one conditional UPDATE: one node wins the
+   * row, the others see 0 rows and leave it, so no post-action runs twice. A match whose
+   * post-actions fail is put back in its status, for the next boot's sweep to try again,
+   * and never stops the sweep: each one is guarded on its own, {@code LinkageError} too.
+   * The read pages by id, so a match left behind is not read twice in one sweep.
+   *
+   * @return how many matches this node released
+   */
+  public int releaseUnansweredAgentMatches() {
+    if (isAgentHandled()) {
+      return 0;
+    }
+    int released = 0;
+    long afterId = 0;
+    List<OwnedMatch> page;
+    do {
+      page = emailFilterStorage.getMatchesByAgentStatuses(WAITING_STATUSES, afterId, SWEEP_BATCH);
+      for (OwnedMatch owned : page) {
+        afterId = Math.max(afterId, owned.match().getId());
+        if (release(owned)) {
+          released++;
+        }
+      }
+    } while (page.size() == SWEEP_BATCH);
+    return released;
+  }
+
+  /**
+   * Releases one match left waiting for an assistant: claims it, then runs the
+   * post-actions it held. Never throws.
+   *
+   * @param owned the match and its owner
+   * @return true when this call released it
+   */
+  private boolean release(OwnedMatch owned) {
+    long matchId = owned.match().getId();
+    String waiting = owned.match().getAgentStatus();
+    try {
+      if (!emailFilterStorage.updateAgentStatusIf(matchId, waiting, EmailFilterMatch.AGENT_SKIPPED_DISABLED)) {
+        // Another node, or the owner's "Run again", got there first.
+        return false;
+      }
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("Mail filter match {} of user {} could not be released from the assistant", matchId, owned.userId(), e);
+      return false;
+    }
+    try {
+      applyPostActions(matchId, owned.userId());
+      return true;
+    } catch (ObjectNotFoundException | IllegalAccessException | RuntimeException | LinkageError e) {
+      LOG.warn("The held actions of mail filter match {} of user {} failed; it waits for the next sweep", matchId, owned.userId(), e);
+      try {
+        emailFilterStorage.updateAgentStatusIf(matchId, EmailFilterMatch.AGENT_SKIPPED_DISABLED, waiting);
+      } catch (RuntimeException | LinkageError revertFailure) {
+        LOG.debug("Mail filter match {} could not be put back in status {}", matchId, waiting, revertFailure);
+      }
+      return false;
+    }
   }
 
   /**
@@ -2129,8 +2236,9 @@ public class EmailFilterService {
   }
 
   /**
-   * Asks for the assistant on the given matches: a request, answered by whatever glue a
-   * deployment has, and by nothing on one without; the matches then wait.
+   * Asks for the assistant on the given matches: a request, answered by the glue that
+   * declared itself as an {@link EmailFilterAgentHandler}. Only called when one did: a
+   * deployment without one never queues a match (see {@link #agentStatus(Run)}).
    *
    * @param username the owner
    * @param matchIds the matches queued
@@ -2159,13 +2267,20 @@ public class EmailFilterService {
   }
 
   /**
-   * Whether the assistant may be queued on one more match of the owner's.
+   * Whether the assistant may be queued on one more match of the owner's: switched on,
+   * run by something on this deployment, and under the owner's caps.
    *
    * @param run the pass
    * @return the status of the new match: pending, or skipped with the reason
    */
   private String agentStatus(Run run) {
     if (!Boolean.parseBoolean(System.getProperty(AGENT_ENABLED_PROPERTY, "true").trim())) {
+      return EmailFilterMatch.AGENT_SKIPPED_DISABLED;
+    }
+    if (!isAgentHandled()) {
+      // Nothing would answer the request: the AI add-on is not installed, or its profile
+      // is off. Skipped as when the assistant is switched off, so the rule's other
+      // actions run in this pass instead of waiting for ever.
       return EmailFilterMatch.AGENT_SKIPPED_DISABLED;
     }
     if (run.pendingBefore < 0) {
