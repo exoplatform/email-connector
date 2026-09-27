@@ -185,6 +185,15 @@ document.addEventListener('open-email-box-search', event => {
 });
 
 /*
+ * Opens the forwarding drawer, from anywhere in the platform: the web notification of a
+ * forwarding change uses it (EXO-90656) -- the drawer the mailbox band's Manage opens,
+ * mounted in this app, without opening the mailbox behind it.
+ */
+document.addEventListener('open-email-forwarding', () => {
+  window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, {forwarding: true}));
+});
+
+/*
  * Opens the mailbox on one of its built-in folders or views, from anywhere in the
  * platform: the web notification of a scheduled mail uses it to open the Scheduled
  * view (EXO-90434), or Sent for a mail that went out without its owner copy (EXO-90595).
@@ -238,9 +247,13 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
     // mailbox=<delegationId> opens a mailbox somebody shared with the user -- the
     // mailbox= deep link the notifications carry (delegation plan 7.4): the switcher is
     // on it, and its band shows, before its list has loaded.
-    const opening = openingFromUrl(urlParams);
+    let opening = openingFromUrl(urlParams);
     const mailbox = urlParams.get('mailbox');
-    if (mailbox) {
+    if (urlParams.get('forwarding') === 'true') {
+      // forwarding=true opens the forwarding drawer: the link a forwarding
+      // notification carries by mail and push (EXO-90656).
+      opening = {forwarding: true};
+    } else if (mailbox) {
       opening.mailbox = mailbox;
     } else if (!opening.mailRemoteId && /^(INBOX|SENT|ARCHIVE|ALL_MAIL|TRASH|JUNK|CUSTOM:\d{1,18})$/.test(urlParams.get('folder') || '')) {
       // folder=<key> alone opens that folder: the link a mail filter's notification

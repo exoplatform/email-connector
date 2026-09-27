@@ -18,8 +18,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <!-- EXO-90656 -- where the user's mail is forwarded changed, or a forward eXo did not
        set was found on the mail server: said from the notification's CONTENT, the
        sentence the server built in the receiver's language (the destination and the
-       rule's or script's name escaped); a click opens the user's mail settings, where the
-       forward is shown and managed. -->
+       rule's or script's name escaped); a click opens the forwarding drawer, where the
+       forward is shown and managed -- the one the mailbox band's Manage opens. -->
   <div
     role="button"
     tabindex="0"
@@ -97,12 +97,13 @@ export default {
       return typeof this.$te === 'function' && this.$te(key) ? this.$t(key) : null;
     },
     /**
-     * Opens the user's settings, where the forward is shown and managed.
+     * Opens the forwarding drawer, where the forward is shown and managed.
      *
      * @returns {void}
      */
     openSettings() {
-      window.location.href = this.settingsUrl;
+      window.require(['SHARED/emailConnectorQuickActionExtension'], () =>
+        document.dispatchEvent(new CustomEvent('open-email-forwarding')));
     },
   },
 };
