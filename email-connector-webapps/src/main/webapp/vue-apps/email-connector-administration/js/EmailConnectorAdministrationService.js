@@ -657,3 +657,50 @@ export function clearManagedMode() {
     }
   });
 }
+
+/**
+ * Whether users of a connector may forward their mail from eXo, and to which domains
+ * (EXO-90656).
+ *
+ * @param {number} emailConnectorId - the connector
+ * @returns {Promise<object>} {authoringEnabled, allowedDomains, saved, killSwitch}
+ */
+export function getConnectorForwarding(emailConnectorId) {
+  return fetch(`/email-connector/rest/connectors/${emailConnectorId}/forwarding`, {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when retrieving the forwarding settings');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * Saves whether users of a connector may forward their mail from eXo, and to which
+ * domains; it applies at once.
+ *
+ * @param {number} emailConnectorId - the connector
+ * @param {object} forwarding - {authoringEnabled, allowedDomains}
+ * @returns {Promise<object>} the settings that apply after the save
+ */
+export function saveConnectorForwarding(emailConnectorId, forwarding) {
+  return fetch(`/email-connector/rest/connectors/${emailConnectorId}/forwarding`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({
+      authoringEnabled: !!forwarding?.authoringEnabled,
+      allowedDomains: forwarding?.allowedDomains || [],
+    }),
+  }).then((resp) => {
+    if (!resp?.ok) {
+      return refusal(resp, 'Error when saving the forwarding settings');
+    }
+    return resp.json();
+  });
+}
