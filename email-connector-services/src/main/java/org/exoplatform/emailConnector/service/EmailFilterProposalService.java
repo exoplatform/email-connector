@@ -96,6 +96,12 @@ public class EmailFilterProposalService {
   /** No handler runs tools on this deployment. */
   public static final String  UNAVAILABLE            = "emailConnector.filters.proposal.unavailable";
 
+  /** An approved call whose run never came back: its node died, or it never ended. */
+  public static final String  INTERRUPTED            = "emailConnector.filters.proposal.interrupted";
+
+  /** How long an approved call may run before it is taken for abandoned, in minutes. */
+  static final long           RUNNING_CEILING_MINUTES = 15;
+
   /** A call whose tool failed without a message of its own. */
   public static final String  TOOL_FAILED            = "emailConnector.filters.proposal.toolFailed";
 
@@ -216,12 +222,9 @@ public class EmailFilterProposalService {
     int written = 0;
     for (Map.Entry<Long, String> entry : rationales.entrySet()) {
       String why = StringUtils.trimToNull(entry.getValue());
-      Optional<EmailFilterProposal> proposal = entry.getKey() == null ? Optional.empty()
-                                                                      : emailFilterProposalStorage.get(entry.getKey(), username);
-      if (why != null && proposal.isPresent() && Objects.equals(proposal.get().getMatchId(), matchId)
-          && EmailFilterProposal.PROPOSED.equals(proposal.get().getStatus())) {
-        proposal.get().setRationale(why);
-        emailFilterProposalStorage.update(proposal.get(), username);
+      // One conditional UPDATE of the reason alone: an approval that moved the row in
+      // between is never undone by this write.
+      if (why != null && entry.getKey() != null && emailFilterProposalStorage.setRationale(entry.getKey(), username, matchId, why)) {
         written++;
       }
     }
@@ -241,8 +244,9 @@ public class EmailFilterProposalService {
   }
 
   /**
-   * The proposals of some of the owner's matches, the expired ones marked so first: the
-   * cards of a mail's Automations panel.
+   * The proposals of some of the owner's matches, the expired ones marked so first, and
+   * an approved call still running past {@value #RUNNING_CEILING_MINUTES} minutes failed
+   * {@value #INTERRUPTED}: the cards of a mail's Automations panel.
    *
    * @param username the owner
    * @param matchIds the matches
@@ -252,7 +256,11 @@ public class EmailFilterProposalService {
     if (matchIds == null || matchIds.isEmpty()) {
       return List.of();
     }
-    emailFilterProposalStorage.expireDue(username, new Date(clock.millis()));
+    Date now = new Date(clock.millis());
+    emailFilterProposalStorage.expireDue(username, now);
+    emailFilterProposalStorage.failStaleRunning(username,
+                                                INTERRUPTED,
+                                                new Date(now.getTime() - ChronoUnit.MINUTES.getDuration().toMillis() * RUNNING_CEILING_MINUTES));
     return emailFilterProposalStorage.getByMatches(username, matchIds);
   }
 
@@ -297,16 +305,26 @@ public class EmailFilterProposalService {
       emailFilterProposalStorage.finish(id, username, EmailFilterProposal.FAILED, null, UNAVAILABLE);
       return reread(username, id);
     }
+    boolean finished = false;
     try {
       String result = handler.executeProposal(username, proposal);
-      emailFilterProposalStorage.finish(id, username, EmailFilterProposal.DONE, result, null);
+      finished = emailFilterProposalStorage.finish(id, username, EmailFilterProposal.DONE, result, null);
     } catch (Exception e) { // NOSONAR whatever the tool did, the row says how it ended
       LOG.info("The tool '{}' proposed by a mail filter's assistant failed for user {}: {}",
                proposal.getToolName(),
                username,
                e.getMessage());
       LOG.debug("The failure of the proposal {}", id, e);
-      emailFilterProposalStorage.finish(id, username, EmailFilterProposal.FAILED, null, StringUtils.defaultIfBlank(e.getMessage(), TOOL_FAILED));
+      finished = emailFilterProposalStorage.finish(id,
+                                                   username,
+                                                   EmailFilterProposal.FAILED,
+                                                   null,
+                                                   StringUtils.defaultIfBlank(e.getMessage(), TOOL_FAILED));
+    } finally {
+      if (!finished) {
+        // An Error, or a write that failed: the row never stays RUNNING.
+        emailFilterProposalStorage.finish(id, username, EmailFilterProposal.FAILED, null, INTERRUPTED);
+      }
     }
     return reread(username, id);
   }
