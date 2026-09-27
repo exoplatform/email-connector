@@ -1759,7 +1759,8 @@ public class MasterChangelogTest {
   // (the custom-folder registry, 1.0.0-53 to -56; the sync-state table, 1.0.0-58 and
   // -59; the notification boundary, 1.0.0-61; the scheduled-send table, 1.0.0-62 to
   // -65; the read-receipt columns, 1.0.0-66; the read-receipt answer store, 1.0.0-67
-  // to -69; the mail filters, 1.0.0-70 to -75; mailbox delegation, 1.0.0-76 to -79). They are the ones a second evaluation computes ahead of the update in
+  // to -69; the mail filters, 1.0.0-70 to -75; mailbox delegation, 1.0.0-76 to -79; the
+  // mail filters' tool-call proposals, 1.0.0-94 to -97). They are the ones a second evaluation computes ahead of the update in
   // the pin, and nothing on this list may ever drift.
   private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-53",
                                                               "1.0.0-54",
