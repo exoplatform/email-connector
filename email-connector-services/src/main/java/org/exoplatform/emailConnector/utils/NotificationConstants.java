@@ -38,6 +38,12 @@ public class NotificationConstants {
   /** How many mails the filter matched in one pass. */
   public static final String FILTER_COUNT                   = "FILTER_COUNT";
 
+  /** The UID in the inbox of the mail a filter notification opens, when it is still there. */
+  public static final String MAIL_REMOTE_ID                 = "MAIL_REMOTE_ID";
+
+  /** The built-in folder a filter filed the notified mail into, when it left the inbox. */
+  public static final String MAIL_FOLDER                    = "MAIL_FOLDER";
+
   /** The scheduled mail's subject, as the notification carries it. */
   public static final String SUBJECT                        = "SUBJECT";
 
