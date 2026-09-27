@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.notification.plugin;
 
+import java.util.List;
 import java.util.Locale;
 
 import org.apache.commons.lang3.StringUtils;
@@ -40,7 +41,9 @@ import org.exoplatform.services.resources.ResourceBundleService;
  * <p>
  * The payload is the filter's name, the count and the line, never the mail's content;
  * the sentence is built in the receiver's language here and read as it is by the web
- * and the push renderings.
+ * and the push renderings. It also names the one mail a click opens -- the most recent
+ * of the pass -- by its inbox UID while it is still there, or the built-in folder the
+ * filter filed it into; the link carries the same, as the deep link the mailbox reads.
  */
 public class EmailFilterNotificationPlugin extends BaseNotificationPlugin {
 
@@ -56,11 +59,20 @@ public class EmailFilterNotificationPlugin extends BaseNotificationPlugin {
   /** The assistant's one line about the mail, or blank. */
   public static final ArgumentLiteral<String> LINE        = new ArgumentLiteral<>(String.class, "line");
 
+  /** The inbox UID of the mail a click opens, or blank when it left the inbox. */
+  public static final ArgumentLiteral<String> MAIL_REMOTE_ID = new ArgumentLiteral<>(String.class, "mailRemoteId");
+
+  /** The built-in folder the filter filed that mail into, or blank. */
+  public static final ArgumentLiteral<String> MAIL_FOLDER = new ArgumentLiteral<>(String.class, "mailFolder");
+
   private static final String                 TITLE_KEY   = "emailFilter.notification.title";
 
   private static final String                 ONE_KEY     = "emailFilter.notification.content.one";
 
   private static final String                 MANY_KEY    = "emailFilter.notification.content.many";
+
+  /** The folders the mailbox's deep link opens on, a filter may file into. */
+  private static final List<String>           OPENABLE_FOLDERS = List.of("JUNK", "TRASH");
 
   /**
    * @param initParams the kernel's plugin parameters
@@ -92,7 +104,8 @@ public class EmailFilterNotificationPlugin extends BaseNotificationPlugin {
 
   /**
    * Builds the notification in the receiver's language: a title, a sentence naming the
-   * filter and the count, or the assistant's line, and the link to the mailbox.
+   * filter and the count, or the assistant's line, and the link that opens the mail it
+   * names -- or the folder it was filed into, or the mailbox when it names neither.
    *
    * @param ctx the notification context
    * @return the notification
@@ -112,6 +125,8 @@ public class EmailFilterNotificationPlugin extends BaseNotificationPlugin {
                                  .replace("{0}", HtmlUtils.htmlEscape(filterName))
                                  .replace("{1}", String.valueOf(count));
     String content = StringUtils.isBlank(line) ? sentence : sentence + " " + HtmlUtils.htmlEscape(line);
+    String mailRemoteId = digits(ctx.value(MAIL_REMOTE_ID));
+    String mailFolder = mailRemoteId == null ? builtInFolder(ctx.value(MAIL_FOLDER)) : null;
     return NotificationInfo.instance()
                            .setFrom("")
                            .to(receiver)
@@ -119,9 +134,51 @@ public class EmailFilterNotificationPlugin extends BaseNotificationPlugin {
                            .with(NotificationConstants.CONTENT, content)
                            .with(NotificationConstants.FILTER_NAME, filterName)
                            .with(NotificationConstants.FILTER_COUNT, String.valueOf(count))
-                           .with(NotificationConstants.LINK, EmailConnectorUtils.getEmailsLink(receiver))
+                           .with(NotificationConstants.MAIL_REMOTE_ID, StringUtils.defaultString(mailRemoteId))
+                           .with(NotificationConstants.MAIL_FOLDER, StringUtils.defaultString(mailFolder))
+                           .with(NotificationConstants.LINK, link(receiver, mailRemoteId, mailFolder))
                            .key(getKey())
                            .end();
+  }
+
+  /**
+   * The link a click follows: the mailbox's deep link, opening the mail by its inbox UID,
+   * or the folder the mail was filed into, or the mailbox alone.
+   *
+   * @param receiver the owner
+   * @param mailRemoteId the mail's inbox UID, or null
+   * @param mailFolder the built-in folder, or null
+   * @return the link
+   */
+  private static String link(String receiver, String mailRemoteId, String mailFolder) {
+    String link = EmailConnectorUtils.getEmailsLink(receiver);
+    if (mailRemoteId != null) {
+      return link + "&mailRemoteId=" + mailRemoteId;
+    }
+    return mailFolder == null ? link : link + "&folder=" + mailFolder;
+  }
+
+  /**
+   * A UID as the link may carry it: digits only.
+   *
+   * @param value the value
+   * @return the digits, or null when the value is not a UID
+   */
+  private static String digits(String value) {
+    String trimmed = StringUtils.trimToNull(value);
+    return trimmed != null && StringUtils.isNumeric(trimmed) ? trimmed : null;
+  }
+
+  /**
+   * A folder as the link may carry it: one of the built-in folders the mailbox opens on,
+   * never a folder key of the user's own, which the deep link does not open.
+   *
+   * @param value the value
+   * @return the folder, or null
+   */
+  private static String builtInFolder(String value) {
+    String folder = StringUtils.trimToNull(value);
+    return folder != null && OPENABLE_FOLDERS.contains(folder) ? folder : null;
   }
 
   /**
