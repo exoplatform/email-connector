@@ -39,9 +39,11 @@ import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.event.EmailConnectorProviderChangedEvent;
 import org.exoplatform.emailConnector.event.UserEmailSettingCleanupEvent;
+import org.exoplatform.emailConnector.model.ConnectorForwarding;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
+import org.exoplatform.emailConnector.service.rules.ForwardingGuard;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsContext;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
@@ -798,6 +800,76 @@ public class EmailConnectorService {
     String previousProvider = previousEmailConnector.getAuthProviderName();
     String newProvider = StringUtils.defaultIfBlank(emailConnector.getAuthProviderName(), previousProvider);
     return !StringUtils.equals(StringUtils.defaultIfBlank(previousProvider, null), StringUtils.defaultIfBlank(newProvider, null));
+  }
+
+  /**
+   * Whether users of a connector may forward their mail from eXo, and to which domains,
+   * as the administration screen shows it: the value that applies, whether the screen
+   * was ever saved (until then the deployment's properties apply), and whether the
+   * deployment's kill switch overrides it.
+   *
+   * @param emailConnectorId the connector
+   * @param username the user asking, checked against the administration ACL
+   * @return the settings that apply
+   * @throws IllegalAccessException if the user may not administer email connectors
+   * @throws IllegalArgumentException when no such connector exists
+   */
+  public ConnectorForwarding getForwarding(Long emailConnectorId, String username) throws IllegalAccessException {
+    EmailConnector connector = administeredConnector(emailConnectorId, username);
+    return ForwardingGuard.resolve(settingService, connector);
+  }
+
+  /**
+   * Saves whether users of a connector may forward their mail from eXo, and to which
+   * domains, in the global settings only administrators can write. It applies at once;
+   * the deployment's kill switch still wins. Switching it off keeps the forwards already
+   * on: users can still remove them, and no new one is accepted.
+   *
+   * @param emailConnectorId the connector
+   * @param forwarding the switch and the domains, each a plain domain
+   * @param username the user saving, checked against the administration ACL
+   * @return the settings that apply after the save
+   * @throws IllegalAccessException if the user may not administer email connectors
+   * @throws IllegalArgumentException when no such connector exists, or a domain is not a
+   *           plain domain ({@value ForwardingGuard#INVALID_DOMAIN})
+   */
+  public ConnectorForwarding saveForwarding(Long emailConnectorId,
+                                            ConnectorForwarding forwarding,
+                                            String username) throws IllegalAccessException {
+    EmailConnector connector = administeredConnector(emailConnectorId, username);
+    if (forwarding == null) {
+      throw new IllegalArgumentException(ForwardingGuard.INVALID_DOMAIN);
+    }
+    ForwardingGuard.save(settingService, connector.getId(), forwarding.isAuthoringEnabled(), forwarding.getAllowedDomains());
+    LOG.info("Forwarding of connector {} set by {}: authoring {}, allowed domains {}",
+             connector.getId(),
+             username,
+             forwarding.isAuthoringEnabled(),
+             forwarding.getAllowedDomains());
+    return ForwardingGuard.resolve(settingService, connector);
+  }
+
+  /**
+   * A connector an administrator acts on.
+   *
+   * @param emailConnectorId the connector
+   * @param username the user, checked against the administration ACL
+   * @return the connector
+   * @throws IllegalAccessException if the user may not administer email connectors
+   * @throws IllegalArgumentException when the id is missing or names no connector
+   */
+  private EmailConnector administeredConnector(Long emailConnectorId, String username) throws IllegalAccessException {
+    if (emailConnectorId == null) {
+      throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
+    }
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE, username, emailConnectorId));
+    }
+    EmailConnector connector = emailConnectorStorage.getEmailConnector(emailConnectorId);
+    if (connector == null) {
+      throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
+    }
+    return connector;
   }
 
   /**
