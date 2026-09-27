@@ -29,7 +29,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        its badges as the version history's small label chips, then its switch and its
        icon buttons; the arrows that cannot move it are kept in place, invisible. -->
   <div>
-    <div class="text-subtitle mb-2">
+    <div v-if="serverFilters" class="text-subtitle mb-2">
       {{ $t('UserSettings.emailConnector.filters.order') }}
     </div>
     <v-alert
@@ -172,16 +172,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-list>
       </template>
     </v-list>
-    <div v-else-if="filters" class="text-sub-title mb-2">
+    <div v-else-if="filters" class="text-subtitle mb-2">
       {{ $t('UserSettings.emailConnector.filters.empty') }}
     </div>
-    <v-btn
-      :disabled="saving || !filters"
-      class="btn mt-2"
-      @click="$emit('edit', null)">
-      <v-icon size="14" class="me-2">fas fa-plus</v-icon>
-      {{ $t('UserSettings.emailConnector.filters.new') }}
-    </v-btn>
     <exo-confirm-dialog
       ref="deleteDialog"
       :title="$t('UserSettings.emailConnector.filters.delete.title')"
@@ -210,6 +203,12 @@ export default {
     folders: {
       type: Array,
       default: () => [],
+    },
+    // Whether a filter may run on the mail server: the line on the order the server's and
+    // eXo's filters apply in is shown only then.
+    serverFilters: {
+      type: Boolean,
+      default: false,
     },
   },
   data: () => ({

@@ -33,6 +33,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <template #title>
         <span>{{ title }}</span>
       </template>
+      <!-- A new filter is added from the header, as the platform's list drawers do
+           (gamification ProgramsOverviewListDrawer, this add-on's folders drawer). -->
+      <template v-if="!editing" #titleIcons>
+        <v-btn
+          :disabled="saving || loading"
+          :title="$t('UserSettings.emailConnector.filters.new')"
+          :aria-label="$t('UserSettings.emailConnector.filters.new')"
+          icon
+          @click="edit(null)">
+          <v-icon size="18">fas fa-plus</v-icon>
+        </v-btn>
+      </template>
       <template #content>
         <div class="pa-4">
           <template v-if="!editing">
@@ -78,8 +90,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               role="alert">
               {{ groupError }}
             </div>
-            <div v-else-if="!supported && !exoDisabled" class="text-subtitle mb-4">
-              {{ $t('UserSettings.emailConnector.filters.exoOnly') }}
+            <div v-else-if="!serverFilters && !exoDisabled" class="text-subtitle mb-4">
+              {{ exoOnlyMessage }}
             </div>
             <v-alert
               v-if="stateMessage"
@@ -116,6 +128,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :key="listKey"
               :server-rules="supported && group ? group.rules : null"
               :folders="folders"
+              :server-filters="serverFilters"
               @edit="edit"
               @changed="read"
               @exo-disabled="exoDisabled = true" />
@@ -181,10 +194,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-import { OPEN_FILTERS_DRAWER_EVENT, filtersMessage, notifyFiltersUpdated } from '../../../js/EmailConnectorFilters.js';
+import { OPEN_FILTERS_DRAWER_EVENT, filtersMessage, holdsFilters, notifyFiltersUpdated } from '../../../js/EmailConnectorFilters.js';
 
 /** The refusal of a deployment that switched server rules off: not an error, eXo runs every filter. */
 const RULES_DISABLED = 'emailConnector.rules.disabled';
+
+/** Why BlueMind holds no rule: the engine's transport is not deployed yet. */
+const BLUEMIND_TRANSPORT_MISSING = 'emailConnector.rules.bluemind.transportMissing';
 
 /** The refusal of a server write the user has not consented to yet. */
 const CONSENT_REQUIRED = 'emailConnector.rules.consentRequired';
@@ -245,6 +261,28 @@ export default {
      */
     supported() {
       return !!this.group?.capabilities?.supported;
+    },
+    /**
+     * Whether a filter may run on the mail server: its engine publishes, and runs a rule
+     * action or eXo's keyword. False for BlueMind, whose engine publishes only the
+     * automatic reply in this phase.
+     *
+     * @returns {Boolean} true when the server holds filters
+     */
+    serverFilters() {
+      return this.supported && holdsFilters(this.group.capabilities);
+    },
+    /**
+     * Why every filter runs in eXo: not available yet from eXo (BlueMind, whose engine
+     * has no transport, or publishes only the automatic reply), or a mail server that
+     * does not let eXo manage its rules.
+     *
+     * @returns {String} the localized line
+     */
+    exoOnlyMessage() {
+      const capabilities = this.group?.capabilities;
+      const notYet = capabilities?.reasonCode === BLUEMIND_TRANSPORT_MISSING || !!capabilities?.supported;
+      return this.$t(notYet ? 'UserSettings.emailConnector.filters.exoOnly.notYet' : 'UserSettings.emailConnector.filters.exoOnly');
     },
     /**
      * What the user must know about the server's state.
