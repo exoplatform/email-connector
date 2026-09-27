@@ -20,6 +20,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
@@ -1332,6 +1333,27 @@ public class EmailFilterService {
       throw new ObjectNotFoundException(MATCH_NOT_FOUND);
     }
     return named(username, emailFilterStorage.getMatchesOfMail(username, email.getMailHeaderId()));
+  }
+
+  /**
+   * What the owner's rules did to a batch of their mails: every match of the owner whose
+   * Message-ID is one of those given, with what it did ({@code actions}: each action's
+   * {@code type}, {@code ok}, {@code undone}, {@code categoryId}) and the assistant's
+   * status and output. For a backend caller already acting as the owner -- the enterprise
+   * auto-categoriser, which must not take off a category a rule set: no delegation
+   * parameter, no connector check, and the rule names are not filled in. Safe off a
+   * request: a match's row has no lazy association, and each read is its own transaction.
+   *
+   * @param username the owner
+   * @param mailHeaderIds the mails' Message-IDs
+   * @return the matches; empty, without a query, for no Message-ID
+   */
+  public List<EmailFilterMatch> getMatchesOfMails(String username, Collection<String> mailHeaderIds) {
+    if (mailHeaderIds == null || mailHeaderIds.isEmpty()) {
+      return List.of();
+    }
+    List<String> ids = mailHeaderIds.stream().filter(StringUtils::isNotBlank).distinct().toList();
+    return ids.isEmpty() ? List.of() : emailFilterStorage.getMatchesOfMails(username, ids);
   }
 
   /**
