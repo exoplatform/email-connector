@@ -51,7 +51,6 @@ import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.model.VacationSetting;
 import org.exoplatform.emailConnector.model.VacationState;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
-import org.exoplatform.emailConnector.service.rules.ForwardingGuard;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngine;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngineRegistry;
 import org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript;
@@ -267,7 +266,7 @@ public class EmailAbsenceService {
       ServerRuleCapabilities capabilities = emailForwardingService.narrowed(engine.probe(session), session.connector());
       // Read in the same conversation as the reply; shown when the deployment shows
       // forwards or lets users set one, and a forward eXo set whatever the switches.
-      boolean shown = forwardingDisplayed() || ForwardingGuard.authoringEnabled(session.connector());
+      boolean shown = forwardingDisplayed() || emailForwardingService.authoringEnabled(session.connector());
       boolean readForward = withForwarding && capabilities.isSupported(ServerRuleCapabilities.FORWARDING_READ);
       ServerVacation vacation;
       ForwardingSetting forwarding = null;
