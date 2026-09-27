@@ -30,20 +30,23 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          EmailThreadAiSummary): the same light wash of the brand colour with an accent bar on
          the reading-start side, the same small bold primary title with its icon, and the
          same body text. Inline style because this webapp's webpack has no CSS loader. -->
+    <!-- Undo, Undo all and Run again are inline text links, as the platform's profile
+         writes its inline actions (social ProfileSingleValuedProperty): a text v-btn has a
+         height and padding of its own and sits lower than the line it follows. -->
     <div class="d-flex align-center mb-1">
       <v-icon size="14" class="me-2 primary--text">fas fa-filter</v-icon>
       <span class="text-caption font-weight-bold primary--text">{{ $t('emailConnector.mailBox.automations.title') }}</span>
       <v-spacer />
-      <v-btn
+      <a
         v-if="undoable.length > 1"
-        :loading="busy"
-        class="px-1"
-        color="primary"
-        text
-        x-small
-        @click="undoAll">
+        :class="linkClass"
+        :aria-disabled="busy"
+        class="text-caption pa-0 font-weight-regular"
+        role="button"
+        href="javascript:void(0);"
+        @click.prevent="busy || undoAll()">
         {{ $t('emailConnector.mailBox.automations.undoAll') }}
-      </v-btn>
+      </a>
     </div>
     <div
       v-if="error"
@@ -61,20 +64,20 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div
         v-for="action in match.actions"
         :key="`${match.id}-${action.type}`"
-        class="d-flex align-center text-body-2">
+        class="d-flex align-baseline text-body-2">
         <span :class="action.ok ? '' : 'error--text'">
           {{ actionLabel(action) }}
         </span>
-        <v-btn
+        <a
           v-if="canUndo(action)"
-          :disabled="busy"
-          class="ms-1 px-1"
-          color="primary"
-          text
-          x-small
-          @click="undo(match, action.type)">
+          :class="linkClass"
+          :aria-disabled="busy"
+          class="ms-2 pa-0 font-weight-regular"
+          role="button"
+          href="javascript:void(0);"
+          @click.prevent="busy || undo(match, action.type)">
           {{ $t('emailConnector.mailBox.automations.undo') }}
-        </v-btn>
+        </a>
       </div>
       <div v-if="match.agentStatus && match.agentStatus !== 'NONE'" class="d-flex align-center text-body-2">
         <v-progress-circular
@@ -84,16 +87,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           indeterminate
           class="me-2 icon-default-color" />
         <span>{{ $t(`emailConnector.mailBox.automations.agent.${match.agentStatus}`) }}</span>
-        <v-btn
+        <a
           v-if="terminal(match)"
-          :disabled="busy"
-          class="ms-1 px-1"
-          color="primary"
-          text
-          x-small
-          @click="retry(match)">
+          :class="linkClass"
+          :aria-disabled="busy"
+          class="ms-2 pa-0 font-weight-regular"
+          role="button"
+          href="javascript:void(0);"
+          @click.prevent="busy || retry(match)">
           {{ $t('emailConnector.mailBox.automations.runAgain') }}
-        </v-btn>
+        </a>
       </div>
       <template v-if="match.agentNameId">
         <component
@@ -158,6 +161,15 @@ export default {
      */
     applicable() {
       return !!this.email?.id && !this.email.draftLocalId && isOwnMailboxMail(this.email);
+    },
+    /**
+     * The colour of the panel's inline action links: the brand colour, muted while an
+     * action is running, when a click does nothing.
+     *
+     * @returns {String} the colour class
+     */
+    linkClass() {
+      return this.busy ? 'text--disabled' : 'primary--text';
     },
     /**
      * The actions an Undo can still take back, over every match.
