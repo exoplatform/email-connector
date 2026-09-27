@@ -39,6 +39,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -630,6 +631,22 @@ public class EmailFilterServiceTest {
     assertEquals(EmailFilterMatch.POST_DONE, retried.getPostActionsState(), "the held actions ran");
     verify(emailBoxService).moveToFolder(List.of(1L), USERNAME, MailFolder.INBOX, "CUSTOM:3");
     verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.FILTER_AGENT_REQUESTED), any(), any());
+  }
+
+  /**
+   * The batch read for a backend caller: no Message-ID, no query; blank ones and
+   * duplicates are not asked for.
+   */
+  @Test
+  void theMatchesOfABatchOfMailsAskOnlyForRealIds() {
+    assertTrue(service.getMatchesOfMails(USERNAME, List.of()).isEmpty());
+    assertTrue(service.getMatchesOfMails(USERNAME, Arrays.asList(" ", null)).isEmpty());
+    verify(emailFilterStorage, never()).getMatchesOfMails(anyString(), any());
+
+    EmailFilterMatch match = storedMatch();
+    when(emailFilterStorage.getMatchesOfMails(USERNAME, List.of("<one@acme.com>"))).thenReturn(List.of(match));
+
+    assertEquals(List.of(match), service.getMatchesOfMails(USERNAME, List.of("<one@acme.com>", "<one@acme.com>", "")));
   }
 
   /**
