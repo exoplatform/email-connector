@@ -34,12 +34,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <!-- Undo, Undo all and Run again are inline text links, as the platform's profile
          writes its inline actions (social ProfileSingleValuedProperty): a text v-btn has a
          height and padding of its own and sits lower than the line it follows. -->
-    <div class="d-flex align-center mb-1">
+    <!-- The header folds the whole panel: open by default while a suggestion waits for the
+         user, folded otherwise; the user's own choice, once made, is kept per browser. -->
+    <div :class="collapsed ? '' : 'mb-1'" class="d-flex align-center">
       <v-icon size="14" class="me-2 primary--text">fas fa-filter</v-icon>
       <span class="text-caption font-weight-bold primary--text">{{ $t('emailConnector.mailBox.automations.title') }}</span>
+      <span
+        v-if="collapsed && waitingLine"
+        class="text-caption text-sub-title ms-2 text-truncate">
+        {{ waitingLine }}
+      </span>
       <v-spacer />
       <a
-        v-if="undoable.length > 1"
+        v-if="!collapsed && undoable.length > 1"
         :class="linkClass"
         :aria-disabled="busy"
         class="text-caption pa-0 font-weight-regular"
@@ -49,6 +56,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         @keydown.enter.prevent="busy || undoAll()">
         {{ $t('emailConnector.mailBox.automations.undoAll') }}
       </a>
+      <v-btn
+        :aria-label="$t(collapsed ? 'emailConnector.mailBox.automations.expand' : 'emailConnector.mailBox.automations.collapse')"
+        :aria-expanded="String(!collapsed)"
+        :title="$t(collapsed ? 'emailConnector.mailBox.automations.expand' : 'emailConnector.mailBox.automations.collapse')"
+        class="ms-1"
+        icon
+        x-small
+        @click="toggleCollapsed">
+        <v-icon size="12" class="primary--text">{{ collapsed ? 'fas fa-chevron-down' : 'fas fa-chevron-up' }}</v-icon>
+      </v-btn>
     </div>
     <div
       v-if="error"
@@ -58,6 +75,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </div>
     <div
       v-for="(match, index) in matches"
+      v-show="!collapsed"
       :key="match.id"
       :class="index && 'mt-2'">
       <div class="text-body-2 font-weight-bold text-truncate">
@@ -112,7 +130,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </template>
       <!-- The tool calls the assistant proposed, one card each, oldest first (EXO-90659). -->
       <template v-if="match.proposals && match.proposals.length">
-        <div class="text-body-2 font-weight-bold mt-2">
+        <div class="text-caption font-weight-bold mt-1">
           {{ $t('emailConnector.mailBox.automations.proposal.heading') }}
         </div>
         <email-connector-mail-box-proposal-card
@@ -138,6 +156,9 @@ const TERMINAL = ['DONE', 'FAILED', 'SKIPPED_CAP', 'SKIPPED_DISABLED'];
 /** The brand colour, with the skin's default when the portal publishes none -- as the AI summary box reads it. */
 const PRIMARY_COLOR = 'var(--allPagesPrimaryColor, #3f8487)';
 
+/** The browser's memory of the user's choice to fold or open the panel. */
+const COLLAPSED_STORAGE_KEY = 'emailAutomationsCollapsed';
+
 /** The actions an Undo can take back. */
 const UNDOABLE = ['MOVE_TO_FOLDER', 'ADD_CATEGORY', 'MARK_READ', 'STAR', 'MARK_JUNK', 'DELETE'];
 
@@ -154,6 +175,8 @@ export default {
     busy: false,
     error: null,
     outcomeExtensions: [],
+    // The user's own choice to fold the panel, as this browser remembers it: null until made.
+    collapsedChoice: null,
   }),
   computed: {
     /**
@@ -190,6 +213,36 @@ export default {
       return this.busy ? 'text--disabled' : 'primary--text';
     },
     /**
+     * The proposals still waiting for the user's decision, over every match.
+     *
+     * @returns {Number} how many
+     */
+    waitingCount() {
+      return this.matches.reduce((count, match) => count + (match.proposals || []).filter(proposal => proposal.status === 'PROPOSED').length, 0);
+    },
+    /**
+     * Whether the panel is folded: as the user chose it last in this browser, else folded
+     * unless a suggestion waits for the user.
+     *
+     * @returns {Boolean} true when folded
+     */
+    collapsed() {
+      return this.collapsedChoice === null ? !this.waitingCount : this.collapsedChoice;
+    },
+    /**
+     * The folded header's count of the suggestions waiting for the user.
+     *
+     * @returns {String} the count in words, or empty when none waits
+     */
+    waitingLine() {
+      if (!this.waitingCount) {
+        return '';
+      }
+      return this.waitingCount === 1
+        ? this.$t('emailConnector.mailBox.automations.waitingOne')
+        : this.$t('emailConnector.mailBox.automations.waiting', { 0: this.waitingCount });
+    },
+    /**
      * The actions an Undo can still take back, over every match.
      *
      * @returns {Object[]} the actions
@@ -208,8 +261,35 @@ export default {
   },
   created() {
     this.outcomeExtensions = extensionRegistry.loadExtensions(FILTER_OUTCOME_EXTENSION.app, FILTER_OUTCOME_EXTENSION.type) || [];
+    this.collapsedChoice = this.storedCollapsed();
   },
   methods: {
+    /**
+     * The user's last choice to fold or open the panel, as this browser keeps it.
+     *
+     * @returns {Boolean|null} the choice, or null when none was made or the storage is unavailable
+     */
+    storedCollapsed() {
+      try {
+        const stored = window.localStorage.getItem(COLLAPSED_STORAGE_KEY);
+        return stored === null ? null : stored === 'true';
+      } catch (e) {
+        return null;
+      }
+    },
+    /**
+     * Folds or opens the panel, and keeps the choice in this browser when it can.
+     *
+     * @returns {void}
+     */
+    toggleCollapsed() {
+      this.collapsedChoice = !this.collapsed;
+      try {
+        window.localStorage.setItem(COLLAPSED_STORAGE_KEY, String(this.collapsedChoice));
+      } catch (e) {
+        // The choice then lasts as long as the panel.
+      }
+    },
     /**
      * Reads what the rules did to the mail.
      *
