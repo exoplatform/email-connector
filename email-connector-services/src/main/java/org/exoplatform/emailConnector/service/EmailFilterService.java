@@ -2235,7 +2235,7 @@ public class EmailFilterService {
         outputs.add(clean);
       }
     }
-    return new FilterAction(FilterAction.AGENT, null, null, agent, instruction, outputs, null);
+    return new FilterAction(FilterAction.AGENT, null, null, agent, instruction, outputs, null, null, action.suggestActions());
   }
 
   /**
@@ -2306,7 +2306,7 @@ public class EmailFilterService {
    * @throws IllegalAccessException when the request comes from someone else's mailbox, or
    *           the caller may not use the connector
    */
-  private void checkOwnMailbox(String username, Long delegationId) throws ObjectNotFoundException, IllegalAccessException {
+  void checkOwnMailbox(String username, Long delegationId) throws ObjectNotFoundException, IllegalAccessException {
     if (!isEnabled()) {
       throw new ObjectNotFoundException(DISABLED);
     }
