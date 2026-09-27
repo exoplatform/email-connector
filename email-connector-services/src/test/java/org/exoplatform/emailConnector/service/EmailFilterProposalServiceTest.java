@@ -196,6 +196,14 @@ public class EmailFilterProposalServiceTest {
       }
       return count;
     });
+    lenient().when(storage.setRationale(anyLong(), anyString(), anyLong(), anyString())).thenAnswer(invocation -> {
+      EmailFilterProposal row = owned(invocation.getArgument(0), invocation.getArgument(1));
+      if (row == null || row.getMatchId() != (long) invocation.getArgument(2) || !EmailFilterProposal.PROPOSED.equals(row.getStatus())) {
+        return false;
+      }
+      row.setRationale(invocation.getArgument(3));
+      return true;
+    });
     lenient().when(storage.expireOfMatch(anyString(), anyLong(), anyString(), any())).thenAnswer(invocation -> {
       int count = 0;
       for (EmailFilterProposal row : rows.values()) {
@@ -393,6 +401,22 @@ public class EmailFilterProposalServiceTest {
     EmailFilterProposal orphan = propose("t2", "{}");
     when(agentHandlers.stream()).thenAnswer(invocation -> Stream.empty());
     assertEquals(EmailFilterProposalService.UNAVAILABLE, service.approve(OWNER, null, orphan.getId()).getLastError());
+  }
+
+  /**
+   * An Error out of the handler, not an Exception, still ends the call: the row never
+   * stays RUNNING, so the card never hangs on "Running...".
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anErrorOutOfTheToolStillEndsTheCall() throws Exception {
+    EmailFilterProposal proposal = propose("t1", "{}");
+    when(handler.executeProposal(eq(OWNER), any())).thenThrow(new NoClassDefFoundError("half-deployed"));
+
+    assertThrows(NoClassDefFoundError.class, () -> service.approve(OWNER, null, proposal.getId()));
+    assertEquals(EmailFilterProposal.FAILED, rows.get(proposal.getId()).getStatus());
+    assertEquals(EmailFilterProposalService.INTERRUPTED, rows.get(proposal.getId()).getLastError());
   }
 
   /**
