@@ -42,9 +42,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       type="text"
       outlined
       dense />
-    <email-connector-user-setting-filter-switch
-      v-model="enabled"
-      :label="$t('UserSettings.emailConnector.filters.form.enabled')" />
     <div class="d-flex align-center justify-space-between mt-4 mb-2">
       <span class="text-header">{{ $t('UserSettings.emailConnector.filters.form.when') }}</span>
       <v-btn
@@ -270,6 +267,8 @@ export default {
   },
   data: () => ({
     name: '',
+    // Not a field of the form: the list switches a filter on and off. A new filter is
+    // created on, an edited one keeps the state it has.
     enabled: true,
     matchAll: true,
     conditions: [],
