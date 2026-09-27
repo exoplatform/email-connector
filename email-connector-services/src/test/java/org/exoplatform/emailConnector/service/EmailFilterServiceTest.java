@@ -141,6 +141,7 @@ public class EmailFilterServiceTest {
     lenient().when(userEmailSettingService.getUserEmailSetting(USERNAME)).thenReturn(setting);
     lenient().when(userEmailSettingService.canConnect(CONNECTOR_ID, USERNAME)).thenReturn(true);
     lenient().doNothing().when(service).notifyOwner(anyString(), anyString(), anyInt(), any());
+    lenient().doNothing().when(service).notifyOwner(anyString(), anyString(), anyInt(), any(), any(), any());
     fakeStorage();
   }
 
@@ -336,6 +337,27 @@ public class EmailFilterServiceTest {
     assertEquals(MailFolder.INBOX, moved.originFolder());
     assertEquals(Boolean.FALSE, match.getActions().get(0).wasRead());
     verify(emailFilterStorage).addMatches(move.getId(), USERNAME, 2L, new Date(NOW));
+  }
+
+  /**
+   * A rule's notification names the mail a click opens: the most recent of the batch by
+   * its inbox UID while it stays there; once a rule filed it, the folder it went to instead,
+   * its inbox UID naming nothing any more.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theNotificationNamesTheMostRecentMailOrWhereItWasFiled() throws Exception {
+    Condition fromEvil = new Condition("FROM", "MATCHES_DOMAIN", null, "evil.org");
+    stored(rule("Tell", EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of(action(FilterAction.NOTIFY))));
+    stored(rule("Bin", EmailFilter.KIND_EXO, List.of(fromEvil), List.of(action(FilterAction.NOTIFY), action(FilterAction.MARK_JUNK))));
+    givenNewMail(mail(1L, "a@acme.com", "One"), mail(3L, "b@acme.com", "Three"), mail(2L, "c@acme.com", "Two"),
+                 mail(4L, "mallory@evil.org", "Spam"));
+
+    service.applyToNewMail(USERNAME, List.of(inbox(1L), inbox(3L), inbox(2L), inbox(4L)), FilterRunContext.OWN_INBOX);
+
+    verify(service).notifyOwner(USERNAME, "Tell", 3, null, 3L, null);
+    verify(service).notifyOwner(USERNAME, "Bin", 1, null, null, MailFolder.JUNK);
   }
 
   /**
