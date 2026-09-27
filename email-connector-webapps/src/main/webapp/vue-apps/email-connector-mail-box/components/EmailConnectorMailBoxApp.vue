@@ -60,6 +60,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          from this mail" with the rule the mail suggests (EXO-90654); registered by the
          user-setting bundle, like the drawers above. -->
     <email-connector-user-setting-filters-drawer />
+    <!-- A filter's matched mails, stacked over the filters drawer; mounted after it. -->
+    <email-connector-user-setting-filter-log-drawer />
     <email-connector-mail-box-move-to-folder-drawer />
     <email-connector-mail-box-drawer-attachments-drawer />
     <email-connector-mail-box-drawer-list-item-action-menu-drawer />
