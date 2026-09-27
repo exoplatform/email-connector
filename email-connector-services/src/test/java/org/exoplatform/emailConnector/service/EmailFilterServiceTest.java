@@ -601,6 +601,38 @@ public class EmailFilterServiceTest {
   }
 
   /**
+   * A match whose owner may no longer read the mailbox is not put back: nothing will
+   * change by the next boot, so its held actions end with the reason.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theSweepEndsAMatchWhoseMailboxCannotBeRead() throws Exception {
+    noAgentHandler();
+    EmailFilterMatch unreadable = waitingMatch(3L, EmailFilterMatch.AGENT_PENDING);
+    when(emailFilterStorage.getMatchesByAgentStatuses(eq(List.of(EmailFilterMatch.AGENT_PENDING, EmailFilterMatch.AGENT_RUNNING)),
+                                                      eq(0L),
+                                                      anyInt())).thenReturn(List.of(new OwnedMatch(USERNAME, copyOf(unreadable))));
+    when(emailFilterStorage.updateAgentStatusIf(anyLong(), anyString(), anyString())).thenAnswer(invocation -> {
+      EmailFilterMatch match = matches.get(invocation.<Long> getArgument(0));
+      if (!match.getAgentStatus().equals(invocation.getArgument(1))) {
+        return false;
+      }
+      match.setAgentStatus(invocation.getArgument(2));
+      return true;
+    });
+    when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, unreadable.getMailHeaderId(), MailFolder.INBOX))
+                                                                                                             .thenThrow(new IllegalAccessException("no connector"));
+
+    assertEquals(1, service.releaseUnansweredAgentMatches());
+
+    EmailFilterMatch ended = matches.get(unreadable.getId());
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_DISABLED, ended.getAgentStatus(), "not put back");
+    assertEquals(EmailFilterMatch.POST_DONE, ended.getPostActionsState());
+    assertEquals(EmailFilterService.UNREADABLE, ended.getLastError());
+  }
+
+  /**
    * With an assistant handler present, the sweep reads and touches nothing.
    */
   @Test
