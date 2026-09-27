@@ -72,6 +72,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { OPEN_FORWARDING_DRAWER_EVENT } from '../../email-connector-user-setting/js/EmailConnectorForwarding.js';
+
 export default {
   data() {
     return {
@@ -98,7 +100,11 @@ export default {
     openDrawer(event) {
       this.$emailConnectorCommonService.getUserEmailSetting().then(userEmailSetting => {
         this.userEmailSetting = userEmailSetting;
-        if (this.userEmailSetting.connected) {
+        if (this.userEmailSetting.connected && event?.detail?.forwarding) {
+          // The forwarding drawer alone, as the band's Manage opens it: a forwarding
+          // notification's click (EXO-90656).
+          this.$root.$emit(OPEN_FORWARDING_DRAWER_EVENT);
+        } else if (this.userEmailSetting.connected) {
           this.$root.$emit('open-mail-box-drawer', event?.detail);
         }
         else {
