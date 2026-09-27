@@ -1058,9 +1058,11 @@ public class UserEmailSettingRest {
   @GetMapping("/absence/forwarding/authoring")
   @Secured("users")
   @Operation(summary = "Reads whether the caller may set a forward from eXo", method = "GET",
-      description = "enabled only where the deployment switched email.connector.forwarding.authoring.enabled[.<connectorId>] on "
-          + "(reasonCode emailConnector.forwarding.disabled otherwise); allowedDomains from "
-          + "email.connector.forwarding.allowedDomains[.<connectorId>], by default the domain of the caller's mailbox; "
+      description = "enabled where the connector administration screen allows it -- or, while it was never saved, "
+          + "email.connector.forwarding.authoring.enabled[.<connectorId>] -- and the deployment-wide kill switch "
+          + "(email.connector.forwarding.authoring.enabled=false) is not set (reasonCode emailConnector.forwarding.disabled "
+          + "otherwise); allowedDomains likewise from the screen or email.connector.forwarding.allowedDomains[.<connectorId>], "
+          + "by default the domain of the caller's mailbox; "
           + "confirmedDestinations, the addresses the caller already confirmed with a code. Shapes the form only: every write "
           + "checks the same again. Own mailbox only.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),

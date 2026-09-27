@@ -41,6 +41,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+import org.exoplatform.emailConnector.model.ConnectorForwarding;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailManagedMode;
 import org.exoplatform.emailConnector.model.EmailSyncExecutorStatus;
@@ -602,6 +603,68 @@ public class EmailConnectorRest {
                                      boolean isEmailConnectorActive) {
     try {
       emailConnectorService.activateEmailConnector(emailConnectorId, isEmailConnectorActive, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Whether users of a connector may forward their mail from eXo, and to which domains.
+   *
+   * @param request the caller's request, for the acting user
+   * @param emailConnectorId email connector technical id
+   * @return {authoringEnabled, allowedDomains, saved, killSwitch}
+   */
+  @GetMapping(path = "/{emailConnectorId}/forwarding")
+  @Secured("administrators")
+  @Operation(summary = "Reads whether users of a connector may forward their mail from eXo", method = "GET",
+      description = "The settings that apply: authoringEnabled and allowedDomains (empty: each user's own mailbox domain); saved "
+          + "false while the screen was never saved, the deployment's properties then applying; killSwitch true when "
+          + "email.connector.forwarding.authoring.enabled=false switches forwarding off everywhere.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "No such connector"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation") })
+  public ConnectorForwarding getForwarding(HttpServletRequest request,
+                                           @Parameter(description = "Email connector technical id", required = true)
+                                           @PathVariable("emailConnectorId")
+                                           Long emailConnectorId) {
+    try {
+      return emailConnectorService.getForwarding(emailConnectorId, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Saves whether users of a connector may forward their mail from eXo, and to which
+   * domains.
+   *
+   * @param request the caller's request, for the acting user
+   * @param emailConnectorId email connector technical id
+   * @param forwarding {authoringEnabled, allowedDomains}
+   * @return the settings that apply after the save
+   */
+  @PutMapping(path = "/{emailConnectorId}/forwarding")
+  @Secured("administrators")
+  @Operation(summary = "Saves whether users of a connector may forward their mail from eXo", method = "PUT",
+      description = "Applies at once. allowedDomains are exact plain domains (empty: each user's own mailbox domain). Switching "
+          + "it off keeps the forwards already on -- users can still remove them -- and accepts no new one. The deployment's "
+          + "kill switch still wins.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Saved"),
+      @ApiResponse(responseCode = "400", description = "No such connector, or a domain that is not a plain domain (emailConnector.forwarding.domain.invalid)"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation") })
+  public ConnectorForwarding saveForwarding(HttpServletRequest request,
+                                            @Parameter(description = "Email connector technical id", required = true)
+                                            @PathVariable("emailConnectorId")
+                                            Long emailConnectorId,
+                                            @RequestBody
+                                            ConnectorForwarding forwarding) {
+    try {
+      return emailConnectorService.saveForwarding(emailConnectorId, forwarding, request.getRemoteUser());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
