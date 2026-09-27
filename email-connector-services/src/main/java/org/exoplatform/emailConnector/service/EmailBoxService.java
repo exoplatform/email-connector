@@ -3973,6 +3973,12 @@ public class EmailBoxService {
    *         cache holds none
    * @throws IllegalAccessException if the user may not read their mailbox
    */
+  // Transactional on its own account, as getOwnMailboxEmailById is: the call below is on
+  // this instance, so it bypasses the proxy and runs without getEmailById's transaction,
+  // and a filter's assistant runs on a background queue thread with no request session to
+  // fall back on -- the message's lazy attachments then fail to load (live regression,
+  // a filter's post-actions after its assistant answered).
+  @Transactional(noRollbackFor = IllegalAccessException.class)
   public Email getOwnEmailByMailHeaderId(String username, String mailHeaderId, String folder) throws IllegalAccessException {
     checkCanReadMailbox(username);
     List<Long> ids = emailBoxStorage.getEmailIdsByMailHeaderId(username, mailHeaderId, folder);
