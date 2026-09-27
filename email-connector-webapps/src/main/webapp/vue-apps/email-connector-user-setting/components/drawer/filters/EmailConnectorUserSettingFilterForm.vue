@@ -712,6 +712,22 @@ export default {
         extensionActions[extension.type] = actions.find(action => action.type === extension.type) || null;
       });
       this.extensionActions = extensionActions;
+      // A rule saved before the four choices existed may hold a plain action and its
+      // assistant output together: what the assistant decides wins, so the form shows
+      // what runs and "never both on" holds once saved.
+      const decided = (extensionActions.AGENT?.outputs || []).filter(output => DECIDABLE_OUTPUTS[output]);
+      if (decided.includes('CATEGORY')) {
+        this.categoryId = null;
+      }
+      if (decided.includes('MARK_READ')) {
+        this.markRead = false;
+      }
+      if (decided.includes('STAR')) {
+        this.star = false;
+      }
+      if (decided.includes('NOTIFY')) {
+        this.notify = false;
+      }
     },
     /**
      * What the rule does about one of the four actions an assistant may decide: Off,
