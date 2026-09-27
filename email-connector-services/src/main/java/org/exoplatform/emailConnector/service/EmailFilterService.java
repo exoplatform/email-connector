@@ -1281,6 +1281,25 @@ public class EmailFilterService {
   }
 
   /**
+   * Ends the held actions of a released match whose owner may no longer read the
+   * mailbox: nothing will run them, and the reason is recorded. Never throws.
+   *
+   * @param matchId the match
+   * @param username its owner
+   */
+  private void closeUnreadable(long matchId, String username) {
+    try {
+      emailFilterStorage.getMatch(matchId, username).ifPresent(match -> {
+        match.setPostActionsState(EmailFilterMatch.POST_DONE);
+        match.setLastError(UNREADABLE);
+        emailFilterStorage.updateMatch(match, username);
+      });
+    } catch (RuntimeException | LinkageError e) {
+      LOG.debug("The held actions of mail filter match {} could not be closed", matchId, e);
+    }
+  }
+
+  /**
    * Releases one match left waiting for an assistant: claims it, then runs the
    * post-actions it held. Never throws.
    *
@@ -1302,7 +1321,13 @@ public class EmailFilterService {
     try {
       applyPostActions(matchId, owned.userId());
       return true;
-    } catch (ObjectNotFoundException | IllegalAccessException | RuntimeException | LinkageError e) {
+    } catch (ObjectNotFoundException | IllegalAccessException e) {
+      // The owner may no longer read the mailbox, or the match is gone: that will not
+      // change by the next boot, so the match ends here instead of failing on every one.
+      LOG.info("The held actions of mail filter match {} of user {} cannot run: {}", matchId, owned.userId(), e.getMessage());
+      closeUnreadable(matchId, owned.userId());
+      return true;
+    } catch (RuntimeException | LinkageError e) {
       LOG.warn("The held actions of mail filter match {} of user {} failed; it waits for the next sweep", matchId, owned.userId(), e);
       try {
         emailFilterStorage.updateAgentStatusIf(matchId, EmailFilterMatch.AGENT_SKIPPED_DISABLED, waiting);
