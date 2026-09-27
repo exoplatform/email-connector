@@ -242,6 +242,10 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
     const mailbox = urlParams.get('mailbox');
     if (mailbox) {
       opening.mailbox = mailbox;
+    } else if (!opening.mailRemoteId && /^(INBOX|SENT|ARCHIVE|ALL_MAIL|TRASH|JUNK|CUSTOM:\d{1,18})$/.test(urlParams.get('folder') || '')) {
+      // folder=<key> alone opens that folder: the link a mail filter's notification
+      // carries by mail and push when it names no mail (EXO-90654).
+      opening.folder = urlParams.get('folder');
     }
     window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, opening));
   }
