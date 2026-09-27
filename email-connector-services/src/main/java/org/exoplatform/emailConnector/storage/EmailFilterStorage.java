@@ -19,11 +19,15 @@ package org.exoplatform.emailConnector.storage;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -60,6 +64,9 @@ public class EmailFilterStorage {
 
   /** The longest Message-ID kept on a match, the RFC 5322 line limit. */
   private static final int    MAX_HEADER_LENGTH  = 998;
+
+  /** How many mails one read of their matches names at most: the IN list's size. */
+  private static final int    MAILS_PER_QUERY    = 500;
 
   @Autowired
   private EmailFilterDAO      emailFilterDAO;
@@ -320,6 +327,37 @@ public class EmailFilterStorage {
    */
   public List<EmailFilterMatch> getMatchesOfMail(String userId, String mailHeaderId) {
     return emailFilterMatchDAO.findByMail(userId, hash(mailHeaderId)).stream().map(EmailFilterStorage::toDto).toList();
+  }
+
+  /**
+   * The matches on some mails, whatever rule. Read by the Message-ID's hash, the indexed
+   * column, in chunks of {@value #MAILS_PER_QUERY}; a match whose stored Message-ID is not
+   * one of those asked for -- a hash collision -- is left out.
+   *
+   * @param userId the owner
+   * @param mailHeaderIds the mails' Message-IDs
+   * @return the matches, newest first within each chunk
+   */
+  public List<EmailFilterMatch> getMatchesOfMails(String userId, Collection<String> mailHeaderIds) {
+    if (mailHeaderIds == null || mailHeaderIds.isEmpty()) {
+      return List.of();
+    }
+    // As createMatch stored them: the Message-ID truncated to the column, the hash of the
+    // whole one.
+    Map<String, String> storedByHash = new LinkedHashMap<>();
+    mailHeaderIds.stream()
+                 .filter(Objects::nonNull)
+                 .forEach(mailHeaderId -> storedByHash.put(hash(mailHeaderId), truncate(mailHeaderId, MAX_HEADER_LENGTH)));
+    List<String> hashes = new ArrayList<>(storedByHash.keySet());
+    List<EmailFilterMatch> matches = new ArrayList<>();
+    for (int from = 0; from < hashes.size(); from += MAILS_PER_QUERY) {
+      emailFilterMatchDAO.findByMails(userId, hashes.subList(from, Math.min(from + MAILS_PER_QUERY, hashes.size())))
+                         .stream()
+                         .filter(entity -> Objects.equals(storedByHash.get(entity.getMailHeaderHash()), entity.getMailHeaderId()))
+                         .map(EmailFilterStorage::toDto)
+                         .forEach(matches::add);
+    }
+    return matches;
   }
 
   /**
