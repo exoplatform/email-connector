@@ -19,8 +19,10 @@ package org.exoplatform.emailConnector.storage;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,7 +37,9 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.emailConnector.dao.EmailFilterDAO;
+import org.exoplatform.emailConnector.dao.EmailFilterMatchDAO;
 import org.exoplatform.emailConnector.entity.EmailFilterEntity;
+import org.exoplatform.emailConnector.entity.EmailFilterMatchEntity;
 import org.exoplatform.emailConnector.model.AppliedAction;
 import org.exoplatform.emailConnector.model.EmailFilterMatch;
 
@@ -52,7 +56,10 @@ import org.exoplatform.emailConnector.model.EmailFilterMatch;
 public class EmailFilterStorageTest {
 
   @Autowired
-  private EmailFilterStorage emailFilterStorage;
+  private EmailFilterStorage  emailFilterStorage;
+
+  @Autowired
+  private EmailFilterMatchDAO emailFilterMatchDAO;
 
   /**
    * The minimal Spring slice: the entities, their repositories and the storage.
@@ -78,6 +85,49 @@ public class EmailFilterStorageTest {
     assertEquals("STAR", updated.getActions().get(0).type(), "the pass writes on after the refusal");
     assertTrue(emailFilterStorage.createMatch(match(8L, "<one@acme.com>"), "alice").isPresent(), "another rule on that mail");
     assertEquals(2, emailFilterStorage.getMatchesOfMail("alice", "<one@acme.com>").size());
+  }
+
+  /**
+   * The batch read by mails, outside any transaction as the auto-categoriser calls it:
+   * each match with what it did, only for the Message-IDs asked, a row whose hash
+   * collides with one of them but whose Message-ID differs left out.
+   */
+  @Test
+  void theMatchesOfABatchOfMailsComeWithWhatTheyDid() {
+    EmailFilterMatch categorised = emailFilterStorage.createMatch(match(7L, "<a@acme.com>"), "bob").orElseThrow();
+    categorised.setActions(List.of(new AppliedAction("ADD_CATEGORY", true, null, null, null, 12L, null, null, null, false)));
+    emailFilterStorage.updateMatch(categorised, "bob");
+    emailFilterStorage.createMatch(match(7L, "<b@acme.com>"), "bob").orElseThrow();
+    emailFilterStorage.createMatch(match(7L, "<c@acme.com>"), "bob").orElseThrow();
+    EmailFilterMatchEntity collision = new EmailFilterMatchEntity();
+    collision.setUserId("bob");
+    collision.setFilterId(9L);
+    collision.setMailHeaderId("<collision@acme.com>");
+    collision.setMailHeaderHash(EmailFilterStorage.hash("<a@acme.com>"));
+    collision.setMatchedDate(new Date());
+    collision.setCreatedDate(new Date());
+    collision.setAgentStatus(EmailFilterMatch.AGENT_NONE);
+    emailFilterMatchDAO.saveAndFlush(collision);
+
+    List<EmailFilterMatch> found = emailFilterStorage.getMatchesOfMails("bob", List.of("<a@acme.com>", "<b@acme.com>", "<z@acme.com>"));
+
+    assertEquals(List.of("<a@acme.com>", "<b@acme.com>"), found.stream().map(EmailFilterMatch::getMailHeaderId).sorted().toList());
+    AppliedAction action = found.stream()
+                                .filter(match -> match.getMailHeaderId().equals("<a@acme.com>"))
+                                .findFirst()
+                                .orElseThrow()
+                                .getActions()
+                                .get(0);
+    assertEquals("ADD_CATEGORY", action.type());
+    assertEquals(12L, action.categoryId());
+    assertTrue(action.ok());
+    assertTrue(emailFilterStorage.getMatchesOfMails("bob", List.of()).isEmpty());
+
+    List<String> many = new ArrayList<>(IntStream.range(0, 600).mapToObj(i -> "<none-" + i + "@acme.com>").toList());
+    many.add("<c@acme.com>");
+    assertEquals(List.of("<c@acme.com>"),
+                 emailFilterStorage.getMatchesOfMails("bob", many).stream().map(EmailFilterMatch::getMailHeaderId).toList(),
+                 "read past the first chunk");
   }
 
   /**
