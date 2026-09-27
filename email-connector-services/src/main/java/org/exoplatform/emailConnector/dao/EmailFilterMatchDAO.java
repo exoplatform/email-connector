@@ -105,6 +105,38 @@ public interface EmailFilterMatchDAO extends JpaRepository<EmailFilterMatchEntit
   String agentStatus, Pageable pageable);
 
   /**
+   * Every user's matches in some assistant statuses, by id, after a given one: the
+   * startup sweep's read, which pages by id so that a match it could not release is not
+   * read again.
+   *
+   * @param statuses the statuses, {@code PENDING} and {@code RUNNING}
+   * @param afterId the last id read, 0 for the first page
+   * @param pageable how many
+   * @return the matches, by ascending id
+   */
+  @Query("SELECT fm FROM EmailFilterMatchEntity fm WHERE fm.agentStatus IN :statuses AND fm.id > :afterId ORDER BY fm.id ASC")
+  List<EmailFilterMatchEntity> findByAgentStatuses(@Param("statuses")
+  Collection<String> statuses, @Param("afterId")
+  long afterId, Pageable pageable);
+
+  /**
+   * Moves one match from an assistant status to another, only if it is still in the
+   * first: the claim that makes one node, and one only, act on it.
+   *
+   * @param id the match
+   * @param from the status it must be in
+   * @param to the status it is moved to
+   * @return 1 when moved, 0 when it was no longer in {@code from}
+   */
+  @Transactional
+  @Modifying(flushAutomatically = true, clearAutomatically = true)
+  @Query("UPDATE EmailFilterMatchEntity fm SET fm.agentStatus = :to WHERE fm.id = :id AND fm.agentStatus = :from")
+  int updateAgentStatusIf(@Param("id")
+  long id, @Param("from")
+  String from, @Param("to")
+  String to);
+
+  /**
    * How many of a user's matches are in an assistant status: the pending cap.
    *
    * @param userId the owner

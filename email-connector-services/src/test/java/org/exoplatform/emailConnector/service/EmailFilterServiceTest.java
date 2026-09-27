@@ -46,6 +46,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -56,6 +57,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.beans.factory.ObjectProvider;
 
 import org.exoplatform.emailConnector.event.NewInboxMailEvent.InboxMail;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
@@ -75,8 +77,10 @@ import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ReconcileReport;
 import org.exoplatform.emailConnector.model.ServerRule.Condition;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.plugin.EmailFilterAgentHandler;
 import org.exoplatform.emailConnector.service.filters.FilterRunContext;
 import org.exoplatform.emailConnector.storage.EmailFilterStorage;
+import org.exoplatform.emailConnector.storage.EmailFilterStorage.OwnedMatch;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.listener.ListenerService;
 
@@ -117,6 +121,9 @@ public class EmailFilterServiceTest {
   @Mock
   private ListenerService              listenerService;
 
+  @Mock
+  private ObjectProvider<EmailFilterAgentHandler> agentHandlers;
+
   @Spy
   @InjectMocks
   private EmailFilterService           service;
@@ -143,6 +150,15 @@ public class EmailFilterServiceTest {
     lenient().doNothing().when(service).notifyOwner(anyString(), anyString(), anyInt(), any());
     lenient().doNothing().when(service).notifyOwner(anyString(), anyString(), anyInt(), any(), any(), any());
     fakeStorage();
+    lenient().when(agentHandlers.stream()).thenAnswer(invocation -> Stream.of(new EmailFilterAgentHandler() {
+    }));
+  }
+
+  /**
+   * A deployment where nothing runs the assistant: no AI add-on, or its profile off.
+   */
+  private void noAgentHandler() {
+    when(agentHandlers.stream()).thenAnswer(invocation -> Stream.empty());
   }
 
   /**
@@ -518,6 +534,105 @@ public class EmailFilterServiceTest {
   }
 
   /**
+   * Without an assistant handler on the deployment, a rule with an assistant never holds
+   * its other actions: the match is skipped as when the assistant is switched off, the
+   * other actions run in the pass, and nothing is requested. With one, the match is
+   * queued ({@link #theAssistantGoesFirstAndThePostActionsAfter()}).
+   *
+   * @throws Exception never
+   */
+  @Test
+  void withoutAHandlerTheAssistantIsSkippedAndTheOtherActionsRun() throws Exception {
+    noAgentHandler();
+    stored(rule("Invoices", EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of(agent(), move("CUSTOM:3"))));
+    givenNewMail(mail(1L, "a@acme.com", "Invoice"));
+
+    assertFalse(service.isAgentHandled());
+    Set<Long> filed = service.applyToNewMail(USERNAME, List.of(inbox(1L)), FilterRunContext.OWN_INBOX);
+
+    assertEquals(Set.of(1L), filed, "the move ran in the pass");
+    EmailFilterMatch match = matches.values().iterator().next();
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_DISABLED, match.getAgentStatus());
+    assertEquals(EmailFilterMatch.POST_DONE, match.getPostActionsState());
+    verify(emailBoxService).moveToFolder(List.of(1L), USERNAME, MailFolder.INBOX, "CUSTOM:3");
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.FILTER_AGENT_REQUESTED), any(), any());
+  }
+
+  /**
+   * The startup sweep, when nothing runs the assistant: every waiting match is claimed,
+   * recorded skipped, and the actions it held run; one whose actions fail is put back in
+   * its status and does not stop the others.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theSweepReleasesTheMatchesLeftWaiting() throws Exception {
+    noAgentHandler();
+    EmailFilterMatch failing = waitingMatch(2L, EmailFilterMatch.AGENT_RUNNING);
+    EmailFilterMatch waiting = waitingMatch(1L, EmailFilterMatch.AGENT_PENDING);
+    when(emailFilterStorage.getMatchesByAgentStatuses(eq(List.of(EmailFilterMatch.AGENT_PENDING, EmailFilterMatch.AGENT_RUNNING)),
+                                                      eq(0L),
+                                                      anyInt())).thenReturn(List.of(new OwnedMatch(USERNAME, copyOf(failing)),
+                                                                                    new OwnedMatch(USERNAME, copyOf(waiting))));
+    when(emailFilterStorage.updateAgentStatusIf(anyLong(), anyString(), anyString())).thenAnswer(invocation -> {
+      EmailFilterMatch match = matches.get(invocation.<Long> getArgument(0));
+      if (!match.getAgentStatus().equals(invocation.getArgument(1))) {
+        return false;
+      }
+      match.setAgentStatus(invocation.getArgument(2));
+      return true;
+    });
+    when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, failing.getMailHeaderId(), MailFolder.INBOX))
+                                                                                                          .thenThrow(new IllegalStateException("the database is away"));
+    when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, waiting.getMailHeaderId(), MailFolder.INBOX))
+                                                                                                          .thenReturn(mail(1L, "a@acme.com", "One"));
+
+    assertEquals(1, service.releaseUnansweredAgentMatches());
+
+    EmailFilterMatch released = matches.get(waiting.getId());
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_DISABLED, released.getAgentStatus());
+    assertEquals(EmailFilterMatch.POST_DONE, released.getPostActionsState());
+    verify(service).applyPostActions(waiting.getId(), USERNAME);
+    verify(emailBoxService).moveToFolder(List.of(1L), USERNAME, MailFolder.INBOX, "CUSTOM:3");
+    EmailFilterMatch putBack = matches.get(failing.getId());
+    assertEquals(EmailFilterMatch.AGENT_RUNNING, putBack.getAgentStatus(), "put back for the next sweep");
+    assertEquals(EmailFilterMatch.POST_PENDING_AGENT, putBack.getPostActionsState());
+  }
+
+  /**
+   * With an assistant handler present, the sweep reads and touches nothing.
+   */
+  @Test
+  void withAHandlerTheSweepTouchesNothing() {
+    assertTrue(service.isAgentHandled());
+
+    assertEquals(0, service.releaseUnansweredAgentMatches());
+
+    verify(emailFilterStorage, never()).getMatchesByAgentStatuses(any(), anyLong(), anyInt());
+    verify(emailFilterStorage, never()).updateAgentStatusIf(anyLong(), anyString(), anyString());
+  }
+
+  /**
+   * "Run again" without an assistant handler does not queue a match that would wait for
+   * ever: it is recorded skipped again, and actions it still held run.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void runAgainWithoutAHandlerDoesNotQueue() throws Exception {
+    noAgentHandler();
+    EmailFilterMatch match = waitingMatch(1L, EmailFilterMatch.AGENT_FAILED);
+    when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, match.getMailHeaderId(), MailFolder.INBOX)).thenReturn(mail(1L, "a@acme.com", "One"));
+
+    EmailFilterMatch retried = service.retry(USERNAME, null, match.getId());
+
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_DISABLED, retried.getAgentStatus());
+    assertEquals(EmailFilterMatch.POST_DONE, retried.getPostActionsState(), "the held actions ran");
+    verify(emailBoxService).moveToFolder(List.of(1L), USERNAME, MailFolder.INBOX, "CUSTOM:3");
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.FILTER_AGENT_REQUESTED), any(), any());
+  }
+
+  /**
    * Undo puts back what a match did, the flags first while the mail is where the filing
    * put it, the move last, and never twice.
    *
@@ -735,6 +850,50 @@ public class EmailFilterServiceTest {
         .ifPresent(action -> copy.setAgentNameId(action.agentNameId()));
     filters.put(copy.getId(), copy);
     return copy(copy);
+  }
+
+  /**
+   * Stores a match of a rule with an assistant and a move, its move held for the
+   * assistant.
+   *
+   * @param uid the mail's inbox UID
+   * @param agentStatus the assistant's status
+   * @return the match
+   */
+  private EmailFilterMatch waitingMatch(long uid, String agentStatus) {
+    EmailFilter filter = stored(rule("Invoices", EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of(agent(), move("CUSTOM:3"))));
+    EmailFilterMatch match = new EmailFilterMatch();
+    match.setId(ids.incrementAndGet());
+    match.setFilterId(filter.getId());
+    match.setMailHeaderId("<" + uid + "@acme.com>");
+    match.setMailRemoteId(uid);
+    match.setMatchedDate(NOW);
+    match.setActions(List.of());
+    match.setAgentNameId("EMAIL_FILTER_ASSISTANT");
+    match.setAgentStatus(agentStatus);
+    match.setPostActionsState(EmailFilterMatch.POST_PENDING_AGENT);
+    matches.put(match.getId(), match);
+    return copyOf(match);
+  }
+
+  /**
+   * A copy of a match, as a read from the storage returns one.
+   *
+   * @param match the match
+   * @return the copy
+   */
+  private static EmailFilterMatch copyOf(EmailFilterMatch match) {
+    EmailFilterMatch copy = new EmailFilterMatch();
+    copy.setId(match.getId());
+    copy.setFilterId(match.getFilterId());
+    copy.setMailHeaderId(match.getMailHeaderId());
+    copy.setMailRemoteId(match.getMailRemoteId());
+    copy.setMatchedDate(match.getMatchedDate());
+    copy.setActions(match.getActions());
+    copy.setAgentNameId(match.getAgentNameId());
+    copy.setAgentStatus(match.getAgentStatus());
+    copy.setPostActionsState(match.getPostActionsState());
+    return copy;
   }
 
   /**
