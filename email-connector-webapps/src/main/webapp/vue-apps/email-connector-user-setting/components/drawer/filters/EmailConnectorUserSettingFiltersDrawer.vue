@@ -196,7 +196,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-import { OPEN_FILTERS_DRAWER_EVENT, filtersMessage, holdsFilters, notifyFiltersUpdated } from '../../../js/EmailConnectorFilters.js';
+import { CLOSE_FILTERS_DRAWER_EVENT, OPEN_FILTERS_DRAWER_EVENT, filtersMessage, holdsFilters, notifyFiltersUpdated } from '../../../js/EmailConnectorFilters.js';
 
 /** The refusal of a deployment that switched server rules off: not an error, eXo runs every filter. */
 const RULES_DISABLED = 'emailConnector.rules.disabled';
@@ -345,11 +345,22 @@ export default {
   },
   created() {
     this.$root.$on(OPEN_FILTERS_DRAWER_EVENT, this.open);
+    this.$root.$on(CLOSE_FILTERS_DRAWER_EVENT, this.close);
   },
   beforeDestroy() {
     this.$root.$off(OPEN_FILTERS_DRAWER_EVENT, this.open);
+    this.$root.$off(CLOSE_FILTERS_DRAWER_EVENT, this.close);
   },
   methods: {
+    /**
+     * Closes the drawer: a matched mail was opened from a filter's log drawer, and the
+     * mailbox's reader is what the user goes to.
+     *
+     * @returns {void}
+     */
+    close() {
+      this.drawer = false;
+    },
     /**
      * Opens the drawer on the list, read again, and the folders a filter may file into.
      * With the rule a mail suggests, opens straight on its form.
