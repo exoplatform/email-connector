@@ -2023,4 +2023,116 @@
       <dropColumn tableName="EMAIL_DELEGATION" columnName="SEND_REFUSED_MODE"/>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-94" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The mail filters' tool-call proposals' sequence (EXO-90659), created before its
+      table for the reason 1.0.0-43 records. 1.0.0-91 and -92 are reserved by the
+      delegation's phase 4 and -93 by the automatic reply's, so this starts at 94; never
+      renumbered once any database ran it.
+    </comment>
+    <createSequence sequenceName="SEQ_EMAIL_FILTER_PROPOSAL_ID" startValue="1"/>
+    <rollback>
+      <dropSequence sequenceName="SEQ_EMAIL_FILTER_PROPOSAL_ID"/>
+    </rollback>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-95">
+    <comment>
+      One row per tool call a mail filter's assistant made and that was recorded instead
+      of run (EXO-90659), until the mail's owner approves, rejects or hands it to the AI
+      chat. MATCH_ID is the match whose assistant made it (EMAIL_FILTER_MATCH, 1.0.0-74),
+      FILTER_ID that match's rule. TOOL_NAME is the tool, TOOL_TITLE and TOOL_DESCRIPTION
+      what its definition said of it when the call was made -- the card shows those, not
+      what the model said. ARGUMENTS is the call's JSON as the model gave it, run as is on
+      approval. CALL_HASH is the SHA-256, lower-case hex, of the tool's name and of the
+      arguments' canonical JSON: UK_EMAIL_FILTER_PROPOSAL records one call once per
+      match, whatever the order of its keys. RATIONALE is the assistant's one-line reason.
+      STATUS is PROPOSED, RUNNING, DONE, FAILED, REJECTED, EXPIRED or HANDED_OVER, moved
+      by conditional UPDATEs only. EXPIRES_DATE is when a waiting call expires.
+      CONVERSATION_ID is the assistant run's, which the per-run cap counts by. RESULT is
+      what the tool answered, LAST_ERROR why it did not run.
+      IDX_EMAIL_FILTER_PROPOSAL_USER serves the mailbox's pending cap and the expiry. The
+      foreign key to the match is 1.0.0-97's, after the MySQL options of -96. Rolled back
+      explicitly, indexes then table.
+    </comment>
+    <createTable tableName="EMAIL_FILTER_PROPOSAL">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_EMAIL_FILTER_PROPOSAL"/>
+      </column>
+      <column name="USER_ID" type="VARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="MATCH_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="FILTER_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="TOOL_NAME" type="VARCHAR(200)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="TOOL_TITLE" type="VARCHAR(250)"/>
+      <column name="TOOL_DESCRIPTION" type="VARCHAR(2000)"/>
+      <column name="ARGUMENTS" type="CLOB">
+        <constraints nullable="false"/>
+      </column>
+      <column name="CALL_HASH" type="VARCHAR(64)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="RATIONALE" type="VARCHAR(500)"/>
+      <column name="STATUS" type="VARCHAR(20)" defaultValue="PROPOSED">
+        <constraints nullable="false"/>
+      </column>
+      <column name="CREATED_DATE" type="TIMESTAMP">
+        <constraints nullable="false"/>
+      </column>
+      <column name="EXPIRES_DATE" type="TIMESTAMP">
+        <constraints nullable="false"/>
+      </column>
+      <column name="DECIDED_DATE" type="TIMESTAMP"/>
+      <column name="CONVERSATION_ID" type="VARCHAR(64)"/>
+      <column name="RESULT" type="CLOB"/>
+      <column name="LAST_ERROR" type="VARCHAR(500)"/>
+    </createTable>
+    <createIndex tableName="EMAIL_FILTER_PROPOSAL" indexName="UK_EMAIL_FILTER_PROPOSAL" unique="true">
+      <column name="MATCH_ID"/>
+      <column name="CALL_HASH"/>
+    </createIndex>
+    <createIndex tableName="EMAIL_FILTER_PROPOSAL" indexName="IDX_EMAIL_FILTER_PROPOSAL_USER">
+      <column name="USER_ID"/>
+      <column name="STATUS"/>
+    </createIndex>
+    <rollback>
+      <dropIndex tableName="EMAIL_FILTER_PROPOSAL" indexName="IDX_EMAIL_FILTER_PROPOSAL_USER"/>
+      <dropIndex tableName="EMAIL_FILTER_PROPOSAL" indexName="UK_EMAIL_FILTER_PROPOSAL"/>
+      <dropTable tableName="EMAIL_FILTER_PROPOSAL"/>
+    </rollback>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-96" dbms="mysql">
+    <comment>
+      The table options of 1.0.0-72, applied to EMAIL_FILTER_PROPOSAL, with the binary
+      collation on USER_ID for the same reason, and BEFORE the foreign key of 1.0.0-97,
+      which needs both tables on InnoDB. CALL_HASH is lower-case hex by construction and
+      needs none. Rolled back with 1.0.0-95's table, explicitly empty.
+    </comment>
+    <sql>ALTER TABLE EMAIL_FILTER_PROPOSAL ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci</sql>
+    <sql>ALTER TABLE EMAIL_FILTER_PROPOSAL MODIFY USER_ID VARCHAR(250) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL</sql>
+    <rollback/>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-97">
+    <comment>
+      A proposal goes with its match, in the database: the match log's retention removes
+      matches with a bulk JPQL DELETE, which no JPA cascade sees; ON DELETE CASCADE is the
+      one place that holds for it, as 1.0.0-65 does for the scheduled sends. Rolled back
+      explicitly.
+    </comment>
+    <addForeignKeyConstraint baseTableName="EMAIL_FILTER_PROPOSAL"
+                             baseColumnNames="MATCH_ID"
+                             referencedTableName="EMAIL_FILTER_MATCH"
+                             referencedColumnNames="ID"
+                             constraintName="FK_EMAIL_FILTER_PROPOSAL_MATCH"
+                             onDelete="CASCADE"/>
+    <rollback>
+      <dropForeignKeyConstraint baseTableName="EMAIL_FILTER_PROPOSAL" constraintName="FK_EMAIL_FILTER_PROPOSAL_MATCH"/>
+    </rollback>
+  </changeSet>
 </databaseChangeLog>
