@@ -24,85 +24,141 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        Everything is text: no markup, no link. One decision per card: Approve runs the
        call as the user, through the platform's own tool path; Reject; Continue in the
        chat hands it to the regular AI chat, after which it never runs from here. -->
+  <!-- Compact until opened: a pending card is one row -- the tool's title with the
+       assistant's reason on one line under it, Approve, Reject and the Details chevron --,
+       a decided one a single line of its status icon, title and status. The details --
+       the tool's id and description, the arguments as a key/value list, the whole reason,
+       the error, Continue in the chat -- open under the chevron. -->
   <v-card
-    class="pa-2 mt-2"
+    class="px-2 py-1 mt-1"
     outlined
     flat>
-    <div class="d-flex align-baseline">
-      <span class="text-body-2 font-weight-bold text-break">{{ title }}</span>
-      <v-spacer />
+    <div class="d-flex align-center text-start">
+      <v-progress-circular
+        v-if="proposal.status === 'RUNNING'"
+        :size="12"
+        :width="2"
+        indeterminate
+        class="me-2 flex-shrink-0 icon-default-color" />
+      <v-icon
+        v-else-if="statusIcon"
+        :class="statusClass"
+        size="12"
+        class="me-2 flex-shrink-0">
+        {{ statusIcon }}
+      </v-icon>
+      <div class="flex-grow-1 text-truncate" style="min-width: 0;">
+        <div
+          :title="title"
+          class="text-body-2 font-weight-bold text-truncate">
+          {{ title }}
+        </div>
+        <div
+          v-if="waiting && proposal.rationale && !open"
+          :title="rationaleLine"
+          class="text-caption text-sub-title font-italic text-truncate">
+          {{ rationaleLine }}
+        </div>
+      </div>
       <span
         v-if="statusLine"
         :class="statusClass"
-        class="text-caption ms-2 text-no-wrap">
+        :title="statusLine"
+        class="text-caption ms-2 text-truncate flex-shrink-1"
+        style="max-width: 50%;">
         {{ statusLine }}
       </span>
+      <template v-if="waiting">
+        <v-btn
+          v-if="actions"
+          :loading="busy === 'approve'"
+          :disabled="!!busy"
+          class="ms-2 px-2 flex-shrink-0"
+          color="primary"
+          elevation="0"
+          x-small
+          @click="approve">
+          {{ $t('emailConnector.mailBox.automations.proposal.approve') }}
+        </v-btn>
+        <v-btn
+          :loading="busy === 'reject'"
+          :disabled="!!busy"
+          class="ms-1 px-2 flex-shrink-0"
+          outlined
+          x-small
+          @click="reject">
+          {{ $t('emailConnector.mailBox.automations.proposal.reject') }}
+        </v-btn>
+      </template>
+      <v-btn
+        :aria-label="$t(open ? 'emailConnector.mailBox.automations.proposal.hideDetails' : 'emailConnector.mailBox.automations.proposal.showDetails')"
+        :aria-expanded="String(open)"
+        :title="$t(open ? 'emailConnector.mailBox.automations.proposal.hideDetails' : 'emailConnector.mailBox.automations.proposal.showDetails')"
+        class="ms-1 flex-shrink-0"
+        icon
+        x-small
+        @click="toggle">
+        <v-icon size="12" class="icon-default-color">{{ open ? 'fas fa-chevron-up' : 'fas fa-chevron-down' }}</v-icon>
+      </v-btn>
     </div>
-    <div v-if="proposal.toolTitle" class="text-caption text-sub-title">{{ proposal.toolName }}</div>
-    <div
-      v-if="proposal.toolDescription"
-      :style="descriptionStyle"
-      class="text-caption text-sub-title text-break">
-      {{ proposal.toolDescription }}
-    </div>
-    <a
-      v-if="longDescription"
-      class="text-caption primary--text"
-      role="button"
-      href="javascript:void(0);"
-      @click.prevent="descriptionOpen = !descriptionOpen">
-      {{ $t(descriptionOpen ? 'emailConnector.mailBox.automations.proposal.less' : 'emailConnector.mailBox.automations.proposal.more') }}
-    </a>
-    <div class="mt-1">
-      <div
-        v-for="argument in argumentLines"
-        :key="argument.key"
-        class="text-body-2 text-break"
-        style="white-space: pre-wrap;">
-        <span class="font-weight-bold">{{ argument.key }}:</span>
-        {{ argument.text }}
+    <div v-if="waiting" class="text-caption text-sub-title">{{ expiryLine }}</div>
+    <v-expand-transition>
+      <div v-show="open" class="pb-1 text-start">
+        <div class="text-caption text-sub-title text-break">{{ proposal.toolName }}</div>
+        <div
+          v-if="proposal.toolDescription"
+          :style="descriptionStyle"
+          class="text-caption text-sub-title text-break">
+          {{ proposal.toolDescription }}
+        </div>
+        <a
+          v-if="longDescription"
+          class="text-caption primary--text"
+          role="button"
+          href="javascript:void(0);"
+          @click.prevent="descriptionOpen = !descriptionOpen">
+          {{ $t(descriptionOpen ? 'emailConnector.mailBox.automations.proposal.less' : 'emailConnector.mailBox.automations.proposal.more') }}
+        </a>
+        <div
+          v-if="argumentLines.length"
+          class="mt-1"
+          style="display: grid; grid-template-columns: fit-content(40%) minmax(0, 1fr); column-gap: 8px; row-gap: 2px;">
+          <template v-for="argument in argumentLines">
+            <div
+              :key="`${argument.key}-key`"
+              class="text-caption text-sub-title text-break">
+              {{ argument.key }}
+            </div>
+            <div
+              :key="`${argument.key}-value`"
+              class="text-body-2 text-break"
+              style="white-space: pre-wrap;">{{ argument.text }}</div>
+          </template>
+        </div>
+        <div v-else class="text-caption text-sub-title mt-1">
+          {{ $t('emailConnector.mailBox.automations.proposal.noArguments') }}
+        </div>
+        <div v-if="proposal.rationale" class="text-caption font-italic mt-1 text-break">
+          {{ rationaleLine }}
+        </div>
+        <div
+          v-if="proposal.status === 'FAILED'"
+          class="text-caption error--text mt-1 text-break">
+          {{ reason(proposal.lastError) }}
+        </div>
+        <v-btn
+          v-if="waiting && actions"
+          :loading="busy === 'handover'"
+          :disabled="!!busy"
+          class="mt-1 px-1"
+          color="primary"
+          text
+          x-small
+          @click="continueInChat">
+          {{ $t('emailConnector.mailBox.automations.proposal.continue') }}
+        </v-btn>
       </div>
-      <div v-if="!argumentLines.length" class="text-body-2 text-sub-title">
-        {{ $t('emailConnector.mailBox.automations.proposal.noArguments') }}
-      </div>
-    </div>
-    <div v-if="proposal.rationale" class="text-caption font-italic mt-1 text-break">
-      {{ $t('emailConnector.mailBox.automations.proposal.why', { 0: proposal.rationale }) }}
-    </div>
-    <div v-if="waiting" class="text-caption text-sub-title mt-1">{{ expiryLine }}</div>
-    <div v-if="waiting" class="d-flex flex-wrap align-center mt-1">
-      <v-btn
-        v-if="actions"
-        :loading="busy === 'approve'"
-        :disabled="!!busy"
-        class="me-2 mb-1"
-        color="primary"
-        elevation="0"
-        small
-        @click="approve">
-        {{ $t('emailConnector.mailBox.automations.proposal.approve') }}
-      </v-btn>
-      <v-btn
-        :loading="busy === 'reject'"
-        :disabled="!!busy"
-        class="me-2 mb-1"
-        outlined
-        small
-        @click="reject">
-        {{ $t('emailConnector.mailBox.automations.proposal.reject') }}
-      </v-btn>
-      <v-btn
-        v-if="actions"
-        :loading="busy === 'handover'"
-        :disabled="!!busy"
-        class="mb-1 px-1"
-        color="primary"
-        text
-        small
-        @click="continueInChat">
-        {{ $t('emailConnector.mailBox.automations.proposal.continue') }}
-      </v-btn>
-    </div>
+    </v-expand-transition>
     <div
       v-if="error"
       class="text-caption error--text"
@@ -123,6 +179,15 @@ const SPACE_ID_ARGUMENT = /(^|_)space_?id$/i;
 
 /** An argument naming one user, or several, by username. */
 const USERNAME_ARGUMENT = /(^|_)(user_?name|assignee)s?$/i;
+
+/** The icon of each decided status, on the card's folded row. */
+const STATUS_ICONS = {
+  DONE: 'fas fa-check-circle',
+  FAILED: 'fas fa-exclamation-circle',
+  REJECTED: 'fas fa-times-circle',
+  EXPIRED: 'far fa-clock',
+  HANDED_OVER: 'fas fa-comments',
+};
 
 /** A day, in milliseconds. */
 const DAY = 24 * 3600 * 1000;
@@ -150,6 +215,8 @@ export default {
     busy: null,
     error: null,
     descriptionOpen: false,
+    // Whether the card's details are open: closed until the user opens them.
+    open: false,
     // The names the platform gave the ids and usernames of the arguments, by raw value.
     names: {},
   }),
@@ -176,6 +243,20 @@ export default {
      */
     waiting() {
       return this.proposal.status === 'PROPOSED';
+    },
+    /**
+     * @returns {String} the assistant's reason, labelled as its suggestion
+     */
+    rationaleLine() {
+      return this.$t('emailConnector.mailBox.automations.proposal.why', { 0: this.proposal.rationale });
+    },
+    /**
+     * The icon of a decided proposal's status, before its title on the folded row.
+     *
+     * @returns {String|null} the icon, or null while it waits for a decision
+     */
+    statusIcon() {
+      return STATUS_ICONS[this.proposal.status] || null;
     },
     /**
      * @returns {Boolean} whether the description is long enough to fold
@@ -258,6 +339,14 @@ export default {
     this.resolveNames();
   },
   methods: {
+    /**
+     * Opens or closes the card's details.
+     *
+     * @returns {void}
+     */
+    toggle() {
+      this.open = !this.open;
+    },
     /**
      * An argument's value as text: a string as it is, a list joined, anything else as
      * its JSON; a value the platform named shows its name first.
