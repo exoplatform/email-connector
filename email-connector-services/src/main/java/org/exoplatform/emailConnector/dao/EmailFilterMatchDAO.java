@@ -77,6 +77,20 @@ public interface EmailFilterMatchDAO extends JpaRepository<EmailFilterMatchEntit
   String mailHeaderHash);
 
   /**
+   * The matches on some mails, whatever rule: what a backend caller acting as the owner
+   * reads for a batch of mails.
+   *
+   * @param userId the owner
+   * @param mailHeaderHashes the mails' Message-ID hashes, not empty
+   * @return the matches, newest first
+   */
+  @Query("SELECT fm FROM EmailFilterMatchEntity fm WHERE fm.userId = :userId AND fm.mailHeaderHash IN :mailHeaderHashes"
+      + " ORDER BY fm.matchedDate DESC, fm.id DESC")
+  List<EmailFilterMatchEntity> findByMails(@Param("userId")
+  String userId, @Param("mailHeaderHashes")
+  Collection<String> mailHeaderHashes);
+
+  /**
    * The log of one rule, newest first.
    *
    * @param userId the owner
