@@ -1169,6 +1169,132 @@ public class MasterChangelogTest {
   }
 
   /**
+   * EXO-90659 -- the proposals' changesets (1.0.0-94 to -97) apply, roll back and apply
+   * again, to a tag placed immediately before them: the sequence, the table and its two
+   * indexes, and the cascading foreign key to the match; one call once per match; a
+   * match deleted takes its proposals along; after the rollback the table and its
+   * sequence are gone and the match table stands.
+   *
+   * @throws Exception when a changeset does not apply or roll back
+   */
+  @Test
+  void theFilterProposalChangesetsRollBackAndReapply() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback94" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-94"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-filter-proposals");
+      assertFalse(tableExists(connection, "EMAIL_FILTER_PROPOSAL"), "sanity: not there before 1.0.0-95");
+      assertTrue(tableExists(connection, "EMAIL_FILTER_MATCH"), "1.0.0-74 runs before it");
+      liquibase.update("");
+      assertTrue(sequenceExists(connection, "SEQ_EMAIL_FILTER_PROPOSAL_ID"), "1.0.0-94 creates the sequence");
+      assertTrue(tableExists(connection, "EMAIL_FILTER_PROPOSAL"), "1.0.0-95 creates EMAIL_FILTER_PROPOSAL");
+      for (String index : List.of("UK_EMAIL_FILTER_PROPOSAL", "IDX_EMAIL_FILTER_PROPOSAL_USER")) {
+        assertTrue(indexExists(connection, "EMAIL_FILTER_PROPOSAL", index), index);
+      }
+      assertOneCallPerMatchAndGoneWithItsMatch(connection);
+
+      liquibase.rollback("before-filter-proposals", "");
+      assertFalse(tableExists(connection, "EMAIL_FILTER_PROPOSAL"), "rolling back drops EMAIL_FILTER_PROPOSAL");
+      assertFalse(sequenceExists(connection, "SEQ_EMAIL_FILTER_PROPOSAL_ID"), "and its sequence");
+      assertTrue(tableExists(connection, "EMAIL_FILTER_MATCH"), "and nothing before them");
+
+      liquibase.update("");
+      assertTrue(tableExists(connection, "EMAIL_FILTER_PROPOSAL"), "the changesets apply again after their rollback");
+      assertOneCallPerMatchAndGoneWithItsMatch(connection);
+    }
+  }
+
+  /**
+   * EXO-90659 -- the proposals' changesets as MySQL and PostgreSQL would run them: the
+   * auto-increment / sequence split, the MySQL table options and binary owner BEFORE the
+   * foreign key, the cascade on both, the NOT NULL columns, the keys, and a rollback
+   * that drops the foreign key, then the indexes, then the table and, on PostgreSQL, the
+   * sequence.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theFilterProposalChangesetsOnMySqlAndPostgreSql() throws Exception {
+    String mysql = offlineUpdateSql("mysql?version=8.0.17", "1.0.0-94", "1.0.0-97");
+    Matcher create = Pattern.compile("CREATE TABLE EMAIL_FILTER_PROPOSAL \\(.*?\\)[^;]*", Pattern.DOTALL).matcher(mysql);
+    assertTrue(create.find(), "no CREATE TABLE EMAIL_FILTER_PROPOSAL in the MySQL SQL: " + mysql);
+    assertTrue(create.group().contains("AUTO_INCREMENT"), "MySQL ids come from an auto-increment: " + create.group());
+    int options = mysql.indexOf("ALTER TABLE EMAIL_FILTER_PROPOSAL ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+    int owner = mysql.indexOf("ALTER TABLE EMAIL_FILTER_PROPOSAL MODIFY USER_ID VARCHAR(250) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL");
+    int foreignKey = mysql.indexOf("ADD CONSTRAINT FK_EMAIL_FILTER_PROPOSAL_MATCH FOREIGN KEY (MATCH_ID) REFERENCES EMAIL_FILTER_MATCH (ID)"
+        + " ON DELETE CASCADE");
+    assertTrue(options > 0 && owner > 0, "the table options and the binary owner of 1.0.0-96: " + mysql);
+    assertTrue(foreignKey > options && foreignKey > owner, "the cascading key of 1.0.0-97, after them: " + mysql);
+    assertFalse(mysql.contains("SEQ_EMAIL_FILTER_PROPOSAL_ID"), "no sequence on MySQL");
+
+    String postgresql = offlineUpdateSql("postgresql?version=15", "1.0.0-94", "1.0.0-97");
+    assertTrue(postgresql.contains("CREATE SEQUENCE  IF NOT EXISTS SEQ_EMAIL_FILTER_PROPOSAL_ID START WITH 1"), postgresql);
+    assertTrue(postgresql.indexOf("SEQ_EMAIL_FILTER_PROPOSAL_ID") < postgresql.indexOf("CREATE TABLE EMAIL_FILTER_PROPOSAL (ID BIGINT NOT NULL,"),
+               "created before its table, with no auto-increment on the id: " + postgresql);
+    assertTrue(postgresql.contains("ADD CONSTRAINT FK_EMAIL_FILTER_PROPOSAL_MATCH FOREIGN KEY (MATCH_ID) REFERENCES EMAIL_FILTER_MATCH (ID)"
+        + " ON DELETE CASCADE"), postgresql);
+    assertFalse(postgresql.contains("ALTER TABLE EMAIL_FILTER_PROPOSAL ENGINE"), "no MySQL options elsewhere");
+
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-94", "1.0.0-97").toUpperCase(Locale.ROOT);
+      assertTrue(update.contains("CREATE UNIQUE INDEX UK_EMAIL_FILTER_PROPOSAL ON EMAIL_FILTER_PROPOSAL(MATCH_ID, CALL_HASH)"),
+                 vendor + ": " + update);
+      assertTrue(update.contains("CREATE INDEX IDX_EMAIL_FILTER_PROPOSAL_USER ON EMAIL_FILTER_PROPOSAL(USER_ID, STATUS)"), vendor + ": " + update);
+      for (String column : List.of("USER_ID VARCHAR(250) NOT NULL", "MATCH_ID BIGINT NOT NULL", "FILTER_ID BIGINT NOT NULL",
+                                   "TOOL_NAME VARCHAR(200) NOT NULL", "CALL_HASH VARCHAR(64) NOT NULL", "TOOL_TITLE VARCHAR(250)",
+                                   "TOOL_DESCRIPTION VARCHAR(2000)", "RATIONALE VARCHAR(500)", "LAST_ERROR VARCHAR(500)",
+                                   "CONVERSATION_ID VARCHAR(64)")) {
+        assertTrue(update.contains(column), vendor + " " + column + ": " + update);
+      }
+      assertTrue(Pattern.compile("STATUS VARCHAR\\(20\\) DEFAULT 'PROPOSED' NOT NULL").matcher(update).find(), vendor + ": " + update);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-94", "1.0.0-97").toUpperCase(Locale.ROOT);
+      int dropKey = rollback.indexOf("FK_EMAIL_FILTER_PROPOSAL_MATCH");
+      int dropIndex = rollback.indexOf("UK_EMAIL_FILTER_PROPOSAL");
+      int dropTable = rollback.indexOf("DROP TABLE EMAIL_FILTER_PROPOSAL");
+      assertTrue(dropKey >= 0 && dropIndex > dropKey && dropTable > dropIndex, vendor + " the key, the indexes, then the table: " + rollback);
+    }
+    assertTrue(offlineRollbackSql("postgresql?version=15", "1.0.0-94", "1.0.0-97").contains("DROP SEQUENCE SEQ_EMAIL_FILTER_PROPOSAL_ID"),
+               "and the sequence, where there is one");
+  }
+
+  /**
+   * The key and the cascade of EMAIL_FILTER_PROPOSAL: one call once per match, the same
+   * call on another match is another proposal, and deleting a match deletes its
+   * proposals -- the match log's retention is a bulk DELETE.
+   *
+   * @param connection the database
+   * @throws SQLException when a statement other than the refused one fails
+   */
+  private void assertOneCallPerMatchAndGoneWithItsMatch(Connection connection) throws SQLException {
+    try (Statement statement = connection.createStatement()) {
+      String match = "INSERT INTO EMAIL_FILTER_MATCH (ID, USER_ID, FILTER_ID, MAIL_HEADER_ID, MAIL_HEADER_HASH, MATCHED_DATE, CREATED_DATE)"
+          + " VALUES (%d, 'alice', 7, '<m@x>', '%s', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
+      statement.executeUpdate(String.format(match, 901, "h901"));
+      statement.executeUpdate(String.format(match, 902, "h902"));
+      String proposal = "INSERT INTO EMAIL_FILTER_PROPOSAL (ID, USER_ID, MATCH_ID, FILTER_ID, TOOL_NAME, ARGUMENTS, CALL_HASH, CREATED_DATE,"
+          + " EXPIRES_DATE) VALUES (%d, 'alice', %d, 7, 'create_task_in_project', '{}', '%s', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
+      statement.executeUpdate(String.format(proposal, 1, 901, "call"));
+      assertThrows(SQLException.class, () -> statement.executeUpdate(String.format(proposal, 2, 901, "call")), "one call once per match");
+      statement.executeUpdate(String.format(proposal, 3, 902, "call"));
+      try (ResultSet row = statement.executeQuery("SELECT STATUS FROM EMAIL_FILTER_PROPOSAL WHERE ID = 1")) {
+        assertTrue(row.next());
+        assertEquals("PROPOSED", row.getString(1), "a recorded call waits by default");
+      }
+      statement.executeUpdate("DELETE FROM EMAIL_FILTER_MATCH WHERE ID = 901");
+      try (ResultSet rows = statement.executeQuery("SELECT ID FROM EMAIL_FILTER_PROPOSAL")) {
+        assertTrue(rows.next());
+        assertEquals(3, rows.getLong(1), "the deleted match's proposal went with it, the other stays");
+        assertFalse(rows.next());
+      }
+      statement.executeUpdate("DELETE FROM EMAIL_FILTER_MATCH");
+      try (ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM EMAIL_FILTER_PROPOSAL")) {
+        rows.next();
+        assertEquals(0, rows.getInt(1));
+      }
+    }
+  }
+
+  /**
    * The keyword key of EMAIL_FILTER: two rules with one keyword are refused, any number
    * of rules without one are not -- which a key on (USER_ID, TAG_KEYWORD) would refuse
    * on Oracle.
@@ -1659,7 +1785,11 @@ public class MasterChangelogTest {
                                                               "1.0.0-76",
                                                               "1.0.0-77",
                                                               "1.0.0-78",
-                                                              "1.0.0-79");
+                                                              "1.0.0-79",
+                                                              "1.0.0-94",
+                                                              "1.0.0-95",
+                                                              "1.0.0-96",
+                                                              "1.0.0-97");
 
   // The changesets whose checksum already depends on where it is computed: every one
   // of them carries a modifySql. Three are covered by validCheckSum ANY (1.0.0-5, -46,
