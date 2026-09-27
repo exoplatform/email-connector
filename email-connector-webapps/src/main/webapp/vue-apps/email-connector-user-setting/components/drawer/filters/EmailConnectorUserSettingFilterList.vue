@@ -123,7 +123,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :title="$t('UserSettings.emailConnector.filters.exo.log')"
               :aria-label="$t('UserSettings.emailConnector.filters.exo.log')"
               icon
-              @click="toggleLog(item)">
+              @click="openLog(item)">
               <v-icon size="18">fas fa-history</v-icon>
             </v-btn>
           </v-list-item-action>
@@ -146,30 +146,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             </v-btn>
           </v-list-item-action>
         </v-list-item>
-        <v-list
-          v-if="item.kind !== 'SERVER' && logOf === item.id"
-          :key="`log-${item.key}`"
-          class="pa-0 ps-4 pb-2"
-          dense>
-          <div v-if="!log.length" class="text-subtitle">{{ $t('UserSettings.emailConnector.filters.exo.log.empty') }}</div>
-          <v-list-item
-            v-for="match in log"
-            :key="match.id"
-            class="pa-0"
-            dense>
-            <v-list-item-content class="pa-0">
-              <v-list-item-title class="text-truncate">
-                {{ match.subject || $t('UserSettings.emailConnector.filters.exo.noSubject') }}
-              </v-list-item-title>
-              <v-list-item-subtitle class="text-truncate">
-                {{ formatDate(match.matchedDate) }}
-                <span v-if="match.agentStatus && match.agentStatus !== 'NONE'">
-                  -- {{ $t(`UserSettings.emailConnector.filters.exo.agent.${match.agentStatus}`) }}
-                </span>
-              </v-list-item-subtitle>
-            </v-list-item-content>
-          </v-list-item>
-        </v-list>
       </template>
     </v-list>
     <div v-else-if="filters" class="text-subtitle mb-2">
@@ -186,7 +162,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-import { filtersMessage, notifyFiltersUpdated, serverItem } from '../../../js/EmailConnectorFilters.js';
+import { OPEN_FILTER_LOG_DRAWER_EVENT, filtersMessage, notifyFiltersUpdated, serverItem } from '../../../js/EmailConnectorFilters.js';
 
 /** The refusal of a deployment that switched eXo's filters off. */
 const EXO_DISABLED = 'emailConnector.filters.disabled';
@@ -217,8 +193,6 @@ export default {
     saving: false,
     error: null,
     deleting: null,
-    logOf: null,
-    log: [],
   }),
   computed: {
     /**
@@ -404,21 +378,13 @@ export default {
         : this.write(() => this.$emailConnectorUserSettingService.deleteExoFilter(item.id));
     },
     /**
-     * Shows or hides what one of eXo's filters did lately.
+     * Opens what one of eXo's filters did lately in its own drawer, stacked over this one.
      *
      * @param {Object} item - the filter
-     * @returns {Promise<void>} resolved once read
+     * @returns {void}
      */
-    toggleLog(item) {
-      if (this.logOf === item.id) {
-        this.logOf = null;
-        return Promise.resolve();
-      }
-      this.logOf = item.id;
-      this.log = [];
-      return this.$emailConnectorUserSettingService.getExoFilterLog(item.id, 20)
-        .then(log => this.log = log || [])
-        .catch(error => this.error = filtersMessage(this.$t.bind(this), error));
+    openLog(item) {
+      this.$root.$emit(OPEN_FILTER_LOG_DRAWER_EVENT, { id: item.id, name: item.name });
     },
     /**
      * A filter in one line: what it does.
@@ -438,15 +404,6 @@ export default {
         parts.push(this.$t('UserSettings.emailConnector.filters.summary.stop'));
       }
       return parts.join(', ');
-    },
-    /**
-     * A date, short, in the user's language.
-     *
-     * @param {Number} millis - the date
-     * @returns {String} the date
-     */
-    formatDate(millis) {
-      return millis ? new Date(millis).toLocaleString(eXo.env.portal.language) : '';
     },
   },
 };
