@@ -219,6 +219,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :fields="selectedProviderFields"
           :secrets-stored="!!emailConnector.id"
           @valid="providerConfigValid = $event" />
+        <email-connector-admin-forwarding-section
+          v-if="emailConnector.id && forwarding"
+          v-model="forwarding"
+          @valid="forwardingValid = $event" />
       </form>
     </template>
     <template #footer>
@@ -290,7 +294,14 @@ export default {
     // Whether the selected provider's required fields are all filled. The drawer does
     // not know what those fields are - the renderer tells it, so the save button can
     // be disabled without this file learning anything about any provider.
-    providerConfigValid: true
+    providerConfigValid: true,
+    // Whether the connector's users may forward their mail, and where: read on opening
+    // an existing connector, saved with it.
+    forwarding: null,
+    // The forwarding settings as loaded: saved again only when the section changed them,
+    // so editing another field never turns the properties' values into saved ones.
+    loadedForwarding: null,
+    forwardingValid: true,
   }),
   computed: {
     disconnectionConfirmMessage() {
@@ -306,7 +317,7 @@ export default {
       return !this.emailConnectorName || !this.emailConnector.imapUrl || !this.emailConnector.imapPort 
       || !this.emailConnector.smtpUrl || !this.emailConnector.smtpPort || !this.emailConnector.smtpSecurityType
       || (this.activeWebmailAccess && !this.emailConnector.webmailUrl)
-      || !this.providerConfigValid;
+      || !this.providerConfigValid || !this.forwardingValid;
     },
     drawerTitle() {
       return this.emailConnector.id && this.$t('emailConnector.admin.connectors.drawer.edit.title', {
@@ -381,6 +392,11 @@ export default {
       this.providerConfig = emailConnector && emailConnector.id
         && await this.loadProviderConfig(emailConnector.id)
         || {};
+      this.forwardingValid = true;
+      this.forwarding = emailConnector && emailConnector.id
+        && await this.$emailConnectorAdministrationService.getConnectorForwarding(emailConnector.id).catch(() => null)
+        || null;
+      this.loadedForwarding = this.forwarding && { ...this.forwarding, allowedDomains: [...(this.forwarding.allowedDomains || [])] };
       this.$refs.emailConnectorDrawer.open();
     },
     close() {
@@ -403,7 +419,21 @@ export default {
       // Not kept between two openings: it holds what an administrator typed for
       // one connector, and the next one they open is not the same connector.
       this.providerConfig = {};
+      this.forwarding = null;
+      this.loadedForwarding = null;
       this.$refs.emailConnectorDrawer.close();
+    },
+    /**
+     * Whether the Forwarding section changed what was loaded.
+     *
+     * @returns {boolean} true when the switch or the domains differ
+     */
+    forwardingChanged() {
+      if (!this.forwarding || !this.loadedForwarding) {
+        return false;
+      }
+      return this.forwarding.authoringEnabled !== this.loadedForwarding.authoringEnabled
+        || JSON.stringify(this.forwarding.allowedDomains || []) !== JSON.stringify(this.loadedForwarding.allowedDomains || []);
     },
     resetImage() {
       this.emailConnector.imageUrl = null;
@@ -482,6 +512,9 @@ export default {
         }
         else {
           await this.$emailConnectorAdministrationService.updateEmailConnector(this.emailConnector);
+          if (this.forwardingChanged()) {
+            await this.$emailConnectorAdministrationService.saveConnectorForwarding(this.emailConnector.id, this.forwarding);
+          }
         }
         await this.$translationService.saveTranslations('emailConnector',  emailConnector.id, 'name', this.emailConnectorNameTranslations);
         if (isNew) {
@@ -498,7 +531,10 @@ export default {
         // connector may not move to a provider that asks the user). Whatever the
         // bundle, a translatable code beats the generic "error" that tells the
         // administrator nothing about a form they can correct.
-        if (e?.messageCode && this.$te(e.messageCode)) {
+        if (e?.message === 'emailConnector.forwarding.domain.invalid') {
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.forwarding.domains.invalid'), 'error');
+        }
+        else if (e?.messageCode && this.$te(e.messageCode)) {
           this.$root.$emit('alert-message', this.$t(e.messageCode), 'error');
         }
         else if (isNew) {

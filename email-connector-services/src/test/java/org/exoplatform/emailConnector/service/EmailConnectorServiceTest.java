@@ -21,12 +21,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
@@ -59,6 +61,7 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.commons.file.services.FileStorageException;
 import org.exoplatform.emailConnector.event.EmailConnectorProviderChangedEvent;
+import org.exoplatform.emailConnector.model.ConnectorForwarding;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
@@ -1465,5 +1468,42 @@ public class EmailConnectorServiceTest {
     connector.setId(id);
     connector.setAuthProviderName(providerName);
     return connector;
+  }
+
+  /**
+   * The connector screen's forwarding settings: only an administrator reads or saves
+   * them; a save is kept in the global settings, which only administrators can write,
+   * with each domain checked and lower-cased, and answers what applies at once.
+   */
+  @Test
+  @SneakyThrows
+  void forwardingSettingsAreAdministrators() {
+    EmailConnector connector = emailConnector();
+    connector.setId(7L);
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(connector);
+    ConnectorForwarding forwarding = new ConnectorForwarding(true, List.of("Partner.com", "@other.org"), false, false);
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.saveForwarding(7L, forwarding, TEST_USER));
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.getForwarding(7L, TEST_USER));
+    verify(settingService, never()).set(any(), any(), any(), any());
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    java.util.Map<String, String> stored = new java.util.HashMap<>();
+    doAnswer(invocation -> {
+      stored.put(invocation.getArgument(2, String.class), invocation.getArgument(3, SettingValue.class).getValue().toString());
+      return null;
+    }).when(settingService).set(eq(Context.GLOBAL), any(), anyString(), any(SettingValue.class));
+    when(settingService.get(eq(Context.GLOBAL), any(), anyString())).thenAnswer(invocation -> {
+      String value = stored.get(invocation.getArgument(2, String.class));
+      return value == null ? null : SettingValue.create(value);
+    });
+    ConnectorForwarding saved = emailConnectorService.saveForwarding(7L, forwarding, TEST_USER);
+    assertTrue(saved.isAuthoringEnabled());
+    assertTrue(saved.isSaved());
+    assertEquals(List.of("partner.com", "other.org"), saved.getAllowedDomains());
+    assertEquals(saved, emailConnectorService.getForwarding(7L, TEST_USER));
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailConnectorService.saveForwarding(7L, new ConnectorForwarding(true, List.of("not a domain"), false, false), TEST_USER));
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.saveForwarding(8L, forwarding, TEST_USER));
   }
 }
