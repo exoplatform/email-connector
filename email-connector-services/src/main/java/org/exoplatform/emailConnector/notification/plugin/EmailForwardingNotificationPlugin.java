@@ -134,9 +134,20 @@ public class EmailForwardingNotificationPlugin extends BaseNotificationPlugin {
                            .with(NotificationConstants.FORWARDING_CHANGE, change.name())
                            .with(NotificationConstants.FORWARDING_DESTINATION, destination)
                            .with(NotificationConstants.FORWARDING_SOURCE, source)
-                           .with(NotificationConstants.LINK, EmailConnectorUtils.getEmailsLink(receiver))
+                           .with(NotificationConstants.LINK, link(receiver))
                            .key(getKey())
                            .end();
+  }
+
+  /**
+   * The link a click follows by mail or push: the mailbox's deep link opening the
+   * forwarding drawer, where the forward is shown and managed -- not the mailbox's list.
+   *
+   * @param receiver the owner
+   * @return the link
+   */
+  static String link(String receiver) {
+    return EmailConnectorUtils.getEmailsLink(receiver) + "&forwarding=true";
   }
 
   /**
