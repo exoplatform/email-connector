@@ -34,6 +34,9 @@ import java.util.Set;
  * @param when {@link #IMMEDIATE} or {@link #AFTER_AGENT}; decided by the service, not
  *          the form: every post-action of a rule with an assistant waits for it
  * @param destination for {@link #FORWARD}: the confirmed address a copy is forwarded to
+ * @param suggestActions for {@link #AGENT}: whether the assistant may use the platform's
+ *          tools -- reading freely, and proposing every change for the owner to approve,
+ *          one by one; false, the default, offers it no tool at all
  */
 public record FilterAction(String type,
                            String folderKey,
@@ -42,7 +45,8 @@ public record FilterAction(String type,
                            String instruction,
                            List<String> outputs,
                            String when,
-                           String destination) {
+                           String destination,
+                           boolean suggestActions) {
 
   /** Runs an assistant on the mail; its answer is applied by the enterprise glue. */
   public static final String      AGENT          = "AGENT";
@@ -107,6 +111,8 @@ public record FilterAction(String type,
    * @param instruction the instruction
    * @param outputs the outputs
    * @param when when it applies
+   * @param destination the forward's address
+   * @param suggestActions whether the assistant may suggest tool calls
    */
   public FilterAction {
     outputs = outputs == null ? List.of() : List.copyOf(outputs);
@@ -130,7 +136,30 @@ public record FilterAction(String type,
                       String instruction,
                       List<String> outputs,
                       String when) {
-    this(type, folderKey, categoryId, agentNameId, instruction, outputs, when, null);
+    this(type, folderKey, categoryId, agentNameId, instruction, outputs, when, null, false);
+  }
+
+  /**
+   * An action whose assistant, if any, suggests no tool call.
+   *
+   * @param type the type
+   * @param folderKey the folder
+   * @param categoryId the category
+   * @param agentNameId the assistant
+   * @param instruction the instruction
+   * @param outputs the outputs
+   * @param when when it applies
+   * @param destination the forward's address
+   */
+  public FilterAction(String type,
+                      String folderKey,
+                      Long categoryId,
+                      String agentNameId,
+                      String instruction,
+                      List<String> outputs,
+                      String when,
+                      String destination) {
+    this(type, folderKey, categoryId, agentNameId, instruction, outputs, when, destination, false);
   }
 
   /**
@@ -140,7 +169,7 @@ public record FilterAction(String type,
    * @return the action
    */
   public FilterAction withWhen(String newWhen) {
-    return new FilterAction(type, folderKey, categoryId, agentNameId, instruction, outputs, newWhen, destination);
+    return new FilterAction(type, folderKey, categoryId, agentNameId, instruction, outputs, newWhen, destination, suggestActions);
   }
 
   /**
