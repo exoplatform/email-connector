@@ -73,18 +73,20 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               <v-list-item-subtitle
                 v-for="action in match.actions"
                 :key="`${match.id}-${action.type}`"
-                class="d-flex align-center">
+                class="d-flex align-baseline">
                 <span :class="action.ok ? '' : 'error--text'">{{ actionLabel(action) }}</span>
-                <v-btn
+                <!-- An inline text link, as the mail's Automations panel writes its Undo:
+                     a text v-btn sits lower than the line it follows. -->
+                <a
                   v-if="canUndo(action)"
-                  :disabled="busy"
-                  class="ms-1 px-1"
-                  color="primary"
-                  text
-                  x-small
-                  @click.stop="undo(match, action.type)">
+                  :class="busy ? 'text--disabled' : 'primary--text'"
+                  :aria-disabled="busy"
+                  class="ms-2 pa-0 font-weight-regular"
+                  role="button"
+                  href="javascript:void(0);"
+                  @click.prevent.stop="busy || undo(match, action.type)">
                   {{ $t('UserSettings.emailConnector.filters.exo.log.undo') }}
-                </v-btn>
+                </a>
               </v-list-item-subtitle>
               <v-list-item-subtitle v-if="match.agentStatus && match.agentStatus !== 'NONE'" class="text-truncate">
                 {{ $t(`UserSettings.emailConnector.filters.exo.agent.${match.agentStatus}`) }}
