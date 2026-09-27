@@ -143,6 +143,32 @@ public class EmailFilterDAOTest {
   }
 
   /**
+   * The startup sweep's read crosses users, keeps the waiting statuses only and pages by
+   * id; its claim moves a match only from the status it was read in, once.
+   */
+  @Test
+  void theSweepReadsEveryUsersWaitingMatchesAndClaimsEachOnce() {
+    Long first = persistMatch(OWNER, 7L, "h1", "PENDING", 1_000L);
+    persistMatch(OWNER, 7L, "h2", "DONE", 2_000L);
+    Long second = persistMatch(OTHER, 7L, "h1", "RUNNING", 3_000L);
+    Long third = persistMatch(OTHER, 8L, "h1", "PENDING", 4_000L);
+    entityManager.clear();
+    List<String> waiting = List.of("PENDING", "RUNNING");
+
+    assertEquals(List.of(first, second),
+                 emailFilterMatchDAO.findByAgentStatuses(waiting, 0L, PageRequest.of(0, 2)).stream().map(EmailFilterMatchEntity::getId).toList());
+    assertEquals(List.of(third),
+                 emailFilterMatchDAO.findByAgentStatuses(waiting, second, PageRequest.of(0, 2)).stream().map(EmailFilterMatchEntity::getId).toList());
+
+    assertEquals(1, emailFilterMatchDAO.updateAgentStatusIf(first, "PENDING", "SKIPPED_DISABLED"));
+    assertEquals(0, emailFilterMatchDAO.updateAgentStatusIf(first, "PENDING", "SKIPPED_DISABLED"), "claimed once");
+    assertEquals(0, emailFilterMatchDAO.updateAgentStatusIf(second, "PENDING", "SKIPPED_DISABLED"), "not in the status read");
+    assertEquals("SKIPPED_DISABLED", emailFilterMatchDAO.findById(first).orElseThrow().getAgentStatus());
+    assertEquals(List.of(second, third),
+                 emailFilterMatchDAO.findByAgentStatuses(waiting, 0L, PageRequest.of(0, 10)).stream().map(EmailFilterMatchEntity::getId).toList());
+  }
+
+  /**
    * Stores a rule.
    *
    * @param userId the owner
@@ -176,8 +202,9 @@ public class EmailFilterDAOTest {
    * @param hash the mail's hash
    * @param status the assistant's status
    * @param date when it matched
+   * @return its id
    */
-  private void persistMatch(String userId, Long filterId, String hash, String status, long date) {
+  private Long persistMatch(String userId, Long filterId, String hash, String status, long date) {
     EmailFilterMatchEntity entity = new EmailFilterMatchEntity();
     entity.setUserId(userId);
     entity.setFilterId(filterId);
@@ -186,6 +213,6 @@ public class EmailFilterDAOTest {
     entity.setMatchedDate(new Date(date));
     entity.setAgentStatus(status);
     entity.setCreatedDate(new Date(date));
-    entityManager.persistAndFlush(entity);
+    return entityManager.persistAndFlush(entity).getId();
   }
 }
