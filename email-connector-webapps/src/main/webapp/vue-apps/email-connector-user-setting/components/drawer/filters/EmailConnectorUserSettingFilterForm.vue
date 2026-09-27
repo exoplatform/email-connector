@@ -157,35 +157,84 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       outlined
       hide-details
       @blur="$refs.moveToSelect.blur()" />
-    <div v-if="!exoDisabled" class="mt-4 mb-2">
-      {{ $t('UserSettings.emailConnector.filters.exo.form.category') }}
+    <!-- With an assistant (EXO-90659), each of these four is Off, Always, or left to the
+         assistant, in the platform's button-group pattern as this add-on's folder access
+         list (EmailConnectorUserSettingFolderAccessList) and social's SelectPeriod use it:
+         a dense v-btn-toggle of small text buttons, one always chosen. Always is the plain
+         action; "Assistant decides" is an output of the assistant's action. Without an
+         assistant they are the plain switches and select they always were. -->
+    <template v-if="hasAgent">
+      <template v-for="row in decidableRows">
+        <div
+          :key="`${row.output}-row`"
+          class="d-flex align-center justify-space-between full-width flex-wrap mt-4">
+          <div :id="`${uid}-${row.output}`" class="me-2">{{ $t(row.labelKey) }}</div>
+          <v-btn-toggle
+            :value="modeOf(row.output)"
+            :aria-labelledby="`${uid}-${row.output}`"
+            mandatory
+            dense
+            @change="setMode(row.output, $event)">
+            <v-btn
+              v-for="mode in MODES"
+              :key="mode"
+              :value="mode"
+              x-small
+              text>
+              {{ $t(`UserSettings.emailConnector.filters.exo.form.mode.${mode}`) }}
+            </v-btn>
+          </v-btn-toggle>
+        </div>
+        <v-select
+          v-if="row.output === 'CATEGORY' && modeOf('CATEGORY') === 'ALWAYS'"
+          :key="`${row.output}-select`"
+          v-model="categoryId"
+          :items="categoryItems"
+          :menu-props="{ bottom: true, offsetY: true }"
+          :aria-label="$t('UserSettings.emailConnector.filters.exo.form.category')"
+          class="pa-0 mt-2"
+          dense
+          outlined
+          hide-details />
+      </template>
+    </template>
+    <template v-else>
+      <div v-if="!exoDisabled" class="mt-4 mb-2">
+        {{ $t('UserSettings.emailConnector.filters.exo.form.category') }}
+      </div>
+      <v-select
+        v-if="!exoDisabled"
+        ref="categorySelect"
+        v-model="categoryId"
+        :items="categoryItems"
+        :menu-props="{ bottom: true, offsetY: true }"
+        :aria-label="$t('UserSettings.emailConnector.filters.exo.form.category')"
+        class="pa-0"
+        clearable
+        dense
+        outlined
+        hide-details
+        @blur="$refs.categorySelect.blur()" />
+      <email-connector-user-setting-filter-switch
+        v-model="markRead"
+        :label="$t('UserSettings.emailConnector.filters.form.markRead')"
+        class="mt-4" />
+      <email-connector-user-setting-filter-switch
+        v-model="star"
+        :label="$t('UserSettings.emailConnector.filters.form.star')"
+        class="mt-2" />
+      <email-connector-user-setting-filter-switch
+        v-if="!exoDisabled"
+        v-model="notify"
+        :label="$t('UserSettings.emailConnector.filters.exo.form.notify')"
+        class="mt-2" />
+    </template>
+    <div
+      v-if="agentOffHint"
+      class="text-subtitle mt-2"
+      role="status">
+      {{ $t('UserSettings.emailConnector.filters.exo.form.agentOffHint') }}
     </div>
-    <v-select
-      v-if="!exoDisabled"
-      ref="categorySelect"
-      v-model="categoryId"
-      :items="categoryItems"
-      :menu-props="{ bottom: true, offsetY: true }"
-      :aria-label="$t('UserSettings.emailConnector.filters.exo.form.category')"
-      class="pa-0"
-      clearable
-      dense
-      outlined
-      hide-details
-      @blur="$refs.categorySelect.blur()" />
-    <email-connector-user-setting-filter-switch
-      v-model="markRead"
-      :label="$t('UserSettings.emailConnector.filters.form.markRead')"
-      class="mt-4" />
-    <email-connector-user-setting-filter-switch
-      v-model="star"
-      :label="$t('UserSettings.emailConnector.filters.form.star')"
-      class="mt-2" />
-    <email-connector-user-setting-filter-switch
-      v-if="!exoDisabled"
-      v-model="notify"
-      :label="$t('UserSettings.emailConnector.filters.exo.form.notify')"
-      class="mt-2" />
     <!-- "Forward to" (EXO-90656): a copy of the mail to one confirmed address in the
          allowed domains, the mail kept; only where the deployment enabled forwarding, and
          only on the mail server. The address is confirmed here, by the code eXo sends to
@@ -261,6 +310,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 import { isAllowedDestination, normalizeDestination } from '../../../js/EmailConnectorForwarding.js';
 import {
   ALL_FIELDS,
+  DECIDABLE_OUTPUTS,
   EXO_ONLY_FIELDS,
   FILTER_ACTION_EXTENSION,
   filtersMessage,
@@ -272,6 +322,12 @@ import {
 } from '../../../js/EmailConnectorFilters.js';
 
 let nextKey = 1;
+
+/** What the user may choose for an action a rule's assistant may also decide. */
+const MODES = ['OFF', 'ALWAYS', 'AGENT'];
+
+/** Makes each instance's label ids unique. */
+let nextUid = 1;
 
 export default {
   props: {
@@ -306,6 +362,14 @@ export default {
     },
   },
   data: () => ({
+    MODES,
+    uid: `emailConnectorFilterForm${nextUid++}`,
+    // With an assistant, whether the category is Always, before a category is chosen.
+    categoryAlways: false,
+    // The actions the assistant decided, while it is on: what turning it off turns off.
+    agentDecided: [],
+    // Whether the last switch-off of the assistant turned "Assistant decides" choices off.
+    agentOffHint: false,
     name: '',
     // Not a field of the form: the list switches a filter on and off. A new filter is
     // created on, an edited one keeps the state it has.
@@ -419,6 +483,27 @@ export default {
      */
     hasAgent() {
       return this.usedExtensionActions.some(action => action.type === 'AGENT');
+    },
+    /**
+     * The assistant's action, when the rule has one.
+     *
+     * @returns {Object|null} {type: 'AGENT', outputs, ...}
+     */
+    agentAction() {
+      return this.usedExtensionActions.find(action => action.type === 'AGENT') || null;
+    },
+    /**
+     * The four actions an assistant may decide, in the form's order.
+     *
+     * @returns {Object[]} {output, labelKey}
+     */
+    decidableRows() {
+      return [
+        { output: 'CATEGORY', labelKey: 'UserSettings.emailConnector.filters.exo.form.category' },
+        { output: 'MARK_READ', labelKey: 'UserSettings.emailConnector.filters.form.markRead' },
+        { output: 'STAR', labelKey: 'UserSettings.emailConnector.filters.form.star' },
+        { output: 'NOTIFY', labelKey: 'UserSettings.emailConnector.filters.exo.form.notify' },
+      ];
     },
     /**
      * Whether the filter does anything at all.
@@ -541,7 +626,9 @@ export default {
      */
     valid() {
       const forwardValid = !this.forwardInput || (!!this.forwardDestination && this.forwardConfirmed && !this.forwardNotOnServer);
-      return this.nameRule(this.name) === true && this.hasAction && this.conditionsValid && !this.exoOnlyRefused && forwardValid;
+      const categoryValid = !this.hasAgent || !this.categoryAlways || !!this.categoryId;
+      return this.nameRule(this.name) === true && this.hasAction && this.conditionsValid && !this.exoOnlyRefused && forwardValid
+        && categoryValid;
     },
     /**
      * The preview's sentence.
@@ -562,11 +649,25 @@ export default {
         this.$emit('change', { value: this.value, valid: this.valid, kind: this.kind });
       },
     },
+    valid() {
+      this.$emit('change', { value: this.value, valid: this.valid, kind: this.kind });
+    },
     kind() {
       this.previewResult = null;
     },
     forwardOffered() {
       this.readForwardingAuthoring();
+    },
+    agentAction(action) {
+      if (action) {
+        this.agentDecided = (action.outputs || []).filter(output => DECIDABLE_OUTPUTS[output]);
+        this.agentOffHint = false;
+      } else {
+        // Switched off: what was left to the assistant is off, and the form says so.
+        this.agentOffHint = this.agentDecided.length > 0;
+        this.agentDecided = [];
+        this.categoryAlways = false;
+      }
     },
   },
   created() {
@@ -611,6 +712,56 @@ export default {
         extensionActions[extension.type] = actions.find(action => action.type === extension.type) || null;
       });
       this.extensionActions = extensionActions;
+    },
+    /**
+     * What the rule does about one of the four actions an assistant may decide: Off,
+     * Always -- the plain action --, or AGENT, the assistant's output.
+     *
+     * @param {String} output - CATEGORY, MARK_READ, STAR or NOTIFY
+     * @returns {String} OFF, ALWAYS or AGENT
+     */
+    modeOf(output) {
+      if ((this.agentAction?.outputs || []).includes(output)) {
+        return 'AGENT';
+      }
+      const always = {
+        CATEGORY: !!this.categoryId || this.categoryAlways,
+        MARK_READ: this.markRead,
+        STAR: this.star,
+        NOTIFY: this.notify,
+      };
+      return always[output] ? 'ALWAYS' : 'OFF';
+    },
+    /**
+     * Sets what the rule does about one of the four actions: the plain action on for
+     * Always, the assistant's output on for AGENT, both off for Off -- never both on.
+     *
+     * @param {String} output - CATEGORY, MARK_READ, STAR or NOTIFY
+     * @param {String} mode - OFF, ALWAYS or AGENT
+     * @returns {void}
+     */
+    setMode(output, mode) {
+      const always = mode === 'ALWAYS';
+      if (output === 'CATEGORY') {
+        this.categoryAlways = always;
+        if (!always) {
+          this.categoryId = null;
+        }
+      } else if (output === 'MARK_READ') {
+        this.markRead = always;
+      } else if (output === 'STAR') {
+        this.star = always;
+      } else if (output === 'NOTIFY') {
+        this.notify = always;
+      }
+      const action = this.agentAction;
+      if (action) {
+        const outputs = (action.outputs || []).filter(candidate => candidate !== output);
+        if (mode === 'AGENT') {
+          outputs.push(output);
+        }
+        this.$set(this.extensionActions, 'AGENT', { ...action, outputs });
+      }
     },
     /**
      * A condition row.
