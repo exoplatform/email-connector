@@ -18,7 +18,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <!-- The mail's Automations panel (EXO-90654): what the user's eXo rules did to this
        mail, each action with its Undo, the assistant's status and what it made of the
        mail -- the latter through the ('EmailFilter', 'email-filter-outcome') extension
-       point, which the enterprise glue fills. What a server rule did at delivery is
+       point, which the enterprise glue fills --, and the tool calls it proposed, one card
+       each, for the user to decide (EXO-90659). What a server rule did at delivery is
        never here: the server does not report it. Renders nothing when no rule matched,
        and nothing on a mail of a mailbox somebody shared with the user. -->
   <v-card
@@ -108,6 +109,20 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :key="`${match.id}-${extension.id}`"
           :match="match"
           :email="email" />
+      </template>
+      <!-- The tool calls the assistant proposed, one card each, oldest first (EXO-90659). -->
+      <template v-if="match.proposals && match.proposals.length">
+        <div class="text-body-2 font-weight-bold mt-2">
+          {{ $t('emailConnector.mailBox.automations.proposal.heading') }}
+        </div>
+        <email-connector-mail-box-proposal-card
+          v-for="proposal in match.proposals"
+          :key="`${match.id}-proposal-${proposal.id}`"
+          :proposal="proposal"
+          :match="match"
+          :email="email"
+          @updated="replaceProposal(match, $event)"
+          @refresh="read" />
       </template>
     </div>
   </v-card>
@@ -264,6 +279,18 @@ export default {
         })
         .catch(error => this.error = filtersMessage(this.$t.bind(this), error))
         .finally(() => this.busy = false);
+    },
+    /**
+     * Puts a proposal's new state on its match, as the decision answered it.
+     *
+     * @param {Object} match - the match
+     * @param {Object} proposal - the proposal
+     * @returns {void}
+     */
+    replaceProposal(match, proposal) {
+      this.matches = this.matches.map(candidate => (candidate.id === match.id
+        ? { ...candidate, proposals: (candidate.proposals || []).map(item => (item.id === proposal.id ? proposal : item)) }
+        : candidate));
     },
     /**
      * Undoes one action of a match.
