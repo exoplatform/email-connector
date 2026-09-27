@@ -18,6 +18,12 @@
 /** The root event the Settings row opens the filters drawer with. */
 export const OPEN_FILTERS_DRAWER_EVENT = 'open-email-filters-drawer';
 
+/** The root event that closes the filters drawer: a matched mail opened from its log drawer. */
+export const CLOSE_FILTERS_DRAWER_EVENT = 'close-email-filters-drawer';
+
+/** The root event a filter's history button opens its log drawer with: {id, name}. */
+export const OPEN_FILTER_LOG_DRAWER_EVENT = 'open-email-filter-log-drawer';
+
 /** The document event the drawer dispatches after a write, so the row reads again. */
 export const FILTERS_UPDATED_EVENT = 'email-filters-updated';
 

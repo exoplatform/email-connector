@@ -40,6 +40,7 @@ import EmailConnectorUserSettingFilterForm from './components/drawer/filters/Ema
 import EmailConnectorUserSettingFilterCondition from './components/drawer/filters/EmailConnectorUserSettingFilterCondition.vue';
 import EmailConnectorUserSettingFilterSwitch from './components/drawer/filters/EmailConnectorUserSettingFilterSwitch.vue';
 import EmailConnectorUserSettingFilterList from './components/drawer/filters/EmailConnectorUserSettingFilterList.vue';
+import EmailConnectorUserSettingFilterLogDrawer from './components/drawer/filters/EmailConnectorUserSettingFilterLogDrawer.vue';
 import EmailConnectorUserSettingMailboxSharingDrawer from './components/sharing/EmailConnectorUserSettingMailboxSharingDrawer.vue';
 import EmailConnectorUserSettingSharingInviteDrawer from './components/sharing/EmailConnectorUserSettingSharingInviteDrawer.vue';
 import EmailConnectorUserSettingFolderAccessDrawer from './components/sharing/EmailConnectorUserSettingFolderAccessDrawer.vue';
@@ -71,6 +72,7 @@ const components = {
   'email-connector-user-setting-filter-condition': EmailConnectorUserSettingFilterCondition,
   'email-connector-user-setting-filter-switch': EmailConnectorUserSettingFilterSwitch,
   'email-connector-user-setting-filter-list': EmailConnectorUserSettingFilterList,
+  'email-connector-user-setting-filter-log-drawer': EmailConnectorUserSettingFilterLogDrawer,
   'email-connector-user-setting-mailbox-sharing-drawer': EmailConnectorUserSettingMailboxSharingDrawer,
   'email-connector-user-setting-sharing-invite-drawer': EmailConnectorUserSettingSharingInviteDrawer,
   'email-connector-user-setting-folder-access-drawer': EmailConnectorUserSettingFolderAccessDrawer,
