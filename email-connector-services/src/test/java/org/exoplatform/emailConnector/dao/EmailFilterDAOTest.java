@@ -143,6 +143,23 @@ public class EmailFilterDAOTest {
   }
 
   /**
+   * The batch read by mails: every rule's matches on the named mails, the owner's only,
+   * newest first.
+   */
+  @Test
+  void matchesAreReadForABatchOfMails() {
+    Long older = persistMatch(OWNER, 7L, "h1", "NONE", 1_000L);
+    Long newer = persistMatch(OWNER, 8L, "h2", "DONE", 2_000L);
+    persistMatch(OWNER, 7L, "h3", "NONE", 3_000L);
+    persistMatch(OTHER, 7L, "h1", "NONE", 4_000L);
+    entityManager.clear();
+
+    assertEquals(List.of(newer, older),
+                 emailFilterMatchDAO.findByMails(OWNER, List.of("h1", "h2", "h9")).stream().map(EmailFilterMatchEntity::getId).toList());
+    assertTrue(emailFilterMatchDAO.findByMails("nobody", List.of("h1")).isEmpty());
+  }
+
+  /**
    * The startup sweep's read crosses users, keeps the waiting statuses only and pages by
    * id; its claim moves a match only from the status it was read in, once.
    */
