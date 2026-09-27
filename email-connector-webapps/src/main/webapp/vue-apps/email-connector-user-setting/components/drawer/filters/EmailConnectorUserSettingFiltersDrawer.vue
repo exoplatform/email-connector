@@ -65,7 +65,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 hide-details />
               <div class="d-flex justify-end mt-2">
                 <v-btn
-                  class="btn me-2"
+                  class="me-2"
+                  color="primary"
+                  text
                   small
                   @click="created = null">
                   {{ $t('UserSettings.emailConnector.filters.exo.apply.later') }}
