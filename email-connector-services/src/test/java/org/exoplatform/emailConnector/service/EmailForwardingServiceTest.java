@@ -327,6 +327,27 @@ public class EmailForwardingServiceTest {
   }
 
   /**
+   * What the connector screen saves applies to the next request, without a restart: a
+   * domain outside the saved list is refused, the switch saved off refuses every new
+   * forward though the property enables it, and the kill switch beats a screen saved on.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheScreenAppliesAtOnce() throws Exception {
+    service.sendCode(USERNAME, null, BOB);
+    ForwardingGuard.save(settingService, CONNECTOR_ID, true, List.of("partner.com"));
+    now += 61_000;
+    assertRefused(ForwardingGuard.DOMAIN_NOT_ALLOWED, () -> service.sendCode(USERNAME, null, CAROL));
+    assertEquals("bob@partner.com", service.sendCode(USERNAME, null, "bob@partner.com").destination());
+    ForwardingGuard.save(settingService, CONNECTOR_ID, false, List.of("partner.com"));
+    assertRefused(ForwardingGuard.DISABLED, () -> service.sendCode(USERNAME, null, "bob@partner.com"));
+    ForwardingGuard.save(settingService, CONNECTOR_ID, true, List.of("partner.com"));
+    System.setProperty(ForwardingGuard.AUTHORING_PROPERTY, "false");
+    assertRefused(ForwardingGuard.DISABLED, () -> service.sendCode(USERNAME, null, "bob@partner.com"));
+  }
+
+  /**
    * A destination that was confirmed but whose domain is no longer allowed is no longer
    * authorized for any write: the generators check against this.
    */
