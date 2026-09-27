@@ -129,6 +129,24 @@ export const FILTER_ACTION_EXTENSION = { app: 'EmailFilter', type: 'email-filter
  */
 export const FILTER_OUTCOME_EXTENSION = { app: 'EmailFilter', type: 'email-filter-outcome' };
 
+/**
+ * The extension point of the AI glue's part of a proposal card (EXO-90659):
+ * extensionRegistry.registerExtension('EmailFilter', 'email-filter-proposal', {id,
+ * approve(proposal, request), continueInChat(proposal, match, email, t)}). approve runs
+ * request() -- the REST approval, which runs the call as the user -- while it answers the
+ * platform's own approval of that very call, and resolves with request()'s answer;
+ * continueInChat opens the regular AI chat about the mail with the proposal as a draft,
+ * written with the card's translation function t.
+ * Without it the card offers only Reject: nothing on the deployment runs tools.
+ */
+export const FILTER_PROPOSAL_EXTENSION = { app: 'EmailFilter', type: 'email-filter-proposal' };
+
+/**
+ * The outputs of an assistant that stand for one of the form's plain actions, when the
+ * rule leaves it to the assistant ("Assistant decides"): output -> plain action type.
+ */
+export const DECIDABLE_OUTPUTS = { CATEGORY: 'ADD_CATEGORY', MARK_READ: 'MARK_READ', STAR: 'STAR', NOTIFY: 'NOTIFY' };
+
 /** The operators on text. */
 const TEXT_OPERATORS = ['CONTAINS', 'NOT_CONTAINS', 'EQUALS', 'STARTS_WITH', 'ENDS_WITH'];
 
