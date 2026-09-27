@@ -20,6 +20,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -1258,12 +1259,30 @@ public class EmailFilterService {
    * @param line the assistant's one line, or null
    */
   public void notifyOwner(String username, String filterName, int count, String line) {
+    notifyOwner(username, filterName, count, line, null, null);
+  }
+
+  /**
+   * Tells the owner that a rule matched their mail, naming the one mail a click opens: by
+   * its inbox UID while it is still there, or by the folder the rule filed it into.
+   *
+   * @param username the owner
+   * @param filterName the rule's name
+   * @param count how many mails it matched
+   * @param line the assistant's one line, or null
+   * @param mailRemoteId the mail's inbox UID, or null when it left the inbox
+   * @param mailFolder the folder the rule filed the mail into, or null
+   */
+  public void notifyOwner(String username, String filterName, int count, String line, Long mailRemoteId, String mailFolder) {
     try {
       NotificationContext ctx = NotificationContextImpl.cloneInstance()
                                                        .append(EmailFilterNotificationPlugin.RECEIVER, username)
                                                        .append(EmailFilterNotificationPlugin.FILTER_NAME, filterName)
                                                        .append(EmailFilterNotificationPlugin.COUNT, String.valueOf(count))
-                                                       .append(EmailFilterNotificationPlugin.LINE, StringUtils.defaultString(line));
+                                                       .append(EmailFilterNotificationPlugin.LINE, StringUtils.defaultString(line))
+                                                       .append(EmailFilterNotificationPlugin.MAIL_REMOTE_ID,
+                                                               mailRemoteId == null ? "" : String.valueOf(mailRemoteId))
+                                                       .append(EmailFilterNotificationPlugin.MAIL_FOLDER, StringUtils.defaultString(mailFolder));
       ctx.getNotificationExecutor()
          .with(ctx.makeCommand(PluginKey.key(NotificationConstants.EMAIL_FILTER_NOTIFICATION_PLUGIN)))
          .execute(ctx);
@@ -1358,6 +1377,26 @@ public class EmailFilterService {
   }
 
   /**
+   * Where a match's filing action put the mail, when one did: its UID in the inbox then
+   * names nothing, a move giving the mail another UID in its new folder.
+   *
+   * @param match the match, possibly null
+   * @return the folder key the mail was filed into, or null when it is still in the inbox
+   */
+  static String filedInto(EmailFilterMatch match) {
+    if (match == null || match.getActions() == null) {
+      return null;
+    }
+    return match.getActions()
+                .stream()
+                .filter(action -> action.ok() && !action.undone() && FilterAction.FILING.contains(action.type()))
+                .map(AppliedAction::folderKey)
+                .filter(Objects::nonNull)
+                .reduce((first, second) -> second)
+                .orElse(null);
+  }
+
+  /**
    * Applies what a pass decided: the post-actions of its immediate matches, batched per
    * rule, the counters, one notification per rule, the assistant's request.
    *
@@ -1386,7 +1425,16 @@ public class EmailFilterService {
       }
     }
     run.counts.forEach((filterId, count) -> emailFilterStorage.addMatches(filterId, run.username, count, run.now));
-    run.notifications.forEach((name, count) -> notifyOwner(run.username, name, count, null));
+    run.notifications.forEach((name, count) -> {
+      EmailFilterMatch notified = Optional.ofNullable(run.notified.get(name)).map(Entry::match).orElse(null);
+      String filedInto = filedInto(notified);
+      notifyOwner(run.username,
+                  name,
+                  count,
+                  null,
+                  notified == null || filedInto != null ? null : notified.getMailRemoteId(),
+                  filedInto);
+    });
     requestAgent(run.username, run.queued);
   }
 
@@ -1467,6 +1515,11 @@ public class EmailFilterService {
       }
       case FilterAction.NOTIFY -> {
         run.notifications.merge(filter.getName(), entries.size(), Integer::sum);
+        // The mail a click on the notification opens: the most recent of the batch, the
+        // highest UID, a UID growing with each arrival in the inbox.
+        entries.stream()
+               .max(Comparator.comparing(entry -> entry.email().getMailRemoteId(), Comparator.nullsFirst(Comparator.naturalOrder())))
+               .ifPresent(entry -> run.notified.put(filter.getName(), entry));
         entries.forEach(entry -> record(applied, entry, AppliedAction.applied(action.type())));
       }
       case FilterAction.MOVE_TO_FOLDER, FilterAction.MARK_JUNK, FilterAction.DELETE -> {
@@ -2231,6 +2284,9 @@ public class EmailFilterService {
 
     /** How many mails each notifying rule matched, by rule name. */
     private final Map<String, Integer>          notifications = new LinkedHashMap<>();
+
+    /** The mail each notifying rule's notification opens, by rule name. */
+    private final Map<String, Entry>            notified      = new HashMap<>();
 
     /** The matches queued for the assistant. */
     private final List<Long>                    queued        = new ArrayList<>();
