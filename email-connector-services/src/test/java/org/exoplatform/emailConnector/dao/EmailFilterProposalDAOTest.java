@@ -139,6 +139,64 @@ public class EmailFilterProposalDAOTest {
   }
 
   /**
+   * The reason is written on a waiting proposal of the owner's match only -- and a claim
+   * made between the run's read and its write is never undone by it: the write touches
+   * the reason alone, under the waiting status.
+   */
+  @Test
+  void aReasonNeverUndoesAClaim() {
+    Long id = persist(OWNER, 7L, "h1", "PROPOSED", "run-1", NOW + 1_000);
+    entityManager.flush();
+    entityManager.clear();
+    emailFilterProposalDAO.findById(id).orElseThrow(); // the run reads it waiting
+
+    Date now = new Date(NOW);
+    assertEquals(1, emailFilterProposalDAO.claim(id, OWNER, "PROPOSED", "RUNNING", now, now)); // the owner approves
+    assertEquals(0, emailFilterProposalDAO.setRationale(id, OWNER, 7L, "PROPOSED", "too late"));
+    entityManager.clear();
+    EmailFilterProposalEntity row = emailFilterProposalDAO.findById(id).orElseThrow();
+    assertEquals("RUNNING", row.getStatus());
+    assertNull(row.getRationale());
+
+    Long waiting = persist(OWNER, 7L, "h2", "PROPOSED", "run-1", NOW + 1_000);
+    entityManager.flush();
+    assertEquals(0, emailFilterProposalDAO.setRationale(waiting, OTHER, 7L, "PROPOSED", "x"), "someone else's");
+    assertEquals(0, emailFilterProposalDAO.setRationale(waiting, OWNER, 8L, "PROPOSED", "x"), "another match's");
+    assertEquals(1, emailFilterProposalDAO.setRationale(waiting, OWNER, 7L, "PROPOSED", "asked"));
+    entityManager.clear();
+    assertEquals("asked", emailFilterProposalDAO.findById(waiting).orElseThrow().getRationale());
+    assertEquals("PROPOSED", emailFilterProposalDAO.findById(waiting).orElseThrow().getStatus());
+  }
+
+  /**
+   * An approved call running since before the ceiling is failed, with the reason; a
+   * recent one, a waiting one and someone else's stay.
+   */
+  @Test
+  void aStaleRunningCallIsFailed() {
+    Long stale = persist(OWNER, 7L, "h1", "RUNNING", "run-1", NOW + 1_000);
+    Long recent = persist(OWNER, 7L, "h2", "RUNNING", "run-1", NOW + 1_000);
+    Long others = persist(OTHER, 7L, "h3", "RUNNING", "run-1", NOW + 1_000);
+    entityManager.flush();
+    entityManager.clear();
+    for (Long id : List.of(stale, others)) {
+      EmailFilterProposalEntity row = emailFilterProposalDAO.findById(id).orElseThrow();
+      row.setDecidedDate(new Date(NOW - 60_000));
+      emailFilterProposalDAO.saveAndFlush(row);
+    }
+    EmailFilterProposalEntity row = emailFilterProposalDAO.findById(recent).orElseThrow();
+    row.setDecidedDate(new Date(NOW));
+    emailFilterProposalDAO.saveAndFlush(row);
+
+    assertEquals(1, emailFilterProposalDAO.failStaleRunning(OWNER, "RUNNING", "FAILED", "interrupted", new Date(NOW - 1_000)));
+    entityManager.clear();
+    assertEquals("FAILED", emailFilterProposalDAO.findById(stale).orElseThrow().getStatus());
+    assertEquals("interrupted", emailFilterProposalDAO.findById(stale).orElseThrow().getLastError());
+    assertEquals("RUNNING", emailFilterProposalDAO.findById(recent).orElseThrow().getStatus());
+    assertEquals("RUNNING", emailFilterProposalDAO.findById(others).orElseThrow().getStatus());
+  }
+
+  /**
    * The expiry marks the owner's waiting rows past their date, and the supersede the
    * waiting rows of one match, with the reason; decided rows stay as they are.
    */

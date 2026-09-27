@@ -151,6 +151,51 @@ public interface EmailFilterProposalDAO extends JpaRepository<EmailFilterProposa
   String lastError);
 
   /**
+   * Writes the assistant's reason on a proposal of its owner's match, only while it still
+   * waits: never a write of the whole row, which could put back a status an approval
+   * moved in between.
+   *
+   * @param id the proposal
+   * @param userId the owner
+   * @param matchId the match it must belong to
+   * @param proposed the waiting status
+   * @param rationale the reason
+   * @return 1 when written, 0 otherwise
+   */
+  @Transactional
+  @Modifying(flushAutomatically = true, clearAutomatically = true)
+  @Query("UPDATE EmailFilterProposalEntity p SET p.rationale = :rationale"
+      + " WHERE p.id = :id AND p.userId = :userId AND p.matchId = :matchId AND p.status = :proposed")
+  int setRationale(@Param("id")
+  long id, @Param("userId")
+  String userId, @Param("matchId")
+  long matchId, @Param("proposed")
+  String proposed, @Param("rationale")
+  String rationale);
+
+  /**
+   * Fails a user's approved calls still running since before a date: their node died,
+   * or their call never came back.
+   *
+   * @param userId the owner
+   * @param running the running status
+   * @param failed the failed status
+   * @param reason the reason recorded
+   * @param before a call decided before this is abandoned
+   * @return how many
+   */
+  @Transactional
+  @Modifying(flushAutomatically = true, clearAutomatically = true)
+  @Query("UPDATE EmailFilterProposalEntity p SET p.status = :failed, p.lastError = :reason"
+      + " WHERE p.userId = :userId AND p.status = :running AND p.decidedDate < :before")
+  int failStaleRunning(@Param("userId")
+  String userId, @Param("running")
+  String running, @Param("failed")
+  String failed, @Param("reason")
+  String reason, @Param("before")
+  Date before);
+
+  /**
    * Expires a user's proposals still waiting past their expiry.
    *
    * @param userId the owner
