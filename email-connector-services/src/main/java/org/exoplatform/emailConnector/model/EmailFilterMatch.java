@@ -123,4 +123,10 @@ public class EmailFilterMatch {
 
   /** The last error, a message code or the handler's short reason. */
   private String                   lastError;
+
+  /**
+   * The tool calls the assistant proposed on this match, for the Automations panel; not
+   * stored with the match, and null where it is not read.
+   */
+  private List<EmailFilterProposal> proposals;
 }
