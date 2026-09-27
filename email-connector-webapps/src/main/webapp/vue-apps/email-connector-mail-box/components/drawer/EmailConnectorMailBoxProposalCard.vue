@@ -29,6 +29,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        a decided one a single line of its status icon, title and status. The details --
        the tool's id and description, the arguments as a key/value list, the whole reason,
        the error, Continue in the chat -- open under the chevron. -->
+  <!-- A failed card offers Fix it in the chat, on its folded row and in its details: the
+       regular AI chat about the mail opens with the recorded call and its error as an
+       unsent draft. Nothing is decided here: the proposal stays failed, and the chat's own
+       approval applies to whatever it runs. -->
   <v-card
     class="px-2 py-1 mt-1"
     outlined
@@ -68,6 +72,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         style="max-width: 50%;">
         {{ statusLine }}
       </span>
+      <a
+        v-if="fixable && !open"
+        :aria-disabled="!!busy"
+        :class="busy ? 'text--disabled' : 'primary--text'"
+        class="text-caption ms-2 flex-shrink-0"
+        role="button"
+        href="javascript:void(0);"
+        @click.prevent="busy || fixInChat()">
+        {{ $t('emailConnector.mailBox.automations.proposal.fix') }}
+      </a>
       <template v-if="waiting">
         <v-btn
           v-if="actions"
@@ -107,16 +121,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <div class="text-caption text-sub-title text-break">{{ proposal.toolName }}</div>
         <div
           v-if="proposal.toolDescription"
+          ref="description"
           :style="descriptionStyle"
           class="text-caption text-sub-title text-break">
           {{ proposal.toolDescription }}
         </div>
         <a
-          v-if="longDescription"
+          v-if="descriptionOpen || descriptionClamped"
+          :aria-expanded="String(descriptionOpen)"
           class="text-caption primary--text"
           role="button"
           href="javascript:void(0);"
-          @click.prevent="descriptionOpen = !descriptionOpen">
+          @click.prevent.stop="toggleDescription">
           {{ $t(descriptionOpen ? 'emailConnector.mailBox.automations.proposal.less' : 'emailConnector.mailBox.automations.proposal.more') }}
         </a>
         <div
@@ -157,6 +173,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           @click="continueInChat">
           {{ $t('emailConnector.mailBox.automations.proposal.continue') }}
         </v-btn>
+        <v-btn
+          v-if="fixable"
+          :disabled="!!busy"
+          class="mt-1 px-1"
+          color="primary"
+          text
+          x-small
+          @click="fixInChat">
+          {{ $t('emailConnector.mailBox.automations.proposal.fix') }}
+        </v-btn>
       </div>
     </v-expand-transition>
     <div
@@ -170,9 +196,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { FILTER_PROPOSAL_EXTENSION } from '../../../email-connector-user-setting/js/EmailConnectorFilters.js';
-
-/** How many characters of a tool's description show before "More". */
-const DESCRIPTION_PREVIEW = 160;
 
 /** An argument naming a space by its id, as the platform's tools name them. */
 const SPACE_ID_ARGUMENT = /(^|_)space_?id$/i;
@@ -215,6 +238,11 @@ export default {
     busy: null,
     error: null,
     descriptionOpen: false,
+    // Whether the folded description is cut: measured, since how many characters fit in
+    // two lines depends on the drawer's width.
+    descriptionClamped: false,
+    // Watches the description's size, to measure it again when the drawer is resized.
+    descriptionObserver: null,
     // Whether the card's details are open: closed until the user opens them.
     open: false,
     // The names the platform gave the ids and usernames of the arguments, by raw value.
@@ -231,6 +259,23 @@ export default {
     actions() {
       const extensions = extensionRegistry.loadExtensions(FILTER_PROPOSAL_EXTENSION.app, FILTER_PROPOSAL_EXTENSION.type) || [];
       return extensions.find(extension => extension?.approve && extension?.continueInChat) || null;
+    },
+    /**
+     * The AI glue's opener of the chat on a failed call, with its call and its error as
+     * the draft. Without it -- no AI add-on, or one that predates it --, a failed card
+     * offers nothing more.
+     *
+     * @returns {Object|null} {fixInChat(proposal, match, email, t, error)}
+     */
+    fixer() {
+      const extensions = extensionRegistry.loadExtensions(FILTER_PROPOSAL_EXTENSION.app, FILTER_PROPOSAL_EXTENSION.type) || [];
+      return extensions.find(extension => extension?.fixInChat) || null;
+    },
+    /**
+     * @returns {Boolean} whether the card offers Fix it in the chat: a failed call, with the AI glue
+     */
+    fixable() {
+      return this.proposal.status === 'FAILED' && !!this.fixer;
     },
     /**
      * @returns {String} the tool's own title, else its name
@@ -259,18 +304,13 @@ export default {
       return STATUS_ICONS[this.proposal.status] || null;
     },
     /**
-     * @returns {Boolean} whether the description is long enough to fold
-     */
-    longDescription() {
-      return (this.proposal.toolDescription || '').length > DESCRIPTION_PREVIEW;
-    },
-    /**
-     * The folded description's style: two lines, then an ellipsis.
+     * The folded description's style: two lines, then an ellipsis -- a description that
+     * fits is not changed by it.
      *
      * @returns {Object} the style binding
      */
     descriptionStyle() {
-      if (!this.longDescription || this.descriptionOpen) {
+      if (this.descriptionOpen) {
         return {};
       }
       return { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' };
@@ -338,14 +378,61 @@ export default {
   created() {
     this.resolveNames();
   },
+  mounted() {
+    this.observeDescription();
+  },
+  beforeDestroy() {
+    this.descriptionObserver?.disconnect();
+  },
   methods: {
     /**
-     * Opens or closes the card's details.
+     * Opens or closes the card's details, and measures the description once shown.
      *
      * @returns {void}
      */
     toggle() {
       this.open = !this.open;
+      this.measureDescription();
+    },
+    /**
+     * Shows the whole description, or folds it back to two lines. Its click stays on the
+     * link: it never opens or closes the card's details.
+     *
+     * @returns {void}
+     */
+    toggleDescription() {
+      this.descriptionOpen = !this.descriptionOpen;
+      this.measureDescription();
+    },
+    /**
+     * Measures, once rendered, whether the folded description is cut -- the only case
+     * where More has something to show. An open description keeps the last measure, so
+     * Less stays offered.
+     *
+     * @returns {void}
+     */
+    measureDescription() {
+      this.$nextTick(() => {
+        const element = this.$refs.description;
+        if (element && !this.descriptionOpen) {
+          // Hidden details measure zero: they are measured again once shown.
+          this.descriptionClamped = element.scrollHeight > element.clientHeight + 1;
+        }
+      });
+    },
+    /**
+     * Measures the description again whenever its size changes: shown, hidden, or the
+     * drawer resized. Where the browser has no ResizeObserver, opening the details
+     * measures it.
+     *
+     * @returns {void}
+     */
+    observeDescription() {
+      if (!this.$refs.description || typeof window.ResizeObserver !== 'function') {
+        return;
+      }
+      this.descriptionObserver = new window.ResizeObserver(() => this.measureDescription());
+      this.descriptionObserver.observe(this.$refs.description);
     },
     /**
      * An argument's value as text: a string as it is, a list joined, anything else as
@@ -465,6 +552,22 @@ export default {
     continueInChat() {
       return this.decide('handover', () => this.$emailConnectorUserSettingService.handOverProposal(this.proposal.id))
         .then(updated => updated && this.actions.continueInChat(updated, this.match, this.email, this.$t.bind(this)));
+    },
+    /**
+     * Opens the regular AI chat about this mail on the failed call: its tool, every
+     * argument as recorded and the error the card shows, with a request to do it again,
+     * in the composer, not sent. Nothing is asked of the server: the proposal stays
+     * failed, and the chat's own approval applies to whatever it then runs.
+     *
+     * @returns {Promise} resolved once the chat is asked to open
+     */
+    fixInChat() {
+      this.busy = 'fix';
+      this.error = null;
+      return Promise.resolve()
+        .then(() => this.fixer.fixInChat(this.proposal, this.match, this.email, this.$t.bind(this), this.reason(this.proposal.lastError)))
+        .catch(() => this.error = this.$t('emailConnector.mailBox.automations.proposal.error.generic'))
+        .finally(() => this.busy = null);
     },
   },
 };

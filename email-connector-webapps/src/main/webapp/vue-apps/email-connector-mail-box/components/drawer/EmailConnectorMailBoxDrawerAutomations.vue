@@ -128,19 +128,50 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :match="match"
           :email="email" />
       </template>
-      <!-- The tool calls the assistant proposed, one card each, oldest first (EXO-90659). -->
+      <!-- The tool calls the assistant proposed, one card each, oldest first (EXO-90659).
+           Only the latest run's show; the earlier runs' fold under one line, closed until
+           opened. A call still waiting for the user always shows, whatever its run. -->
       <template v-if="match.proposals && match.proposals.length">
         <div class="text-caption font-weight-bold mt-1">
           {{ $t('emailConnector.mailBox.automations.proposal.heading') }}
         </div>
         <email-connector-mail-box-proposal-card
-          v-for="proposal in match.proposals"
+          v-for="proposal in proposalRuns[match.id].latest"
           :key="`${match.id}-proposal-${proposal.id}`"
           :proposal="proposal"
           :match="match"
           :email="email"
           @updated="replaceProposal(match, $event)"
           @refresh="read" />
+        <template v-if="proposalRuns[match.id].earlier.length">
+          <div class="d-flex align-center mt-1">
+            <span class="text-caption text-sub-title">
+              {{ $t('emailConnector.mailBox.automations.proposal.earlier', { 0: proposalRuns[match.id].earlier.length }) }}
+            </span>
+            <v-btn
+              :aria-label="$t(earlierOpen[match.id] ? 'emailConnector.mailBox.automations.proposal.hideEarlier' : 'emailConnector.mailBox.automations.proposal.showEarlier')"
+              :aria-expanded="String(!!earlierOpen[match.id])"
+              :title="$t(earlierOpen[match.id] ? 'emailConnector.mailBox.automations.proposal.hideEarlier' : 'emailConnector.mailBox.automations.proposal.showEarlier')"
+              class="ms-1"
+              icon
+              x-small
+              @click="toggleEarlier(match)">
+              <v-icon size="12" class="icon-default-color">{{ earlierOpen[match.id] ? 'fas fa-chevron-up' : 'fas fa-chevron-down' }}</v-icon>
+            </v-btn>
+          </div>
+          <v-expand-transition>
+            <div v-if="earlierOpen[match.id]">
+              <email-connector-mail-box-proposal-card
+                v-for="proposal in proposalRuns[match.id].earlier"
+                :key="`${match.id}-proposal-${proposal.id}`"
+                :proposal="proposal"
+                :match="match"
+                :email="email"
+                @updated="replaceProposal(match, $event)"
+                @refresh="read" />
+            </div>
+          </v-expand-transition>
+        </template>
       </template>
     </div>
   </v-card>
@@ -158,6 +189,9 @@ const PRIMARY_COLOR = 'var(--allPagesPrimaryColor, #3f8487)';
 
 /** The browser's memory of the user's choice to fold or open the panel. */
 const COLLAPSED_STORAGE_KEY = 'emailAutomationsCollapsed';
+
+/** How far apart two calls without a run id may be recorded and still count as one run, in ms. */
+const RUN_GAP = 60 * 1000;
 
 /** The actions an Undo can take back. */
 const UNDOABLE = ['MOVE_TO_FOLDER', 'ADD_CATEGORY', 'MARK_READ', 'STAR', 'MARK_JUNK', 'DELETE'];
@@ -177,6 +211,8 @@ export default {
     outcomeExtensions: [],
     // The user's own choice to fold the panel, as this browser remembers it: null until made.
     collapsedChoice: null,
+    // Which matches show their earlier runs' suggestions, by match id: none until opened.
+    earlierOpen: {},
   }),
   computed: {
     /**
@@ -241,6 +277,14 @@ export default {
       return this.waitingCount === 1
         ? this.$t('emailConnector.mailBox.automations.waitingOne')
         : this.$t('emailConnector.mailBox.automations.waiting', { 0: this.waitingCount });
+    },
+    /**
+     * Each match's proposals, split between its latest run's and the earlier runs'.
+     *
+     * @returns {Object} {latest, earlier} by match id
+     */
+    proposalRuns() {
+      return this.matches.reduce((runs, match) => ({ ...runs, [match.id]: this.splitRuns(match.proposals || []) }), {});
     },
     /**
      * The actions an Undo can still take back, over every match.
@@ -359,6 +403,53 @@ export default {
         })
         .catch(error => this.error = filtersMessage(this.$t.bind(this), error))
         .finally(() => this.busy = false);
+    },
+    /**
+     * Splits proposals by the assistant run that recorded them: its conversation, else --
+     * for a call recorded without one -- the calls recorded within a minute of each
+     * other. The latest run is the one recorded last. Its calls, and any call still
+     * waiting for the user whatever its run, are the latest; the rest are earlier. Each
+     * side keeps the proposals' order.
+     *
+     * @param {Object[]} proposals - the match's proposals
+     * @returns {Object} {latest, earlier}; earlier is empty when there is a single run
+     */
+    splitRuns(proposals) {
+      const runOf = {};
+      const lastRecorded = {};
+      let cluster = null;
+      let clusterEnd = 0;
+      [...proposals].sort((a, b) => (a.createdDate || 0) - (b.createdDate || 0)).forEach(proposal => {
+        const recorded = proposal.createdDate || 0;
+        let run = proposal.conversationId ? `conversation-${proposal.conversationId}` : null;
+        if (!run) {
+          if (cluster === null || recorded - clusterEnd > RUN_GAP) {
+            cluster = `recorded-${recorded}`;
+          }
+          clusterEnd = recorded;
+          run = cluster;
+        }
+        runOf[proposal.id] = run;
+        lastRecorded[run] = Math.max(lastRecorded[run] || 0, recorded);
+      });
+      const runs = Object.keys(lastRecorded);
+      if (runs.length < 2) {
+        return { latest: proposals, earlier: [] };
+      }
+      const latestRun = runs.reduce((latest, run) => (lastRecorded[run] > lastRecorded[latest] ? run : latest));
+      return {
+        latest: proposals.filter(proposal => runOf[proposal.id] === latestRun || proposal.status === 'PROPOSED'),
+        earlier: proposals.filter(proposal => runOf[proposal.id] !== latestRun && proposal.status !== 'PROPOSED'),
+      };
+    },
+    /**
+     * Shows or folds a match's earlier runs' suggestions.
+     *
+     * @param {Object} match - the match
+     * @returns {void}
+     */
+    toggleEarlier(match) {
+      this.$set(this.earlierOpen, match.id, !this.earlierOpen[match.id]);
     },
     /**
      * Puts a proposal's new state on its match, as the decision answered it.
