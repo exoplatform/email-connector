@@ -264,7 +264,7 @@ public class EmailForwardingService {
                                        String mailboxAddress,
                                        ServerRuleCapabilities capabilities) {
     String reason = null;
-    if (!ForwardingGuard.authoringEnabled(connector)) {
+    if (!forwardingGuard.authoringEnabled(connector)) {
       reason = ForwardingGuard.DISABLED;
     } else if (capabilities != null && !capabilities.isSupported(ServerRuleCapabilities.FORWARDING_WRITE)) {
       ElementSupport support = capabilities.elements().get(ServerRuleCapabilities.FORWARDING_WRITE);
@@ -273,8 +273,19 @@ public class EmailForwardingService {
     }
     return new ForwardingAuthoring(reason == null,
                                    reason,
-                                   ForwardingGuard.allowedDomains(connector, mailboxAddress),
+                                   forwardingGuard.allowedDomains(connector, mailboxAddress),
                                    new ArrayList<>(forwardingGuard.confirmedDestinations(username)));
+  }
+
+  /**
+   * Whether users of a connector may author a forward, as {@link ForwardingGuard}
+   * resolves it.
+   *
+   * @param connector the connector
+   * @return true when they may
+   */
+  public boolean authoringEnabled(EmailConnector connector) {
+    return forwardingGuard.authoringEnabled(connector);
   }
 
   /**
@@ -286,7 +297,7 @@ public class EmailForwardingService {
    * @return the capabilities the interface is offered
    */
   public ServerRuleCapabilities narrowed(ServerRuleCapabilities capabilities, EmailConnector connector) {
-    if (capabilities == null || ForwardingGuard.authoringEnabled(connector)) {
+    if (capabilities == null || forwardingGuard.authoringEnabled(connector)) {
       return capabilities;
     }
     return capabilities.withElement(ServerRuleCapabilities.FORWARDING_WRITE, ElementSupport.unsupported(ForwardingGuard.DISABLED))
@@ -539,8 +550,8 @@ public class EmailForwardingService {
    * @param connector the connector
    * @return true when shown
    */
-  public static boolean foreignShown(EmailConnector connector) {
-    return EmailAbsenceService.forwardingDisplayed() || ForwardingGuard.authoringEnabled(connector);
+  public boolean foreignShown(EmailConnector connector) {
+    return EmailAbsenceService.forwardingDisplayed() || forwardingGuard.authoringEnabled(connector);
   }
 
   /**
@@ -729,7 +740,7 @@ public class EmailForwardingService {
    *           mailbox itself
    */
   String allowedNewDestination(String username, Mailbox mailbox, String destination) throws IllegalAccessException {
-    if (!ForwardingGuard.authoringEnabled(mailbox.connector())) {
+    if (!forwardingGuard.authoringEnabled(mailbox.connector())) {
       throw new IllegalAccessException(ForwardingGuard.DISABLED);
     }
     requireStepUp(username);
@@ -737,7 +748,7 @@ public class EmailForwardingService {
     if (to.equals(mailbox.address())) {
       throw new IllegalArgumentException(ForwardingGuard.OWN_ADDRESS);
     }
-    if (!ForwardingGuard.isAllowedDomain(to, mailbox.connector(), mailbox.address())) {
+    if (!forwardingGuard.isAllowedDomain(to, mailbox.connector(), mailbox.address())) {
       throw new IllegalAccessException(ForwardingGuard.DOMAIN_NOT_ALLOWED);
     }
     return to;
