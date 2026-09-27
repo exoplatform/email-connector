@@ -18,8 +18,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <!-- EXO-90654 -- one of the user's own mail filters handled new mail: said from the
        notification's CONTENT, the sentence the server built in the receiver's language
        (the filter's name escaped, and the assistant's line when it wrote one), rebuilt
-       here from FILTER_NAME and FILTER_COUNT when it is missing; a click opens the
-       mailbox on its inbox. -->
+       here from FILTER_NAME and FILTER_COUNT when it is missing; a click opens the mail
+       it names -- the most recent of the batch -- by its inbox UID (MAIL_REMOTE_ID), as
+       the Favorites drawer opens a mail; or the folder the filter filed it into
+       (MAIL_FOLDER); or, naming neither, the mailbox on its inbox. -->
   <div
     role="button"
     tabindex="0"
@@ -118,12 +120,16 @@ export default {
       return typeof this.$te === 'function' && this.$te(key) ? this.$t(key) : null;
     },
     /**
-     * Opens the mailbox on its inbox.
+     * Opens the mail the notification names, or the folder it was filed into, or the inbox.
      *
      * @returns {void}
      */
     openMailbox() {
-      document.dispatchEvent(new CustomEvent('open-email-box-folder', { detail: { folder: 'INBOX' } }));
+      const mailRemoteId = Number(this.parameters.MAIL_REMOTE_ID) || null;
+      const event = mailRemoteId
+        ? new CustomEvent('open-email-box-mail', { detail: { mailRemoteId, folder: 'INBOX' } })
+        : new CustomEvent('open-email-box-folder', { detail: { folder: this.parameters.MAIL_FOLDER || 'INBOX' } });
+      window.require(['SHARED/emailConnectorQuickActionExtension'], () => document.dispatchEvent(event));
     },
   },
 };
