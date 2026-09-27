@@ -21,84 +21,90 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        point, which the enterprise glue fills. What a server rule did at delivery is
        never here: the server does not report it. Renders nothing when no rule matched,
        and nothing on a mail of a mailbox somebody shared with the user. -->
-  <div v-if="matches.length" class="my-2">
-    <!-- Laid out as the platform lists a few items with their actions (the activity
-         stream settings' categories): a section title with its icon, each rule as a
-         dense list item, its actions as subtitles with their Undo as a small text
-         button, errors in the error color. -->
-    <div class="d-flex align-center">
-      <v-icon size="16" class="icon-default-color me-2">fas fa-filter</v-icon>
-      <span class="text-header">{{ $t('emailConnector.mailBox.automations.title') }}</span>
+  <v-card
+    v-if="matches.length"
+    :style="panelStyle"
+    class="pa-3 mt-2 mb-1"
+    flat>
+    <!-- Dressed as the mail's AI summary box right above it (the enterprise glue's
+         EmailThreadAiSummary): the same light wash of the brand colour with an accent bar on
+         the reading-start side, the same small bold primary title with its icon, and the
+         same body text. Inline style because this webapp's webpack has no CSS loader. -->
+    <div class="d-flex align-center mb-1">
+      <v-icon size="14" class="me-2 primary--text">fas fa-filter</v-icon>
+      <span class="text-caption font-weight-bold primary--text">{{ $t('emailConnector.mailBox.automations.title') }}</span>
       <v-spacer />
       <v-btn
         v-if="undoable.length > 1"
         :loading="busy"
+        class="px-1"
         color="primary"
         text
-        small
+        x-small
         @click="undoAll">
         {{ $t('emailConnector.mailBox.automations.undoAll') }}
       </v-btn>
     </div>
     <div
       v-if="error"
-      class="error--text mt-1"
+      class="text-body-2 error--text"
       role="alert">
       {{ error }}
     </div>
-    <v-list class="pa-0" dense>
-      <v-list-item
-        v-for="match in matches"
-        :key="match.id"
-        class="pa-0"
-        dense>
-        <v-list-item-content class="pa-0">
-          <v-list-item-title class="text-truncate">
-            {{ match.filterName || $t('emailConnector.mailBox.automations.deletedRule') }}
-          </v-list-item-title>
-          <v-list-item-subtitle
-            v-for="action in match.actions"
-            :key="`${match.id}-${action.type}`"
-            class="d-flex align-center">
-            <span :class="action.ok ? '' : 'error--text'">
-              {{ actionLabel(action) }}
-            </span>
-            <v-btn
-              v-if="canUndo(action)"
-              :disabled="busy"
-              class="ms-1"
-              color="primary"
-              text
-              x-small
-              @click="undo(match, action.type)">
-              {{ $t('emailConnector.mailBox.automations.undo') }}
-            </v-btn>
-          </v-list-item-subtitle>
-          <v-list-item-subtitle v-if="match.agentStatus && match.agentStatus !== 'NONE'" class="d-flex align-center">
-            <span>{{ $t(`emailConnector.mailBox.automations.agent.${match.agentStatus}`) }}</span>
-            <v-btn
-              v-if="terminal(match)"
-              :disabled="busy"
-              class="ms-1"
-              color="primary"
-              text
-              x-small
-              @click="retry(match)">
-              {{ $t('emailConnector.mailBox.automations.runAgain') }}
-            </v-btn>
-          </v-list-item-subtitle>
-          <template v-if="match.agentNameId">
-            <component
-              :is="extension.vueComponent"
-              v-for="extension in outcomeExtensions"
-              :key="`${match.id}-${extension.id}`"
-              :match="match"
-              :email="email" />
-          </template>
-        </v-list-item-content>
-      </v-list-item>
-    </v-list>
-  </div>
+    <div
+      v-for="(match, index) in matches"
+      :key="match.id"
+      :class="index && 'mt-2'">
+      <div class="text-body-2 font-weight-bold text-truncate">
+        {{ match.filterName || $t('emailConnector.mailBox.automations.deletedRule') }}
+      </div>
+      <div
+        v-for="action in match.actions"
+        :key="`${match.id}-${action.type}`"
+        class="d-flex align-center text-body-2">
+        <span :class="action.ok ? '' : 'error--text'">
+          {{ actionLabel(action) }}
+        </span>
+        <v-btn
+          v-if="canUndo(action)"
+          :disabled="busy"
+          class="ms-1 px-1"
+          color="primary"
+          text
+          x-small
+          @click="undo(match, action.type)">
+          {{ $t('emailConnector.mailBox.automations.undo') }}
+        </v-btn>
+      </div>
+      <div v-if="match.agentStatus && match.agentStatus !== 'NONE'" class="d-flex align-center text-body-2">
+        <v-progress-circular
+          v-if="!terminal(match)"
+          :size="12"
+          :width="2"
+          indeterminate
+          class="me-2 icon-default-color" />
+        <span>{{ $t(`emailConnector.mailBox.automations.agent.${match.agentStatus}`) }}</span>
+        <v-btn
+          v-if="terminal(match)"
+          :disabled="busy"
+          class="ms-1 px-1"
+          color="primary"
+          text
+          x-small
+          @click="retry(match)">
+          {{ $t('emailConnector.mailBox.automations.runAgain') }}
+        </v-btn>
+      </div>
+      <template v-if="match.agentNameId">
+        <component
+          :is="extension.vueComponent"
+          v-for="extension in outcomeExtensions"
+          :key="`${match.id}-${extension.id}`"
+          :match="match"
+          :email="email" />
+      </template>
+    </div>
+  </v-card>
 </template>
 
 <script>
@@ -107,6 +113,9 @@ import { isOwnMailboxMail } from '../../js/EmailConnectorMailFilters.js';
 
 /** The assistant statuses after which it runs again only when asked. */
 const TERMINAL = ['DONE', 'FAILED', 'SKIPPED_CAP', 'SKIPPED_DISABLED'];
+
+/** The brand colour, with the skin's default when the portal publishes none -- as the AI summary box reads it. */
+const PRIMARY_COLOR = 'var(--allPagesPrimaryColor, #3f8487)';
 
 /** The actions an Undo can take back. */
 const UNDOABLE = ['MOVE_TO_FOLDER', 'ADD_CATEGORY', 'MARK_READ', 'STAR', 'MARK_JUNK', 'DELETE'];
@@ -126,6 +135,21 @@ export default {
     outcomeExtensions: [],
   }),
   computed: {
+    /**
+     * The panel's inline style, the AI summary box's: the brand colour at 8 % as background,
+     * and a 3px accent bar on the reading-start side with that side's corners squared.
+     *
+     * @returns {Object} the style binding of the card
+     */
+    panelStyle() {
+      const side = this.$vuetify?.rtl ? 'Right' : 'Left';
+      return {
+        backgroundColor: `color-mix(in srgb, ${PRIMARY_COLOR} 8%, transparent)`,
+        [`border${side}`]: `3px solid ${PRIMARY_COLOR}`,
+        [`borderTop${side}Radius`]: 0,
+        [`borderBottom${side}Radius`]: 0,
+      };
+    },
     /**
      * Whether the panel may ask about this mail: a cached mail of the user's own
      * mailbox, never a draft.
