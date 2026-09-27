@@ -42,11 +42,13 @@ import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.EmailFilter;
 import org.exoplatform.emailConnector.model.EmailFilterMatch;
+import org.exoplatform.emailConnector.model.EmailFilterProposal;
 import org.exoplatform.emailConnector.model.FilterApplyReport;
 import org.exoplatform.emailConnector.model.FilterPreview;
 import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerRulesSettings;
+import org.exoplatform.emailConnector.service.EmailFilterProposalService;
 import org.exoplatform.emailConnector.service.EmailFilterService;
 import org.exoplatform.emailConnector.service.EmailServerRuleService;
 
@@ -96,11 +98,17 @@ public class EmailFilterRest {
   @Autowired
   private EmailFilterService     emailFilterService;
 
+  @Autowired
+  private EmailFilterProposalService emailFilterProposalService;
+
   private static final String    FILTER_BAD_REQUEST      = "An invalid value (emailConnector.rules.name.invalid, .condition.invalid, "
       + ".action.invalid, emailConnector.filters.kind.invalid, .scope.invalid, .agent.invalid), a folder or category that is not "
       + "the caller's (emailConnector.folder.unknown, .notMirrored, emailConnector.filters.category.unknown), too many rules "
       + "(emailConnector.filters.tooMany), no consent yet for a rule with a server half (emailConnector.rules.consentRequired), "
       + "or a server half this server cannot run (emailConnector.rules.unsupported.*)";
+
+  private static final String    PROPOSAL_CONFLICT_DESCRIPTION = "The proposal no longer waits: decided already "
+      + "(emailConnector.filters.proposal.notPending) or past its expiry (emailConnector.filters.proposal.expired)";
 
   private static final String    FORBIDDEN_DESCRIPTION   = "Asked from someone else's mailbox (emailConnector.rules.ownMailboxOnly), "
       + "or the connector may not be used";
@@ -673,7 +681,10 @@ public class EmailFilterRest {
   @Operation(summary = "Reads what the caller's filters did to one of their mails", method = "GET",
       description = "The mail's Automations panel: each eXo rule that matched it, what it did and whether it can be undone, "
           + "the assistant's status and answer. By the cached mail's id -- a Message-ID is not URL-safe -- and found again by "
-          + "Message-ID, so a mail moved or re-cached keeps its history. What a server rule did at delivery is never here.")
+          + "Message-ID, so a mail moved or re-cached keeps its history. What a server rule did at delivery is never here. "
+          + "Each match carries the tool calls its assistant proposed (proposals: id, toolName, toolTitle, toolDescription, "
+          + "arguments as the model gave them, rationale, status, createdDate, expiresDate, decidedDate, result, lastError); "
+          + "those past their expiry are marked EXPIRED by the read.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "403", description = FORBIDDEN_DESCRIPTION + ", or the mail is not the caller's"),
       @ApiResponse(responseCode = "404", description = "The feature is off, no mailbox is connected, or no such mail") })
@@ -684,7 +695,9 @@ public class EmailFilterRest {
                                                @Parameter(description = DELEGATION_DESCRIPTION)
                                                @RequestParam(name = "delegationId", required = false)
                                                Long delegationId) {
-    return read(() -> emailFilterService.getMatchesOfMail(request.getRemoteUser(), delegationId, emailId));
+    String username = request.getRemoteUser();
+    return read(() -> emailFilterProposalService.withProposals(username,
+                                                               emailFilterService.getMatchesOfMail(username, delegationId, emailId)));
   }
 
   /**
@@ -744,6 +757,105 @@ public class EmailFilterRest {
                                      @RequestParam(name = "delegationId", required = false)
                                      Long delegationId) {
     return read(() -> emailFilterService.retry(request.getRemoteUser(), delegationId, id));
+  }
+
+  /**
+   * Approves a tool call a filter's assistant proposed, and runs it.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param id the proposal
+   * @param delegationId the share the request is made from; refused
+   * @return the proposal once run
+   */
+  @PostMapping("/proposals/{id:[0-9]+}/approve")
+  @Secured("users")
+  @Operation(summary = "Approves a tool call a filter's assistant proposed, and runs it", method = "POST",
+      description = "The call runs once, as the caller, through the platform's own tool path -- the tool's own permission checks "
+          + "and approval apply -- and the answer waits for it. The proposal answered is DONE with the tool's result, or FAILED "
+          + "with the tool's message (or emailConnector.filters.proposal.unavailable when nothing runs tools here).")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Run; DONE or FAILED"),
+      @ApiResponse(responseCode = "403", description = FORBIDDEN_DESCRIPTION + ", or the proposal is someone else's "
+          + "(emailConnector.filters.proposal.notYours)"),
+      @ApiResponse(responseCode = "404", description = "The feature is off, no mailbox is connected, or no such proposal"),
+      @ApiResponse(responseCode = "409", description = PROPOSAL_CONFLICT_DESCRIPTION) })
+  public EmailFilterProposal approveProposal(HttpServletRequest request,
+                                             @Parameter(description = "The proposal's id")
+                                             @PathVariable("id")
+                                             long id,
+                                             @Parameter(description = DELEGATION_DESCRIPTION)
+                                             @RequestParam(name = "delegationId", required = false)
+                                             Long delegationId) {
+    return decide(() -> emailFilterProposalService.approve(request.getRemoteUser(), delegationId, id));
+  }
+
+  /**
+   * Rejects a tool call a filter's assistant proposed.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param id the proposal
+   * @param delegationId the share the request is made from; refused
+   * @return the proposal, rejected
+   */
+  @PostMapping("/proposals/{id:[0-9]+}/reject")
+  @Secured("users")
+  @Operation(summary = "Rejects a tool call a filter's assistant proposed", method = "POST",
+      description = "The call never runs.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Rejected"),
+      @ApiResponse(responseCode = "403", description = FORBIDDEN_DESCRIPTION + ", or the proposal is someone else's "
+          + "(emailConnector.filters.proposal.notYours)"),
+      @ApiResponse(responseCode = "404", description = "The feature is off, no mailbox is connected, or no such proposal"),
+      @ApiResponse(responseCode = "409", description = PROPOSAL_CONFLICT_DESCRIPTION) })
+  public EmailFilterProposal rejectProposal(HttpServletRequest request,
+                                            @Parameter(description = "The proposal's id")
+                                            @PathVariable("id")
+                                            long id,
+                                            @Parameter(description = DELEGATION_DESCRIPTION)
+                                            @RequestParam(name = "delegationId", required = false)
+                                            Long delegationId) {
+    return decide(() -> emailFilterProposalService.reject(request.getRemoteUser(), delegationId, id));
+  }
+
+  /**
+   * Hands a tool call a filter's assistant proposed to the AI chat.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param id the proposal
+   * @param delegationId the share the request is made from; refused
+   * @return the proposal, handed over
+   */
+  @PostMapping("/proposals/{id:[0-9]+}/handover")
+  @Secured("users")
+  @Operation(summary = "Hands a tool call a filter's assistant proposed to the AI chat", method = "POST",
+      description = "The caller goes on in the regular AI chat, where its own approval applies; the call never runs from the "
+          + "proposal again, whatever the chat does.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Handed over"),
+      @ApiResponse(responseCode = "403", description = FORBIDDEN_DESCRIPTION + ", or the proposal is someone else's "
+          + "(emailConnector.filters.proposal.notYours)"),
+      @ApiResponse(responseCode = "404", description = "The feature is off, no mailbox is connected, or no such proposal"),
+      @ApiResponse(responseCode = "409", description = PROPOSAL_CONFLICT_DESCRIPTION) })
+  public EmailFilterProposal handOverProposal(HttpServletRequest request,
+                                              @Parameter(description = "The proposal's id")
+                                              @PathVariable("id")
+                                              long id,
+                                              @Parameter(description = DELEGATION_DESCRIPTION)
+                                              @RequestParam(name = "delegationId", required = false)
+                                              Long delegationId) {
+    return decide(() -> emailFilterProposalService.handOver(request.getRemoteUser(), delegationId, id));
+  }
+
+  /**
+   * Runs a decision on a proposal and maps its refusals to statuses: a proposal no longer
+   * waiting is a conflict, 409, with its message code as the reason.
+   *
+   * @param call the decision
+   * @return the proposal after it
+   */
+  private static EmailFilterProposal decide(Read<EmailFilterProposal> call) {
+    try {
+      return read(call);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    }
   }
 
   /**
