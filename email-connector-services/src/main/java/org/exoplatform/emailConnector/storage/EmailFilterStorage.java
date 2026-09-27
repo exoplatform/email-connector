@@ -77,6 +77,15 @@ public class EmailFilterStorage {
   }
 
   /**
+   * A match with its owner, for a read across users.
+   *
+   * @param userId the owner
+   * @param match the match
+   */
+  public record OwnedMatch(String userId, EmailFilterMatch match) {
+  }
+
+  /**
    * A user's rules, in evaluation order.
    *
    * @param userId the owner
@@ -341,6 +350,34 @@ public class EmailFilterStorage {
                               .stream()
                               .map(EmailFilterStorage::toDto)
                               .toList();
+  }
+
+  /**
+   * Every user's matches in some assistant statuses, after a given id, with their owner.
+   *
+   * @param statuses the statuses
+   * @param afterId the last id read, 0 for the first page
+   * @param limit how many
+   * @return the matches, by ascending id
+   */
+  public List<OwnedMatch> getMatchesByAgentStatuses(Collection<String> statuses, long afterId, int limit) {
+    return emailFilterMatchDAO.findByAgentStatuses(statuses, afterId, PageRequest.of(0, limit))
+                              .stream()
+                              .map(entity -> new OwnedMatch(entity.getUserId(), toDto(entity)))
+                              .toList();
+  }
+
+  /**
+   * Moves one match from an assistant status to another, only if it is still in the
+   * first.
+   *
+   * @param id the match
+   * @param from the status it must be in
+   * @param to the status it is moved to
+   * @return true when this call moved it
+   */
+  public boolean updateAgentStatusIf(long id, String from, String to) {
+    return emailFilterMatchDAO.updateAgentStatusIf(id, from, to) == 1;
   }
 
   /**
