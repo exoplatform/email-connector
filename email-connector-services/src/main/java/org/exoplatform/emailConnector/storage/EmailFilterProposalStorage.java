@@ -212,6 +212,35 @@ public class EmailFilterProposalStorage {
   }
 
   /**
+   * Writes the assistant's reason on a waiting proposal of a match, and nothing else.
+   *
+   * @param id the proposal
+   * @param userId the owner
+   * @param matchId the match
+   * @param rationale the reason
+   * @return true when written
+   */
+  public boolean setRationale(long id, String userId, long matchId, String rationale) {
+    return emailFilterProposalDAO.setRationale(id,
+                                               userId,
+                                               matchId,
+                                               EmailFilterProposal.PROPOSED,
+                                               truncate(rationale, MAX_RATIONALE_LENGTH)) == 1;
+  }
+
+  /**
+   * Fails the owner's approved calls running since before a date.
+   *
+   * @param userId the owner
+   * @param reason the reason
+   * @param before a call decided before this is abandoned
+   * @return how many
+   */
+  public int failStaleRunning(String userId, String reason, Date before) {
+    return emailFilterProposalDAO.failStaleRunning(userId, EmailFilterProposal.RUNNING, EmailFilterProposal.FAILED, reason, before);
+  }
+
+  /**
    * Expires a user's proposals past their expiry.
    *
    * @param userId the owner
