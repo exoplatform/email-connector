@@ -871,3 +871,35 @@ export function undoAutomation(matchId, action) {
 export function retryAutomation(matchId) {
   return filterRequest(`/matches/${matchId}/retry`, 'POST', null, 'Error when running the assistant again');
 }
+
+/**
+ * Approves a tool call a rule's assistant proposed; the call runs, as the user, and the
+ * answer waits for it.
+ *
+ * @param {number} proposalId - the proposal
+ * @returns {Promise<object>} the proposal once run: DONE or FAILED
+ */
+export function approveProposal(proposalId) {
+  return filterRequest(`/proposals/${proposalId}/approve`, 'POST', null, 'Error when approving the proposal');
+}
+
+/**
+ * Rejects a tool call a rule's assistant proposed; it never runs.
+ *
+ * @param {number} proposalId - the proposal
+ * @returns {Promise<object>} the proposal, REJECTED
+ */
+export function rejectProposal(proposalId) {
+  return filterRequest(`/proposals/${proposalId}/reject`, 'POST', null, 'Error when rejecting the proposal');
+}
+
+/**
+ * Hands a tool call a rule's assistant proposed to the AI chat; it never runs from the
+ * proposal again.
+ *
+ * @param {number} proposalId - the proposal
+ * @returns {Promise<object>} the proposal, HANDED_OVER
+ */
+export function handOverProposal(proposalId) {
+  return filterRequest(`/proposals/${proposalId}/handover`, 'POST', null, 'Error when handing the proposal over');
+}
