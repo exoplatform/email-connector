@@ -136,7 +136,8 @@ public class EmailFavoriteService {
    * Message-ID count once, on the INBOX one, else on the lowest id — the same row
    * whatever order the rows are read in, so a favorite never moves from one copy to
    * another between two reconciliations. Rows with no Message-ID cannot be told
-   * apart, and each counts.
+   * apart, and each counts. Newest first, at most {@code MAX_FAVORITES} of them: the
+   * ceiling of the favorites read back beside them, or the two sides stop matching.
    *
    * @param username the mailbox owner
    * @return the flagged mails' ids, as strings
@@ -146,7 +147,7 @@ public class EmailFavoriteService {
     if (starredEmails == null) {
       return new HashSet<>();
     }
-    // Keyed by Message-ID, or by the row itself when it has none
+    // Keyed by Message-ID, or by the row itself when it has none; in reading order, newest first
     Map<String, Email> byMessage = new LinkedHashMap<>();
     for (Email email : starredEmails) {
       String key = StringUtils.isBlank(email.getMailHeaderId()) ? "#" + email.getId() : email.getMailHeaderId();
@@ -154,6 +155,7 @@ public class EmailFavoriteService {
     }
     return byMessage.values()
                     .stream()
+                    .limit(MAX_FAVORITES)
                     .map(email -> String.valueOf(email.getId()))
                     .collect(Collectors.toCollection(HashSet::new));
   }

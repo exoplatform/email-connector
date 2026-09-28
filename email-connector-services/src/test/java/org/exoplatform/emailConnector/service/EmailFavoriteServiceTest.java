@@ -236,6 +236,25 @@ public class EmailFavoriteServiceTest {
     }
   }
 
+  /**
+   * The flagged side stops where the favorites read back beside it stop: past that
+   * ceiling the two sides would never match again, and every reconciliation would
+   * try to create the same favorites anew.
+   */
+  @Test
+  public void reconcileFavoritesReadsNoMoreFlaggedMailsThanFavoritesItReadsBack() throws Exception {
+    givenUserIdentity();
+    givenFavoritedEmailIds();
+    List<Email> rows = java.util.stream.LongStream.rangeClosed(1, 501).mapToObj(id -> starred(id, MailFolder.INBOX, "<" + id + "@host>")).toList();
+    when(emailBoxStorage.getStarredEmailKeys(anyString(), anyList())).thenReturn(rows);
+
+    emailFavoriteService.reconcileFavorites(USERNAME);
+
+    ArgumentCaptor<Favorite> created = ArgumentCaptor.forClass(Favorite.class);
+    verify(favoriteService, times(500)).createFavorite(created.capture());
+    assertFalse(created.getAllValues().stream().anyMatch(favorite -> "501".equals(favorite.getObjectId())), "the oldest one is past the ceiling");
+  }
+
   @Test
   public void isFavorite() throws Exception {
     givenUserIdentity();
