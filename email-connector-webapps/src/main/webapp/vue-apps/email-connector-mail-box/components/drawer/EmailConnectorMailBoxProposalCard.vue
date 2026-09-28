@@ -33,6 +33,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        regular AI chat about the mail opens with the recorded call and its error as an
        unsent draft. Nothing is decided here: the proposal stays failed, and the chat's own
        approval applies to whatever it runs. -->
+  <!-- A done card offers Open, on its folded row and in its details, when the tool's
+       stored answer names a page of this eXo -- the task, note, event or activity the call
+       created. Any other link, or none, offers nothing. -->
   <v-card
     class="px-2 py-1 mt-1"
     outlined
@@ -64,11 +67,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ rationaleLine }}
         </div>
       </div>
+      <!-- A short status keeps its width beside Open; only a failure's reason is cut. -->
       <span
         v-if="statusLine"
-        :class="statusClass"
+        :class="[statusClass, proposal.status === 'FAILED' ? 'flex-shrink-1' : 'flex-shrink-0']"
         :title="statusLine"
-        class="text-caption ms-2 text-truncate flex-shrink-1"
+        class="text-caption ms-2 text-truncate"
         style="max-width: 50%;">
         {{ statusLine }}
       </span>
@@ -81,6 +85,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         href="javascript:void(0);"
         @click.prevent="busy || fixInChat()">
         {{ $t('emailConnector.mailBox.automations.proposal.fix') }}
+      </a>
+      <a
+        v-if="createdLink && !open"
+        :href="createdLink"
+        :title="$t('emailConnector.mailBox.automations.proposal.openTitle')"
+        class="text-caption primary--text ms-2 flex-shrink-0">
+        {{ $t('emailConnector.mailBox.automations.proposal.open') }}
       </a>
       <template v-if="waiting">
         <v-btn
@@ -162,6 +173,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           class="text-caption error--text mt-1 text-break">
           {{ reason(proposal.lastError) }}
         </div>
+        <a
+          v-if="createdLink"
+          :href="createdLink"
+          :title="$t('emailConnector.mailBox.automations.proposal.openTitle')"
+          class="d-inline-block text-caption primary--text mt-1">
+          {{ $t('emailConnector.mailBox.automations.proposal.open') }}
+        </a>
         <v-btn
           v-if="waiting && actions"
           :loading="busy === 'handover'"
@@ -212,13 +230,31 @@ const STATUS_ICONS = {
   HANDED_OVER: 'fas fa-comments',
 };
 
+/**
+ * The fields of a tool's answer that link to what it created, in the order they are
+ * tried on the answer's own object: the first one holding a link of this eXo wins. From
+ * the answers stored on done proposals, which come as the MCP content list,
+ * [{"text": "<the tool's JSON>"}]: create_personal_task
+ * answers the task with "link" (/portal/dw/tasks/taskDetail/<id>), create_agenda_event
+ * the event with "url" (/portal/dw/agenda?eventId=<id>); the other names cover the
+ * platform's other models (a note's or an activity's permalink, a document's webUrl).
+ * create_personal_note and send_kudos answer no link at all: their cards offer no Open.
+ */
+const LINK_FIELDS = ['link', 'permalink', 'url', 'webUrl', 'web_url', 'note_url', 'noteUrl', 'activity_url', 'activityUrl', 'href'];
+
+/** The fields of a wrapper around a tool's answer: MCP content and text, or a result envelope. */
+const WRAPPER_FIELDS = ['text', 'content', 'structuredContent', 'result', 'data'];
+
+/** How many levels the answer is unwrapped for a link: each JSON text, list and wrapper counts one. */
+const LINK_DEPTH = 6;
+
 /** A day, in milliseconds. */
 const DAY = 24 * 3600 * 1000;
 
 export default {
   props: {
     // The proposal {id, toolName, toolTitle, toolDescription, arguments, rationale,
-    // status, expiresDate, lastError}, as the panel's read gives it.
+    // status, expiresDate, result, lastError}, as the panel's read gives it.
     proposal: {
       type: Object,
       required: true,
@@ -366,6 +402,17 @@ export default {
       return this.$t(`emailConnector.mailBox.automations.proposal.status.${status}`);
     },
     /**
+     * The page of this eXo the done call created, as the tool's stored answer names it.
+     *
+     * @returns {String|null} the link, or null when the call is not done or names none of this eXo
+     */
+    createdLink() {
+      if (this.proposal.status !== 'DONE' || !this.proposal.result) {
+        return null;
+      }
+      return this.findLink(this.proposal.result, LINK_DEPTH);
+    },
+    /**
      * @returns {String} the status line's colour
      */
     statusClass() {
@@ -483,6 +530,86 @@ export default {
           }
         });
       });
+    },
+    /**
+     * The first link of this eXo a tool's answer carries: the answer is unwrapped first --
+     * a JSON text, a list such as the MCP content list, a wrapper's text, content, result
+     * or data --, then the object it carries is tried field by field in the order of
+     * LINK_FIELDS. Nothing else nested is searched: an author's profile or a parent's page
+     * is not what the call created.
+     *
+     * @param {*} value - the answer, or a part of it
+     * @param {Number} depth - how many more levels may be unwrapped
+     * @returns {String|null} the link, or null when none is found
+     */
+    findLink(value, depth) {
+      if (depth < 0 || value === null || typeof value === 'undefined') {
+        return null;
+      }
+      if (typeof value === 'string') {
+        const parsed = this.parseJson(value);
+        return parsed === null ? null : this.findLink(parsed, depth - 1);
+      }
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          const link = this.findLink(item, depth - 1);
+          if (link) {
+            return link;
+          }
+        }
+        return null;
+      }
+      if (typeof value !== 'object') {
+        return null;
+      }
+      const field = LINK_FIELDS.find(name => typeof value[name] === 'string' && this.safeLink(value[name]));
+      if (field) {
+        return this.safeLink(value[field]);
+      }
+      for (const key of WRAPPER_FIELDS) {
+        const link = this.findLink(value[key], depth - 1);
+        if (link) {
+          return link;
+        }
+      }
+      return null;
+    },
+    /**
+     * A text as JSON, when it is a JSON object or list.
+     *
+     * @param {String} text - the text
+     * @returns {Object|Array|null} the parsed value, or null when the text is not one
+     */
+    parseJson(text) {
+      const trimmed = text.trim();
+      if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+        return null;
+      }
+      try {
+        return JSON.parse(trimmed);
+      } catch (e) {
+        return null;
+      }
+    },
+    /**
+     * A link the card may open in the same tab: a path starting with "/", or an absolute
+     * URL, either one resolving to this page's origin. A protocol-relative or backslashed
+     * path resolves to another origin and is refused, as is any other origin or scheme.
+     *
+     * @param {String} link - the link the tool gave
+     * @returns {String|null} the resolved link, or null when refused
+     */
+    safeLink(link) {
+      const value = link.trim();
+      if (!value) {
+        return null;
+      }
+      try {
+        const url = value.startsWith('/') ? new URL(value, window.location.origin) : new URL(value);
+        return url.origin === window.location.origin ? url.href : null;
+      } catch (e) {
+        return null;
+      }
     },
     /**
      * A refusal or failure in words: a message code of this add-on, else the tool's own
