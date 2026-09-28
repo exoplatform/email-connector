@@ -852,6 +852,16 @@ export function getMailAutomations(emailId) {
 }
 
 /**
+ * The user's own mails with a suggestion of an assistant still waiting for them: what
+ * the mailbox list marks.
+ *
+ * @returns {Promise<string[]>} the mails' Message-IDs
+ */
+export function getWaitingSuggestionMails() {
+  return filterRequest('/proposals/waiting', 'GET', null, 'Error when reading the waiting suggestions');
+}
+
+/**
  * Undoes what a rule did to a mail: one action, or every one.
  *
  * @param {number} matchId - the match
