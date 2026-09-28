@@ -103,4 +103,12 @@ public interface FilterMail {
    * @return the keywords, lower-case; empty when none or not known
    */
   Set<String> keywords();
+
+  /**
+   * The stable keys of the default categories the mail carries (e.g.
+   * {@code emailImportantCategory}), never their ids or names.
+   *
+   * @return the keys, empty when none; null when not known
+   */
+  Set<String> categories();
 }
