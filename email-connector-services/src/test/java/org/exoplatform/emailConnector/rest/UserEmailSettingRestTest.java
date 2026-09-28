@@ -30,6 +30,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.util.List;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -56,6 +58,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.ReadReceiptPolicy;
@@ -139,14 +142,53 @@ public class UserEmailSettingRestTest {
 
   @Test
   void getUserEmailSetting() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(SIMPLE_USER)).thenReturn(new UserEmailSetting());
     ResultActions response = mockMvc.perform(get(USER_EMAIL_SETTING_PATH).with(testSimpleUser()));
     response.andExpect(status().isOk());
   }
 
+  /**
+   * EXO-90610. The settings read never carries the password; it says whether one is
+   * stored.
+   */
+  @Test
+  void theSettingsReadNeverSendsThePasswordBack() throws Exception {
+    UserEmailSetting stored = userEmailSetting();
+    stored.setPasswordStored(true);
+    when(userEmailSettingService.getUserEmailSetting(SIMPLE_USER)).thenReturn(stored);
+
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH).with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.emailPassword").doesNotExist())
+           .andExpect(jsonPath("$.passwordStored").value(true))
+           .andExpect(jsonPath("$.emailAddress").value(stored.getEmailAddress()));
+  }
+
+  /** EXO-90610. A connection refused for lack of a password answers 400 with its code. */
+  @Test
+  void aConnectionWithNoApplicablePasswordAnswers400() throws Exception {
+    doThrow(new IllegalArgumentException(UserEmailSettingService.PASSWORD_REQUIRED)).when(userEmailSettingService)
+                                                                                    .connectUserEmailSetting(any(),
+                                                                                                             eq(SIMPLE_USER),
+                                                                                                             eq(false));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "?broadcast=false").with(testSimpleUser())
+                                                                     .content(asJsonString(userEmailSetting()))
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest());
+  }
+
   @Test
   void getUserEmailConnectors() throws Exception {
-    ResultActions response = mockMvc.perform(get(USER_EMAIL_SETTING_PATH).with(testSimpleUser()));
-    response.andExpect(status().isOk());
+    EmailConnector connector = new EmailConnector();
+    connector.setId(1L);
+    connector.setName("Company mail");
+    when(userEmailSettingService.getUserEmailConnectors(any(), eq(SIMPLE_USER))).thenReturn(List.of(connector));
+
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/connectors").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$[0].id").value(1))
+           .andExpect(jsonPath("$[0].name").value("Company mail"));
   }
 
   /**
