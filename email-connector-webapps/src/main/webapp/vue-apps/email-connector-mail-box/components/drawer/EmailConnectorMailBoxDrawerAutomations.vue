@@ -129,7 +129,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :email="email" />
       </template>
       <!-- A run that was offered tools and suggested nothing says so under its note, so an
-           empty panel is never read as a failure to show the suggestions. -->
+           empty panel is never read as a failure to show the suggestions -- first what its
+           lookups looked for and did not find, as the server read them from the run's own
+           conversation (EXO-90659). Text only: the values are the model's arguments. -->
+      <template v-if="suggestedNothing(match)">
+        <div
+          v-for="(line, lineIndex) in notFoundLines(match)"
+          :key="`${match.id}-not-found-${lineIndex}`"
+          class="text-caption text-sub-title mt-1">
+          {{ line }}
+        </div>
+      </template>
       <div
         v-if="suggestedNothing(match)"
         class="text-caption text-sub-title mt-1">
@@ -398,6 +408,33 @@ export default {
       } catch (e) {
         return false;
       }
+    },
+    /**
+     * The lines saying what the match's last run looked for and did not find: one per
+     * `notFound` entry of its outcome, with the value looked for when there is one.
+     * An outcome without it, or that is not JSON, gives none.
+     *
+     * @param {Object} match - the match
+     * @returns {Array<String>} the localized lines, plain text
+     */
+    notFoundLines(match) {
+      let entries;
+      try {
+        entries = JSON.parse(match.agentOutput)?.notFound;
+      } catch (e) {
+        return [];
+      }
+      if (!Array.isArray(entries)) {
+        return [];
+      }
+      return entries
+        .filter(entry => entry && (entry.title || entry.tool))
+        .map(entry => {
+          const title = String(entry.title || entry.tool);
+          return entry.looked_for
+            ? this.$t('emailConnector.mailBox.automations.proposal.notFound', { 0: String(entry.looked_for), 1: title })
+            : this.$t('emailConnector.mailBox.automations.proposal.notFoundNoValue', { 0: title });
+        });
     },
     /**
      * An action in words.
