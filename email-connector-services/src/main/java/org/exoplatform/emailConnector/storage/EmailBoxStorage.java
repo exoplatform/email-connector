@@ -1458,6 +1458,25 @@ public class EmailBoxStorage {
   }
 
   /**
+   * The user's starred messages outside the given folders, as light rows carrying
+   * their id, folder and Message-ID only: what the Favorites drawer is reconciled from.
+   *
+   * @param userId the mailbox owner
+   * @param excludedFolders the folders left out
+   * @return the starred rows, newest first
+   */
+  public List<Email> getStarredEmailKeys(String userId, List<String> excludedFolders) {
+    return emailBoxDao.findStarredKeysByUserIdExcludingFolders(userId, excludedFolders).stream().map(row -> {
+      Email email = new Email();
+      email.setId((Long) row[0]);
+      email.setFolder((String) row[1]);
+      email.setMailHeaderId((String) row[2]);
+      email.setStarred(true);
+      return email;
+    }).toList();
+  }
+
+  /**
    * What the list needs to know about each of the user's conversations that the
    * folder it is listing cannot tell it: the full cross-folder message count
    * (Gmail-style, rather than only the messages that happen to be in the folder on

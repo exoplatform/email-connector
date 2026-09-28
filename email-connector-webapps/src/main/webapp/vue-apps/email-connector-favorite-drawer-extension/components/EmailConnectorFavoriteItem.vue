@@ -132,7 +132,9 @@ export default {
       // than this drawer rendering a second, lesser copy of it.
       window.require(['SHARED/emailConnectorQuickActionExtension'], () =>
         document.dispatchEvent(new CustomEvent('open-email-box-mail', {
-          detail: {mailRemoteId: this.email?.mailRemoteId},
+          // The folder with the UID: a favorite may be filed in any folder, and a UID
+          // names a message within its own folder only.
+          detail: {mailRemoteId: this.email?.mailRemoteId, folder: this.email?.folder},
         })));
     },
     /**
@@ -166,7 +168,8 @@ export default {
       };
       this.isFavorite = false;
       this.$root.$emit('favorite-removed', 'email', this.id);
-      fetch('/email-connector/rest/email-box/starred?starred=false', {
+      const folder = this.email.folder && this.email.folder !== 'INBOX' ? `&folder=${encodeURIComponent(this.email.folder)}` : '';
+      fetch(`/email-connector/rest/email-box/starred?starred=false${folder}`, {
         method: 'PATCH',
         credentials: 'include',
         headers: {
@@ -188,6 +191,7 @@ export default {
         document.dispatchEvent(new CustomEvent('email-favorite-status-changed', {
           detail: {
             mailRemoteIds: [this.email.mailRemoteId],
+            folder: this.email.folder,
             favorite: false,
           },
         }));

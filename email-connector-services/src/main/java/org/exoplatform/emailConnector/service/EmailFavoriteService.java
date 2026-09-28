@@ -16,8 +16,10 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -127,19 +129,36 @@ public class EmailFavoriteService {
   /**
    * The ids of the mails this user has flagged, as favorites object ids.
    * <p>
-   * Only the INBOX is read: the Favorites drawer lists the inbox's flagged
-   * mails, while the star itself can be set and cleared in any folder of the
-   * mailbox.
+   * Every folder is read but Trash, Spam and All Mail
+   * ({@link MailFolder#NOT_FAVORITED_FOLDERS}), so a starred mail stays a favorite
+   * whatever folder it is filed in. One message cached in two folders — a Gmail
+   * label, a copy another client made — is one favorite: the rows sharing a
+   * Message-ID count once, the INBOX one first. Rows with no Message-ID cannot be
+   * told apart, and each counts.
    *
    * @param username the mailbox owner
    * @return the flagged mails' ids, as strings
    */
   private Set<String> getFlaggedEmailIds(String username) {
-    List<Email> starredEmails = emailBoxStorage.getStarredEmails(username, MailFolder.INBOX);
-    return starredEmails == null ? new HashSet<>()
-                                 : starredEmails.stream()
-                                                .map(email -> String.valueOf(email.getId()))
-                                                .collect(Collectors.toCollection(HashSet::new));
+    List<Email> starredEmails = emailBoxStorage.getStarredEmailKeys(username, MailFolder.NOT_FAVORITED_FOLDERS);
+    Set<String> flagged = new HashSet<>();
+    if (starredEmails == null) {
+      return flagged;
+    }
+    Map<String, Email> byMessageId = new HashMap<>();
+    for (Email email : starredEmails) {
+      String messageId = email.getMailHeaderId();
+      if (StringUtils.isBlank(messageId)) {
+        flagged.add(String.valueOf(email.getId()));
+        continue;
+      }
+      Email kept = byMessageId.get(messageId);
+      if (kept == null || (!MailFolder.INBOX.equals(kept.getFolder()) && MailFolder.INBOX.equals(email.getFolder()))) {
+        byMessageId.put(messageId, email);
+      }
+    }
+    byMessageId.values().forEach(email -> flagged.add(String.valueOf(email.getId())));
+    return flagged;
   }
 
   /**

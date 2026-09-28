@@ -150,6 +150,49 @@ public class EmailBoxDAOTest {
    * @param mailHeaderId the Message-ID the row remembers
    * @return the row's generated id
    */
+  /**
+   * The read the Favorites drawer is reconciled from: the owner's starred rows in every
+   * folder but the excluded ones, as {@code [id, folder, mailHeaderId]} -- executed
+   * against the engine for its {@code NOT IN} over a bound list and its projection.
+   */
+  @Test
+  void theStarredKeysReadLeavesOutTheExcludedFoldersAndTheUnstarredRows() {
+    Long inInbox = starredRow(30L, MailFolder.INBOX, "<a@host>");
+    Long inProjets = starredRow(31L, "CUSTOM:6", "<b@host>");
+    starredRow(32L, MailFolder.TRASH, "<c@host>");
+    starredRow(33L, MailFolder.JUNK, "<d@host>");
+    starredRow(34L, MailFolder.ALL_MAIL, "<a@host>");
+    persistEmailCarrying(35L, MailFolder.ARCHIVE, "<e@host>");
+    entityManager.clear();
+
+    List<Object[]> rows = emailBoxDAO.findStarredKeysByUserIdExcludingFolders(USERNAME, MailFolder.NOT_FAVORITED_FOLDERS);
+
+    assertEquals(List.of(inInbox, inProjets), rows.stream().map(row -> (Long) row[0]).sorted().toList(),
+                 "the starred inbox and user-folder rows; not Trash, Spam, All Mail, nor the unstarred archive row");
+    Object[] projets = rows.stream().filter(row -> inProjets.equals(row[0])).findFirst().orElseThrow();
+    assertEquals("CUSTOM:6", projets[1]);
+    assertEquals("<b@host>", projets[2]);
+    assertTrue(emailBoxDAO.findStarredKeysByUserIdExcludingFolders("bob", MailFolder.NOT_FAVORITED_FOLDERS).isEmpty(),
+               "another user's read answers none of these rows");
+  }
+
+  /**
+   * A starred row of the test user.
+   *
+   * @param remoteId its UID
+   * @param folder its folder
+   * @param mailHeaderId its Message-ID
+   * @return its technical id
+   */
+  private Long starredRow(long remoteId, String folder, String mailHeaderId) {
+    Long id = persistEmailCarrying(remoteId, folder, mailHeaderId);
+    EmailBoxEntity email = entityManager.find(EmailBoxEntity.class, id);
+    email.setStarred(true);
+    entityManager.persist(email);
+    entityManager.flush();
+    return id;
+  }
+
   private Long persistEmailCarrying(long remoteId, String folder, String mailHeaderId) {
     Long id = persistEmail(remoteId, folder, "body", Boolean.FALSE);
     EmailBoxEntity email = entityManager.find(EmailBoxEntity.class, id);

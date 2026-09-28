@@ -161,6 +161,19 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<String> excludedFolders);
 
   /**
+   * The keys of the owner's starred messages outside the given folders: the read the
+   * Favorites drawer is reconciled from, which needs no body and no attachment.
+   *
+   * @param userId the mailbox owner
+   * @param excludedFolders the folders left out (MailFolder.NOT_FAVORITED_FOLDERS)
+   * @return rows of {@code [id, folder, mailHeaderId]}, newest first
+   */
+  @Query("SELECT email.id, email.folder, email.mailHeaderId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.starred = true AND email.folder NOT IN :excludedFolders ORDER BY email.receivedDate DESC")
+  List<Object[]> findStarredKeysByUserIdExcludingFolders(@Param("userId")
+  String userId, @Param("excludedFolders")
+  List<String> excludedFolders);
+
+  /**
    * The starred subset of a folder, for the list's starred filter. A dedicated query
    * rather than a flag on {@link #findByUserIdAndFolderWithAttachments} so the common
    * unfiltered listing keeps its exact plan, and the filter runs in SQL instead of
