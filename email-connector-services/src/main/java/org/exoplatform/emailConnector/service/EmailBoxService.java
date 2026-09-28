@@ -159,6 +159,7 @@ import org.exoplatform.emailConnector.model.DiscoveredFolder;
 import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailCategoryAdded;
 import org.exoplatform.emailConnector.model.FolderClassification;
 import org.exoplatform.emailConnector.model.FavoriteRemoval;
 import org.exoplatform.emailConnector.model.FolderMessageCounts;
@@ -648,10 +649,13 @@ public class EmailBoxService {
   // racing user edits over a single JSON blob is how settings get clobbered.
   private static final String     MAILBOX_SYNC_STATE_KEY                                      = "emailBoxSyncState";
 
-  // The nameIds of the add-on's own default email categories (see default-categories.json).
-  // The platform's CategoryImportService persists each nameId -> created category id in
-  // SettingService, so the assignable email category ids are resolved from there.
-  private static final List<String> DEFAULT_EMAIL_CATEGORY_NAME_IDS                          =
+  /**
+   * The nameIds of the add-on's own default email categories (see default-categories.json):
+   * their stable keys, which a mail filter's category condition names. The platform's
+   * CategoryImportService persists each nameId -> created category id in SettingService,
+   * so the assignable email category ids are resolved from there.
+   */
+  public static final List<String>  DEFAULT_EMAIL_CATEGORY_NAME_IDS                          =
                                                                    List.of("emailImportantCategory",
                                                                            "emailInvitationCategory",
                                                                            "emailNotificationCategory",
@@ -8380,6 +8384,7 @@ public class EmailBoxService {
       throw new IllegalArgumentException("emailConnector.category.notFound");
     }
     int linked = 0;
+    List<Long> linkedUids = new ArrayList<>();
     for (Long mailRemoteId : mailRemoteIds) {
       Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, actingFolder, false, false, false, false);
       if (email == null) {
@@ -8390,6 +8395,7 @@ public class EmailBoxService {
                                  new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE, String.valueOf(email.getId()), 0),
                                  username);
         linked++;
+        linkedUids.add(mailRemoteId);
       } catch (ObjectAlreadyExistsException e) {
         // Idempotent: the email is already in this category, nothing to do.
       } catch (ObjectNotFoundException e) {
@@ -8404,7 +8410,36 @@ public class EmailBoxService {
     if (linked > 0) {
       broadcastUnreadCountChangedIfCategoryScoped(username);
     }
+    if (MailFolder.INBOX.equals(actingFolder)) {
+      broadcastCategoryAdded(username, categoryId, linkedUids);
+    }
     return linked;
+  }
+
+  /**
+   * Says which inbox mails just got a category, whoever put it there -- the AI
+   * categorizer, the user from the mailbox, the MCP tool, a mail filter's own action --
+   * so the owner's mail filters on that category run on them
+   * ({@link EmailConnectorUtils#EMAIL_CATEGORY_ADDED}). Only the links that stuck: a mail
+   * already in the category was not categorised now. Only the inbox's: filters run on the
+   * owner's own inbox, never on Junk or another folder. A broadcast failure never fails
+   * the assignment.
+   *
+   * @param username the mailbox owner
+   * @param categoryId the category just added
+   * @param mailRemoteIds the INBOX UIDs of the mails that got it
+   */
+  private void broadcastCategoryAdded(String username, long categoryId, List<Long> mailRemoteIds) {
+    if (mailRemoteIds.isEmpty()) {
+      return;
+    }
+    try {
+      listenerService.broadcast(EmailConnectorUtils.EMAIL_CATEGORY_ADDED,
+                                username,
+                                new EmailCategoryAdded(categoryId, List.copyOf(mailRemoteIds)));
+    } catch (Exception e) {
+      LOG.warn("Could not announce category {} added to {} mail(s) of user {}", categoryId, mailRemoteIds.size(), username, e);
+    }
   }
 
   /**
@@ -8553,13 +8588,31 @@ public class EmailBoxService {
   }
 
   /**
+   * The stable key of each of the add-on's own default email categories, by the id the
+   * importer gave it on this instance: what a mail filter's category condition names, so
+   * it survives a rename, a translation or a re-import that gives the category another id.
+   *
+   * @return {@code id -> nameId}, for the defaults the importer has created
+   */
+  public Map<Long, String> getDefaultEmailCategoryNameIds() {
+    Map<Long, String> nameIds = new HashMap<>();
+    for (String nameId : DEFAULT_EMAIL_CATEGORY_NAME_IDS) {
+      Long categoryId = getDefaultEmailCategoryId(nameId);
+      if (categoryId != null) {
+        nameIds.put(categoryId, nameId);
+      }
+    }
+    return nameIds;
+  }
+
+  /**
    * Resolves one default email category's id from the {@code nameId -> id} mapping
    * the platform's category importer persisted in settings.
    *
    * @param nameId the category's declared nameId (see {@code default-categories.json})
    * @return the category id, or null when the importer has not created it (yet)
    */
-  private Long getDefaultEmailCategoryId(String nameId) {
+  public Long getDefaultEmailCategoryId(String nameId) {
     SettingValue<?> settingValue = settingService.get(CATEGORY_IMPORT_CONTEXT, CATEGORY_IMPORT_SCOPE, nameId);
     if (settingValue != null && settingValue.getValue() != null) {
       try {
