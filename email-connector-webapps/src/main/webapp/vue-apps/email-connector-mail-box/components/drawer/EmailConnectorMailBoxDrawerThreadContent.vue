@@ -57,8 +57,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       element="div"
       class="my-auto" />
     <!-- What the user's own eXo rules did to the opened mail, with its Undo
-         (EXO-90654); nothing at all when no rule matched it. -->
-    <email-connector-mail-box-drawer-automations :email="email" />
+         (EXO-90654); nothing at all when no rule matched it. Over a conversation, to
+         every message the user received in it, grouped by message, each group's header
+         leading to its message below (EXO-90669). -->
+    <email-connector-mail-box-drawer-automations
+      :email="email"
+      :messages="isThread ? categorizableMessages : null"
+      @go-to-message="goToMessage" />
     <!-- The messages of this conversation the folder list does not hold (a sent reply,
          an archived message), counted from the list row's conversation total and held
          by a skeleton strip each until the conversation lands. No progress bar here:
@@ -128,6 +133,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <email-connector-mail-box-drawer-thread-message
         v-else
         :key="item.key"
+        :data-message-key="item.key"
         :email="item.message"
         :expanded="expandedIds.includes(item.key)"
         :collapsible="!isLast(item.message)"
@@ -897,6 +903,32 @@ export default {
       if (row && this.email && row.mailRemoteId === this.email.mailRemoteId
           && (row.folder || 'INBOX') === (this.email.folder || 'INBOX')) {
         this.receiptsReleased = true;
+      }
+    },
+    /**
+     * Brings a message of the conversation into view, open: the Automations panel's way
+     * to a message its group is about (EXO-90669). A message folded behind a count badge
+     * is revealed first; the scroll is the drawer's own, the message's top at the top of
+     * the view. Not a smooth scroll: its animation is dropped by a browser that throttles
+     * the page's rendering, and the panel's click would then do nothing visible.
+     *
+     * @param {Object} message - the message
+     * @returns {Promise<void>} resolved once scrolled, or at once when it is not here
+     */
+    async goToMessage(message) {
+      const key = message && this.msgKey(message);
+      if (!key || !this.messages.some(candidate => this.msgKey(candidate) === key)) {
+        return;
+      }
+      if (!this.revealedKeys.includes(key)) {
+        this.revealedKeys = this.revealedKeys.concat(key);
+      }
+      this.expand(key);
+      await this.$nextTick();
+      const element = Array.from(this.$el.querySelectorAll('[data-message-key]'))
+        .find(candidate => candidate.getAttribute('data-message-key') === key);
+      if (element?.scrollIntoView) {
+        element.scrollIntoView({ block: 'start' });
       }
     },
     // Reveal a folded run: its messages render as individual strips from now on.
