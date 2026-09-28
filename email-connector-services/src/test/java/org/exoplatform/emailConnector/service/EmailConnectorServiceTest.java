@@ -144,6 +144,8 @@ public class EmailConnectorServiceTest {
     Identity identity = mock(Identity.class);
     when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
     when(userAcl.isAdministrator(identity)).thenReturn(true);
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.updateEmailConnector(emailConnector, TEST_USER));
+    emailConnector.setId(1L);
     emailConnectorService.updateEmailConnector(emailConnector, TEST_USER);
     verify(emailConnectorStorage).updateEmailConnector(emailConnector);
   }
@@ -863,6 +865,104 @@ public class EmailConnectorServiceTest {
     order.verify(providerConfigStorage).validate(any(), any());
     order.verify(emailConnectorStorage).createEmailConnector(posted);
     order.verify(providerConfigStorage).store(any(), any());
+  }
+
+  /**
+   * A configuration the validation accepted can still fail when it is written - the
+   * secret's encryption, the database - and the connector row is committed by another
+   * transaction than the settings. The row just created is then removed, so the
+   * administrator's error matches what is stored and a retry does not make a second
+   * connector.
+   */
+  @Test
+  @SneakyThrows
+  void aConfigurationThatCannotBeStoredRemovesTheConnectorJustCreated() {
+    grantAdministration();
+    EmailConnector posted = emailConnector();
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.createEmailConnector(posted)).thenReturn(stored);
+    doThrow(new ConnectorCredentialsException("connector.credentials.configurationCodecFailure")).when(providerConfigStorage)
+                                                                                     .store(any(), any());
+
+    IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailConnectorService.createEmailConnector(posted, TEST_USER));
+
+    assertEquals("connector.credentials.configurationCodecFailure", thrown.getMessage());
+    verify(emailConnectorStorage).deleteEmailConnector(7L);
+  }
+
+  /** A configuration stored without failure keeps the connector it was written for. */
+  @Test
+  @SneakyThrows
+  void aStoredConfigurationKeepsTheConnectorJustCreated() {
+    grantAdministration();
+    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(mock(ApplicationList.class));
+    EmailConnector posted = emailConnector();
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.createEmailConnector(posted)).thenReturn(stored);
+
+    emailConnectorService.createEmailConnector(posted, TEST_USER);
+
+    verify(emailConnectorStorage, never()).deleteEmailConnector(anyLong());
+  }
+
+  /**
+   * On update the configuration of the provider being selected is written first, under
+   * its own keys: when that write fails, the connector row and the configuration it
+   * still uses are both left as they were.
+   */
+  @Test
+  @SneakyThrows
+  void aConfigurationThatCannotBeStoredLeavesTheConnectorUntouchedOnUpdate() {
+    grantAdministration();
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("personal");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+    EmailConnector posted = emailConnector();
+    posted.setId(7L);
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+    doThrow(new ConnectorCredentialsException("connector.credentials.configurationCodecFailure")).when(providerConfigStorage)
+                                                                                     .store(any(), any());
+
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.updateEmailConnector(posted, TEST_USER));
+
+    verify(emailConnectorStorage, never()).updateEmailConnector(any());
+    verify(providerConfigStorage, never()).delete(any());
+  }
+
+  /**
+   * And the accepted update writes the new configuration, then the row, and removes the
+   * configuration of the provider being left last.
+   */
+  @Test
+  @SneakyThrows
+  void updateStoresTheNewConfigurationBeforeTheRowAndDiscardsTheOldOneLast() {
+    grantAdministration();
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("personal-imap");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+    EmailConnector posted = emailConnector();
+    posted.setId(7L);
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+
+    emailConnectorService.updateEmailConnector(posted, TEST_USER);
+
+    InOrder order = inOrder(providerConfigStorage, emailConnectorStorage);
+    order.verify(providerConfigStorage).store(any(), any());
+    order.verify(emailConnectorStorage).updateEmailConnector(posted);
+    order.verify(providerConfigStorage).delete(argThat(context -> "personal-imap".equals(context.getConnectorCredentialsProviderName())));
   }
 
   /**

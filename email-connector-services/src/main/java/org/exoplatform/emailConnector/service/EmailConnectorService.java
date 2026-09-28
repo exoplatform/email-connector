@@ -657,7 +657,16 @@ public class EmailConnectorService {
     // answers by creating a second one.
     validateProviderConfig(emailConnector);
     EmailConnector storedEmailConnector = emailConnectorStorage.createEmailConnector(emailConnector);
-    storeProviderConfig(storedEmailConnector, emailConnector.getProviderConfig());
+    // The connector and its configuration are committed by two different transactions -
+    // the row by Spring's repository, the settings by the kernel's own EntityManager - so
+    // a failure of the second, which the validation above cannot foresee (the secret's
+    // encryption, the database), is undone here by removing the row just created.
+    try {
+      storeProviderConfig(storedEmailConnector, emailConnector.getProviderConfig());
+    } catch (RuntimeException e) {
+      removeConnectorLeftWithoutConfiguration(storedEmailConnector, e);
+      throw e;
+    }
     activateEmailApp();
     return storedEmailConnector;
 
@@ -680,18 +689,23 @@ public class EmailConnectorService {
                                                      username,
                                                      emailConnector.getName()));
     }
+    if (emailConnector.getId() == null) {
+      throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
+    }
     // Before the row is written, for the reason the create path already carries: the
     // connector and its configuration are two writes, and a refusal on the second
     // would otherwise leave the connector on a provider whose configuration was never
     // stored - an authentication nothing can perform, that no screen shows as broken.
     validateProviderConfig(emailConnector);
-    // The id is nullable on this path - the storage resolves the connector by name when
-    // it is - so the previous state is only read when there is an id to read it by.
-    EmailConnector previousEmailConnector = emailConnector.getId() == null ? null
-                                                                          : emailConnectorStorage.getEmailConnector(emailConnector.getId());
+    EmailConnector previousEmailConnector = emailConnectorStorage.getEmailConnector(emailConnector.getId());
+    // The configuration is written before the row, under the provider being selected:
+    // its keys carry the provider name, so this write never touches the configuration
+    // the connector still uses. A failure here therefore leaves the connector exactly as
+    // it was; the configuration of the provider being left is removed only once the
+    // connector no longer points at it.
+    storeProviderConfig(emailConnector, emailConnector.getProviderConfig());
     emailConnectorStorage.updateEmailConnector(emailConnector);
     discardConfigOfProviderBeingLeft(previousEmailConnector, emailConnector);
-    storeProviderConfig(emailConnector, emailConnector.getProviderConfig());
   }
 
   /**
@@ -744,6 +758,24 @@ public class EmailConnectorService {
     String newProvider = StringUtils.defaultIfBlank(emailConnector.getAuthProviderName(), previousProvider);
     if (StringUtils.isNotBlank(previousProvider) && !StringUtils.equals(previousProvider, newProvider)) {
       providerConfigStorage.delete(providerConfigContext(previousEmailConnector.getId(), previousProvider));
+    }
+  }
+
+  /**
+   * Removes a connector whose configuration could not be written right after its
+   * creation, so that the refusal the administrator receives matches what is stored.
+   *
+   * @param storedEmailConnector the connector just created
+   * @param cause the failure of the configuration write, which the caller rethrows
+   */
+  private void removeConnectorLeftWithoutConfiguration(EmailConnector storedEmailConnector, RuntimeException cause) {
+    try {
+      emailConnectorStorage.deleteEmailConnector(storedEmailConnector.getId());
+    } catch (RuntimeException e) {
+      cause.addSuppressed(e);
+      LOG.warn("Email connector {} was created but its provider configuration could not be stored, and removing it failed",
+               storedEmailConnector.getId(),
+               e);
     }
   }
 
