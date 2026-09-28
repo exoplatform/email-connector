@@ -126,6 +126,8 @@ public class UserEmailSettingRest {
       userEmailSettingService.connectUserEmailSetting(userEmailSetting, request.getRemoteUser(), broadcast);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
@@ -140,7 +142,11 @@ public class UserEmailSettingRest {
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public UserEmailSetting getUserEmailSetting(HttpServletRequest request) {
-    return userEmailSettingService.getUserEmailSetting(request.getRemoteUser());
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(request.getRemoteUser());
+    // The decoded password never leaves the server (EXO-90610): passwordStored tells
+    // the screen there is one to keep, and a blank password on the next PUT keeps it.
+    userEmailSetting.setEmailPassword(null);
+    return userEmailSetting;
   }
 
   @PutMapping("/preferences")
