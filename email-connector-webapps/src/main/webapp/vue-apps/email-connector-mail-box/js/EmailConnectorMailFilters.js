@@ -14,6 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
+import { getWaitingSuggestionMails } from '../../email-connector-user-setting/js/EmailConnectorUserSettingService.js';
 import { sharedMailboxOfFolder } from './EmailConnectorSharedMailboxes.js';
 
 /**
@@ -38,4 +39,76 @@ export function isOwnMailboxMail(email) {
 export function canCreateFilterFrom(email) {
   return isOwnMailboxMail(email) && !email.draftLocalId && !!email.sender?.address
     && !['DRAFTS', 'SENT', 'SCHEDULED'].includes(email.folder);
+}
+
+// The mails with a suggestion of an assistant waiting for the user (EXO-90669), as the
+// server last answered: Message-ID -> true. Observable, so every list row follows a read
+// without being told; the platform's Vue is a global, and a context without it gets a
+// plain object.
+const waitingSuggestions = typeof Vue !== 'undefined' && Vue.observable
+  ? Vue.observable({ mailHeaderIds: {} })
+  : { mailHeaderIds: {} };
+
+/** How long a read of the waiting suggestions is reused before the list reads them again, in ms. */
+const WAITING_SUGGESTIONS_TTL = 60 * 1000;
+
+/** When the waiting suggestions were last read, in ms; 0 before the first read. */
+let waitingSuggestionsReadAt = 0;
+
+/** The read on its way, shared by every caller while it is. */
+let waitingSuggestionsRead = null;
+
+/** Whether the server said the feature is not there for this user: no read is made again. */
+let waitingSuggestionsUnavailable = false;
+
+/**
+ * Reads again which of the user's mails have a suggestion waiting for them, at most once
+ * a minute unless forced: one request for the whole mailbox, whatever the rows. A read
+ * that fails keeps what was known; one the server refuses (the feature off, no mailbox
+ * connected, a shared mailbox) empties it and is not made again.
+ *
+ * @param {boolean} [force] - true to read even within the minute, after a decision
+ * @returns {Promise<void>} resolved once read, or at once when not needed
+ */
+export function refreshWaitingSuggestions(force) {
+  if (waitingSuggestionsUnavailable) {
+    return Promise.resolve();
+  }
+  if (waitingSuggestionsRead) {
+    return waitingSuggestionsRead;
+  }
+  if (!force && Date.now() - waitingSuggestionsReadAt < WAITING_SUGGESTIONS_TTL) {
+    return Promise.resolve();
+  }
+  // Started inside the chain, so that even a request that cannot be made at all ends in
+  // the catch below rather than failing the list's rendering.
+  waitingSuggestionsRead = Promise.resolve()
+    .then(() => getWaitingSuggestionMails())
+    .then(ids => {
+      waitingSuggestions.mailHeaderIds = (ids || []).reduce((known, id) => ({ ...known, [id]: true }), {});
+    })
+    .catch(error => {
+      if (error?.status === 403 || error?.status === 404) {
+        waitingSuggestionsUnavailable = true;
+        waitingSuggestions.mailHeaderIds = {};
+      }
+    })
+    .finally(() => {
+      waitingSuggestionsReadAt = Date.now();
+      waitingSuggestionsRead = null;
+    });
+  return waitingSuggestionsRead;
+}
+
+/**
+ * Whether one of the given mails -- a list row's, or every mail of its conversation --
+ * has a suggestion waiting for the user, as last read. A mail of a mailbox somebody
+ * shared with the user never has: its suggestions are not the user's.
+ *
+ * @param {Array<object>} emails - the mails
+ * @returns {boolean} true when one has
+ */
+export function hasWaitingSuggestions(emails) {
+  const known = waitingSuggestions.mailHeaderIds;
+  return (emails || []).some(email => !!email?.mailHeaderId && known[email.mailHeaderId] === true && isOwnMailboxMail(email));
 }
