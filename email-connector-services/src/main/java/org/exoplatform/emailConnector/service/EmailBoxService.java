@@ -6253,6 +6253,28 @@ public class EmailBoxService {
   }
 
   /**
+   * The user's own cached mails whose subject or sender contains a keyword, newest
+   * first, for the editors' "/mail" link picker.
+   * <p>
+   * Only the mailbox of {@code username} is read, never one delegated to them: the
+   * rows are selected by their owner column, the way
+   * {@link #getOwnedEmailById(long, String)} refuses another owner's row. It is
+   * one bounded query on the cache, with no IMAP call, cheap enough for a picker
+   * that searches as the user types. Drafts, Trash and Junk are left out.
+   *
+   * @param username the user searching, whose mails only are returned
+   * @param keyword the searched text, matched literally and case-insensitively
+   * @param offset how many matches to skip
+   * @param limit how many matches at most, capped to
+   *          {@link EmailBoxStorage#MAX_LINK_RESULTS}
+   * @return light mails carrying id, owner, subject, sender and date; never null
+   */
+  @Transactional(readOnly = true)
+  public List<Email> searchOwnEmailsForLink(String username, String keyword, int offset, int limit) {
+    return emailBoxStorage.searchEmailsForLink(username, keyword, offset, limit);
+  }
+
+  /**
    * Update the read/unread status of one or more emails (by IMAP mailRemoteId),
    * optimistically in the local mirror first and then, when requested, on the IMAP
    * server. Each per-message remote failure (including a message that no longer

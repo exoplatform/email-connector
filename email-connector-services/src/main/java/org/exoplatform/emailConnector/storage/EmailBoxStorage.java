@@ -106,6 +106,21 @@ public class EmailBoxStorage {
 
   private static final String DEFAULT_ATTACHMENT_MIME_TYPE = "application/octet-stream";
 
+  /** The most matches the "/mail" link picker is given in one page. */
+  public static final int           MAX_LINK_RESULTS        = 20;
+
+  /** The longest keyword the "/mail" link picker searches, longer ones are cut. */
+  public static final int           MAX_LINK_KEYWORD_LENGTH = 100;
+
+  /**
+   * The folders the "/mail" link picker never offers: a draft is not a mail yet,
+   * and Trash and Junk are the mail the user or the server threw away.
+   */
+  public static final List<String>  LINK_EXCLUDED_FOLDERS   = List.of(MailFolder.DRAFTS, MailFolder.TRASH, MailFolder.JUNK);
+
+  /** The escape character of the link picker's {@code LIKE} pattern. */
+  private static final String       LIKE_ESCAPE             = "!";
+
   private static final Log    LOG                          = ExoLogger.getLogger(EmailBoxStorage.class);
 
   /**
@@ -1418,6 +1433,68 @@ public class EmailBoxStorage {
       return List.of();
     }
     return emailBoxDao.findByUserIdAndFoldersForSearch(userId, folders).stream().map(this::fromEntityForSearch).toList();
+  }
+
+  /**
+   * The owner's cached messages whose subject or sender (name or address) contains
+   * a keyword, newest first, for the editors' "/mail" link picker.
+   * <p>
+   * One query on the mailbox cache, bounded in SQL, reading four columns: the
+   * picker fires on every pause in the typing, so it never loads the mailbox, never
+   * calls the IMAP server and never reads a row per result. Drafts, Trash and Junk
+   * are never offered ({@link #LINK_EXCLUDED_FOLDERS}). The keyword is trimmed,
+   * capped to {@link #MAX_LINK_KEYWORD_LENGTH} characters and matched literally:
+   * a {@code %} or a {@code _} typed by the user is not a wildcard.
+   *
+   * @param userId the mailbox owner, whose rows only are read
+   * @param keyword the searched text
+   * @param offset how many matches to skip, negative read as 0
+   * @param limit how many matches at most, capped to {@link #MAX_LINK_RESULTS}
+   * @return light {@link Email}s carrying id, owner, subject, sender and date;
+   *         empty for a blank owner, a blank keyword or a non-positive limit
+   */
+  public List<Email> searchEmailsForLink(String userId, String keyword, int offset, int limit) {
+    String pattern = toContainsPattern(keyword);
+    if (StringUtils.isBlank(userId) || pattern == null || limit <= 0) {
+      return Collections.emptyList();
+    }
+    List<Object[]> rows = emailBoxDao.findLinkCandidatesByUserId(userId,
+                                                                 LINK_EXCLUDED_FOLDERS,
+                                                                 pattern,
+                                                                 Math.max(0, offset),
+                                                                 Math.min(limit, MAX_LINK_RESULTS));
+    return rows.stream().map(row -> {
+      Email email = new Email();
+      email.setId((Long) row[0]);
+      email.setUserId(userId);
+      email.setSubject((String) row[1]);
+      email.setSender(toLightSender((String) row[2]));
+      email.setReceivedDate((Date) row[3]);
+      return email;
+    }).toList();
+  }
+
+  /**
+   * The case-insensitive {@code LIKE} pattern matching a keyword anywhere, the
+   * keyword taken literally.
+   * <p>
+   * The escape character ({@code !}) is escaped first, then {@code %} and
+   * {@code _}, so that none of the three keeps a meaning in the pattern.
+   *
+   * @param keyword the searched text, untrusted
+   * @return {@code %keyword%} lower-cased and escaped, or {@code null} for a blank
+   *         keyword
+   */
+  public static String toContainsPattern(String keyword) {
+    String text = StringUtils.trim(keyword);
+    if (StringUtils.isEmpty(text)) {
+      return null;
+    }
+    text = StringUtils.left(text, MAX_LINK_KEYWORD_LENGTH).toLowerCase(Locale.ROOT);
+    String escaped = text.replace(LIKE_ESCAPE, LIKE_ESCAPE + LIKE_ESCAPE)
+                         .replace("%", LIKE_ESCAPE + "%")
+                         .replace("_", LIKE_ESCAPE + "_");
+    return "%" + escaped + "%";
   }
 
   @SneakyThrows
