@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import org.junit.jupiter.api.Test;
@@ -28,6 +29,8 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.portal.config.UserPortalConfigService;
 import org.exoplatform.services.security.Identity;
@@ -46,6 +49,9 @@ class EmailPermanentLinkPluginTest {
 
   @Mock
   private UserACL                  userAcl;
+
+  @Mock
+  private EmailBoxService          emailBoxService;
 
   @InjectMocks
   private EmailPermanentLinkPlugin plugin;
@@ -76,12 +82,68 @@ class EmailPermanentLinkPluginTest {
   }
 
   /**
-   * The link opens the mailbox on the site's home page.
+   * The link opens the mail it names in the mailbox's reader: its UID and the key of
+   * its folder, read from the cache when the link is followed.
    */
   @Test
-  void directAccessUrlOpensTheMailbox() {
+  void directAccessUrlOpensThatMail() {
     when(portalConfigService.getMetaPortal()).thenReturn("dw");
-    assertEquals("/portal/dw?openEmailBox=true", plugin.getDirectAccessUrl(new PermanentLinkObject("email", "3")));
+    when(emailBoxService.getEmailById(3L, null)).thenReturn(email(42L, "INBOX"));
+    assertEquals("/portal/dw?openEmailBox=true&mailRemoteId=42&folder=INBOX",
+                 plugin.getDirectAccessUrl(new PermanentLinkObject("email", "3")));
+  }
+
+  /**
+   * A custom folder's key is encoded in the URL, since it carries a colon.
+   */
+  @Test
+  void directAccessUrlEncodesACustomFolderKey() {
+    when(portalConfigService.getMetaPortal()).thenReturn("dw");
+    when(emailBoxService.getEmailById(3L, null)).thenReturn(email(7L, "CUSTOM:12"));
+    assertEquals("/portal/dw?openEmailBox=true&mailRemoteId=7&folder=CUSTOM%3A12",
+                 plugin.getDirectAccessUrl(new PermanentLinkObject("email", "3")));
+  }
+
+  /**
+   * A mail the reader cannot open from outside -- gone from the cache, a draft, a
+   * folder key this add-on never wrote, no UID -- opens the mailbox alone.
+   */
+  @Test
+  void directAccessUrlFallsBackToTheMailbox() {
+    when(portalConfigService.getMetaPortal()).thenReturn("dw");
+    String mailbox = "/portal/dw?openEmailBox=true";
+    when(emailBoxService.getEmailById(3L, null)).thenReturn(null);
+    assertEquals(mailbox, plugin.getDirectAccessUrl(new PermanentLinkObject("email", "3")));
+    when(emailBoxService.getEmailById(4L, null)).thenReturn(email(42L, "DRAFTS"));
+    assertEquals(mailbox, plugin.getDirectAccessUrl(new PermanentLinkObject("email", "4")));
+    when(emailBoxService.getEmailById(5L, null)).thenReturn(email(42L, "CUSTOM:x"));
+    assertEquals(mailbox, plugin.getDirectAccessUrl(new PermanentLinkObject("email", "5")));
+    when(emailBoxService.getEmailById(6L, null)).thenReturn(email(null, "INBOX"));
+    assertEquals(mailbox, plugin.getDirectAccessUrl(new PermanentLinkObject("email", "6")));
+  }
+
+  /**
+   * An object id that is not a number looks nothing up.
+   */
+  @Test
+  void directAccessUrlOfANonNumericIdIsTheMailbox() {
+    when(portalConfigService.getMetaPortal()).thenReturn("dw");
+    assertEquals("/portal/dw?openEmailBox=true", plugin.getDirectAccessUrl(new PermanentLinkObject("email", "3&x=1")));
+    verifyNoInteractions(emailBoxService);
+  }
+
+  /**
+   * A cached mail.
+   *
+   * @param mailRemoteId its IMAP UID
+   * @param folder its folder key
+   * @return the mail
+   */
+  private static Email email(Long mailRemoteId, String folder) {
+    Email email = new Email();
+    email.setMailRemoteId(mailRemoteId);
+    email.setFolder(folder);
+    return email;
   }
 
 }
