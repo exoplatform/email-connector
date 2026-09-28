@@ -172,7 +172,9 @@ async function mountBoth(emails, overrides = {}) {
       $emailConnectorCommonService: serviceStub({}),
       $vuetify: { breakpoint: {}, rtl: false },
     },
-    stubs: { 'exo-drawer': exoDrawerStub() },
+    // The mailbox drawer is a pinneable-drawer, which wraps exo-drawer: the same
+    // stand-in for both.
+    stubs: { 'exo-drawer': exoDrawerStub(), 'pinneable-drawer': exoDrawerStub() },
   });
   const mailbox = host.vm.$refs.mailbox;
   const mail = host.vm.$refs.mail;
@@ -251,12 +253,15 @@ describe('the mail drawer hands its mail over to the one full-screen layout (EXO
     expect(fixture.mail.email.content).toBeTruthy();
     fixture.service.getEmailByRemoteId.mockClear();
     fixture.service.updateEmailsReadStatus.mockClear();
-    const revealThreadRow = jest.spyOn(fixture.mailbox, 'revealThreadRow');
+    const revealed = [];
+    jest.spyOn(fixture.mailbox, 'revealThreadRow').mockImplementation(key => revealed.push({ key, expanded: fixture.mailbox.expanded }));
 
     await expandFromMail(fixture);
 
     // Closing on a hand-over is not a return to the narrow list: no row to focus there.
-    expect(revealThreadRow).not.toHaveBeenCalled();
+    // The full-screen list is brought to the mail's row instead, where the narrow list
+    // was left (EXO-90717).
+    expect(revealed).toEqual([{ key: message(2).threadId, expanded: true }]);
     expect(fixture.mailbox.$refs.emailBoxDrawer.expand).toBe(true);
     expect(fixture.mailbox.expanded).toBe(true);
     expect(fixture.mailbox.email.mailRemoteId).toBe(2);
@@ -362,24 +367,97 @@ describe('the mail drawer hands its mail over to the one full-screen layout (EXO
     expect(fixture.mailbox.$refs.emailBoxDrawer.confirmationAsked).toBe(true);
   });
 
-  it('comes back to the list on collapse', async () => {
+  it('keeps the mail open on collapse, over the list, one step back (EXO-90717)', async () => {
     fixture = await mountBoth([message(1), message(2)]);
     fixture.host.vm.$root.$emit('open-email-detail-drawer', 2, fixture.mailbox.emails, false, null, false, false, 'INBOX');
     await flush();
     await expandFromMail(fixture);
+    fixture.service.getEmailByRemoteId.mockClear();
+    fixture.service.updateEmailsReadStatus.mockClear();
 
-    jest.useFakeTimers();
-    fixture.mailbox.$refs.emailBoxDrawer.toogleExpand();
-    await fixture.host.vm.$nextTick();
-    jest.advanceTimersByTime(250);
-    jest.useRealTimers();
-    await fixture.host.vm.$nextTick();
+    await collapse(fixture);
+
+    expect(fixture.mailbox.expanded).toBe(false);
+    expect(fixture.mailbox.$el.querySelector('[data-slot="fullAppLeftContent"]')).toBeNull();
+    // The mail drawer reads on, in the mail's own folder, on the full copy the full
+    // screen held: nothing fetched, read or counted again.
+    expect(fixture.mail.emailDetailDrawer).toBe(true);
+    expect(fixture.host.vm.$root.isDetailDrawerActive).toBe(true);
+    expect(fixture.mail.email.mailRemoteId).toBe(2);
+    expect(fixture.mail.email.folder).toBe('INBOX');
+    expect(fixture.mail.email.content.body).toBe('<p>body 2</p>');
+    expect(fixture.mail.selectEmailPlaceHolder).toBe(false);
+    expect(fixture.service.getEmailByRemoteId).not.toHaveBeenCalled();
+    expect(fixture.service.updateEmailsReadStatus).not.toHaveBeenCalled();
+    // The mailbox's reader is empty, and its list comes back to the mail's row once the
+    // mail drawer closes.
+    expect(fixture.mailbox.email).toBeNull();
+    const revealThreadRow = jest.spyOn(fixture.mailbox, 'revealThreadRow');
+    fixture.mail.close();
+    expect(revealThreadRow).toHaveBeenCalledWith(message(2).threadId);
+  });
+
+  it('keeps a mail opened in full screen, of another folder, open on collapse', async () => {
+    fixture = await mountBoth([message(1, 'ARCHIVE'), message(2, 'ARCHIVE')]);
+    fixture.mailbox.currentFolder = 'ARCHIVE';
+    await expandMailBox(fixture);
+    await fixture.mailbox.openListedEmail(fixture.mailbox.emails[1]);
+    await flush();
+    expect(fixture.mailbox.email.mailRemoteId).toBe(2);
+
+    await collapse(fixture);
+
+    expect(fixture.mail.emailDetailDrawer).toBe(true);
+    expect(fixture.mail.email.mailRemoteId).toBe(2);
+    expect(fixture.mail.email.folder).toBe('ARCHIVE');
+    expect(fixture.mailbox.currentFolder).toBe('ARCHIVE');
+  });
+
+  it('comes back to the list on collapse with no mail open', async () => {
+    fixture = await mountBoth([message(1), message(2)]);
+    await expandMailBox(fixture);
+    fixture.mailbox.pinnedEmail = false;
+    fixture.mailbox.email = null;
+    fixture.mailbox.selectEmailPlaceHolder = true;
+
+    await collapse(fixture);
 
     expect(fixture.mailbox.expanded).toBe(false);
     expect(fixture.mail.emailDetailDrawer).toBe(false);
-    expect(fixture.mailbox.$el.querySelector('[data-slot="fullAppLeftContent"]')).toBeNull();
+    expect(fixture.host.vm.$root.isDetailDrawerActive).toBeFalsy();
   });
 });
+
+/**
+ * Presses the mailbox drawer's own expand button and lets it switch layouts.
+ *
+ * @param {Object} fixture the mounted drawers
+ * @returns {Promise<void>} resolved once the full screen is on
+ */
+async function expandMailBox(fixture) {
+  jest.useFakeTimers();
+  fixture.mailbox.$refs.emailBoxDrawer.toogleExpand();
+  await fixture.host.vm.$nextTick();
+  jest.advanceTimersByTime(250);
+  jest.useRealTimers();
+  await flush();
+}
+
+/**
+ * Presses the full screen's collapse button and lets the mailbox drawer go back to
+ * its narrow layout.
+ *
+ * @param {Object} fixture the mounted drawers
+ * @returns {Promise<void>} resolved once the drawer is narrow again
+ */
+async function collapse(fixture) {
+  jest.useFakeTimers();
+  fixture.mailbox.$refs.emailBoxDrawer.toogleExpand();
+  await fixture.host.vm.$nextTick();
+  jest.advanceTimersByTime(250);
+  jest.useRealTimers();
+  await fixture.host.vm.$nextTick();
+}
 
 describe('a draft\'s conversation opens in the full-screen reader (EXO-90415)', () => {
   let fixture;
