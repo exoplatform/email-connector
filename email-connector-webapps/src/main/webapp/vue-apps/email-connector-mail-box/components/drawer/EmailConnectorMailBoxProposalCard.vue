@@ -116,21 +116,33 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           v-if="actions"
           :loading="busy === 'approve'"
           :disabled="!!busy"
-          class="ms-2 px-2 flex-shrink-0"
+          class="ms-2 px-3 flex-shrink-0"
           color="primary"
           elevation="0"
-          x-small
+          small
           @click="approve">
           {{ $t('emailConnector.mailBox.automations.proposal.approve') }}
+          <template #loader>
+            <v-progress-circular
+              size="16"
+              width="2"
+              indeterminate />
+          </template>
         </v-btn>
         <v-btn
           :loading="busy === 'reject'"
           :disabled="!!busy"
-          class="ms-1 px-2 flex-shrink-0"
+          class="ms-1 px-3 flex-shrink-0"
           outlined
-          x-small
+          small
           @click="reject">
           {{ $t('emailConnector.mailBox.automations.proposal.reject') }}
+          <template #loader>
+            <v-progress-circular
+              size="16"
+              width="2"
+              indeterminate />
+          </template>
         </v-btn>
       </template>
       <v-btn
