@@ -85,7 +85,7 @@ export function refreshWaitingSuggestions(force) {
   waitingSuggestionsRead = Promise.resolve()
     .then(() => getWaitingSuggestionMails())
     .then(ids => {
-      waitingSuggestions.mailHeaderIds = (ids || []).reduce((known, id) => ({ ...known, [id]: true }), {});
+      waitingSuggestions.mailHeaderIds = (ids || []).reduce((known, id) => ({ ...known, [id]: (known[id] || 0) + 1 }), {});
     })
     .catch(error => {
       if (error?.status === 403 || error?.status === 404) {
@@ -101,14 +101,22 @@ export function refreshWaitingSuggestions(force) {
 }
 
 /**
- * Whether one of the given mails -- a list row's, or every mail of its conversation --
- * has a suggestion waiting for the user, as last read. A mail of a mailbox somebody
- * shared with the user never has: its suggestions are not the user's.
+ * How many suggestions wait for the user on the given mails -- a list row's, or every
+ * mail of its conversation --, as last read: the server answers a Message-ID once per
+ * waiting suggestion. Mails of a mailbox somebody shared with the user count none.
  *
  * @param {Array<object>} emails - the mails
- * @returns {boolean} true when one has
+ * @returns {number} the number of waiting suggestions, 0 when none
  */
-export function hasWaitingSuggestions(emails) {
+export function waitingSuggestionCount(emails) {
   const known = waitingSuggestions.mailHeaderIds;
-  return (emails || []).some(email => !!email?.mailHeaderId && known[email.mailHeaderId] === true && isOwnMailboxMail(email));
+  const seen = new Set();
+  return (emails || []).reduce((count, email) => {
+    const id = email?.mailHeaderId;
+    if (!id || seen.has(id) || !isOwnMailboxMail(email)) {
+      return count;
+    }
+    seen.add(id);
+    return count + (known[id] || 0);
+  }, 0);
 }
