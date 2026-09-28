@@ -129,6 +129,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               </v-list-item-title>
             </v-list-item-content>
             <v-list-item-action class="my-0 flex-row align-center">
+              <!-- A suggestion of an assistant waits for the user on this mail, or on a
+                   mail of its conversation (EXO-90669): the Automations box of the
+                   reader is where it is decided. A plain icon with a native title, not
+                   a v-tooltip: this list streams thousands of rows. -->
+              <v-icon
+                v-if="waitingSuggestions"
+                :title="$t('emailConnector.mailBox.list.drawer.waitingSuggestions')"
+                :aria-label="$t('emailConnector.mailBox.list.drawer.waitingSuggestions')"
+                role="img"
+                size="12"
+                class="primary--text me-2">
+                fas fa-filter
+              </v-icon>
               <!-- Quiet favorite, next to the date (the unread dot keeps the left edge):
                    always there when set, offered on hover to set it.
                    It keeps its box at all times and only fades, exactly like the row
@@ -194,6 +207,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+import { hasWaitingSuggestions } from '../../js/EmailConnectorMailFilters.js';
 import { canDragFrom, dragLabel, dragPayloadOfRow, draggedRowCount, startDrag } from '../../js/EmailConnectorMailBoxDragAndDrop.js';
 
 export default {
@@ -278,6 +292,15 @@ export default {
       const drag = this.dragSource;
       return !!drag && drag.folder === (this.email.folder || 'INBOX')
         && this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread).some(id => drag.ids.includes(id));
+    },
+    /**
+     * Whether a suggestion of an assistant waits for the user on the row's mail, or on
+     * any mail of its conversation that the list holds, as the list last read them.
+     *
+     * @returns {Boolean} true when one waits
+     */
+    waitingSuggestions() {
+      return hasWaitingSuggestions(this.thread?.emails || [this.email]);
     },
     gapSize() {
       return Math.abs(this.left);
