@@ -817,11 +817,11 @@ public class UserEmailSettingServiceTest {
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
                                                     () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
 
-    // Le message compte : sans lui, cette assertion passe sur une version qui a
-    // perdu la garde et echoue simplement plus loin, pour une autre raison.
+    // The message matters: without it, this assertion passes on a version that lost
+    // the guard and simply fails further on, for another reason.
     assertTrue(refusal.getMessage(), refusal.getMessage().contains("expects the user to supply"));
 
-    // Rien d'ECRIT : canConnect lit le reglage existant, ce qui est legitime.
+    // Nothing WRITTEN: canConnect reads the existing setting, which is legitimate.
     verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
   }
 
@@ -836,7 +836,7 @@ public class UserEmailSettingServiceTest {
 
     assertThrows(IllegalArgumentException.class, () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
 
-    // Rien d'ECRIT : canConnect lit le reglage existant, ce qui est legitime.
+    // Nothing WRITTEN: canConnect reads the existing setting, which is legitimate.
     verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
   }
 

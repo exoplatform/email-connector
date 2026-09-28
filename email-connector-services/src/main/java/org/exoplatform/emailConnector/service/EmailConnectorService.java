@@ -18,10 +18,10 @@ package org.exoplatform.emailConnector.service;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
-import java.util.stream.Collectors;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -940,12 +940,6 @@ public class EmailConnectorService {
   }
 
   /**
-   * Get email connectors that will be available for all users.
-   *
-   * @param locale used language to retrieve email connector name
-   * @return list of stored {@link EmailConnector} in datasource
-   */
-  /**
    * Whether each declared provider asks its user for anything, keyed by provider
    * name.
    * <p>
@@ -991,6 +985,12 @@ public class EmailConnectorService {
     }
   }
 
+  /**
+   * Get email connectors that will be available for all users.
+   *
+   * @param locale used language to retrieve email connector name
+   * @return list of stored {@link EmailConnector} in datasource
+   */
   public List<EmailConnector> getEmailConnectors(Locale locale) {
     List<EmailConnector> emailConnectors = emailConnectorStorage.getEmailConnectors();
     emailConnectors = emailConnectors.stream().map(emailConnector -> {
