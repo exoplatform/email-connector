@@ -194,6 +194,15 @@ public class EmailConnectorUtils {
   // removed glue left waiting are released by EmailFilterAgentSweepJob after boot.
   public static final String   FILTER_AGENT_REQUESTED      = "exo.email.filterAgentRequested";
 
+  /**
+   * A mail of the owner's inbox just got a category, whoever put it there: the AI
+   * categorizer, the user, the MCP tool or a filter's own action. Source = the owner's
+   * username, data = an {@code EmailCategoryAdded} -- the category and the INBOX UIDs of
+   * the mails whose link stuck. The owner's mail filters with a category condition run on
+   * them then, rather than at sync, when no mail has a category yet.
+   */
+  public static final String   EMAIL_CATEGORY_ADDED        = "exo.email.categoryAdded";
+
   public static final String   EMAIL_FEATURE           = "email";
 
   private static final int     DEFAULT_AVATAR_WIDTH    = 350;
