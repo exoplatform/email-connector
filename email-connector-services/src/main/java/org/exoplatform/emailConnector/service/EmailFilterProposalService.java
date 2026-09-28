@@ -265,6 +265,22 @@ public class EmailFilterProposalService {
   }
 
   /**
+   * The Message-IDs of the caller's mails with a suggestion still waiting for them: what
+   * the mailbox list marks, once per load. Of the caller's own mailbox only.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @return the Message-IDs, each once
+   * @throws ObjectNotFoundException when the feature is off or no mailbox is connected
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   */
+  public List<String> getWaitingMails(String username, Long delegationId) throws ObjectNotFoundException, IllegalAccessException {
+    emailFilterService.checkOwnMailbox(username, delegationId);
+    return emailFilterProposalStorage.getWaitingMailHeaderIds(username, new Date(clock.millis()));
+  }
+
+  /**
    * Puts on each match the calls its assistant proposed.
    *
    * @param username the owner
