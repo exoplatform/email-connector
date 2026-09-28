@@ -1024,9 +1024,9 @@ public class EmailConnectorServiceTest {
   public void asksTheUserWhenNothingCanSayOtherwise() {
     when(emailConnectorStorage.getEmailConnectors()).thenReturn(List.of(connectorWithProvider(3L, null),
                                                                         connectorWithProvider(2L, "bluemind-sudo")));
-    // Le contexte Spring est partage par toute la classe : un champ mis a null ici
-    // le resterait pour les tests suivants, qui verraient une couture absente sans
-    // l'avoir demande. D'ou la restauration, quoi qu'il arrive.
+    // The Spring context is shared by the whole class: a field set to null here would
+    // stay null for the following tests, which would see an absent seam without having
+    // asked for one. Hence the restore, whatever happens.
     ReflectionTestUtils.setField(emailConnectorService, "emailCredentialsResolver", null);
     try {
       Map<String, Boolean> requirements = emailConnectorService.connectionRequirements();
