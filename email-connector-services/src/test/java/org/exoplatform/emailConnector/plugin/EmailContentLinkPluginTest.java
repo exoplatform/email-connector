@@ -104,7 +104,8 @@ class EmailContentLinkPluginTest {
   /**
    * The extension serves the {@code email} type, the one the AI chat's source
    * chip and the links already written ask for, and is listed in the editors'
-   * "/" menu under the {@code /mail} command, searched in place.
+   * "/" menu under the {@code /mail} command, searched in place; its chips
+   * open the mail in a drawer, over the page they are on.
    */
   @Test
   void extensionType() {
@@ -115,7 +116,7 @@ class EmailContentLinkPluginTest {
     assertEquals("fa fa-envelope", extension.getIcon());
     assertEquals("mail", extension.getCommand());
     assertFalse(extension.isHidden(), "Mail is offered in the editors' insert menu");
-    assertFalse(extension.isDrawer());
+    assertTrue(extension.isDrawer(), "A mail chip opens the mail over the page, not on another page");
   }
 
   /**
@@ -237,6 +238,45 @@ class EmailContentLinkPluginTest {
   void titleOfSomebodyElsesMailIsNone() {
     ConversationState.setCurrent(new ConversationState(new Identity(OTHER_USER)));
     assertNull(plugin.getContentTitle(String.valueOf(EMAIL_ID), Locale.ENGLISH));
+  }
+
+  /**
+   * Even should the owned lookup ever hand back a mail of another owner, its
+   * subject is not given: the plugin checks the owner again.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void titleNeverGivesAMailOwnedBySomebodyElse() throws Exception {
+    when(emailBoxService.getOwnedEmailById(7L, OTHER_USER)).thenReturn(mail(7L, OWNER, "Salary review"));
+    ConversationState.setCurrent(new ConversationState(new Identity(OTHER_USER)));
+    assertNull(plugin.getContentTitle("7", Locale.ENGLISH));
+  }
+
+  /**
+   * An id matching no mail answers exactly as somebody else's mail does, so a
+   * chip never tells whether a mail id exists.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void titleOfUnknownMailIsTheSameAsSomebodyElses() throws Exception {
+    when(emailBoxService.getOwnedEmailById(999L, OTHER_USER)).thenReturn(null);
+    ConversationState.setCurrent(new ConversationState(new Identity(OTHER_USER)));
+    assertEquals(plugin.getContentTitle(String.valueOf(EMAIL_ID), Locale.ENGLISH),
+                 plugin.getContentTitle("999", Locale.ENGLISH));
+    assertNull(plugin.getContentTitle("999", Locale.ENGLISH));
+  }
+
+  /**
+   * An id that is not a number designates no mail, and reads none.
+   */
+  @Test
+  void titleOfNonNumericIdIsNone() {
+    ConversationState.setCurrent(new ConversationState(new Identity(OWNER)));
+    assertNull(plugin.getContentTitle("42abc", Locale.ENGLISH));
+    assertNull(plugin.getContentTitle("../42", Locale.ENGLISH));
+    verifyNoInteractions(emailBoxService);
   }
 
   /**
