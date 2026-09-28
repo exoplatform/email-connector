@@ -229,7 +229,7 @@ public class EmailFilterProposalDAOTest {
 
   /**
    * The mails with a suggestion waiting are the owner's, read through their own matches:
-   * a waiting, unexpired proposal marks its match's mail once however many it has; a
+   * each waiting, unexpired proposal marks its match's mail once, so the list can count them; a
    * decided or expired one, someone else's proposal, and a proposal on someone else's
    * match do not.
    */
@@ -250,7 +250,7 @@ public class EmailFilterProposalDAOTest {
     entityManager.flush();
     entityManager.clear();
 
-    assertEquals(List.of("<waiting@x>"), emailFilterProposalDAO.findWaitingMailHeaderIds(OWNER, "PROPOSED", new Date(NOW)));
+    assertEquals(List.of("<waiting@x>", "<waiting@x>"), emailFilterProposalDAO.findWaitingMailHeaderIds(OWNER, "PROPOSED", new Date(NOW)));
     assertEquals(List.of("<others@x>"), emailFilterProposalDAO.findWaitingMailHeaderIds(OTHER, "PROPOSED", new Date(NOW)));
     assertTrue(emailFilterProposalDAO.findWaitingMailHeaderIds(OWNER, "PROPOSED", new Date(NOW + 1_000)).isEmpty(),
                "every one expired by then");
