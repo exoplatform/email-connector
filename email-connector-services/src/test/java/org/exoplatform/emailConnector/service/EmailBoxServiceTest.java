@@ -1357,6 +1357,42 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L), TEST_USER, true, "INBOX");
   }
 
+  /**
+   * A draft never uploaded has no UID: its null id is counted as failed and the other
+   * ids of the call are still flagged, rather than the whole call failing.
+   */
+  @Test
+  @SneakyThrows
+  void aStarOnARowWithNoUidIsCountedAndTheOthersAreStillPushed() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    Message message = mock(Message.class);
+    when(((UIDFolder) inbox).getMessageByUID(1212L)).thenReturn(message);
+
+    int failed = emailBoxService.updateEmailStarredStatus(Arrays.asList(null, 1212L), TEST_USER, "INBOX", true, true);
+
+    assertEquals(1, failed);
+    verify(message).setFlag(Flags.Flag.FLAGGED, true);
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L), TEST_USER, true, "INBOX");
+  }
+
+  /**
+   * A call carrying only rows with no UID has nothing to push: no connection is opened.
+   */
+  @Test
+  @SneakyThrows
+  void aStarOnRowsWithNoUidOnlyOpensNoConnection() {
+    int failed = emailBoxService.updateEmailStarredStatus(Arrays.asList((Long) null), TEST_USER, "DRAFTS", true, true);
+
+    assertEquals(1, failed);
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+    verify(emailBoxStorage, never()).updateEmailStarredStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), anyString());
+  }
+
   @Test
   void updateEmailStarredStatusRevertsWhenTheServerRejectsTheFlag() throws Exception {
     // The compensating revert is not optional: a star the server refused must not

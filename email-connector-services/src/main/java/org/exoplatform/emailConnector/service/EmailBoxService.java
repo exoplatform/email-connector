@@ -5605,15 +5605,18 @@ public class EmailBoxService {
                                       String folder,
                                       boolean starred,
                                       boolean updateRemoteStarredStatus) throws IllegalAccessException {
-    int failedEmailUpdates = 0;
-    if (mailRemoteIds != null && !mailRemoteIds.isEmpty()) {
+    // A row with no UID (a draft never uploaded) has no message on the server to
+    // carry the flag: it is counted as failed, never pushed.
+    List<Long> uids = mailRemoteIds == null ? List.of() : mailRemoteIds.stream().filter(Objects::nonNull).toList();
+    int failedEmailUpdates = mailRemoteIds == null ? 0 : mailRemoteIds.size() - uids.size();
+    if (!uids.isEmpty()) {
       UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
       if (userEmailSetting.getEmailConnectorId() == null
           || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
         throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_UPDATE_EMAIL_MESSAGE, username));
       }
       String sourceFolder = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
-      emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, starred, sourceFolder);
+      emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(uids, username, starred, sourceFolder);
       Store store = null;
       Folder remoteFolder = null;
       try {
@@ -5624,17 +5627,17 @@ public class EmailBoxService {
           if (remoteFolder == null) {
             // Rows cached under a folder the mailbox no longer offers: nothing can be
             // flagged, so the optimistic local change goes back and every id fails.
-            emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, !starred, sourceFolder);
+            emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(uids, username, !starred, sourceFolder);
             LOG.warn("No {} folder for user {}; the star of {} message(s) could not be pushed",
                      sourceFolder,
                      username,
-                     mailRemoteIds.size());
+                     uids.size());
             emailFavoriteService.reconcileFavorites(username);
-            return mailRemoteIds.size();
+            return failedEmailUpdates + uids.size();
           }
           remoteFolder.open(Folder.READ_WRITE);
         }
-        for (Long mailRemoteId : mailRemoteIds) {
+        for (Long mailRemoteId : uids) {
           try {
             if (updateRemoteStarredStatus) {
               Message remoteMessage = ((UIDFolder) remoteFolder).getMessageByUID(mailRemoteId);
@@ -5658,7 +5661,7 @@ public class EmailBoxService {
           }
         }
       } catch (Exception e) {
-        emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, !starred, sourceFolder);
+        emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(uids, username, !starred, sourceFolder);
         LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
         throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
       } finally {

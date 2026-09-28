@@ -113,7 +113,7 @@
   </v-hover>
 </template>
 <script>
-import { isReadOnlyFolder, updateEmailsFavoriteStatus } from '../../email-connector-mail-box/js/EmailConnectorMailBoxService.js';
+import { isDraftsFolder, isReadOnlyFolder, updateEmailsFavoriteStatus } from '../../email-connector-mail-box/js/EmailConnectorMailBoxService.js';
 
 const HTML_ENTITIES = {
   '&': '&amp;',
@@ -165,8 +165,8 @@ export default {
     },
     canFavorite() {
       // The flag is pushed to the hit's own folder, so every hit can be favorited but
-      // a read-only folder's (Trash, Spam) -- the same rule the mailbox itself applies.
-      return !isReadOnlyFolder(this.result?.folder);
+      // a read-only folder's (Trash, Spam) or a draft's -- the same rule the mailbox itself applies.
+      return !isReadOnlyFolder(this.result?.folder) && !isDraftsFolder(this.result?.folder);
     },
     unread() {
       return this.result && !this.result.read;
