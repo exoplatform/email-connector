@@ -205,6 +205,37 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   Collection<String> folders);
 
   /**
+   * One page of a mailbox's cached messages whose subject or sender contains a
+   * keyword, for the editors' "/mail" link picker.
+   * <p>
+   * A projection, not the entity: the picker shows a subject and nothing else, so
+   * neither the body nor the attachments are read. The sender column stores
+   * {@code name,address}, so one {@code LIKE} on it matches the name and the
+   * address alike. Both sides are lowered, the pattern by the caller, so the match
+   * is case-insensitive on every database whatever its collation. The escape
+   * character is {@code !}, not a backslash, which MySQL would read as the escape
+   * of the SQL string literal itself.
+   *
+   * @param userId the mailbox owner: only their own rows are read
+   * @param excludedFolders the folders never offered (drafts, trash, junk)
+   * @param pattern the lower-cased {@code %keyword%} pattern, its {@code %},
+   *          {@code _} and {@code !} escaped with {@code !}
+   * @param offset how many matches to skip
+   * @param limit how many matches at most
+   * @return rows of {@code [id, subject, sender, receivedDate]}, newest first
+   */
+  @Query("SELECT email.id, email.subject, email.sender, email.receivedDate FROM EmailBoxEntity email"
+      + " WHERE email.userId = :userId AND email.folder NOT IN :excludedFolders"
+      + " AND (LOWER(email.subject) LIKE :pattern ESCAPE '!' OR LOWER(email.sender) LIKE :pattern ESCAPE '!')"
+      + " ORDER BY email.receivedDate DESC, email.id DESC LIMIT :limit OFFSET :offset")
+  List<Object[]> findLinkCandidatesByUserId(@Param("userId")
+  String userId, @Param("excludedFolders")
+  List<String> excludedFolders, @Param("pattern")
+  String pattern, @Param("offset")
+  int offset, @Param("limit")
+  int limit);
+
+  /**
    * The starred subset of a folder, for the list's starred filter. A dedicated query
    * rather than a flag on {@link #findByUserIdAndFolderWithAttachments} so the common
    * unfiltered listing keeps its exact plan, and the filter runs in SQL instead of
