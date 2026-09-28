@@ -128,6 +128,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :match="match"
           :email="email" />
       </template>
+      <!-- A run that was offered tools and suggested nothing says so under its note, so an
+           empty panel is never read as a failure to show the suggestions. -->
+      <div
+        v-if="suggestedNothing(match)"
+        class="text-caption text-sub-title mt-1">
+        {{ $t('emailConnector.mailBox.automations.proposal.none') }}
+      </div>
       <!-- The tool calls the assistant proposed, one card each, oldest first (EXO-90659).
            Only the latest run's show; the earlier runs' fold under one line, closed until
            opened. A call still waiting for the user always shows, whatever its run. -->
@@ -371,6 +378,26 @@ export default {
      */
     terminal(match) {
       return TERMINAL.includes(match.agentStatus);
+    },
+    /**
+     * Whether the match's last run was offered tools and suggested nothing: its outcome
+     * lists the run's proposals -- a key only a run with tools writes -- and that list is
+     * empty. A run without tools, one still going, or an outcome that is not JSON says
+     * nothing.
+     *
+     * @param {Object} match - the match
+     * @returns {Boolean} true when the run suggested nothing
+     */
+    suggestedNothing(match) {
+      if (match.agentStatus !== 'DONE' || !match.agentOutput) {
+        return false;
+      }
+      try {
+        const output = JSON.parse(match.agentOutput);
+        return Array.isArray(output?.proposals) && !output.proposals.length;
+      } catch (e) {
+        return false;
+      }
     },
     /**
      * An action in words.
