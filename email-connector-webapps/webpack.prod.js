@@ -35,6 +35,7 @@ const config = {
     emailSearch: './src/main/webapp/vue-apps/email-connector-search/main.js',
     emailContactsSearch: './src/main/webapp/vue-apps/email-connector-contacts-search/main.js',
     emailConnectorProfileExtension: './src/main/webapp/vue-apps/email-connector-profile-extension/main.js',
+    emailConnectorContentLinkExtension: './src/main/webapp/vue-apps/email-connector-content-link-extension/main.js',
   },
   output: {
     path: path.join(__dirname, 'target/email-connector/'),
