@@ -76,8 +76,28 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       outlined
       dense
       @input="update({ header: $event })" />
+    <!-- A category (EXO-90666): one of the default categories by its localized name, as the
+         mail's category chips show it, stored by its stable key. -->
+    <template v-if="value.field === 'CATEGORY'">
+      <v-select
+        ref="categorySelect"
+        :value="value.value"
+        :items="categoryItems"
+        :menu-props="{ bottom: true, offsetY: true }"
+        :aria-label="$t('UserSettings.emailConnector.filters.form.category')"
+        :placeholder="$t('UserSettings.emailConnector.filters.form.category')"
+        class="pa-0 mt-2"
+        dense
+        outlined
+        hide-details
+        @change="update({ value: $event })"
+        @blur="$refs.categorySelect.blur()" />
+      <div class="text-subtitle mt-1">
+        {{ $t('UserSettings.emailConnector.filters.form.categoryHint') }}
+      </div>
+    </template>
     <v-text-field
-      v-if="!isFlagField(value.field)"
+      v-else-if="!isFlagField(value.field)"
       :value="value.value"
       :placeholder="valuePlaceholder"
       :aria-label="$t('UserSettings.emailConnector.filters.form.value')"
@@ -113,8 +133,22 @@ export default {
       type: Boolean,
       default: true,
     },
+    // The categories a category condition may name: {id, name, nameId}; only the
+    // default ones, which have a stable key, are offered.
+    categories: {
+      type: Array,
+      default: () => [],
+    },
   },
   computed: {
+    /**
+     * The default categories, by their localized name, each valued by its stable key.
+     *
+     * @returns {Object[]} the items
+     */
+    categoryItems() {
+      return this.categories.filter(category => category.nameId).map(category => ({ value: category.nameId, text: category.name }));
+    },
     /**
      * The operators of the row's field, as the select's items.
      *
@@ -151,17 +185,23 @@ export default {
     },
     /**
      * Changes the field, and puts the condition on the new field's first operator when
-     * the one it had does not apply to it.
+     * the one it had does not apply to it; the value is emptied between a category and a
+     * text.
      *
      * @param {String} field - the new field
      * @returns {void}
      */
     changeField(field) {
       const operators = operatorsOf(field);
-      this.update({
+      const change = {
         field,
         operator: operators.includes(this.value.operator) ? this.value.operator : operators[0],
-      });
+      };
+      if ((field === 'CATEGORY') !== (this.value.field === 'CATEGORY')) {
+        // A category's key is no text to search for, nor a text a category.
+        change.value = '';
+      }
+      this.update(change);
     },
     /**
      * The header name's rule.
