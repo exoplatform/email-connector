@@ -21,7 +21,9 @@
  * The provider configuration is validated server-side and refused with a message
  * code - a missing required field, a value outside a field's options. Thrown as a
  * bare sentence that code never reaches the screen, and the administrator is told
- * "error" about a form they can in fact correct.
+ * "error" about a form they can in fact correct. The platform answers a refusal with
+ * a JSON body whose `message` is the code; a body that is not JSON is read as the
+ * code itself.
  *
  * @param {Response} resp the refused response
  * @param {string} fallback message to use when the body carries nothing
@@ -29,9 +31,18 @@
  */
 function refusal(resp, fallback) {
   return resp.text().then(body => {
-    const error = new Error(body || fallback);
-    error.messageCode = body || null;
+    let code = body || '';
+    try {
+      const parsed = JSON.parse(body);
+      code = parsed && parsed.message || '';
+    } catch (e) {
+      // not JSON: the body is the code itself
+    }
+    const error = new Error(code || fallback);
+    error.messageCode = code || null;
     throw error;
+  }, () => {
+    throw new Error(fallback);
   });
 }
 

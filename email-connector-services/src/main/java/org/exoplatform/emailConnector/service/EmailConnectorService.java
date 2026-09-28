@@ -894,10 +894,10 @@ public class EmailConnectorService {
   /**
    * Says what was refused, and enough to act on it.
    * <p>
-   * Logged because the refusal reaches the browser as a bare 400 whose message code
-   * the error body does not carry, which left an administrator - and whoever reads the
-   * server afterwards - with nothing at all to go on. The keys are named, never the
-   * values: one of them is a password.
+   * Logged because a refusal is an administrator's configuration error, and whoever
+   * reads the server afterwards needs to know which connector, which provider and which
+   * rule. The browser gets the message code in the error body's {@code message}. The
+   * keys are named, never the values: one of them is a password.
    *
    * @param emailConnector the connector whose configuration was refused
    * @param values what was submitted, for its keys
