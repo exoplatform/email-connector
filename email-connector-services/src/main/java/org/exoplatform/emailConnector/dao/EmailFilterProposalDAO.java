@@ -77,16 +77,17 @@ public interface EmailFilterProposalDAO extends JpaRepository<EmailFilterProposa
 
   /**
    * The Message-IDs of the owner's mails with a proposal still waiting for them and not
-   * past its expiry: what marks a mail, or its conversation, in the mailbox list. One
-   * query for the whole mailbox, both sides of the join scoped to the owner; the pending
-   * cap of the mailbox bounds the answer.
+   * past its expiry, once per waiting proposal: what marks a mail, or its conversation,
+   * in the mailbox list with the number of suggestions waiting. One query for the whole
+   * mailbox, both sides of the join scoped to the owner; the pending cap of the mailbox
+   * bounds the answer.
    *
    * @param userId the owner
    * @param status the waiting status, {@code PROPOSED}
    * @param notExpiredAt the time the proposals must not have expired at
-   * @return the Message-IDs, each once
+   * @return the Message-IDs, once per waiting proposal
    */
-  @Query("SELECT DISTINCT m.mailHeaderId FROM EmailFilterProposalEntity p, EmailFilterMatchEntity m"
+  @Query("SELECT m.mailHeaderId FROM EmailFilterProposalEntity p, EmailFilterMatchEntity m"
       + " WHERE p.matchId = m.id AND p.userId = :userId AND m.userId = :userId AND p.status = :status"
       + " AND p.expiresDate > :notExpiredAt")
   List<String> findWaitingMailHeaderIds(@Param("userId")
