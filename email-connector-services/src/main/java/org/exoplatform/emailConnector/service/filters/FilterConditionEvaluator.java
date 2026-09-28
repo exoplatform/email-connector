@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service.filters;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 import org.exoplatform.emailConnector.model.ServerRule;
 
@@ -43,6 +44,14 @@ public final class FilterConditionEvaluator {
 
   /** A field only eXo evaluates: the mail has an attachment. */
   public static final String HAS_ATTACHMENT  = "HAS_ATTACHMENT";
+
+  /**
+   * A field only eXo evaluates: the mail carries a default category, named by its stable
+   * key ({@code emailImportantCategory}), never by its id or name. The mail server knows
+   * nothing of eXo's categories, and a mail gets one after it is synced: a rule on it runs
+   * when the category is added, not at sync.
+   */
+  public static final String CATEGORY        = "CATEGORY";
 
   /** The answer of a condition, or of a rule. */
   public enum Result {
@@ -152,9 +161,26 @@ public final class FilterConditionEvaluator {
       return flag(mail.isAutomated(), operator);
     case HAS_ATTACHMENT:
       return flag(mail.hasAttachment(), operator);
+    case CATEGORY:
+      return category(mail.categories(), operator, value);
     default:
       return Result.FALSE;
     }
+  }
+
+  /**
+   * A category condition: the mail carries the default category of that key.
+   *
+   * @param categories the keys of the mail's default categories, null when not known
+   * @param operator {@code EQUALS}, the one a category condition takes
+   * @param key the category's stable key
+   * @return the answer; {@link Result#UNKNOWN} when the mail's categories are not known
+   */
+  private static Result category(Set<String> categories, String operator, String key) {
+    if (categories == null) {
+      return Result.UNKNOWN;
+    }
+    return Result.of(ServerRule.EQUALS.equals(operator) && categories.contains(key));
   }
 
   /**
