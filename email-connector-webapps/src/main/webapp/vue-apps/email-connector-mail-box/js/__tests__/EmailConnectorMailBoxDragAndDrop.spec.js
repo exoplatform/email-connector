@@ -25,6 +25,7 @@ import {
   dragPayloadOfRow,
   dragPayloadOfSearchHit,
   draggedRowCount,
+  endDrag,
   folderDropAction,
   hasDragPayload,
   startDrag,
@@ -199,16 +200,24 @@ describe('where dragged mail may land (EXO-90421)', () => {
 });
 
 describe('the drag itself (EXO-90421)', () => {
-  it('writes a move under the mailbox\'s own type, and pictures it with the message count', () => {
-    const event = dragEvent();
+  it('writes a move under the mailbox\'s own type, blanks the browser\'s picture and pictures the move beside the pointer until the drag ends', () => {
+    const event = { ...dragEvent(), clientX: 40, clientY: 30 };
 
     startDrag(event, { folder: 'INBOX', ids: [1, 2] }, 'Move 2 emails');
 
     expect(event.dataTransfer.effectAllowed).toBe('move');
     expect(JSON.parse(event.dataTransfer.data[DRAG_MIME])).toEqual({ folder: 'INBOX', ids: [1, 2] });
     const [image] = event.dataTransfer.setDragImage.mock.calls[0];
-    expect(image.textContent).toBe('Move 2 emails');
-    expect(document.body.contains(image)).toBe(true);
+    expect(image.tagName).toBe('IMG');
+    const picture = document.body.querySelector('.fa-arrows-alt').parentNode;
+    expect(picture.textContent).toBe('Move 2 emails');
+    expect([picture.style.left, picture.style.top]).toEqual(['52px', '42px']);
+
+    document.dispatchEvent(Object.assign(new Event('dragover'), { clientX: 100, clientY: 80 }));
+    expect([picture.style.left, picture.style.top]).toEqual(['112px', '92px']);
+
+    endDrag();
+    expect(document.body.contains(picture)).toBe(false);
   });
 
   it('counts the messages in the picture', () => {

@@ -181,47 +181,32 @@ export function dragLabel(count, t) {
     : t('emailConnector.mailBox.list.drawer.drag.emails', { 0: count });
 }
 
-/**
- * Builds the picture that follows the pointer: a small chip saying how many messages
- * move. It has to be in the page, and rendered, when the browser takes the picture
- * (Safari draws nothing otherwise); it is taken out on the next frame.
- *
- * @param {String} label what the chip says
- * @returns {HTMLElement} the chip, already in the page
- */
-export function buildDragImage(label) {
-  const chip = document.createElement('div');
-  chip.textContent = label;
-  Object.assign(chip.style, {
-    position: 'fixed',
-    top: '0',
-    left: '0',
-    zIndex: '-1',
-    pointerEvents: 'none',
-    padding: '6px 12px',
-    borderRadius: '16px',
-    font: '14px sans-serif',
-    whiteSpace: 'nowrap',
-    color: '#fff',
-    background: 'var(--allPagesPrimaryColor, #578dc9)',
-  });
-  document.body.appendChild(chip);
-  const remove = () => chip.remove();
-  if (window.requestAnimationFrame) {
-    window.requestAnimationFrame(() => window.setTimeout(remove, 0));
-  } else {
-    window.setTimeout(remove, 0);
-  }
-  return chip;
-}
+// The picture that follows the pointer (EXO-90460): a real element of the page -- the
+// move icon and how many rows move -- put under the pointer on every dragover, as the
+// Documents app does. Not the browser's own picture: that one is a photograph of an
+// element taken as the drag starts, and it came out as an empty square on the tester's
+// browser. The browser's picture is replaced by a transparent pixel, so nothing else
+// follows the pointer.
+
+// A transparent pixel, loaded as the module loads so it is ready for the first drag: an
+// image not yet loaded is refused, and the browser then photographs the row.
+const BLANK_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+const BLANK_IMAGE = typeof Image === 'undefined' ? null : Object.assign(new Image(), { src: BLANK_PIXEL });
+
+// How far from the pointer's tip the picture sits, so the tip stays visible.
+const PICTURE_OFFSET = 12;
+
+// The picture following the pointer; null between drags.
+let picture = null;
 
 /**
- * Starts a drag: a move, the payload written under DRAG_MIME, the counting chip as its
- * picture. The picture is a nicety, and a browser that refuses it keeps its own.
+ * Starts a drag: a move, the payload written under DRAG_MIME, the browser's own picture
+ * blanked, and the picture of the drag shown under the pointer (showDragPicture). The
+ * picture is a nicety: a browser that refuses the blank keeps its own, behind the chip.
  *
  * @param {DragEvent} event the dragstart event
  * @param {Object} payload the dragged {folder, ids}
- * @param {String} label what the chip says
+ * @param {String} label what the picture says
  * @returns {void}
  */
 export function startDrag(event, payload, label) {
@@ -232,8 +217,81 @@ export function startDrag(event, payload, label) {
   transfer.effectAllowed = 'move';
   transfer.setData(DRAG_MIME, JSON.stringify(payload));
   try {
-    transfer.setDragImage(buildDragImage(label), 0, 0);
+    if (BLANK_IMAGE) {
+      transfer.setDragImage(BLANK_IMAGE, 0, 0);
+    }
   } catch (e) {
     // The browser's own picture of the row, then.
   }
+  showDragPicture(label, event);
+}
+
+/**
+ * Shows the picture of the drag under the pointer: a chip with the move icon and the
+ * label, above everything, letting the pointer through, moved on every dragover until
+ * endDrag takes it out -- at the drop, at the end of the drag, or when the drawer ends
+ * it (a lost window, a collapsed full screen).
+ *
+ * @param {String} label what the picture says
+ * @param {DragEvent} event the dragstart event, for where the pointer is
+ * @returns {HTMLElement} the picture, in the page
+ */
+export function showDragPicture(label, event) {
+  endDrag();
+  const chip = document.createElement('div');
+  const icon = document.createElement('i');
+  icon.className = 'fas fa-arrows-alt';
+  icon.setAttribute('aria-hidden', 'true');
+  icon.style.marginRight = '8px';
+  chip.appendChild(icon);
+  chip.appendChild(document.createTextNode(label));
+  Object.assign(chip.style, {
+    position: 'fixed',
+    zIndex: '10000',
+    pointerEvents: 'none',
+    padding: '6px 12px',
+    borderRadius: '16px',
+    font: '14px sans-serif',
+    whiteSpace: 'nowrap',
+    color: '#fff',
+    background: 'var(--allPagesPrimaryColor, #578dc9)',
+    boxShadow: '0 2px 6px rgba(0, 0, 0, 0.3)',
+  });
+  document.body.appendChild(chip);
+  picture = chip;
+  moveDragPicture(event);
+  document.addEventListener('dragover', moveDragPicture, true);
+  document.addEventListener('dragend', endDrag, true);
+  document.addEventListener('drop', endDrag, true);
+  return chip;
+}
+
+/**
+ * Takes the picture of the drag out of the page, if one is there.
+ *
+ * @returns {void}
+ */
+export function endDrag() {
+  if (!picture) {
+    return;
+  }
+  picture.remove();
+  picture = null;
+  document.removeEventListener('dragover', moveDragPicture, true);
+  document.removeEventListener('dragend', endDrag, true);
+  document.removeEventListener('drop', endDrag, true);
+}
+
+/**
+ * Puts the picture beside the pointer, from the coordinates a drag event carries.
+ *
+ * @param {DragEvent} event the dragstart or dragover event
+ * @returns {void}
+ */
+function moveDragPicture(event) {
+  if (!picture || typeof event?.clientX !== 'number') {
+    return;
+  }
+  picture.style.left = `${event.clientX + PICTURE_OFFSET}px`;
+  picture.style.top = `${event.clientY + PICTURE_OFFSET}px`;
 }
