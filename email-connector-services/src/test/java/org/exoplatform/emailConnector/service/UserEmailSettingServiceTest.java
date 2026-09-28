@@ -825,6 +825,21 @@ public class UserEmailSettingServiceTest {
     verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
   }
 
+  /**
+   * The one-click path keeps the access check of the typed one: a user who may not
+   * connect this connector is refused before any provider is asked or anything written.
+   */
+  @Test
+  @SneakyThrows
+  void refusesToConnectThroughTheProviderWhenTheUserMayNotConnect() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(false);
+
+    assertThrows(IllegalAccessException.class, () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    verifyNoInteractions(emailCredentialsResolver);
+    verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+  }
+
   /** A provider that cannot name the mailbox has nothing to connect. */
   @Test
   @SneakyThrows

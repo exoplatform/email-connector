@@ -334,6 +334,27 @@ public class EmailConnectorRestTest {
     response.andExpect(status().isOk());
   }
 
+  /**
+   * A simple user reads which declared providers ask them for something: the list of
+   * connectors offered to them needs it to decide between a form and a one-click connect.
+   */
+  @Test
+  void connectionRequirementsIsReadableByASimpleUser() throws Exception {
+    when(emailConnectorService.connectionRequirements()).thenReturn(Map.of("bluemind-sudo", false, "personal", true));
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/connection-requirements").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$['bluemind-sudo']").value(false))
+           .andExpect(jsonPath("$.personal").value(true));
+  }
+
+  /** It is still reserved to platform users. */
+  @Test
+  void connectionRequirementsIsRefusedWithoutTheUsersRole() throws Exception {
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/connection-requirements").with(user(SIMPLE_USER).password(TEST_PASSWORD)
+                                                                                           .authorities(new SimpleGrantedAuthority("guests"))))
+           .andExpect(status().isForbidden());
+  }
+
   private RequestPostProcessor testAdminUser() {
     return user(ADMIN_USER).password(TEST_PASSWORD).authorities(new SimpleGrantedAuthority("administrators"));
   }
