@@ -129,19 +129,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               </v-list-item-title>
             </v-list-item-content>
             <v-list-item-action class="my-0 flex-row align-center">
-              <!-- A suggestion of an assistant waits for the user on this mail, or on a
-                   mail of its conversation (EXO-90669): the Automations box of the
-                   reader is where it is decided. A plain icon with a native title, not
-                   a v-tooltip: this list streams thousands of rows. -->
-              <v-icon
-                v-if="waitingSuggestions"
-                :title="$t('emailConnector.mailBox.list.drawer.waitingSuggestions')"
-                :aria-label="$t('emailConnector.mailBox.list.drawer.waitingSuggestions')"
-                role="img"
-                size="12"
-                class="primary--text me-2">
-                fas fa-filter
-              </v-icon>
               <!-- Quiet favorite, next to the date (the unread dot keeps the left edge):
                    always there when set, offered on hover to set it.
                    It keeps its box at all times and only fades, exactly like the row
@@ -167,7 +154,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-list-item
             class="px-0 height-auto">
             <v-list-item-content class="py-0">
-              <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': threadUnread }]" v-text="subject" />
+              <v-list-item-subtitle :class="['mb-1 text-color d-flex align-center', { 'font-weight-bold': threadUnread }]">
+                <!-- The suggestions of an assistant waiting for the user on this mail, or on
+                     the mails of its conversation (EXO-90669), as a count before the subject:
+                     the left edge is never under the row's hover actions. A native title,
+                     not a v-tooltip: this list streams thousands of rows. -->
+                <span
+                  v-if="waitingSuggestionCount"
+                  :title="waitingSuggestionsLabel"
+                  :aria-label="waitingSuggestionsLabel"
+                  role="img"
+                  class="primary white--text rounded-pill px-2 me-2 flex-shrink-0 caption font-weight-bold">{{ waitingSuggestionCount }}</span>
+                <span class="text-truncate">{{ subject }}</span>
+              </v-list-item-subtitle>
               <v-list-item-subtitle v-text="excerpt" />
               <!-- The shared mailbox a draft was written in (EXO-90595), as the Scheduled
                    view names it; nothing for the user's own. -->
@@ -207,7 +206,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
-import { hasWaitingSuggestions } from '../../js/EmailConnectorMailFilters.js';
+import { waitingSuggestionCount } from '../../js/EmailConnectorMailFilters.js';
 import { canDragFrom, dragLabel, dragPayloadOfRow, draggedRowCount, startDrag } from '../../js/EmailConnectorMailBoxDragAndDrop.js';
 
 export default {
@@ -294,13 +293,23 @@ export default {
         && this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread).some(id => drag.ids.includes(id));
     },
     /**
-     * Whether a suggestion of an assistant waits for the user on the row's mail, or on
-     * any mail of its conversation that the list holds, as the list last read them.
+     * How many suggestions of an assistant wait for the user on the row's mail, or on the
+     * mails of its conversation that the list holds, as the list last read them.
      *
-     * @returns {Boolean} true when one waits
+     * @returns {number} the count, 0 when none
      */
-    waitingSuggestions() {
-      return hasWaitingSuggestions(this.thread?.emails || [this.email]);
+    waitingSuggestionCount() {
+      return waitingSuggestionCount(this.thread?.emails || [this.email]);
+    },
+    /**
+     * What the count before the subject says, for the tooltip and screen readers.
+     *
+     * @returns {string} the label
+     */
+    waitingSuggestionsLabel() {
+      return this.waitingSuggestionCount === 1
+        ? this.$t('emailConnector.mailBox.list.drawer.waitingSuggestionsOne')
+        : this.$t('emailConnector.mailBox.list.drawer.waitingSuggestionsCount', { 0: this.waitingSuggestionCount });
     },
     gapSize() {
       return Math.abs(this.left);
