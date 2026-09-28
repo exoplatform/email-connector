@@ -143,14 +143,6 @@ public class EmailBoxDAOTest {
   }
 
   /**
-   * Persists one cached message in a given folder, pinned to a Message-ID.
-   *
-   * @param remoteId the IMAP UID, within that folder
-   * @param folder the {@link MailFolder} discriminator
-   * @param mailHeaderId the Message-ID the row remembers
-   * @return the row's generated id
-   */
-  /**
    * The read the Favorites drawer is reconciled from: the owner's starred rows in every
    * folder but the excluded ones, as {@code [id, folder, mailHeaderId]} -- executed
    * against the engine for its {@code NOT IN} over a bound list and its projection.
@@ -193,6 +185,14 @@ public class EmailBoxDAOTest {
     return id;
   }
 
+  /**
+   * Persists one cached message in a given folder, pinned to a Message-ID.
+   *
+   * @param remoteId the IMAP UID, within that folder
+   * @param folder the {@link MailFolder} discriminator
+   * @param mailHeaderId the Message-ID the row remembers
+   * @return the row's generated id
+   */
   private Long persistEmailCarrying(long remoteId, String folder, String mailHeaderId) {
     Long id = persistEmail(remoteId, folder, "body", Boolean.FALSE);
     EmailBoxEntity email = entityManager.find(EmailBoxEntity.class, id);
