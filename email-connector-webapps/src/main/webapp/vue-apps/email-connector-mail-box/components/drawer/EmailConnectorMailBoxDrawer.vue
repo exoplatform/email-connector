@@ -1490,8 +1490,8 @@ export default {
      */
     async openMailFromOutside(opening) {
       // No folder means the inbox, and anything that does not say otherwise is
-      // already cached: that is the Favorites drawer, which only holds cached inbox
-      // mail.
+      // already cached: that is the Favorites drawer, whose mails are cached rows of
+      // any folder, sent with their folder.
       const hit = {
         mailRemoteId: opening.mailRemoteId,
         folder: opening.folder || 'INBOX',
