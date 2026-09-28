@@ -129,7 +129,7 @@ public class EmailFavoriteService {
   /**
    * The ids of the mails this user has flagged, as favorites object ids.
    * <p>
-   * Every folder is read but Trash, Spam and All Mail
+   * Every folder is read but Trash, Spam, All Mail and Drafts
    * ({@link MailFolder#NOT_FAVORITED_FOLDERS}), so a starred mail stays a favorite
    * whatever folder it is filed in. One message cached in two folders — a Gmail
    * label, a copy another client made — is one favorite: the rows sharing a

@@ -178,10 +178,10 @@ public class EmailFavoriteServiceTest {
 
   /**
    * A starred mail stays a favorite whatever folder it is filed in: every folder is
-   * read but Trash, Spam and All Mail.
+   * read but Trash, Spam, All Mail and Drafts.
    */
   @Test
-  public void reconcileFavoritesReadsEveryFolderButTrashSpamAndAllMail() throws Exception {
+  public void reconcileFavoritesReadsEveryFolderButTrashSpamAllMailAndDrafts() throws Exception {
     givenUserIdentity();
     when(emailBoxStorage.getStarredEmailKeys(USERNAME, MailFolder.NOT_FAVORITED_FOLDERS)).thenReturn(List.of(starred(11L, "CUSTOM:6", "<a@host>")));
     givenFavoritedEmailIds();
@@ -191,7 +191,7 @@ public class EmailFavoriteServiceTest {
     ArgumentCaptor<Favorite> created = ArgumentCaptor.forClass(Favorite.class);
     verify(favoriteService, times(1)).createFavorite(created.capture());
     assertEquals("11", created.getValue().getObjectId(), "a mail starred in a user folder is a favorite");
-    assertEquals(List.of(MailFolder.TRASH, MailFolder.JUNK, MailFolder.ALL_MAIL), MailFolder.NOT_FAVORITED_FOLDERS);
+    assertEquals(List.of(MailFolder.TRASH, MailFolder.JUNK, MailFolder.ALL_MAIL, MailFolder.DRAFTS), MailFolder.NOT_FAVORITED_FOLDERS);
   }
 
   /**

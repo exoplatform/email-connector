@@ -435,7 +435,7 @@ public class EmailBoxRest {
   @DeleteMapping("/favorites/{emailId}")
   @Secured("users")
   @Operation(summary = "Removes a favorited email from the favorites", method = "DELETE",
-             description = "Clears the IMAP \\Flagged flag of the favorited email and of its copies in the caller's other folders (the rows sharing its Message-ID, Trash, Spam and All Mail left out), each in its own folder, so the one favorite the Favorites drawer shows for them does not come back at the next reconciliation. Addressed by the technical id the favorite is stored against; answers 404 for an email that is not the caller's. Returns the number of copies whose update failed.")
+             description = "Clears the IMAP \\Flagged flag of the favorited email and of its copies in the caller's other folders (the rows sharing its Message-ID, Trash, Spam, All Mail and Drafts left out), each in its own folder, so the one favorite the Favorites drawer shows for them does not come back at the next reconciliation. Addressed by the technical id the favorite is stored against; answers 404 for an email that is not the caller's. Returns the number of copies whose update failed.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "Not found"), })

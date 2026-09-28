@@ -154,13 +154,14 @@ public class EmailBoxDAOTest {
     starredRow(32L, MailFolder.TRASH, "<c@host>");
     starredRow(33L, MailFolder.JUNK, "<d@host>");
     starredRow(34L, MailFolder.ALL_MAIL, "<a@host>");
+    starredRow(36L, MailFolder.DRAFTS, "<f@host>");
     persistEmailCarrying(35L, MailFolder.ARCHIVE, "<e@host>");
     entityManager.clear();
 
     List<Object[]> rows = emailBoxDAO.findStarredKeysByUserIdExcludingFolders(USERNAME, MailFolder.NOT_FAVORITED_FOLDERS);
 
     assertEquals(List.of(inInbox, inProjets), rows.stream().map(row -> (Long) row[0]).sorted().toList(),
-                 "the starred inbox and user-folder rows; not Trash, Spam, All Mail, nor the unstarred archive row");
+                 "the starred inbox and user-folder rows; not Trash, Spam, All Mail, Drafts, nor the unstarred archive row");
     Object[] projets = rows.stream().filter(row -> inProjets.equals(row[0])).findFirst().orElseThrow();
     assertEquals("CUSTOM:6", projets[1]);
     assertEquals("<b@host>", projets[2]);
