@@ -1102,6 +1102,9 @@ public class EmailFilterServiceTest {
     FilterAction action = seeded.getActions().get(0);
     assertEquals(FilterAction.AGENT, action.type());
     assertEquals(EmailFilterService.SEED_IMPORTANT_INSTRUCTION, action.instruction());
+    // Worded as actions, not as "suggest": a model told to suggest lists actions in its answer instead of calling their tools.
+    assertTrue(action.instruction().contains("at most three actions"), action.instruction());
+    assertFalse(action.instruction().contains("suggest"), action.instruction());
     assertEquals(List.of("NOTE"), action.outputs());
     assertTrue(action.suggestActions());
     assertEquals(EmailFilterService.SEED_AGENT_MARKER, action.agentNameId());
