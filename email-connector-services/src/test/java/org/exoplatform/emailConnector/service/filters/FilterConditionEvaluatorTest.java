@@ -90,6 +90,50 @@ class FilterConditionEvaluatorTest {
   }
 
   /**
+   * A category condition names the category by its stable key: it holds on a mail that
+   * carries the category whatever id this instance gave it -- a re-import that changes the
+   * id keeps the rule -- and never on the id itself; a mail whose categories are not read
+   * leaves it undecided.
+   */
+  @Test
+  void aCategoryIsMatchedByItsKeyWhateverItsId() {
+    Condition important = new Condition(FilterConditionEvaluator.CATEGORY, "EQUALS", null, "emailImportantCategory");
+
+    assertEquals(Result.TRUE, one(important, categorised(List.of(5L), Map.of(5L, "emailImportantCategory"))));
+    assertEquals(Result.TRUE,
+                 one(important, categorised(List.of(9L), Map.of(9L, "emailImportantCategory", 5L, "emailNotificationCategory"))),
+                 "the same category under another id");
+    assertEquals(Result.FALSE,
+                 one(important, categorised(List.of(5L), Map.of(9L, "emailImportantCategory", 5L, "emailNotificationCategory"))),
+                 "the old id now names another category");
+    assertEquals(Result.FALSE, one(important, categorised(List.of(), Map.of(5L, "emailImportantCategory"))), "no category");
+    assertEquals(Result.FALSE,
+                 one(new Condition(FilterConditionEvaluator.CATEGORY, "EQUALS", null, "5"),
+                     categorised(List.of(5L), Map.of(5L, "emailImportantCategory"))),
+                 "never by its id");
+    assertEquals(Result.FALSE,
+                 one(new Condition(FilterConditionEvaluator.CATEGORY, "CONTAINS", null, "emailImportantCategory"),
+                     categorised(List.of(5L), Map.of(5L, "emailImportantCategory"))),
+                 "no other operator");
+    Email email = new Email();
+    email.setCategoryIds(List.of(5L));
+    assertEquals(Result.UNKNOWN, one(important, new EmailFilterMail(email, null, Set.of(), null, null)), "categories not read");
+  }
+
+  /**
+   * A mail carrying categories, read through the keys given.
+   *
+   * @param categoryIds its categories' ids
+   * @param keys the key of each default category by its id
+   * @return the mail
+   */
+  private static FilterMail categorised(List<Long> categoryIds, Map<Long, String> keys) {
+    Email email = new Email();
+    email.setCategoryIds(categoryIds);
+    return new EmailFilterMail(email, null, Set.of(), null, null, keys::get);
+  }
+
+  /**
    * One condition.
    *
    * @param condition the condition
