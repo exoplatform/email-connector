@@ -32,6 +32,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.ResourceBundle;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -42,6 +43,11 @@ import org.springframework.stereotype.Service;
 
 import org.exoplatform.commons.api.notification.NotificationContext;
 import org.exoplatform.commons.api.notification.model.PluginKey;
+import org.exoplatform.commons.api.notification.plugin.NotificationPluginUtils;
+import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.SettingValue;
+import org.exoplatform.commons.api.settings.data.Context;
+import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.emailConnector.event.NewInboxMailEvent;
@@ -76,6 +82,7 @@ import org.exoplatform.emailConnector.utils.NotificationConstants;
 import org.exoplatform.services.listener.ListenerService;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
+import org.exoplatform.services.resources.ResourceBundleService;
 
 /**
  * The rules eXo runs itself on the owner's own inbox, after each sync: their CRUD, the
@@ -104,6 +111,11 @@ import org.exoplatform.services.log.Log;
  * <p>
  * Every verb acts as the owner, on their own mailbox, through the mailbox's own
  * ACL-checked methods; a request made from a shared mailbox is refused.
+ * <p>
+ * Every owner starts with one rule, "Important mail", switched off until they turn it
+ * on: an assistant on the mail the Important category reaches, seeded once, lazily --
+ * the first time their rules are read, or when a mailbox is connected -- and then
+ * theirs ({@link #ensureImportantFilter}).
  */
 @Service
 public class EmailFilterService {
@@ -127,6 +139,47 @@ public class EmailFilterService {
 
   /** How many days the matches are kept. */
   public static final String          RETENTION_PROPERTY         = "exo.email.filters.log.retentionDays";
+
+  /** The deployment's switch for the seeded "Important mail" rule, on by default. */
+  public static final String          SEED_IMPORTANT_PROPERTY    = "exo.emailConnector.filters.seed.important";
+
+  /** The per-owner settings scope of the seeds' markers. */
+  public static final Scope           SEED_SCOPE                 = Scope.APPLICATION.id("EMAIL_FILTERS");
+
+  /** The marker of the "Important mail" seed: set once the owner got, or forwent, their copy. */
+  public static final String          SEED_IMPORTANT_KEY         = "seed.important";
+
+  /** The version of the "Important mail" seed the marker records; a bump never re-seeds. */
+  public static final String          SEED_IMPORTANT_VERSION     = "1";
+
+  /** The bundle the seeded rule's name is read from, in the owner's language. */
+  public static final String          SEED_BUNDLE                = "locale.portlet.emailConnector.emailConnectorUserSetting";
+
+  /** The key of the seeded rule's name in {@link #SEED_BUNDLE}. */
+  public static final String          SEED_IMPORTANT_NAME_KEY    = "UserSettings.emailConnector.filters.seed.important.name";
+
+  /** The seeded rule's name when the bundle cannot be read. */
+  public static final String          SEED_IMPORTANT_NAME        = "Important mail: what it asks of me";
+
+  /** The category the seeded rule waits for, by its stable key. */
+  public static final String          SEED_IMPORTANT_CATEGORY    = "emailImportantCategory";
+
+  /**
+   * The assistant the seeded rule names. Only a marker, like the one the drawer's form
+   * stores: the assistant that runs is always the administrator's, from the "Mail
+   * filters" binding; the marker is what the log and the retry read to know the rule
+   * has one.
+   */
+  public static final String          SEED_AGENT_MARKER          = "EMAIL_FILTER_ASSISTANT";
+
+  /** What the seeded rule asks of the assistant. */
+  public static final String          SEED_IMPORTANT_INSTRUCTION =
+                                                                 "This email was flagged important. Summarise in two or three sentences what it is about, "
+                                                                     + "who wants what from me, and every deadline or date it names. Then suggest at most two actions, "
+                                                                     + "only what it clearly calls for: a task for a decision, a reply or a piece of work I must do, "
+                                                                     + "with its deadline; a calendar event for a meeting it proposes; a personal note for minutes, "
+                                                                     + "decisions or reference information worth keeping; a kudos when it thanks or praises a colleague; "
+                                                                     + "a post in the space it names when it asks me to share something. If it only informs me, suggest nothing.";
 
   /** The feature is switched off. */
   public static final String          DISABLED                   = "emailConnector.filters.disabled";
@@ -245,8 +298,19 @@ public class EmailFilterService {
 
   private static final Pattern        AGENT_NAME                 = Pattern.compile("[A-Za-z0-9._-]{1,200}");
 
+  /** The locks two first reads of one owner's rules take turns on, striped by owner. */
+  private static final Object[]       SEED_LOCKS                 = newLocks(64);
+
   @Autowired
   private EmailFilterStorage          emailFilterStorage;
+
+  /** Where the seeds' markers are kept, per owner. */
+  @Autowired
+  private SettingService              settingService;
+
+  /** Where the seeded rule's name is read from, in the owner's language. */
+  @Autowired
+  private ResourceBundleService       resourceBundleService;
 
   @Autowired
   private EmailServerRuleService      emailServerRuleService;
@@ -284,7 +348,8 @@ public class EmailFilterService {
   }
 
   /**
-   * The caller's eXo rules, in the order they run.
+   * The caller's eXo rules, in the order they run. The first read seeds the "Important
+   * mail" rule ({@link #ensureImportantFilter}), so the drawer never opens empty.
    *
    * @param username the caller, from the request's session
    * @param delegationId the share the request was made from; any value is refused
@@ -295,7 +360,188 @@ public class EmailFilterService {
    */
   public List<EmailFilter> getFilters(String username, Long delegationId) throws ObjectNotFoundException, IllegalAccessException {
     checkOwnMailbox(username, delegationId);
+    seedImportantFilter(username);
     return emailFilterStorage.getFilters(username);
+  }
+
+  /**
+   * Gives the owner their "Important mail" rule, once: an assistant on the mail the
+   * Important category reaches, switched off until they turn it on, last in the order.
+   * A per-owner marker ({@link #SEED_SCOPE}, {@link #SEED_IMPORTANT_KEY}) records that
+   * the copy was made, or forgone; it is written right after the insert and never by a
+   * deletion, so a rule the owner deleted never comes back, and a later version of the
+   * seed never replaces the owner's copy. The seed is skipped without the marker, to be
+   * tried again on the next read, while the Important category is not imported yet;
+   * skipped for good, with the marker, when the owner already has {@value #MAX_FILTERS}
+   * rules, or when the deployment switched the seed off
+   * ({@value #SEED_IMPORTANT_PROPERTY}); and only ever attempted for a connected mailbox
+   * -- an owner without one has no rules to read, and gets it when they connect.
+   *
+   * @param username the owner
+   * @return true when the rule was created by this call
+   * @throws ObjectNotFoundException when the feature is off, or no mailbox is connected
+   * @throws IllegalAccessException when the owner may not use their connector
+   */
+  public boolean ensureImportantFilter(String username) throws ObjectNotFoundException, IllegalAccessException {
+    checkOwnMailbox(username, null);
+    return seedImportantFilter(username);
+  }
+
+  /**
+   * Seeds the "Important mail" rule of an owner whose mailbox was checked, as
+   * {@link #ensureImportantFilter} says. Two reads of the same owner take turns on a
+   * lock and re-read the marker under it, so the second finds the first's copy.
+   *
+   * @param username the owner
+   * @return true when the rule was created by this call
+   */
+  private boolean seedImportantFilter(String username) {
+    if (!isSeedImportantEnabled() || isSeeded(username)) {
+      return false;
+    }
+    synchronized (seedLockOf(username)) {
+      if (isSeeded(username)) {
+        return false;
+      }
+      if (emailBoxService.getDefaultEmailCategoryId(SEED_IMPORTANT_CATEGORY) == null) {
+        // Not imported yet: the rule could name it, but never run. Tried again next time.
+        LOG.debug("The Important category is not imported yet: the Important mail filter of user {} waits", username);
+        return false;
+      }
+      if (emailFilterStorage.getFilters(username).size() >= MAX_FILTERS) {
+        markSeeded(username);
+        LOG.info("User {} already has {} mail filters: the Important mail filter is not seeded", username, MAX_FILTERS);
+        return false;
+      }
+      EmailFilter filter = validated(username, importantFilterSeed(username));
+      filter.setPosition(emailFilterStorage.nextPosition(username));
+      Date now = now();
+      filter.setActiveSince(now.getTime());
+      EmailFilter saved = emailFilterStorage.save(username, filter, now);
+      markSeeded(username);
+      LOG.info("Mail filter {} 'Important mail' seeded, switched off, for user {}", saved.getId(), username);
+      return true;
+    }
+  }
+
+  /**
+   * The "Important mail" rule as the form would have sent it: named in the owner's
+   * language, on the Important category, switched off, its assistant asked for a
+   * summary and at most two suggestions, written as a note.
+   *
+   * @param username the owner
+   * @return the rule, to validate
+   */
+  private EmailFilter importantFilterSeed(String username) {
+    EmailFilter filter = new EmailFilter();
+    filter.setName(seedName(username));
+    filter.setEnabled(false);
+    filter.setKind(EmailFilter.KIND_EXO);
+    filter.setMailboxScope(EmailFilter.SCOPE_OWN);
+    filter.setMatchAll(true);
+    filter.setConditions(List.of(new ServerRule.Condition(FilterConditionEvaluator.CATEGORY,
+                                                          ServerRule.EQUALS,
+                                                          null,
+                                                          SEED_IMPORTANT_CATEGORY)));
+    filter.setActions(List.of(new FilterAction(FilterAction.AGENT,
+                                               null,
+                                               null,
+                                               SEED_AGENT_MARKER,
+                                               SEED_IMPORTANT_INSTRUCTION,
+                                               List.of("NOTE"),
+                                               null,
+                                               null,
+                                               true)));
+    filter.setStopProcessing(false);
+    return filter;
+  }
+
+  /**
+   * The seeded rule's name in the owner's language, from the settings bundle the
+   * drawer reads, or the English name when the bundle or the key cannot be read.
+   *
+   * @param username the owner
+   * @return the name
+   */
+  private String seedName(String username) {
+    try {
+      ResourceBundle bundle = resourceBundleService.getResourceBundle(SEED_BUNDLE, seedLocale(username));
+      if (bundle != null) {
+        return StringUtils.defaultIfBlank(bundle.getString(SEED_IMPORTANT_NAME_KEY), SEED_IMPORTANT_NAME);
+      }
+    } catch (RuntimeException e) {
+      // A missing bundle or key too: MissingResourceException is one.
+      LOG.warn("The name of the Important mail filter of user {} could not be read from the bundle; the English name is used", username, e);
+    }
+    return SEED_IMPORTANT_NAME;
+  }
+
+  /**
+   * The owner's language, as their profile says; English when it cannot be read.
+   *
+   * @param username the owner
+   * @return the locale
+   */
+  Locale seedLocale(String username) {
+    try {
+      String language = NotificationPluginUtils.getLanguage(username);
+      return StringUtils.isBlank(language) ? Locale.ENGLISH : Locale.of(language);
+    } catch (RuntimeException e) {
+      return Locale.ENGLISH;
+    }
+  }
+
+  /**
+   * Whether the owner got, or forwent, their "Important mail" rule.
+   *
+   * @param username the owner
+   * @return true when the marker is set
+   */
+  private boolean isSeeded(String username) {
+    SettingValue<?> value = settingService.get(Context.USER.id(username), SEED_SCOPE, SEED_IMPORTANT_KEY);
+    return value != null && value.getValue() != null && StringUtils.isNotBlank(value.getValue().toString());
+  }
+
+  /**
+   * Records that the owner got, or forwent, their "Important mail" rule.
+   *
+   * @param username the owner
+   */
+  private void markSeeded(String username) {
+    settingService.set(Context.USER.id(username), SEED_SCOPE, SEED_IMPORTANT_KEY, SettingValue.create(SEED_IMPORTANT_VERSION));
+  }
+
+  /**
+   * Whether the deployment seeds the "Important mail" rule.
+   *
+   * @return true unless {@value #SEED_IMPORTANT_PROPERTY} is false
+   */
+  private static boolean isSeedImportantEnabled() {
+    return Boolean.parseBoolean(System.getProperty(SEED_IMPORTANT_PROPERTY, "true").trim());
+  }
+
+  /**
+   * The lock of an owner's seed.
+   *
+   * @param username the owner
+   * @return the lock
+   */
+  private static Object seedLockOf(String username) {
+    return SEED_LOCKS[Math.floorMod(username.hashCode(), SEED_LOCKS.length)];
+  }
+
+  /**
+   * New locks.
+   *
+   * @param count how many
+   * @return the locks
+   */
+  private static Object[] newLocks(int count) {
+    Object[] locks = new Object[count];
+    for (int i = 0; i < count; i++) {
+      locks[i] = new Object();
+    }
+    return locks;
   }
 
   /**
