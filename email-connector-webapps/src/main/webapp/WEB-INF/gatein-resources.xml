@@ -323,6 +323,25 @@
     </depends>
   </module>
 
+  <!-- Opens a mail chip's mail in the mailbox drawer, over the page the chip is on.
+       The name MUST contain "ContentLinkExtension": Social's content-link app
+       discovers the listeners of its drawer chips with
+       includeExtensions('ContentLinkExtension'), which matches on the module NAME,
+       then dispatches content-link-email-drawer. In contentLinkGRP with the other
+       add-ons' content-link extensions. -->
+  <module>
+    <name>EmailConnectorContentLinkExtension</name>
+    <load-group>contentLinkGRP</load-group>
+    <script>
+      <path>/js/emailConnectorContentLinkExtension.bundle.js</path>
+    </script>
+    <!-- Required lazily as SHARED/eXoVueI18n, for the alert: requirejs only knows a
+         shared module on a page where something depends on it. -->
+    <depends>
+      <module>eXoVueI18n</module>
+    </depends>
+  </module>
+
   <!-- The unified-search connector's front-end half. The connector descriptor names
        it as SHARED/EmailSearch, so the module name here IS that contract: the search
        app requires it to register the row component and to call formatSearchResult on
