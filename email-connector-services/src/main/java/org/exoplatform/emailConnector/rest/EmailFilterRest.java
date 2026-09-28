@@ -760,6 +760,29 @@ public class EmailFilterRest {
   }
 
   /**
+   * The caller's mails with a suggestion still waiting for them.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param delegationId the share the request is made from; refused
+   * @return the mails' Message-IDs
+   */
+  @GetMapping("/proposals/waiting")
+  @Secured("users")
+  @Operation(summary = "Lists the caller's mails with a suggestion waiting for them", method = "GET",
+      description = "The Message-IDs of the caller's own mails that have at least one tool call proposed by a filter's "
+          + "assistant, still waiting for a decision and not past its expiry: what the mailbox list marks. One read per "
+          + "list load, bounded by the mailbox's pending cap.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = FORBIDDEN_DESCRIPTION),
+      @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected") })
+  public List<String> getWaitingMails(HttpServletRequest request,
+                                      @Parameter(description = DELEGATION_DESCRIPTION)
+                                      @RequestParam(name = "delegationId", required = false)
+                                      Long delegationId) {
+    return read(() -> emailFilterProposalService.getWaitingMails(request.getRemoteUser(), delegationId));
+  }
+
+  /**
    * Approves a tool call a filter's assistant proposed, and runs it.
    *
    * @param request the HTTP request, carrying the authenticated user

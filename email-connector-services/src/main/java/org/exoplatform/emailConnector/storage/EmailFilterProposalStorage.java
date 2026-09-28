@@ -141,6 +141,17 @@ public class EmailFilterProposalStorage {
   }
 
   /**
+   * The Message-IDs of the owner's mails with a proposal still waiting for them.
+   *
+   * @param userId the owner
+   * @param now the time; a proposal past its expiry at it does not count
+   * @return the Message-IDs, each once
+   */
+  public List<String> getWaitingMailHeaderIds(String userId, Date now) {
+    return emailFilterProposalDAO.findWaitingMailHeaderIds(userId, EmailFilterProposal.PROPOSED, now);
+  }
+
+  /**
    * The proposals of some matches of their owner.
    *
    * @param userId the owner
