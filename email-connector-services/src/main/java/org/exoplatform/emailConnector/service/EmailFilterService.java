@@ -177,7 +177,7 @@ public class EmailFilterService {
                                                                  "This email was flagged important. Note in two or three sentences what it is about, "
                                                                      + "who wants what from me, and every deadline or date it names. Then act on what it "
                                                                      + "clearly calls for, at most three actions: work, a decision or a reply I must do goes in "
-                                                                     + "a task with its deadline; a meeting it proposes goes in my agenda; minutes, decisions or "
+                                                                     + "a personal task with its deadline; a meeting it proposes goes in my agenda; minutes, decisions or "
                                                                      + "reference information go in a personal note; thanks or praise for a colleague is a kudos; "
                                                                      + "a request to share something is a post in the space it names. If it only informs me, do "
                                                                      + "nothing more.";
