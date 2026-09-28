@@ -208,6 +208,29 @@ document.addEventListener('open-email-box-mailbox', event => {
   window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, mailbox ? {mailbox: String(mailbox)} : null));
 });
 
+/**
+ * What a mailbox URL asks to open: one mail when it names one, else the mailbox.
+ *
+ * A mail's permanent link lands here as ?openEmailBox=true&mailRemoteId=<uid>&folder=<key>
+ * (EmailPermanentLinkPlugin). The parameters are data from the address bar, so they are
+ * validated and nothing is rendered from them: a UID is digits, a folder one of the keys
+ * the reader can open a mail from outside with. Anything else opens the mailbox alone.
+ * Whose mail it is needs no check here: the reader fetches it as the viewer, so the link
+ * opens nothing of somebody else's.
+ *
+ * @param {URLSearchParams} urlParams the page's query parameters
+ * @returns {Object} the opening payload: {mailRemoteId, folder}, or {} for the mailbox
+ */
+function openingFromUrl(urlParams) {
+  const mailRemoteId = urlParams.get('mailRemoteId');
+  const folder = urlParams.get('folder') || 'INBOX';
+  const knownFolder = /^(INBOX|SENT|ARCHIVE|ALL_MAIL|TRASH|JUNK|CUSTOM:\d{1,18})$/.test(folder);
+  if (!/^\d{1,18}$/.test(mailRemoteId || '') || !knownFolder) {
+    return {};
+  }
+  return {mailRemoteId: Number(mailRemoteId), folder};
+}
+
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
   const urlParams = new URLSearchParams(window.location.search);
   const shouldOpenEmailBox = urlParams.get('openEmailBox') === 'true';
@@ -215,8 +238,12 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
     // mailbox=<delegationId> opens a mailbox somebody shared with the user -- the
     // mailbox= deep link the notifications carry (delegation plan 7.4): the switcher is
     // on it, and its band shows, before its list has loaded.
+    const opening = openingFromUrl(urlParams);
     const mailbox = urlParams.get('mailbox');
-    window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, mailbox ? {mailbox} : null));
+    if (mailbox) {
+      opening.mailbox = mailbox;
+    }
+    window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, opening));
   }
 }
 
