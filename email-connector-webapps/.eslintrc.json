@@ -9,5 +9,13 @@
   "rules": {
     "vue/multi-word-component-names": "off",
     "vue/no-mutating-props": "warn"
-  }
+  },
+  "overrides": [
+    {
+      "files": ["**/__tests__/**/*.spec.js"],
+      "env": {
+        "jest": true
+      }
+    }
+  ]
 }
