@@ -449,6 +449,8 @@
         <values-param>
           <name>classpath.resources</name>
           <value>locale.notification.emailConnectorNotification</value>
+          <!-- Read server-side too: the seeded "Important mail" filter takes its name from it, in the owner's language -->
+          <value>locale.portlet.emailConnector.emailConnectorUserSetting</value>
         </values-param>
         <values-param>
           <name>portal.resource.names</name>

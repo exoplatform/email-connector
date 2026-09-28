@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -42,10 +43,17 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
+import java.util.ListResourceBundle;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 
@@ -60,6 +68,11 @@ import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.ObjectProvider;
 
+import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.SettingValue;
+import org.exoplatform.commons.api.settings.data.Context;
+import org.exoplatform.commons.api.settings.data.Scope;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.event.NewInboxMailEvent.InboxMail;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
@@ -84,6 +97,7 @@ import org.exoplatform.emailConnector.storage.EmailFilterStorage;
 import org.exoplatform.emailConnector.storage.EmailFilterStorage.OwnedMatch;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.listener.ListenerService;
+import org.exoplatform.services.resources.ResourceBundleService;
 
 /**
  * The eXo rules service: the combined save with the server first, the hop's names from
@@ -131,11 +145,20 @@ public class EmailFilterServiceTest {
   @Mock
   private ObjectProvider<EmailFilterAgentHandler> agentHandlers;
 
+  @Mock
+  private SettingService               settingService;
+
+  @Mock
+  private ResourceBundleService        resourceBundleService;
+
   @Spy
   @InjectMocks
   private EmailFilterService           service;
 
   private final Map<Long, EmailFilter> filters      = new TreeMap<>();
+
+  /** The owners' settings, as one map behind the mock: {@code context/scope/key} to value. */
+  private final Map<String, String>    settings     = new ConcurrentHashMap<>();
 
   private final Map<Long, EmailFilterMatch> matches = new TreeMap<>();
 
@@ -157,8 +180,11 @@ public class EmailFilterServiceTest {
     lenient().doNothing().when(service).notifyOwner(anyString(), anyString(), anyInt(), any());
     lenient().doNothing().when(service).notifyOwner(anyString(), anyString(), anyInt(), any(), any(), any());
     fakeStorage();
+    fakeSettings();
     lenient().when(agentHandlers.stream()).thenAnswer(invocation -> Stream.of(new EmailFilterAgentHandler() {
     }));
+    lenient().when(emailBoxService.getDefaultEmailCategoryId(EmailFilterService.SEED_IMPORTANT_CATEGORY)).thenReturn(IMPORTANT_ID);
+    lenient().doReturn(Locale.ENGLISH).when(service).seedLocale(USERNAME);
   }
 
   /**
@@ -176,6 +202,7 @@ public class EmailFilterServiceTest {
     System.clearProperty(EmailFilterService.AGENT_ENABLED_PROPERTY);
     System.clearProperty(EmailFilterService.MAX_PENDING_PROPERTY);
     System.clearProperty(EmailFilterService.ENABLED_PROPERTY);
+    System.clearProperty(EmailFilterService.SEED_IMPORTANT_PROPERTY);
   }
 
   /**
@@ -1047,6 +1074,235 @@ public class EmailFilterServiceTest {
     assertEquals(EmailFilterMatch.AGENT_PENDING, queued.getAgentStatus());
     assertEquals(0, queued.getAgentAttempts());
     verify(listenerService).broadcast(EmailConnectorUtils.FILTER_AGENT_REQUESTED, USERNAME, List.of(match.getId()));
+  }
+
+  /**
+   * The first read of an owner's rules seeds "Important mail", switched off, as the
+   * form would have sent it -- on the Important category, its assistant asked for a note
+   * and at most two suggestions, last in the order -- and records it; the next read finds
+   * that copy and makes no other.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theImportantFilterIsSeededOnceOnTheFirstRead() throws Exception {
+    List<EmailFilter> first = service.getFilters(USERNAME, null);
+
+    assertEquals(1, first.size());
+    EmailFilter seeded = first.get(0);
+    assertFalse(seeded.isEnabled(), "switched off until the owner turns it on");
+    assertEquals(EmailFilterService.SEED_IMPORTANT_NAME, seeded.getName());
+    assertEquals(EmailFilter.KIND_EXO, seeded.getKind());
+    assertEquals(EmailFilter.SCOPE_OWN, seeded.getMailboxScope());
+    assertTrue(seeded.isMatchAll());
+    assertFalse(seeded.isStopProcessing());
+    assertEquals(0, seeded.getPosition());
+    assertEquals(List.of(IMPORTANT), seeded.getConditions(), "the category by its stable key");
+    assertEquals(1, seeded.getActions().size());
+    FilterAction action = seeded.getActions().get(0);
+    assertEquals(FilterAction.AGENT, action.type());
+    assertEquals(EmailFilterService.SEED_IMPORTANT_INSTRUCTION, action.instruction());
+    assertEquals(List.of("NOTE"), action.outputs());
+    assertTrue(action.suggestActions());
+    assertEquals(EmailFilterService.SEED_AGENT_MARKER, action.agentNameId());
+    assertEquals(EmailFilterService.SEED_AGENT_MARKER, seeded.getAgentNameId(), "the log and the retry know the rule has an assistant");
+    assertEquals(EmailFilterService.SEED_IMPORTANT_VERSION, seedMarker(), "recorded");
+
+    List<EmailFilter> second = service.getFilters(USERNAME, null);
+
+    assertEquals(1, second.size(), "the same copy");
+    assertEquals(seeded.getId(), second.get(0).getId());
+    verify(emailFilterStorage, times(1)).save(eq(USERNAME), any(), any());
+  }
+
+  /**
+   * The seeded rule is named in the owner's language, from the settings bundle the
+   * drawer reads; the English name only when the bundle cannot be read.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theSeededFilterIsNamedInTheOwnersLanguage() throws Exception {
+    doReturn(Locale.FRENCH).when(service).seedLocale(USERNAME);
+    when(resourceBundleService.getResourceBundle(EmailFilterService.SEED_BUNDLE, Locale.FRENCH)).thenReturn(new ListResourceBundle() {
+      @Override
+      protected Object[][] getContents() {
+        return new Object[][] { { EmailFilterService.SEED_IMPORTANT_NAME_KEY, "Courrier important : ce qu'il attend de moi" } };
+      }
+    });
+
+    List<EmailFilter> read = service.getFilters(USERNAME, null);
+
+    assertEquals("Courrier important : ce qu'il attend de moi", read.get(0).getName());
+  }
+
+  /**
+   * A seeded rule the owner deleted never comes back: the deletion leaves the marker.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aDeletedSeedIsNeverRecreated() throws Exception {
+    EmailFilter seeded = service.getFilters(USERNAME, null).get(0);
+
+    service.deleteFilter(USERNAME, null, seeded.getId(), false);
+
+    assertTrue(service.getFilters(USERNAME, null).isEmpty(), "gone for good");
+    assertEquals(EmailFilterService.SEED_IMPORTANT_VERSION, seedMarker(), "the marker stays");
+    verify(emailFilterStorage, times(1)).save(eq(USERNAME), any(), any());
+  }
+
+  /**
+   * A deployment that switched the seed off seeds nothing, and records nothing: switched
+   * back on, the owner gets their copy.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void noSeedWhenTheDeploymentSwitchedItOff() throws Exception {
+    System.setProperty(EmailFilterService.SEED_IMPORTANT_PROPERTY, "false");
+
+    assertTrue(service.getFilters(USERNAME, null).isEmpty());
+    assertNull(seedMarker(), "nothing recorded");
+    verify(emailFilterStorage, never()).save(eq(USERNAME), any(), any());
+
+    System.setProperty(EmailFilterService.SEED_IMPORTANT_PROPERTY, "true");
+
+    assertEquals(1, service.getFilters(USERNAME, null).size());
+  }
+
+  /**
+   * While the Important category is not imported, the seed waits without a marker, and
+   * the next read after the import makes it.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theSeedWaitsForTheImportantCategory() throws Exception {
+    when(emailBoxService.getDefaultEmailCategoryId(EmailFilterService.SEED_IMPORTANT_CATEGORY)).thenReturn(null);
+
+    assertTrue(service.getFilters(USERNAME, null).isEmpty());
+    assertNull(seedMarker(), "tried again next time");
+    verify(emailFilterStorage, never()).save(eq(USERNAME), any(), any());
+
+    when(emailBoxService.getDefaultEmailCategoryId(EmailFilterService.SEED_IMPORTANT_CATEGORY)).thenReturn(IMPORTANT_ID);
+
+    assertEquals(1, service.getFilters(USERNAME, null).size());
+    assertEquals(EmailFilterService.SEED_IMPORTANT_VERSION, seedMarker());
+  }
+
+  /**
+   * An owner who already has as many rules as allowed forgoes the seed for good: no
+   * rule, and the marker, so a later deletion of theirs never makes room for it.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anOwnerAtTheCapForgoesTheSeed() throws Exception {
+    for (int i = 0; i < EmailFilterService.MAX_FILTERS; i++) {
+      stored(rule("Rule " + i, EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of(action(FilterAction.STAR))));
+    }
+
+    List<EmailFilter> read = service.getFilters(USERNAME, null);
+
+    assertEquals(EmailFilterService.MAX_FILTERS, read.size());
+    assertTrue(read.stream().noneMatch(filter -> EmailFilterService.SEED_IMPORTANT_NAME.equals(filter.getName())));
+    assertEquals(EmailFilterService.SEED_IMPORTANT_VERSION, seedMarker(), "forgone, recorded");
+    verify(emailFilterStorage, never()).save(eq(USERNAME), any(), any());
+  }
+
+  /**
+   * Two first reads at once make one copy: the second waits for the first's insert and
+   * finds its marker.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void twoFirstReadsAtOnceSeedOneFilter() throws Exception {
+    CountDownLatch bothStarted = new CountDownLatch(2);
+    ExecutorService readers = Executors.newFixedThreadPool(2);
+    try {
+      List<java.util.concurrent.Future<List<EmailFilter>>> reads = new ArrayList<>();
+      for (int i = 0; i < 2; i++) {
+        reads.add(readers.submit(() -> {
+          bothStarted.countDown();
+          bothStarted.await(5, TimeUnit.SECONDS);
+          return service.getFilters(USERNAME, null);
+        }));
+      }
+      for (java.util.concurrent.Future<List<EmailFilter>> read : reads) {
+        assertEquals(1, read.get(5, TimeUnit.SECONDS).size(), "each read sees the one copy");
+      }
+    } finally {
+      readers.shutdownNow();
+    }
+    assertEquals(1, filters.size());
+    verify(emailFilterStorage, times(1)).save(eq(USERNAME), any(), any());
+  }
+
+  /**
+   * An owner without a connected mailbox has no rules to read, and no seed: they get it
+   * when they connect.
+   */
+  @Test
+  void noSeedWithoutAConnectedMailbox() {
+    when(userEmailSettingService.getUserEmailSetting(USERNAME)).thenReturn(null);
+
+    assertThrows(ObjectNotFoundException.class, () -> service.ensureImportantFilter(USERNAME));
+
+    assertNull(seedMarker());
+    verify(emailFilterStorage, never()).save(eq(USERNAME), any(), any());
+  }
+
+  /**
+   * The connection's seed, through {@link EmailFilterService#ensureImportantFilter}: made
+   * once, and answered as such.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theConnectionSeedsOnceToo() throws Exception {
+    assertTrue(service.ensureImportantFilter(USERNAME), "created");
+    assertFalse(service.ensureImportantFilter(USERNAME), "already there");
+
+    assertEquals(1, service.getFilters(USERNAME, null).size());
+  }
+
+  /**
+   * The owner's seed marker, as the settings hold it.
+   *
+   * @return the version recorded, or null
+   */
+  private String seedMarker() {
+    return settings.get(settingKey(Context.USER.id(USERNAME), EmailFilterService.SEED_SCOPE, EmailFilterService.SEED_IMPORTANT_KEY));
+  }
+
+  /**
+   * The settings, as one map behind the mock.
+   */
+  private void fakeSettings() {
+    lenient().when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenAnswer(invocation -> {
+      String value = settings.get(settingKey(invocation.getArgument(0), invocation.getArgument(1), invocation.getArgument(2)));
+      return value == null ? null : SettingValue.create(value);
+    });
+    lenient().doAnswer(invocation -> {
+      SettingValue<?> value = invocation.getArgument(3);
+      settings.put(settingKey(invocation.getArgument(0), invocation.getArgument(1), invocation.getArgument(2)),
+                   String.valueOf(value.getValue()));
+      return null;
+    }).when(settingService).set(any(Context.class), any(Scope.class), anyString(), any());
+  }
+
+  /**
+   * One setting's key in the map.
+   *
+   * @param context its context
+   * @param scope its scope
+   * @param key its key
+   * @return the map key
+   */
+  private static String settingKey(Context context, Scope scope, String key) {
+    return context.getName() + "/" + context.getId() + "/" + scope.getName() + "/" + scope.getId() + "/" + key;
   }
 
   /**
