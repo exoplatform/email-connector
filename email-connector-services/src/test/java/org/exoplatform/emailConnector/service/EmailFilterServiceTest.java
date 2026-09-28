@@ -104,6 +104,12 @@ public class EmailFilterServiceTest {
 
   private static final Condition       FROM_ACME    = new Condition("FROM", "MATCHES_DOMAIN", null, "acme.com");
 
+  private static final Condition       IMPORTANT    = new Condition("CATEGORY", "EQUALS", null, "emailImportantCategory");
+
+  private static final long            IMPORTANT_ID = 17L;
+
+  private static final long            NOTIFICATION_ID = 18L;
+
   @Mock
   private EmailFilterStorage           emailFilterStorage;
 
@@ -812,6 +818,214 @@ public class EmailFilterServiceTest {
     assertEquals(List.of("HEADER"), preview.notPreviewable());
     assertTrue(preview.approximate(), "a server rule's count is the server's approximation");
     verify(emailBoxService, never()).getEmailById(anyLong(), anyString());
+  }
+
+  /**
+   * A rule on a category runs when a mail gets that category, whoever added it: the match
+   * is recorded and its assistant queued, as at sync. Adding another category, or a mail
+   * that lost the category before the rules ran, runs nothing.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aCategoryRuleRunsWhenTheMailGetsTheCategory() throws Exception {
+    stored(rule("Important", EmailFilter.KIND_EXO, List.of(IMPORTANT), List.of(agent())));
+    givenCategories();
+    Email mail = categorised(mail(1L, "a@acme.com", "Board meeting"), IMPORTANT_ID);
+    Email uncategorised = mail(2L, "a@acme.com", "Board meeting");
+    givenNewMail(mail, uncategorised);
+
+    service.applyToCategorizedMail(USERNAME, NOTIFICATION_ID, List.of(1L));
+    service.applyToCategorizedMail(USERNAME, IMPORTANT_ID, List.of(2L));
+    assertTrue(matches.isEmpty(), "another category, or a mail that lost it: " + matches);
+
+    service.applyToCategorizedMail(USERNAME, IMPORTANT_ID, List.of(1L));
+
+    assertEquals(1, matches.size());
+    EmailFilterMatch match = matches.values().iterator().next();
+    assertEquals(1L, match.getMailRemoteId());
+    assertEquals(EmailFilterMatch.AGENT_PENDING, match.getAgentStatus());
+    verify(listenerService).broadcast(EmailConnectorUtils.FILTER_AGENT_REQUESTED, USERNAME, List.of(match.getId()));
+    verify(emailFilterStorage).addMatches(eq(match.getFilterId()), eq(USERNAME), eq(1L), any());
+  }
+
+  /**
+   * Only the category just added runs a rule: a mail that also carries Important, when it
+   * gets Notification, does not run the rule on Important -- that one ran, or chose not
+   * to, when Important was added. And a mail that lost the category before the rules ran
+   * does not run it, even where another condition alone would do ("any").
+   *
+   * @throws Exception never
+   */
+  @Test
+  void onlyTheCategoryJustAddedRunsARuleAndOnlyIfStillThere() throws Exception {
+    EmailFilter important = rule("Important or Acme", EmailFilter.KIND_EXO, List.of(IMPORTANT, FROM_ACME), List.of(action(FilterAction.STAR)));
+    important.setMatchAll(false);
+    stored(important);
+    EmailFilter notification = stored(rule("Notification",
+                                           EmailFilter.KIND_EXO,
+                                           List.of(new Condition("CATEGORY", "EQUALS", null, "emailNotificationCategory")),
+                                           List.of(action(FilterAction.MARK_READ))));
+    givenCategories();
+    givenNewMail(categorised(mail(1L, "a@acme.com", "Hello"), IMPORTANT_ID, NOTIFICATION_ID), categorised(mail(2L, "a@acme.com", "Hello")));
+
+    service.applyToCategorizedMail(USERNAME, NOTIFICATION_ID, List.of(1L));
+    service.applyToCategorizedMail(USERNAME, IMPORTANT_ID, List.of(2L));
+
+    assertEquals(List.of(notification.getId()), matches.values().stream().map(EmailFilterMatch::getFilterId).toList());
+  }
+
+  /**
+   * A mail never runs a category rule twice: the category taken off and put back -- or put
+   * back by the categorizer after the user -- finds the match of the first time.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aCategoryAddedAgainDoesNotRunTheRuleAgain() throws Exception {
+    stored(rule("Important", EmailFilter.KIND_EXO, List.of(IMPORTANT), List.of(action(FilterAction.STAR))));
+    givenCategories();
+    givenNewMail(categorised(mail(1L, "a@acme.com", "Board meeting"), IMPORTANT_ID));
+
+    service.applyToCategorizedMail(USERNAME, IMPORTANT_ID, List.of(1L));
+    service.applyToCategorizedMail(USERNAME, IMPORTANT_ID, List.of(1L));
+
+    assertEquals(1, matches.size());
+    verify(emailBoxService, times(1)).updateEmailStarredStatus(List.of(1L), USERNAME, MailFolder.INBOX, true, true);
+  }
+
+  /**
+   * The rule's other conditions must hold too, joined as the rule says: "all" needs the
+   * sender as well, "any" is satisfied by the category.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aCategoryRuleStillNeedsItsOtherConditions() throws Exception {
+    stored(rule("Important from Acme", EmailFilter.KIND_EXO, List.of(IMPORTANT, FROM_ACME), List.of(action(FilterAction.STAR))));
+    givenCategories();
+    givenNewMail(categorised(mail(1L, "a@other.org", "Hello"), IMPORTANT_ID), categorised(mail(2L, "a@acme.com", "Hello"), IMPORTANT_ID));
+
+    service.applyToCategorizedMail(USERNAME, IMPORTANT_ID, List.of(1L, 2L));
+
+    assertEquals(List.of(2L), matches.values().stream().map(EmailFilterMatch::getMailRemoteId).toList());
+
+    EmailFilter any = rule("Important or Acme", EmailFilter.KIND_EXO, List.of(IMPORTANT, FROM_ACME), List.of(action(FilterAction.STAR)));
+    any.setMatchAll(false);
+    EmailFilter anyStored = stored(any);
+    service.applyToCategorizedMail(USERNAME, IMPORTANT_ID, List.of(1L));
+
+    assertTrue(matches.values().stream().anyMatch(match -> match.getFilterId().equals(anyStored.getId()) && match.getMailRemoteId() == 1L),
+               "any: the category is enough");
+  }
+
+  /**
+   * At sync, a rule on a category never runs -- its mail has no category yet, and it runs
+   * when the mail gets one -- while the other rules run exactly as before, on the same
+   * pass.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theSyncLeavesCategoryRulesAndRunsTheOthers() throws Exception {
+    EmailFilter onCategory = rule("Important or Acme", EmailFilter.KIND_EXO, List.of(IMPORTANT, FROM_ACME), List.of(action(FilterAction.MARK_READ)));
+    onCategory.setMatchAll(false);
+    stored(onCategory);
+    EmailFilter star = stored(rule("Star", EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of(action(FilterAction.STAR))));
+    givenNewMail(categorised(mail(1L, "a@acme.com", "Hello"), IMPORTANT_ID));
+
+    service.applyToNewMail(USERNAME, List.of(inbox(1L)), FilterRunContext.OWN_INBOX);
+
+    assertEquals(List.of(star.getId()), matches.values().stream().map(EmailFilterMatch::getFilterId).toList());
+    verify(emailBoxService).updateEmailStarredStatus(List.of(1L), USERNAME, MailFolder.INBOX, true, true);
+    verify(emailBoxService, never()).updateEmailReadStatus(any(), any(), any(), anyBoolean(), anyBoolean());
+  }
+
+  /**
+   * A rule on a category that is switched off, or on another mailbox, never runs; nor does
+   * any rule when the mail is not found in the inbox -- moved to Junk meanwhile.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aCategoryRuleRunsOnlyEnabledAndOnTheInbox() throws Exception {
+    EmailFilter off = rule("Off", EmailFilter.KIND_EXO, List.of(IMPORTANT), List.of(action(FilterAction.STAR)));
+    off.setEnabled(false);
+    stored(off);
+    EmailFilter on = stored(rule("On", EmailFilter.KIND_EXO, List.of(IMPORTANT), List.of(action(FilterAction.STAR))));
+    givenCategories();
+    givenNewMail(categorised(mail(1L, "a@acme.com", "Hello"), IMPORTANT_ID));
+
+    service.applyToCategorizedMail(USERNAME, IMPORTANT_ID, List.of(1L, 7L));
+
+    assertEquals(List.of(on.getId()), matches.values().stream().map(EmailFilterMatch::getFilterId).toList());
+  }
+
+  /**
+   * A category condition is stored by the category's stable key, one of the defaults, and
+   * compared with "is" only; never by id or on a rule the server runs; and never beside a
+   * header, which only the sync reads, long before a mail gets a category.
+   */
+  @Test
+  void aCategoryConditionIsValidatedByItsKey() {
+    List<FilterAction> star = List.of(action(FilterAction.STAR));
+    assertEquals(List.of(IMPORTANT),
+                 service.validated(USERNAME,
+                                   rule("R", EmailFilter.KIND_EXO, List.of(new Condition("category", "equals", null, " emailImportantCategory ")), star))
+                        .getConditions());
+    for (Condition refused : List.of(new Condition("CATEGORY", "EQUALS", null, String.valueOf(IMPORTANT_ID)),
+                                     new Condition("CATEGORY", "EQUALS", null, "Important"),
+                                     new Condition("CATEGORY", "CONTAINS", null, "emailImportantCategory"))) {
+      assertThrows(IllegalArgumentException.class,
+                   () -> service.validated(USERNAME, rule("R", EmailFilter.KIND_EXO, List.of(refused), star)),
+                   refused.toString());
+    }
+    assertThrows(IllegalArgumentException.class, () -> service.validated(USERNAME, rule("R", EmailFilter.KIND_HOP, List.of(IMPORTANT), star)));
+    assertThrows(IllegalArgumentException.class,
+                 () -> service.validated(USERNAME,
+                                         rule("R", EmailFilter.KIND_EXO, List.of(IMPORTANT, new Condition("HEADER", "CONTAINS", "X-Tag", "a")), star)));
+  }
+
+  /**
+   * Run once on the cached inbox, and previewed, a rule on a category matches the mails
+   * that already carry it -- the one way it reaches mail categorised before it existed.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void runOnceAndThePreviewMatchTheMailsAlreadyCategorised() throws Exception {
+    givenCategories();
+    when(emailBoxService.getCachedInbox(USERNAME)).thenReturn(List.of(categorised(mail(1L, "a@acme.com", "One"), IMPORTANT_ID),
+                                                                      categorised(mail(2L, "b@acme.com", "Two"), NOTIFICATION_ID),
+                                                                      mail(3L, "c@acme.com", "Three")));
+
+    FilterPreview preview = service.preview(USERNAME, null, rule("R", EmailFilter.KIND_EXO, List.of(IMPORTANT), null));
+    assertEquals(1, preview.total());
+
+    EmailFilter important = stored(rule("Important", EmailFilter.KIND_EXO, List.of(IMPORTANT), List.of(action(FilterAction.STAR))));
+    service.applyOnce(USERNAME, null, important.getId(), false);
+    assertEquals(List.of(1L), matches.values().stream().map(EmailFilterMatch::getMailRemoteId).toList());
+  }
+
+  /**
+   * The owner's default categories: Important and Notification, by the ids the importer
+   * gave them.
+   */
+  private void givenCategories() {
+    lenient().when(emailBoxService.getDefaultEmailCategoryNameIds())
+             .thenReturn(Map.of(IMPORTANT_ID, "emailImportantCategory", NOTIFICATION_ID, "emailNotificationCategory"));
+  }
+
+  /**
+   * A mail with categories.
+   *
+   * @param email the mail
+   * @param categoryIds its categories
+   * @return the mail
+   */
+  private static Email categorised(Email email, Long... categoryIds) {
+    email.setCategoryIds(List.of(categoryIds));
+    return email;
   }
 
   /**
