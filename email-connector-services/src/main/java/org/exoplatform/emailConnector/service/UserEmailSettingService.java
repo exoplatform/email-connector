@@ -194,7 +194,7 @@ public class UserEmailSettingService {
    *           something, or names no mailbox
    * @throws IllegalStateException when the mailbox refuses the service account
    */
-  @Transactional
+  @Transactional(rollbackFor = Exception.class)
   public void connectThroughProvider(long emailConnectorId, String username) throws IllegalAccessException {
     if (!canConnect(emailConnectorId, username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE, username));
