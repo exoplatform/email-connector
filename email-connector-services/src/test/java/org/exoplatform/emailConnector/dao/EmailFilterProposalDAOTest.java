@@ -34,6 +34,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.test.context.TestPropertySource;
 
+import org.exoplatform.emailConnector.entity.EmailFilterMatchEntity;
 import org.exoplatform.emailConnector.entity.EmailFilterProposalEntity;
 
 import jakarta.persistence.PersistenceException;
@@ -224,6 +225,54 @@ public class EmailFilterProposalDAOTest {
     assertEquals("superseded", superseded.getLastError());
     assertNull(emailFilterProposalDAO.findById(due).orElseThrow().getLastError(), "an expiry names no reason");
     assertEquals("PROPOSED", emailFilterProposalDAO.findById(otherMatch).orElseThrow().getStatus(), "another match");
+  }
+
+  /**
+   * The mails with a suggestion waiting are the owner's, read through their own matches:
+   * a waiting, unexpired proposal marks its match's mail once however many it has; a
+   * decided or expired one, someone else's proposal, and a proposal on someone else's
+   * match do not.
+   */
+  @Test
+  void theWaitingMailsAreTheOwnersWaitingUnexpiredOnes() {
+    Long waitingMatch = persistMatch(OWNER, "waiting");
+    Long decidedMatch = persistMatch(OWNER, "decided");
+    Long expiredMatch = persistMatch(OWNER, "expired");
+    Long othersMatch = persistMatch(OTHER, "others");
+    persist(OWNER, waitingMatch, "h1", "PROPOSED", "run-1", NOW + 1_000);
+    persist(OWNER, waitingMatch, "h2", "PROPOSED", "run-1", NOW + 1_000);
+    persist(OWNER, waitingMatch, "h3", "REJECTED", "run-1", NOW + 1_000);
+    persist(OWNER, decidedMatch, "h4", "DONE", "run-1", NOW + 1_000);
+    persist(OWNER, expiredMatch, "h5", "PROPOSED", "run-1", NOW);
+    persist(OTHER, othersMatch, "h6", "PROPOSED", "run-1", NOW + 1_000);
+    // The owner's proposal on someone else's match: the join is scoped on both sides.
+    persist(OWNER, othersMatch, "h7", "PROPOSED", "run-1", NOW + 1_000);
+    entityManager.flush();
+    entityManager.clear();
+
+    assertEquals(List.of("<waiting@x>"), emailFilterProposalDAO.findWaitingMailHeaderIds(OWNER, "PROPOSED", new Date(NOW)));
+    assertEquals(List.of("<others@x>"), emailFilterProposalDAO.findWaitingMailHeaderIds(OTHER, "PROPOSED", new Date(NOW)));
+    assertTrue(emailFilterProposalDAO.findWaitingMailHeaderIds(OWNER, "PROPOSED", new Date(NOW + 1_000)).isEmpty(),
+               "every one expired by then");
+  }
+
+  /**
+   * Persists a match of a mail.
+   *
+   * @param userId the owner
+   * @param mail the mail's Message-ID, without its brackets and domain
+   * @return its id
+   */
+  private Long persistMatch(String userId, String mail) {
+    EmailFilterMatchEntity entity = new EmailFilterMatchEntity();
+    entity.setUserId(userId);
+    entity.setFilterId(3L);
+    entity.setMailHeaderId("<" + mail + "@x>");
+    entity.setMailHeaderHash(mail);
+    entity.setMatchedDate(new Date(NOW - 10_000));
+    entity.setAgentStatus("DONE");
+    entity.setCreatedDate(new Date(NOW - 10_000));
+    return entityManager.persist(entity).getId();
   }
 
   /**
