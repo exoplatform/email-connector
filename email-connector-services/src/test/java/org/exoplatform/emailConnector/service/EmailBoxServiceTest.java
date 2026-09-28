@@ -1260,6 +1260,10 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L), TEST_USER, false, MailFolder.INBOX);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(77L), TEST_USER, false, "CUSTOM:6");
     verify(emailBoxStorage, never()).updateEmailStarredStatusByMailRemoteIds(eq(List.of(5L)), anyString(), anyBoolean(), anyString());
+    // The favorite's own row goes last, so the drawer never shows the other copy in between.
+    InOrder order = inOrder(projetsCopy, inboxCopy);
+    order.verify(projetsCopy).setFlag(Flags.Flag.FLAGGED, false);
+    order.verify(inboxCopy).setFlag(Flags.Flag.FLAGGED, false);
   }
 
   /**

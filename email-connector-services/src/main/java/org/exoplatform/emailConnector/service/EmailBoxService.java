@@ -5354,12 +5354,20 @@ public class EmailBoxService {
    */
   public int unstarFavorite(Email favorite, String username) throws IllegalAccessException {
     Map<String, List<Long>> uidsByFolder = new LinkedHashMap<>();
-    addCopy(uidsByFolder, favorite.getFolder(), favorite.getMailRemoteId());
     if (StringUtils.isNotBlank(favorite.getMailHeaderId())) {
       emailBoxStorage.getStarredEmailKeys(username, MailFolder.NOT_FAVORITED_FOLDERS)
                      .stream()
                      .filter(copy -> favorite.getMailHeaderId().equals(copy.getMailHeaderId()))
                      .forEach(copy -> addCopy(uidsByFolder, copy.getFolder(), copy.getMailRemoteId()));
+    }
+    // Its own folder last: each call realigns the drawer, and while the favorite's own
+    // row is starred it stays the copy the drawer shows, so the favorite never moves to
+    // another copy between two calls.
+    String ownFolder = StringUtils.isBlank(favorite.getFolder()) ? MailFolder.INBOX : favorite.getFolder();
+    List<Long> ownFolderCopies = uidsByFolder.remove(ownFolder);
+    addCopy(uidsByFolder, ownFolder, favorite.getMailRemoteId());
+    if (ownFolderCopies != null) {
+      ownFolderCopies.forEach(uid -> addCopy(uidsByFolder, ownFolder, uid));
     }
     int failed = 0;
     for (Map.Entry<String, List<Long>> copies : uidsByFolder.entrySet()) {
