@@ -3363,6 +3363,11 @@ export default {
      * list on screen (autoSelectFirstEmail). The placeholder is still set at once, so
      * the reader never renders with nothing to read during the layout's transition.
      * The drawer's width follows at once too (layoutExpanded, EXO-90415).
+     * <p>
+     * The mail being read survives the switch both ways (EXO-90717): full screen
+     * scrolls its list to that mail's row, and going back to the drawer hands the mail
+     * to the mail drawer, the narrow reader, with the list one step back
+     * (handEmailBackToMailDrawer) -- as when the mail was opened in the drawer.
      *
      * @param {Boolean} expanded whether the drawer is now full screen
      * @returns {void}
@@ -3375,9 +3380,14 @@ export default {
       window.setTimeout(() => {
         this.expanded = expanded;
         if (expanded) {
+          const openedBefore = this.email && !this.selectEmailPlaceHolder;
           this.autoSelectFirstEmail();
+          if (openedBefore) {
+            this.$nextTick(() => this.revealOpenedEmailRow());
+          }
         } else {
           this.autoSelectPending = false;
+          this.handEmailBackToMailDrawer();
         }
       }, 200);
       if (expanded) {
@@ -3385,6 +3395,82 @@ export default {
           this.selectEmailPlaceHolder = true;
         }
       }
+    },
+    /**
+     * The key of the list row holding the mail the reader shows -- a conversation's
+     * thread id, or a search hit's folder:UID while a search runs -- or null when the
+     * list on screen does not hold it.
+     *
+     * @returns {String} the row's key, or null
+     */
+    openedEmailRowKey() {
+      const entries = this.navigationEntriesOf(this.navigationEmails);
+      const index = threadIndexOf(entries, this.email);
+      return index >= 0 ? String(entries[index].threadId) : null;
+    },
+    /**
+     * Scrolls the full-screen list to the row of the mail the reader shows, the way the
+     * narrow list was left when that mail was opened there (EXO-90717).
+     *
+     * @returns {void}
+     */
+    revealOpenedEmailRow() {
+      if (!this.expanded || !this.email || this.selectEmailPlaceHolder) {
+        return;
+      }
+      const key = this.openedEmailRowKey();
+      if (key) {
+        this.revealThreadRow(key);
+      }
+    },
+    /**
+     * Going back from full screen to the drawer keeps the mail being read open
+     * (EXO-90717): it is handed to the mail drawer, the narrow reader, as it is -- a
+     * full copy is not fetched, read or counted again -- with the list it belongs to,
+     * the folder it is numbered in, and whether that list is a search's or does not
+     * hold it (a pinned mail, a Scheduled view's), so the mail drawer does not take it
+     * back to the placeholder on the next refresh. Its row is where the list comes back
+     * to once the mail drawer closes (rowToRefocus), as after an opening in the drawer.
+     * <p>
+     * Nothing is handed back with no mail open, the placeholder up, a multi-selection
+     * running, or the drawer closing (close has already emptied the reader): the list
+     * shows as it did.
+     *
+     * @returns {void}
+     */
+    handEmailBackToMailDrawer() {
+      const email = this.email;
+      if (!this.emailBoxDrawer || !email || this.selectEmailPlaceHolder || this.selectMode) {
+        return;
+      }
+      const scheduled = !!email.scheduledRow;
+      const detachedFromList = this.searchActive || this.pinnedEmail || scheduled;
+      let emails = this.emails;
+      if (this.searchActive) {
+        emails = this.mergedSearchResults;
+      } else if (scheduled) {
+        emails = [email];
+      }
+      const threadKey = !this.searchActive && !scheduled && this.openedEmailRowKey();
+      this.rowToRefocus = threadKey
+        ? { threadKey, index: threadRows(this.emails).findIndex(thread => String(thread.threadId) === threadKey) }
+        : null;
+      // The reader of this drawer is gone: whatever it was still loading or waiting on
+      // belongs to the mail drawer from now on.
+      this.supersedeEmailRequest();
+      this.readerLoading = false;
+      this.readerPartial = false;
+      this.pinnedEmail = false;
+      this.email = null;
+      this.threadContext = null;
+      this.$root.$emit('collapse-mail-box-on-email', {
+        email,
+        folder: email.folder || 'INBOX',
+        emails,
+        detachedFromList,
+        syncInProgress: this.syncInProgress,
+        webmailUrl: this.webmailUrl,
+      });
     },
     /**
      * Opens the first mail of the list on screen in the full-screen reader, when the

@@ -216,6 +216,9 @@ export default {
     this.$root.$on('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
     this.$root.$on('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$on('open-email-thread-drawer', this.onOpenEmailThreadDrawer);
+    // The mailbox drawer went back from full screen to its narrow layout with a mail
+    // open: this drawer reads it on (EXO-90717).
+    this.$root.$on('collapse-mail-box-on-email', this.showHandedBackEmail);
     this.$root.$on('scheduled-email-updated', this.onScheduledEmailUpdated);
     this.$root.$on('update-email-read-status', this.onUpdateEmailReadStatus);
     this.$root.$on('update-email-favorite-status', this.onApplyEmailFavoriteStatus);
@@ -249,6 +252,7 @@ export default {
     this.$root.$off('retry-email-read', this.onRetryEmailRead);
     this.$root.$off('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
     this.$root.$off('open-email-thread-drawer', this.onOpenEmailThreadDrawer);
+    this.$root.$off('collapse-mail-box-on-email', this.showHandedBackEmail);
     this.$root.$off('scheduled-email-updated', this.onScheduledEmailUpdated);
     this.$root.$off('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$off('delete-email', this.onDeleteOrArchiveEmail);
@@ -588,6 +592,33 @@ export default {
       this.threadContext = null;
       this.$root.isDetailDrawerActive = false;
       this.$root.$emit('email-detail-drawer-closed');
+    },
+    /**
+     * Reads on the mail the mailbox drawer's full-screen reader was showing when it went
+     * back to its narrow layout (EXO-90717): the mail stays open, over the list, as when
+     * it is opened in the drawer -- the reverse of expandInMailBox.
+     * <p>
+     * A full copy, a draft's row or a copy that could not be read is shown as it is:
+     * nothing fetched, read or counted again. A bare list row, whose full copy the
+     * full-screen reader was still waiting for, is fetched in the folder it is numbered
+     * in, without pushing its read status again.
+     *
+     * @param {Object} handback {email, folder, emails, detachedFromList, syncInProgress,
+     *   webmailUrl}: the mail, the folder it is numbered in, the list it was opened
+     *   from, whether that list is a search's or does not hold the mail, and the
+     *   toolbar's context
+     * @returns {void}
+     */
+    showHandedBackEmail(handback) {
+      const email = handback?.email;
+      if (!email) {
+        return;
+      }
+      this.openThreadOn(email, handback.emails || [email], handback.syncInProgress, handback.webmailUrl);
+      this.detachedFromList = !!handback.detachedFromList;
+      if (!email.unavailable && this.$emailConnectorMailBoxService.isListingRow(email)) {
+        this.fetchEmail(email.mailRemoteId, { folder: handback.folder });
+      }
     },
     /**
      * Expands the mail into the mailbox drawer's full screen, the one full-screen
