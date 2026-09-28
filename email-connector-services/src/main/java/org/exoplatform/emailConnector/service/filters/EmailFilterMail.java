@@ -47,6 +47,9 @@ public final class EmailFilterMail implements FilterMail {
 
   private final Supplier<Long>                 sizeKb;
 
+  /** The stable key of a default category by its id; null when categories are not read. */
+  private final Function<Long, String>         categoryKeys;
+
   private Email                                full;
 
   /**
@@ -64,12 +67,36 @@ public final class EmailFilterMail implements FilterMail {
                          Set<String> keywords,
                          Function<String, List<String>> headers,
                          Supplier<Long> sizeKb) {
-    this.listed = Objects.requireNonNull(listed);
-    this.loader = loader;
-    this.keywords = keywords == null ? Set.of()
-                                     : keywords.stream().map(keyword -> keyword.toLowerCase(Locale.ROOT)).collect(Collectors.toSet());
-    this.headers = headers;
-    this.sizeKb = sizeKb;
+    this(listed, loader, keywords, headers, sizeKb, null);
+  }
+
+  /**
+   * A cached mail whose categories a rule may read.
+   *
+   * @param row the row as read, possibly without its recipients or body
+   * @param rowLoader reads the whole row, when a condition needs what the listed one
+   *          lacks; null when {@code row} is whole
+   * @param mailKeywords the server's keywords on the mail, lower-case; null when not known
+   * @param headerReader reads a header of the mail, null when eXo cannot read its headers
+   * @param sizeReader reads the mail's size in kilobytes, null when eXo cannot know it
+   * @param keyOfCategory the stable key of a default category by its id on this instance,
+   *          null for another category; null when the mail's categories are not read
+   */
+  public EmailFilterMail(Email row,
+                         Supplier<Email> rowLoader,
+                         Set<String> mailKeywords,
+                         Function<String, List<String>> headerReader,
+                         Supplier<Long> sizeReader,
+                         Function<Long, String> keyOfCategory) {
+    this.listed = Objects.requireNonNull(row);
+    this.loader = rowLoader;
+    this.keywords = mailKeywords == null ? Set.of()
+                                         : mailKeywords.stream()
+                                                       .map(keyword -> keyword.toLowerCase(Locale.ROOT))
+                                                       .collect(Collectors.toSet());
+    this.headers = headerReader;
+    this.sizeKb = sizeReader;
+    this.categoryKeys = keyOfCategory;
   }
 
   /**
@@ -176,6 +203,18 @@ public final class EmailFilterMail implements FilterMail {
   @Override
   public Set<String> keywords() {
     return keywords;
+  }
+
+  /**
+   * {@inheritDoc}
+   */
+  @Override
+  public Set<String> categories() {
+    if (categoryKeys == null) {
+      return null; // NOSONAR -- null is "not known", which the evaluator answers UNKNOWN
+    }
+    List<Long> ids = listed.getCategoryIds() == null ? List.of() : listed.getCategoryIds();
+    return ids.stream().filter(Objects::nonNull).map(categoryKeys).filter(Objects::nonNull).collect(Collectors.toSet());
   }
 
   /**

@@ -180,6 +180,32 @@ public class EmailFilterRoutingTest {
   }
 
   /**
+   * A category condition makes an eXo filter whatever the server can do -- even a server
+   * that would claim to test a "category" -- and saving one never asks the server: the
+   * mail server knows nothing of eXo's categories.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aCategoryFilterAlwaysRunsInExo() throws Exception {
+    Condition important = new Condition("CATEGORY", "EQUALS", null, "emailImportantCategory");
+    Map<String, ElementSupport> elements = new HashMap<>();
+    ServerRuleCapabilities.ELEMENTS.forEach(element -> elements.put(element, new ElementSupport(true, null)));
+    elements.put("CATEGORY", new ElementSupport(true, null));
+    ServerRuleCapabilities claimsAll = new ServerRuleCapabilities(true, null, true, false, VocabularySource.FIXED, elements);
+
+    assertEquals(EmailFilter.KIND_EXO, EmailFilterService.route(filter(List.of(important), action(FilterAction.STAR)), claimsAll));
+    assertEquals(EmailFilter.KIND_EXO,
+                 EmailFilterService.route(filter(List.of(FROM_ACME, important), action(FilterAction.STAR)), capabilities(Set.of())));
+
+    EmailFilter saved = service.saveRouted(USERNAME, null, filter(List.of(important), action(FilterAction.STAR)), null, null, false, false);
+
+    assertEquals(EmailFilter.KIND_EXO, saved.getKind());
+    assertEquals(List.of(important), filters.get(saved.getId()).getConditions(), "stored by the category's key");
+    verify(emailServerRuleService, never()).getCapabilities(any(), any());
+  }
+
+  /**
    * A new filter the server can run whole is a server rule: nothing is stored in eXo.
    *
    * @throws Exception never
