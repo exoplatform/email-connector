@@ -167,6 +167,29 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       inactive>
       <span class="caption text-sub-title">{{ inboxOnlyHint }}</span>
     </v-list-item>
+    <!-- "Create a filter from this mail" (EXO-90654): the filters drawer opens on the
+         rule this mail suggests. Never on a row of a mailbox somebody shared with the
+         user: rules run on the user's own mailbox, and a rule made from someone else's
+         mail would not mean what the click meant. Before the destructive actions:
+         Delete, Discard or Delete forever always ends the menu. -->
+    <v-list-item
+      v-if="canCreateFilter"
+      class="ps-2 pe-3 height-auto"
+      @click.stop="createFilter">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="icon-default-color mx-auto"
+          size="16">
+          fa-filter
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.filters.createFromMail') }}
+      </span>
+    </v-list-item>
     <v-list-item
       v-if="!restricted && canDelete"
       class="ps-2 pe-3 height-auto"
@@ -283,28 +306,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-sheet>
       <span>
         {{ $t('emailConnector.mailBox.list.drawer.detail.purge.label') }}
-      </span>
-    </v-list-item>
-    <!-- "Create a filter from this mail" (EXO-90654): the filters drawer opens on the
-         rule this mail suggests. Never on a row of a mailbox somebody shared with the
-         user: rules run on the user's own mailbox, and a rule made from someone else's
-         mail would not mean what the click meant. -->
-    <v-list-item
-      v-if="canCreateFilter"
-      class="ps-2 pe-3 height-auto"
-      @click.stop="createFilter">
-      <v-sheet
-        class="d-flex"
-        width="28"
-        height="36">
-        <v-icon
-          class="icon-default-color mx-auto"
-          size="16">
-          fa-filter
-        </v-icon>
-      </v-sheet>
-      <span>
-        {{ $t('emailConnector.mailBox.filters.createFromMail') }}
       </span>
     </v-list-item>
   </v-list>
