@@ -174,12 +174,13 @@ public class EmailFilterService {
 
   /** What the seeded rule asks of the assistant. */
   public static final String          SEED_IMPORTANT_INSTRUCTION =
-                                                                 "This email was flagged important. Summarise in two or three sentences what it is about, "
-                                                                     + "who wants what from me, and every deadline or date it names. Then suggest at most two actions, "
-                                                                     + "only what it clearly calls for: a task for a decision, a reply or a piece of work I must do, "
-                                                                     + "with its deadline; a calendar event for a meeting it proposes; a personal note for minutes, "
-                                                                     + "decisions or reference information worth keeping; a kudos when it thanks or praises a colleague; "
-                                                                     + "a post in the space it names when it asks me to share something. If it only informs me, suggest nothing.";
+                                                                 "This email was flagged important. Note in two or three sentences what it is about, "
+                                                                     + "who wants what from me, and every deadline or date it names. Then act on what it "
+                                                                     + "clearly calls for, at most three actions: work, a decision or a reply I must do goes in "
+                                                                     + "a task with its deadline; a meeting it proposes goes in my agenda; minutes, decisions or "
+                                                                     + "reference information go in a personal note; thanks or praise for a colleague is a kudos; "
+                                                                     + "a request to share something is a post in the space it names. If it only informs me, do "
+                                                                     + "nothing more.";
 
   /** The feature is switched off. */
   public static final String          DISABLED                   = "emailConnector.filters.disabled";
