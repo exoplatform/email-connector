@@ -1104,6 +1104,8 @@ public class EmailFilterServiceTest {
     assertEquals(EmailFilterService.SEED_IMPORTANT_INSTRUCTION, action.instruction());
     // Worded as actions, not as "suggest": a model told to suggest lists actions in its answer instead of calling their tools.
     assertTrue(action.instruction().contains("at most three actions"), action.instruction());
+    // A task with no project named is a personal one: "a task" alone made the model pick the project tool and invent a project.
+    assertTrue(action.instruction().contains("a personal task"), action.instruction());
     assertFalse(action.instruction().contains("suggest"), action.instruction());
     assertEquals(List.of("NOTE"), action.outputs());
     assertTrue(action.suggestActions());
