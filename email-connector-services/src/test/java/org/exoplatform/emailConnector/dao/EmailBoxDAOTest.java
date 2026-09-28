@@ -144,7 +144,7 @@ public class EmailBoxDAOTest {
 
   /**
    * The read the Favorites drawer is reconciled from: the owner's starred rows in every
-   * folder but the excluded ones, as {@code [id, folder, mailHeaderId]} -- executed
+   * folder but the excluded ones, as {@code [id, folder, mailHeaderId, mailRemoteId]} -- executed
    * against the engine for its {@code NOT IN} over a bound list and its projection.
    */
   @Test
@@ -164,6 +164,7 @@ public class EmailBoxDAOTest {
     Object[] projets = rows.stream().filter(row -> inProjets.equals(row[0])).findFirst().orElseThrow();
     assertEquals("CUSTOM:6", projets[1]);
     assertEquals("<b@host>", projets[2]);
+    assertEquals(31L, projets[3]);
     assertTrue(emailBoxDAO.findStarredKeysByUserIdExcludingFolders("bob", MailFolder.NOT_FAVORITED_FOLDERS).isEmpty(),
                "another user's read answers none of these rows");
   }

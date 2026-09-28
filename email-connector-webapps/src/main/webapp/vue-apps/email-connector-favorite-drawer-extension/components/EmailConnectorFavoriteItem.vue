@@ -144,10 +144,10 @@ export default {
      * The favorite of a mail is only a mirror of the mail server's own \Flagged
      * flag, recomputed from it at every sync — so a removal that stopped at the
      * favorites store would be undone within minutes, the row quietly back in the
-     * drawer. The flag is therefore cleared too, through the endpoint the mailbox
-     * star uses — called directly, as the read above is: the mailbox service that
-     * wraps it lives in the mailbox bundle, which this extension deliberately
-     * does not load on every page. When the server refuses the message, that
+     * drawer. The flag is therefore cleared too, on every copy of the message the
+     * favorite stands for, through the favorite's own endpoint — called directly, as
+     * the read above is, since this extension deliberately does not load the
+     * mailbox bundle on every page. When the server refuses the message, that
      * endpoint reverts the row and reconciles the favorites itself — the drawer
      * is only re-read to show what it decided; when it cannot reach the server
      * at all it answers before reconciling, and then the favorite is put back
@@ -168,14 +168,11 @@ export default {
       };
       this.isFavorite = false;
       this.$root.$emit('favorite-removed', 'email', this.id);
-      const folder = this.email.folder && this.email.folder !== 'INBOX' ? `&folder=${encodeURIComponent(this.email.folder)}` : '';
-      fetch(`/email-connector/rest/email-box/starred?starred=false${folder}`, {
-        method: 'PATCH',
+      // Addressed by the favorite's own id: the server clears the star of every copy of
+      // the message the favorite stands for, each in its folder.
+      fetch(`/email-connector/rest/email-box/favorites/${this.id}`, {
+        method: 'DELETE',
         credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify([this.email.mailRemoteId]),
       }).then(response => {
         if (!response?.ok) {
           throw new Error('Favorited email cannot be unstarred');

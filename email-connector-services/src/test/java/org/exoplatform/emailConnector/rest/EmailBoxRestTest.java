@@ -543,6 +543,24 @@ public class EmailBoxRestTest {
   }
 
   @Test
+  void removeFavoriteEmail() throws Exception {
+    // An id the mailbox no longer has, and somebody else's mail: both missing, never forbidden.
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser())).andExpect(status().isNotFound());
+    Email favorite = new Email();
+    favorite.setId(121L);
+    when(emailBoxService.getOwnedEmailById(121L, SIMPLE_USER)).thenReturn(favorite);
+    when(emailBoxService.unstarFavorite(favorite, SIMPLE_USER)).thenReturn(1);
+
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.failedUpdates").value(1));
+    verify(emailBoxService).unstarFavorite(favorite, SIMPLE_USER);
+
+    doThrow(IllegalAccessException.class).when(emailBoxService).getOwnedEmailById(anyLong(), anyString());
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser())).andExpect(status().isNotFound());
+  }
+
+  @Test
   void sendDraft() throws Exception {
     ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send").with(testSimpleUser()));
     response.andExpect(status().isBadRequest());

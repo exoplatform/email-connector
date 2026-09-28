@@ -1225,6 +1225,63 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * Removing a favorite clears the star of every copy it stands for, each in its own
+   * folder: the drawer counts the copies of a message as one favorite, and a copy left
+   * starred would bring the removed entry back. Another message is left alone.
+   */
+  @Test
+  @SneakyThrows
+  void removingAFavoriteClearsTheStarOfEveryCopyOfItsMessage() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(registeredFolder(6L, "Projets", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    Message inboxCopy = mock(Message.class);
+    when(((UIDFolder) inbox).getMessageByUID(1212L)).thenReturn(inboxCopy);
+    IMAPFolder projets = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Projets");
+    when(store.getFolder("Projets")).thenReturn(projets);
+    Message projetsCopy = mock(Message.class);
+    when(projets.getMessageByUID(77L)).thenReturn(projetsCopy);
+    Email favorite = starredKey(7L, MailFolder.INBOX, "<m@host>", 1212L);
+    when(emailBoxStorage.getStarredEmailKeys(TEST_USER, MailFolder.NOT_FAVORITED_FOLDERS)).thenReturn(List.of(favorite,
+                                                                                                            starredKey(8L, "CUSTOM:6", "<m@host>", 77L),
+                                                                                                            starredKey(9L, MailFolder.SENT, "<other@host>", 5L)));
+
+    int failed = emailBoxService.unstarFavorite(favorite, TEST_USER);
+
+    assertEquals(0, failed);
+    verify(inboxCopy).setFlag(Flags.Flag.FLAGGED, false);
+    verify(projetsCopy).setFlag(Flags.Flag.FLAGGED, false);
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L), TEST_USER, false, MailFolder.INBOX);
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(77L), TEST_USER, false, "CUSTOM:6");
+    verify(emailBoxStorage, never()).updateEmailStarredStatusByMailRemoteIds(eq(List.of(5L)), anyString(), anyBoolean(), anyString());
+  }
+
+  /**
+   * One light starred row, as {@code EmailBoxStorage#getStarredEmailKeys} answers it.
+   *
+   * @param id its technical id
+   * @param folder its folder
+   * @param mailHeaderId its Message-ID
+   * @param mailRemoteId its UID within that folder
+   * @return the row
+   */
+  private static Email starredKey(long id, String folder, String mailHeaderId, long mailRemoteId) {
+    Email email = new Email();
+    email.setId(id);
+    email.setFolder(folder);
+    email.setMailHeaderId(mailHeaderId);
+    email.setMailRemoteId(mailRemoteId);
+    email.setStarred(true);
+    return email;
+  }
+
+  /**
    * No folder from the caller is the INBOX, which is what every caller written before the
    * mailbox held other folders meant.
    */

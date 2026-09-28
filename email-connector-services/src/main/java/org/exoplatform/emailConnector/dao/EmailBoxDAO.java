@@ -166,9 +166,9 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    *
    * @param userId the mailbox owner
    * @param excludedFolders the folders left out (MailFolder.NOT_FAVORITED_FOLDERS)
-   * @return rows of {@code [id, folder, mailHeaderId]}, newest first
+   * @return rows of {@code [id, folder, mailHeaderId, mailRemoteId]}, newest first
    */
-  @Query("SELECT email.id, email.folder, email.mailHeaderId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.starred = true AND email.folder NOT IN :excludedFolders ORDER BY email.receivedDate DESC")
+  @Query("SELECT email.id, email.folder, email.mailHeaderId, email.mailRemoteId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.starred = true AND email.folder NOT IN :excludedFolders ORDER BY email.receivedDate DESC")
   List<Object[]> findStarredKeysByUserIdExcludingFolders(@Param("userId")
   String userId, @Param("excludedFolders")
   List<String> excludedFolders);

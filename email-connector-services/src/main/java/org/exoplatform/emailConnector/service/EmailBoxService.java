@@ -5338,6 +5338,55 @@ public class EmailBoxService {
   }
 
   /**
+   * Clears the star of every copy a favorite stands for: its own row, and the rows of
+   * the user's other folders carrying its Message-ID, Trash, Spam and All Mail left out
+   * as the Favorites drawer leaves them out. The drawer counts the copies of a message
+   * as one favorite ({@code EmailFavoriteService}), so clearing one copy only would
+   * leave the favorite standing on another, and the entry the user just removed would
+   * be back at the next reconciliation. Each copy is unstarred in its own folder,
+   * where its UID means that message.
+   *
+   * @param favorite the favorited email, resolved for this user with
+   *          {@link #getOwnedEmailById}
+   * @param username the mailbox owner
+   * @return how many copies could not be unstarred
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   */
+  public int unstarFavorite(Email favorite, String username) throws IllegalAccessException {
+    Map<String, List<Long>> uidsByFolder = new LinkedHashMap<>();
+    addCopy(uidsByFolder, favorite.getFolder(), favorite.getMailRemoteId());
+    if (StringUtils.isNotBlank(favorite.getMailHeaderId())) {
+      emailBoxStorage.getStarredEmailKeys(username, MailFolder.NOT_FAVORITED_FOLDERS)
+                     .stream()
+                     .filter(copy -> favorite.getMailHeaderId().equals(copy.getMailHeaderId()))
+                     .forEach(copy -> addCopy(uidsByFolder, copy.getFolder(), copy.getMailRemoteId()));
+    }
+    int failed = 0;
+    for (Map.Entry<String, List<Long>> copies : uidsByFolder.entrySet()) {
+      failed += updateEmailStarredStatus(copies.getValue(), username, copies.getKey(), false, true);
+    }
+    return failed;
+  }
+
+  /**
+   * Adds one copy of a message to the UIDs to unstar, per folder, once; a copy with no
+   * UID (a draft never uploaded) has nothing on the server to carry the flag.
+   *
+   * @param uidsByFolder the UIDs to unstar, by folder
+   * @param folder the copy's folder, blank meaning INBOX
+   * @param mailRemoteId the copy's UID within that folder
+   */
+  private static void addCopy(Map<String, List<Long>> uidsByFolder, String folder, Long mailRemoteId) {
+    if (mailRemoteId == null) {
+      return;
+    }
+    List<Long> uids = uidsByFolder.computeIfAbsent(StringUtils.isBlank(folder) ? MailFolder.INBOX : folder, key -> new ArrayList<>());
+    if (!uids.contains(mailRemoteId)) {
+      uids.add(mailRemoteId);
+    }
+  }
+
+  /**
    * Update the read/unread status of one or more emails (by IMAP mailRemoteId),
    * optimistically in the local mirror first and then, when requested, on the IMAP
    * server. Each per-message remote failure (including a message that no longer

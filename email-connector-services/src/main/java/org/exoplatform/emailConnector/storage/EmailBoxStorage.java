@@ -1459,7 +1459,8 @@ public class EmailBoxStorage {
 
   /**
    * The user's starred messages outside the given folders, as light rows carrying
-   * their id, folder and Message-ID only: what the Favorites drawer is reconciled from.
+   * their id, folder, Message-ID and UID only: what the Favorites drawer is reconciled
+   * from, and what a favorite's copies are unstarred through.
    *
    * @param userId the mailbox owner
    * @param excludedFolders the folders left out
@@ -1471,6 +1472,7 @@ public class EmailBoxStorage {
       email.setId((Long) row[0]);
       email.setFolder((String) row[1]);
       email.setMailHeaderId((String) row[2]);
+      email.setMailRemoteId((Long) row[3]);
       email.setStarred(true);
       return email;
     }).toList();
