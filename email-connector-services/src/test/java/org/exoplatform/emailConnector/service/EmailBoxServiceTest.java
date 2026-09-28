@@ -205,6 +205,7 @@ import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.MailboxSyncState;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailCategory;
+import org.exoplatform.emailConnector.model.EmailCategoryAdded;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
@@ -5069,6 +5070,49 @@ public class EmailBoxServiceTest {
     doThrow(ObjectNotFoundException.class).when(categoryLinkService)
                                           .link(anyLong(), any(CategoryObject.class), anyString());
     assertThrows(IllegalArgumentException.class, () -> emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
+  }
+
+  /**
+   * EXO-90666 -- a category that sticks on an inbox mail is announced with the mail's UID,
+   * whoever added it, so the owner's filters on that category run on it; one added to a
+   * Junk mail never is, filters running on the inbox only; and a mail already in the
+   * category was not categorised now, so it is not announced again.
+   */
+  @Test
+  @SneakyThrows
+  void aCategoryAddedToAnInboxMailIsAnnouncedAndNeverOnJunk() {
+    when(categoryService.getCategory(5L)).thenReturn(new Category());
+    Email junk = email(TEST_USER);
+    junk.setId(9l);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212l),
+                                                         eq(TEST_USER),
+                                                         any(),
+                                                         eq(MailFolder.JUNK),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(junk);
+
+    assertEquals(1, emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER, MailFolder.JUNK));
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.EMAIL_CATEGORY_ADDED), any(), any());
+
+    Email inbox = email(TEST_USER);
+    inbox.setId(7l);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212l),
+                                                         eq(TEST_USER),
+                                                         any(),
+                                                         eq(MailFolder.INBOX),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(inbox);
+    assertEquals(1, emailBoxService.linkEmailsToCategory(List.of(1212l, 3434l), 5L, TEST_USER));
+    verify(listenerService).broadcast(EmailConnectorUtils.EMAIL_CATEGORY_ADDED,
+                                      TEST_USER,
+                                      new EmailCategoryAdded(5L, List.of(1212l)));
+
+    doThrow(ObjectAlreadyExistsException.class).when(categoryLinkService)
+                                               .link(anyLong(), any(CategoryObject.class), anyString());
+    assertEquals(0, emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
+    verify(listenerService, times(1)).broadcast(eq(EmailConnectorUtils.EMAIL_CATEGORY_ADDED), any(), any());
   }
 
   /**
