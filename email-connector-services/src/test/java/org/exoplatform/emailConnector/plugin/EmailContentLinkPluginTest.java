@@ -17,11 +17,14 @@
 package org.exoplatform.emailConnector.plugin;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -100,7 +103,8 @@ class EmailContentLinkPluginTest {
 
   /**
    * The extension serves the {@code email} type, the one the AI chat's source
-   * chip asks for, and stays out of the editors' link picker.
+   * chip and the links already written ask for, and is listed in the editors'
+   * "/" menu under the {@code /mail} command, searched in place.
    */
   @Test
   void extensionType() {
@@ -109,7 +113,9 @@ class EmailContentLinkPluginTest {
     assertEquals("email", plugin.getObjectType());
     assertEquals("contentLink.email", extension.getTitleKey());
     assertEquals("fa fa-envelope", extension.getIcon());
-    assertTrue(extension.isHidden());
+    assertEquals("mail", extension.getCommand());
+    assertFalse(extension.isHidden(), "Mail is offered in the editors' insert menu");
+    assertFalse(extension.isDrawer());
   }
 
   /**
@@ -157,15 +163,62 @@ class EmailContentLinkPluginTest {
   }
 
   /**
-   * A text keyword, an anonymous caller or an id beyond the long range resolve
-   * to nothing, without reading any mail.
+   * An anonymous caller, a blank keyword or a non-positive limit resolve to
+   * nothing, without reading any mail.
    */
   @Test
-  void searchOfTextOrAnonymousIsEmpty() {
-    assertTrue(plugin.search("report", new Identity(OWNER), Locale.ENGLISH, 0, 10).isEmpty());
+  void searchOfAnonymousOrBlankIsEmpty() {
     assertTrue(plugin.search(String.valueOf(EMAIL_ID), null, Locale.ENGLISH, 0, 10).isEmpty());
-    assertTrue(plugin.search("99999999999999999999", new Identity(OWNER), Locale.ENGLISH, 0, 10).isEmpty());
+    assertTrue(plugin.search("report", null, Locale.ENGLISH, 0, 10).isEmpty());
+    assertTrue(plugin.search("  ", new Identity(OWNER), Locale.ENGLISH, 0, 10).isEmpty());
+    assertTrue(plugin.search("report", new Identity(OWNER), Locale.ENGLISH, 0, 0).isEmpty());
     verifyNoInteractions(emailBoxService);
+  }
+
+  /**
+   * A text keyword searches the user's own mails, trimmed, and titles each by
+   * its subject, "(no subject)" when it has none.
+   */
+  @Test
+  void searchOfTextReturnsOwnMatches() {
+    when(emailBoxService.searchOwnEmailsForLink(OWNER, "invoice", 0, 10)).thenReturn(List.of(mail(5L, OWNER, "Invoice 12"),
+                                                                                          mail(4L, OWNER, " ")));
+    List<ContentLinkSearchResult> results = plugin.search(" invoice ", new Identity(OWNER), Locale.ENGLISH, 0, 10);
+    assertEquals(List.of("5", "4"), results.stream().map(ContentLinkSearchResult::getObjectId).toList());
+    assertEquals(List.of("Invoice 12", "(no subject)"), results.stream().map(ContentLinkSearchResult::getTitle).toList());
+    assertEquals("email", results.get(0).getObjectType());
+    assertEquals("fa fa-envelope", results.get(0).getIcon());
+  }
+
+  /**
+   * Even if the text search ever returned another user's mail, it would not be
+   * handed out.
+   */
+  @Test
+  void searchOfTextDropsAMailOwnedBySomebodyElse() {
+    when(emailBoxService.searchOwnEmailsForLink(OTHER_USER, "report", 0, 10)).thenReturn(List.of(mail(EMAIL_ID, OWNER, "Secret")));
+    assertTrue(plugin.search("report", new Identity(OTHER_USER), Locale.ENGLISH, 0, 10).isEmpty());
+  }
+
+  /**
+   * A number that is none of the user's mail ids, or beyond the long range, is
+   * searched as text, since a subject can hold a number.
+   */
+  @Test
+  void searchOfUnresolvedNumberFallsBackToText() {
+    when(emailBoxService.searchOwnEmailsForLink(OWNER, "2026", 0, 10)).thenReturn(List.of(mail(9L, OWNER, "Budget 2026")));
+    assertEquals("Budget 2026", plugin.search("2026", new Identity(OWNER), Locale.ENGLISH, 0, 10).get(0).getTitle());
+    assertTrue(plugin.search("99999999999999999999", new Identity(OWNER), Locale.ENGLISH, 0, 10).isEmpty());
+    verify(emailBoxService).searchOwnEmailsForLink(OWNER, "99999999999999999999", 0, 10);
+  }
+
+  /**
+   * A resolved mail id answers that mail alone, without a text search.
+   */
+  @Test
+  void searchOfOwnIdDoesNotSearchText() {
+    assertEquals(1, plugin.search(String.valueOf(EMAIL_ID), new Identity(OWNER), Locale.ENGLISH, 0, 10).size());
+    verify(emailBoxService, never()).searchOwnEmailsForLink(anyString(), anyString(), anyInt(), anyInt());
   }
 
   /**
@@ -196,21 +249,35 @@ class EmailContentLinkPluginTest {
   }
 
   /**
-   * A mail without subject still resolves, under its sender's name.
+   * A mail without subject still resolves, as "(no subject)".
    *
    * @throws Exception never
    */
   @Test
-  void titleFallsBackToSender() throws Exception {
-    Email email = new Email();
-    email.setId(8L);
-    email.setUserId(OWNER);
+  void titleFallsBackToNoSubject() throws Exception {
+    Email email = mail(8L, OWNER, null);
     EmailSender sender = new EmailSender();
     sender.setAddress("alice@example.org");
     email.setSender(sender);
     when(emailBoxService.getOwnedEmailById(anyLong(), anyString())).thenReturn(email);
     ConversationState.setCurrent(new ConversationState(new Identity(OWNER)));
-    assertEquals("alice@example.org", plugin.getContentTitle("8", Locale.ENGLISH));
+    assertEquals("(no subject)", plugin.getContentTitle("8", Locale.ENGLISH));
+  }
+
+  /**
+   * A light mail, as the link searches return it.
+   *
+   * @param id the mail id
+   * @param owner the mailbox owner
+   * @param subject the subject
+   * @return the mail
+   */
+  private static Email mail(long id, String owner, String subject) {
+    Email email = new Email();
+    email.setId(id);
+    email.setUserId(owner);
+    email.setSubject(subject);
+    return email;
   }
 
 }
