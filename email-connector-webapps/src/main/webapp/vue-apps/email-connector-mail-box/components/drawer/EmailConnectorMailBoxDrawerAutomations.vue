@@ -21,9 +21,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        point, which the enterprise glue fills --, and the tool calls it proposed, one card
        each, for the user to decide (EXO-90659). What a server rule did at delivery is
        never here: the server does not report it. Renders nothing when no rule matched,
-       and nothing on a mail of a mailbox somebody shared with the user. -->
+       and nothing on a mail of a mailbox somebody shared with the user. Over a
+       conversation, one panel covers every message the user received in it, grouped by
+       message (EXO-90669). -->
   <v-card
-    v-if="matches.length"
+    v-if="allMatches.length"
     :style="panelStyle"
     class="pa-3 mt-2 mb-1"
     flat>
@@ -73,124 +75,169 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       role="alert">
       {{ error }}
     </div>
-    <div
-      v-for="(match, index) in matches"
-      v-show="!collapsed"
-      :key="match.id"
-      :class="index && 'mt-2'">
-      <div class="text-body-2 font-weight-bold text-truncate">
-        {{ match.filterName || $t('emailConnector.mailBox.automations.deletedRule') }}
-      </div>
+    <!-- One group per message of the conversation a rule touched (EXO-90669): the
+         groups with a suggestion waiting for the user first, then the rest, newest
+         first. The groups without one fold under a single line; so does the opened
+         message's when some other group waits. A single mail is one group, without a
+         header and never folded: the panel as it always was. -->
+    <template v-for="row in rows">
       <div
-        v-for="action in match.actions"
-        :key="`${match.id}-${action.type}`"
-        class="d-flex align-baseline text-body-2">
-        <span :class="action.ok ? '' : 'error--text'">
-          {{ actionLabel(action) }}
+        v-if="row.type === 'fold'"
+        v-show="!collapsed"
+        :key="row.key"
+        :class="row.first ? '' : 'mt-2'"
+        class="d-flex align-center">
+        <span class="text-caption text-sub-title">
+          {{ $t('emailConnector.mailBox.automations.earlierMessages', { 0: foldedGroups.length }) }}
         </span>
-        <a
-          v-if="canUndo(action)"
-          :class="linkClass"
-          :aria-disabled="busy"
-          class="ms-2 pa-0 font-weight-regular"
-          role="button"
-          href="javascript:void(0);"
-          @click.prevent="busy || undo(match, action.type)"
-          @keydown.enter.prevent="busy || undo(match, action.type)">
-          {{ $t('emailConnector.mailBox.automations.undo') }}
-        </a>
+        <v-btn
+          :aria-label="$t(groupsOpen ? 'emailConnector.mailBox.automations.hideEarlierMessages' : 'emailConnector.mailBox.automations.showEarlierMessages')"
+          :aria-expanded="String(groupsOpen)"
+          :title="$t(groupsOpen ? 'emailConnector.mailBox.automations.hideEarlierMessages' : 'emailConnector.mailBox.automations.showEarlierMessages')"
+          class="ms-1"
+          icon
+          x-small
+          @click="groupsOpen = !groupsOpen">
+          <v-icon size="12" class="icon-default-color">{{ groupsOpen ? 'fas fa-chevron-up' : 'fas fa-chevron-down' }}</v-icon>
+        </v-btn>
       </div>
-      <div v-if="match.agentStatus && match.agentStatus !== 'NONE'" class="d-flex align-center text-body-2">
-        <v-progress-circular
-          v-if="!terminal(match)"
-          :size="12"
-          :width="2"
-          indeterminate
-          class="me-2 icon-default-color" />
-        <span>{{ $t(`emailConnector.mailBox.automations.agent.${match.agentStatus}`) }}</span>
-        <a
-          v-if="terminal(match)"
-          :class="linkClass"
-          :aria-disabled="busy"
-          class="ms-2 pa-0 font-weight-regular"
-          role="button"
-          href="javascript:void(0);"
-          @click.prevent="busy || retry(match)"
-          @keydown.enter.prevent="busy || retry(match)">
-          {{ $t('emailConnector.mailBox.automations.runAgain') }}
-        </a>
-      </div>
-      <template v-if="match.agentNameId">
-        <component
-          :is="extension.vueComponent"
-          v-for="extension in outcomeExtensions"
-          :key="`${match.id}-${extension.id}`"
-          :match="match"
-          :email="email" />
-      </template>
-      <!-- A run that was offered tools and suggested nothing says so under its note, so an
-           empty panel is never read as a failure to show the suggestions -- first what its
-           lookups looked for and did not find, as the server read them from the run's own
-           conversation (EXO-90659). Text only: the values are the model's arguments. -->
-      <template v-if="suggestedNothing(match)">
-        <div
-          v-for="(line, lineIndex) in notFoundLines(match)"
-          :key="`${match.id}-not-found-${lineIndex}`"
-          class="text-caption text-sub-title mt-1">
-          {{ line }}
-        </div>
-      </template>
       <div
-        v-if="suggestedNothing(match)"
-        class="text-caption text-sub-title mt-1">
-        {{ $t('emailConnector.mailBox.automations.proposal.none') }}
-      </div>
-      <!-- The tool calls the assistant proposed, one card each, oldest first (EXO-90659).
-           Only the latest run's show; the earlier runs' fold under one line, closed until
-           opened. A call still waiting for the user always shows, whatever its run. -->
-      <template v-if="match.proposals && match.proposals.length">
-        <div class="text-caption font-weight-bold mt-1">
-          {{ $t('emailConnector.mailBox.automations.proposal.heading') }}
-        </div>
-        <email-connector-mail-box-proposal-card
-          v-for="proposal in proposalRuns[match.id].latest"
-          :key="`${match.id}-proposal-${proposal.id}`"
-          :proposal="proposal"
-          :match="match"
-          :email="email"
-          @updated="replaceProposal(match, $event)"
-          @refresh="read" />
-        <template v-if="proposalRuns[match.id].earlier.length">
-          <div class="d-flex align-center mt-1">
-            <span class="text-caption text-sub-title">
-              {{ $t('emailConnector.mailBox.automations.proposal.earlier', { 0: proposalRuns[match.id].earlier.length }) }}
-            </span>
-            <v-btn
-              :aria-label="$t(earlierOpen[match.id] ? 'emailConnector.mailBox.automations.proposal.hideEarlier' : 'emailConnector.mailBox.automations.proposal.showEarlier')"
-              :aria-expanded="String(!!earlierOpen[match.id])"
-              :title="$t(earlierOpen[match.id] ? 'emailConnector.mailBox.automations.proposal.hideEarlier' : 'emailConnector.mailBox.automations.proposal.showEarlier')"
-              class="ms-1"
-              icon
-              x-small
-              @click="toggleEarlier(match)">
-              <v-icon size="12" class="icon-default-color">{{ earlierOpen[match.id] ? 'fas fa-chevron-up' : 'fas fa-chevron-down' }}</v-icon>
-            </v-btn>
+        v-else
+        v-show="!collapsed"
+        :key="row.key"
+        :class="row.first ? '' : 'mt-2'">
+        <!-- Who wrote the message and when, one line; a click brings the message
+             itself into view in the conversation below. -->
+        <a
+          v-if="threaded"
+          :aria-label="$t('emailConnector.mailBox.automations.goToMessage', { 0: senderOf(row.group.email), 1: dateOf(row.group.email) })"
+          :title="$t('emailConnector.mailBox.automations.goToMessage', { 0: senderOf(row.group.email), 1: dateOf(row.group.email) })"
+          class="d-block text-caption text-sub-title text-truncate"
+          role="button"
+          href="javascript:void(0);"
+          @click.prevent="$emit('go-to-message', row.group.email)"
+          @keydown.enter.prevent="$emit('go-to-message', row.group.email)">
+          {{ senderOf(row.group.email) }} · {{ dateOf(row.group.email) }}
+        </a>
+        <div
+          v-for="(match, index) in row.group.matches"
+          :key="match.id"
+          :class="index && 'mt-2'">
+          <div class="text-body-2 font-weight-bold text-truncate">
+            {{ match.filterName || $t('emailConnector.mailBox.automations.deletedRule') }}
           </div>
-          <v-expand-transition>
-            <div v-if="earlierOpen[match.id]">
-              <email-connector-mail-box-proposal-card
-                v-for="proposal in proposalRuns[match.id].earlier"
-                :key="`${match.id}-proposal-${proposal.id}`"
-                :proposal="proposal"
-                :match="match"
-                :email="email"
-                @updated="replaceProposal(match, $event)"
-                @refresh="read" />
+          <div
+            v-for="action in match.actions"
+            :key="`${match.id}-${action.type}`"
+            class="d-flex align-baseline text-body-2">
+            <span :class="action.ok ? '' : 'error--text'">
+              {{ actionLabel(action) }}
+            </span>
+            <a
+              v-if="canUndo(action)"
+              :class="linkClass"
+              :aria-disabled="busy"
+              class="ms-2 pa-0 font-weight-regular"
+              role="button"
+              href="javascript:void(0);"
+              @click.prevent="busy || undo(row.group, match, action.type)"
+              @keydown.enter.prevent="busy || undo(row.group, match, action.type)">
+              {{ $t('emailConnector.mailBox.automations.undo') }}
+            </a>
+          </div>
+          <div v-if="match.agentStatus && match.agentStatus !== 'NONE'" class="d-flex align-center text-body-2">
+            <v-progress-circular
+              v-if="!terminal(match)"
+              :size="12"
+              :width="2"
+              indeterminate
+              class="me-2 icon-default-color" />
+            <span>{{ $t(`emailConnector.mailBox.automations.agent.${match.agentStatus}`) }}</span>
+            <a
+              v-if="terminal(match)"
+              :class="linkClass"
+              :aria-disabled="busy"
+              class="ms-2 pa-0 font-weight-regular"
+              role="button"
+              href="javascript:void(0);"
+              @click.prevent="busy || retry(row.group, match)"
+              @keydown.enter.prevent="busy || retry(row.group, match)">
+              {{ $t('emailConnector.mailBox.automations.runAgain') }}
+            </a>
+          </div>
+          <template v-if="match.agentNameId">
+            <component
+              :is="extension.vueComponent"
+              v-for="extension in outcomeExtensions"
+              :key="`${match.id}-${extension.id}`"
+              :match="match"
+              :email="row.group.email" />
+          </template>
+          <!-- A run that was offered tools and suggested nothing says so under its note, so an
+               empty panel is never read as a failure to show the suggestions -- first what its
+               lookups looked for and did not find, as the server read them from the run's own
+               conversation (EXO-90659). Text only: the values are the model's arguments. -->
+          <template v-if="suggestedNothing(match)">
+            <div
+              v-for="(line, lineIndex) in notFoundLines(match)"
+              :key="`${match.id}-not-found-${lineIndex}`"
+              class="text-caption text-sub-title mt-1">
+              {{ line }}
             </div>
-          </v-expand-transition>
-        </template>
-      </template>
-    </div>
+          </template>
+          <div
+            v-if="suggestedNothing(match)"
+            class="text-caption text-sub-title mt-1">
+            {{ $t('emailConnector.mailBox.automations.proposal.none') }}
+          </div>
+          <!-- The tool calls the assistant proposed, one card each, oldest first (EXO-90659).
+               Only the latest run's show; the earlier runs' fold under one line, closed until
+               opened. A call still waiting for the user always shows, whatever its run. -->
+          <template v-if="match.proposals && match.proposals.length">
+            <div class="text-caption font-weight-bold mt-1">
+              {{ $t('emailConnector.mailBox.automations.proposal.heading') }}
+            </div>
+            <email-connector-mail-box-proposal-card
+              v-for="proposal in proposalRuns[match.id].latest"
+              :key="`${match.id}-proposal-${proposal.id}`"
+              :proposal="proposal"
+              :match="match"
+              :email="row.group.email"
+              @updated="replaceProposal(row.group, match, $event)"
+              @refresh="read" />
+            <template v-if="proposalRuns[match.id].earlier.length">
+              <div class="d-flex align-center mt-1">
+                <span class="text-caption text-sub-title">
+                  {{ $t('emailConnector.mailBox.automations.proposal.earlier', { 0: proposalRuns[match.id].earlier.length }) }}
+                </span>
+                <v-btn
+                  :aria-label="$t(earlierOpen[match.id] ? 'emailConnector.mailBox.automations.proposal.hideEarlier' : 'emailConnector.mailBox.automations.proposal.showEarlier')"
+                  :aria-expanded="String(!!earlierOpen[match.id])"
+                  :title="$t(earlierOpen[match.id] ? 'emailConnector.mailBox.automations.proposal.hideEarlier' : 'emailConnector.mailBox.automations.proposal.showEarlier')"
+                  class="ms-1"
+                  icon
+                  x-small
+                  @click="toggleEarlier(match)">
+                  <v-icon size="12" class="icon-default-color">{{ earlierOpen[match.id] ? 'fas fa-chevron-up' : 'fas fa-chevron-down' }}</v-icon>
+                </v-btn>
+              </div>
+              <v-expand-transition>
+                <div v-if="earlierOpen[match.id]">
+                  <email-connector-mail-box-proposal-card
+                    v-for="proposal in proposalRuns[match.id].earlier"
+                    :key="`${match.id}-proposal-${proposal.id}`"
+                    :proposal="proposal"
+                    :match="match"
+                    :email="row.group.email"
+                    @updated="replaceProposal(row.group, match, $event)"
+                    @refresh="read" />
+                </div>
+              </v-expand-transition>
+            </template>
+          </template>
+        </div>
+      </div>
+    </template>
   </v-card>
 </template>
 
@@ -213,6 +260,12 @@ const RUN_GAP = 60 * 1000;
 /** The actions an Undo can take back. */
 const UNDOABLE = ['MOVE_TO_FOLDER', 'ADD_CATEGORY', 'MARK_READ', 'STAR', 'MARK_JUNK', 'DELETE'];
 
+/** How many messages of a conversation are asked about at once. */
+const READ_CONCURRENCY = 3;
+
+/** The folders whose mails the user did not receive: no rule runs on them. */
+const NOT_RECEIVED = ['SENT', 'DRAFTS', 'SCHEDULED'];
+
 export default {
   props: {
     // The mail the reader opened.
@@ -220,9 +273,18 @@ export default {
       type: Object,
       default: null,
     },
+    // The messages of the conversation the mail belongs to, drafts aside; null for a
+    // mail read alone (EXO-90669).
+    messages: {
+      type: Array,
+      default: null,
+    },
   },
   data: () => ({
-    matches: [],
+    // One group per mail asked about: {key, email, matches}.
+    groups: [],
+    // Whether the groups folded under "Earlier in this conversation" are shown.
+    groupsOpen: false,
     busy: false,
     error: null,
     outcomeExtensions: [],
@@ -257,6 +319,109 @@ export default {
       return !!this.email?.id && !this.email.draftLocalId && isOwnMailboxMail(this.email);
     },
     /**
+     * Whether the panel covers a conversation rather than one mail.
+     *
+     * @returns {Boolean} true over a conversation of several messages
+     */
+    threaded() {
+      return Array.isArray(this.messages) && this.messages.length > 1;
+    },
+    /**
+     * The mails the panel asks about: over a conversation, each message the user
+     * received in it, of their own mailbox -- a sent reply and a draft have no rule run
+     * on them --; else the opened mail, when it may be asked about.
+     *
+     * @returns {Object[]} the mails
+     */
+    sources() {
+      if (!this.threaded) {
+        return this.applicable ? [this.email] : [];
+      }
+      return this.messages.filter(message => !!message?.id && !message.draftLocalId && isOwnMailboxMail(message)
+        && !NOT_RECEIVED.includes(message.folder));
+    },
+    /**
+     * What the panel asks about, as one key: a read is made again only when it changes.
+     *
+     * @returns {String} the mails' ids
+     */
+    sourceKey() {
+      return this.sources.map(source => source.id).join(',');
+    },
+    /**
+     * The matches of every group.
+     *
+     * @returns {Object[]} the matches
+     */
+    allMatches() {
+      return this.groups.flatMap(group => group.matches);
+    },
+    /**
+     * The groups with something to show, in the panel's order: those with a suggestion
+     * waiting for the user first, then the others, each side newest first.
+     *
+     * @returns {Object[]} the groups
+     */
+    orderedGroups() {
+      return this.groups
+        .filter(group => group.matches.length)
+        .sort((first, second) => (this.waitingOf(second) > 0) - (this.waitingOf(first) > 0)
+          || this.receivedOf(second) - this.receivedOf(first));
+    },
+    /**
+     * Whether a group of the conversation has a suggestion waiting for the user.
+     *
+     * @returns {Boolean} true when one has
+     */
+    anyGroupWaiting() {
+      return this.orderedGroups.some(group => this.waitingOf(group) > 0);
+    },
+    /**
+     * Whether a group shows open: always for a single mail; over a conversation, a group
+     * with a suggestion waiting, and -- when none waits anywhere -- the opened message's.
+     *
+     * @returns {Function} the test, given a group
+     */
+    isGroupOpen() {
+      const openedKey = this.email?.id ? String(this.email.id) : null;
+      return group => !this.threaded || this.waitingOf(group) > 0 || (!this.anyGroupWaiting && group.key === openedKey);
+    },
+    /**
+     * The groups folded under "Earlier in this conversation".
+     *
+     * @returns {Object[]} the groups
+     */
+    foldedGroups() {
+      return this.orderedGroups.filter(group => !this.isGroupOpen(group));
+    },
+    /**
+     * The groups on screen once the panel is open: the open ones, and the folded ones
+     * while the user shows them.
+     *
+     * @returns {Object[]} the groups
+     */
+    visibleGroups() {
+      const open = this.orderedGroups.filter(group => this.isGroupOpen(group));
+      return this.groupsOpen ? open.concat(this.foldedGroups) : open;
+    },
+    /**
+     * What the panel's body renders, in order: the open groups, the fold line when some
+     * groups are folded, and the folded groups while shown.
+     *
+     * @returns {Object[]} the rows: {type: 'group', key, group, first} or {type: 'fold', key, first}
+     */
+    rows() {
+      const open = this.orderedGroups.filter(group => this.isGroupOpen(group));
+      const rows = open.map(group => ({ type: 'group', key: `group-${group.key}`, group }));
+      if (this.foldedGroups.length) {
+        rows.push({ type: 'fold', key: 'fold' });
+        if (this.groupsOpen) {
+          this.foldedGroups.forEach(group => rows.push({ type: 'group', key: `group-${group.key}`, group }));
+        }
+      }
+      return rows.map((row, index) => ({ ...row, first: index === 0 }));
+    },
+    /**
      * The colour of the panel's inline action links: the brand colour, muted while an
      * action is running, when a click does nothing.
      *
@@ -271,7 +436,7 @@ export default {
      * @returns {Number} how many
      */
     waitingCount() {
-      return this.matches.reduce((count, match) => count + (match.proposals || []).filter(proposal => proposal.status === 'PROPOSED').length, 0);
+      return this.groups.reduce((count, group) => count + this.waitingOf(group), 0);
     },
     /**
      * Whether the panel is folded: as the user chose it last in this browser, else folded
@@ -301,23 +466,28 @@ export default {
      * @returns {Object} {latest, earlier} by match id
      */
     proposalRuns() {
-      return this.matches.reduce((runs, match) => ({ ...runs, [match.id]: this.splitRuns(match.proposals || []) }), {});
+      return this.allMatches.reduce((runs, match) => ({ ...runs, [match.id]: this.splitRuns(match.proposals || []) }), {});
     },
     /**
-     * The actions an Undo can still take back, over every match.
+     * The actions an Undo can still take back, over every match on screen: Undo all
+     * never reaches a message whose group is folded.
      *
      * @returns {Object[]} the actions
      */
     undoable() {
-      return this.matches.flatMap(match => (match.actions || []).filter(action => this.canUndo(action)));
+      return this.visibleGroups.flatMap(group => group.matches)
+        .flatMap(match => (match.actions || []).filter(action => this.canUndo(action)));
     },
   },
   watch: {
-    'email.id': {
+    sourceKey: {
       immediate: true,
       handler() {
         this.read();
       },
+    },
+    'email.id'() {
+      this.groupsOpen = false;
     },
   },
   created() {
@@ -352,24 +522,87 @@ export default {
       }
     },
     /**
-     * Reads what the rules did to the mail.
+     * Reads what the rules did to each mail the panel asks about: one request per mail,
+     * {@link READ_CONCURRENCY} at a time. A mail whose read is refused shows nothing; an
+     * answer that comes back after the panel moved on to other mails is dropped.
      *
-     * @returns {Promise<void>} resolved once read; a refusal shows nothing
+     * @returns {Promise<void>} resolved once every mail is read
      */
     read() {
       this.error = null;
-      if (!this.applicable) {
-        this.matches = [];
+      const key = this.sourceKey;
+      const sources = this.sources;
+      if (!sources.length) {
+        this.groups = [];
         return Promise.resolve();
       }
-      const emailId = this.email.id;
-      return this.$emailConnectorUserSettingService.getMailAutomations(emailId)
-        .then(matches => {
-          if (this.email?.id === emailId) {
-            this.matches = matches || [];
-          }
-        })
-        .catch(() => this.matches = []);
+      const groups = sources.map(source => ({ key: String(source.id), email: source, matches: [] }));
+      let next = 0;
+      const worker = () => {
+        if (next >= groups.length) {
+          return Promise.resolve();
+        }
+        const group = groups[next++];
+        return this.$emailConnectorUserSettingService.getMailAutomations(group.email.id)
+          .then(matches => group.matches = matches || [])
+          .catch(() => group.matches = [])
+          .then(worker);
+      };
+      const workers = Array.from({ length: Math.min(READ_CONCURRENCY, groups.length) }, worker);
+      return Promise.all(workers).then(() => {
+        if (this.sourceKey === key) {
+          this.groups = groups;
+        }
+      });
+    },
+    /**
+     * How many suggestions of a group wait for the user.
+     *
+     * @param {Object} group - the group
+     * @returns {Number} how many
+     */
+    waitingOf(group) {
+      return group.matches.reduce((count, match) => count + (match.proposals || []).filter(proposal => proposal.status === 'PROPOSED').length, 0);
+    },
+    /**
+     * When a group's mail was received.
+     *
+     * @param {Object} group - the group
+     * @returns {Number} the time, in ms; 0 when unknown
+     */
+    receivedOf(group) {
+      const time = new Date(group.email?.receivedDate).getTime();
+      return Number.isNaN(time) ? 0 : time;
+    },
+    /**
+     * Who wrote a mail, as its group's header names them.
+     *
+     * @param {Object} email - the mail
+     * @returns {String} the sender's name, else their address
+     */
+    senderOf(email) {
+      return email?.sender?.name || email?.sender?.address || '';
+    },
+    /**
+     * When a mail was received, as the conversation writes it.
+     *
+     * @param {Object} email - the mail
+     * @returns {String} the date
+     */
+    dateOf(email) {
+      return this.$emailConnectorMailBoxService.formatDateString(email?.receivedDate, this.$t('emailConnector.mailBox.list.drawer.yesterday'));
+    },
+    /**
+     * Puts a match's new state in its group.
+     *
+     * @param {Object} group - the group
+     * @param {Function} update - given a match of the group, answers it as it now stands
+     * @returns {void}
+     */
+    updateGroup(group, update) {
+      this.groups = this.groups.map(candidate => (candidate.key === group.key
+        ? { ...candidate, matches: candidate.matches.map(update) }
+        : candidate));
     },
     /**
      * Whether an action can be undone.
@@ -450,20 +683,21 @@ export default {
       return action.ok ? label : this.$t('emailConnector.mailBox.automations.failed', { 0: label });
     },
     /**
-     * Runs a request on a match, and puts its answer in place.
+     * Runs a request on a match of a group, and puts its answer in place.
      *
+     * @param {Object} group - the group of the match
      * @param {Function} request - the request, answering the match
      * @returns {Promise<void>} resolved once done, or once the refusal is shown
      */
-    run(request) {
+    run(group, request) {
       this.busy = true;
       this.error = null;
       return request()
         .then(updated => {
           if (updated?.id) {
-            this.matches = this.matches.map(match => (match.id === updated.id ? updated : match));
+            this.updateGroup(group, match => (match.id === updated.id ? updated : match));
           }
-          this.$root.$emit('email-automations-updated', this.email);
+          this.$root.$emit('email-automations-updated', group.email);
         })
         .catch(error => this.error = filtersMessage(this.$t.bind(this), error))
         .finally(() => this.busy = false);
@@ -516,45 +750,52 @@ export default {
       this.$set(this.earlierOpen, match.id, !this.earlierOpen[match.id]);
     },
     /**
-     * Puts a proposal's new state on its match, as the decision answered it.
+     * Puts a proposal's new state on its match, as the decision answered it, and tells
+     * the mailbox, whose list marks the mails with a suggestion waiting.
      *
+     * @param {Object} group - the group of the match
      * @param {Object} match - the match
      * @param {Object} proposal - the proposal
      * @returns {void}
      */
-    replaceProposal(match, proposal) {
-      this.matches = this.matches.map(candidate => (candidate.id === match.id
+    replaceProposal(group, match, proposal) {
+      this.updateGroup(group, candidate => (candidate.id === match.id
         ? { ...candidate, proposals: (candidate.proposals || []).map(item => (item.id === proposal.id ? proposal : item)) }
         : candidate));
+      this.$root.$emit('email-automations-updated', group.email);
     },
     /**
      * Undoes one action of a match.
      *
+     * @param {Object} group - the group of the match
      * @param {Object} match - the match
      * @param {String} type - the action's type
      * @returns {Promise<void>} resolved once undone
      */
-    undo(match, type) {
-      return this.run(() => this.$emailConnectorUserSettingService.undoAutomation(match.id, type));
+    undo(group, match, type) {
+      return this.run(group, () => this.$emailConnectorUserSettingService.undoAutomation(match.id, type));
     },
     /**
-     * Undoes every action of every match that can be.
+     * Undoes every action that can be, of every match on screen.
      *
      * @returns {Promise<void>} resolved once undone
      */
     undoAll() {
-      const pending = this.matches.filter(match => (match.actions || []).some(action => this.canUndo(action)));
-      return pending.reduce((chain, match) => chain.then(() => this.run(() => this.$emailConnectorUserSettingService.undoAutomation(match.id))),
+      const pending = this.visibleGroups.flatMap(group => group.matches
+        .filter(match => (match.actions || []).some(action => this.canUndo(action)))
+        .map(match => ({ group, match })));
+      return pending.reduce((chain, { group, match }) => chain.then(() => this.run(group, () => this.$emailConnectorUserSettingService.undoAutomation(match.id))),
         Promise.resolve());
     },
     /**
      * Runs the assistant again on a match.
      *
+     * @param {Object} group - the group of the match
      * @param {Object} match - the match
      * @returns {Promise<void>} resolved once queued
      */
-    retry(match) {
-      return this.run(() => this.$emailConnectorUserSettingService.retryAutomation(match.id));
+    retry(group, match) {
+      return this.run(group, () => this.$emailConnectorUserSettingService.retryAutomation(match.id));
     },
   },
 };

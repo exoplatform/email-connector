@@ -42,6 +42,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { refreshWaitingSuggestions } from '../../js/EmailConnectorMailFilters.js';
+
 // How many threads are built on the first paint, and how many more each time the bottom
 // of the list is reached. Comfortably more than a drawer's height on any screen, so the
 // window is never the reason a scroll stops, and small enough that opening the drawer
@@ -115,18 +117,40 @@ export default {
       return this.threads.length > this.renderedThreadCount;
     },
   },
+  watch: {
+    // Which rows carry a suggestion waiting for the user is read once for the whole
+    // mailbox, as the list (re)loads -- at most once a minute, whatever the rows
+    // (EXO-90669).
+    emails: {
+      immediate: true,
+      handler() {
+        refreshWaitingSuggestions();
+      },
+    },
+  },
   created() {
     this.onSetOpened = (mailRemoteId) => {
       this.openedEmailId = mailRemoteId;
     };
     this.$root.$on('set-opened', this.onSetOpened);
+    this.$root.$on('email-automations-updated', this.onAutomationsUpdated);
   },
   beforeDestroy() {
     // The list is rebuilt each time the drawer switches between its narrow and wide
     // layouts; a listener left on the root would keep every former list alive.
     this.$root.$off('set-opened', this.onSetOpened);
+    this.$root.$off('email-automations-updated', this.onAutomationsUpdated);
   },
   methods: {
+    /**
+     * Reads the waiting suggestions again at once: a suggestion was decided, or a rule's
+     * work undone or run again, in the reader, so a row's marker may have to go.
+     *
+     * @returns {void}
+     */
+    onAutomationsUpdated() {
+      refreshWaitingSuggestions(true);
+    },
     /**
      * Brings one row into view and gives it the keyboard focus -- the arrow keys'
      * way of walking the list (EXO-90414, see EmailConnectorMailBoxListNavigation).

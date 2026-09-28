@@ -329,6 +329,24 @@ public class EmailFilterProposalServiceTest {
   }
 
   /**
+   * The mails the list marks are read for the caller, at the service's clock, once their
+   * own mailbox is checked; a delegation is refused before anything is read.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theWaitingMailsAreTheCallersOwn() throws Exception {
+    when(storage.getWaitingMailHeaderIds(OWNER, new Date(NOW))).thenReturn(List.of("<a@x>"));
+
+    assertEquals(List.of("<a@x>"), service.getWaitingMails(OWNER, null));
+    verify(emailFilterService).checkOwnMailbox(OWNER, null);
+
+    doThrow(new IllegalAccessException("emailConnector.rules.ownMailboxOnly")).when(emailFilterService).checkOwnMailbox(OWNER, 12L);
+    assertThrows(IllegalAccessException.class, () -> service.getWaitingMails(OWNER, 12L));
+    verify(storage).getWaitingMailHeaderIds(anyString(), any());
+  }
+
+  /**
    * Someone else's approval is refused with the refusal, 403 at the REST, and runs
    * nothing; a missing proposal is not found; a delegation's refusal comes first.
    *
