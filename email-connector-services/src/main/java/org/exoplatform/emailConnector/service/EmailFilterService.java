@@ -200,10 +200,14 @@ public class EmailFilterService {
   /** The longest assistant answer kept. */
   private static final int            MAX_AGENT_OUTPUT_LENGTH    = 65_536;
 
-  /** The fields only eXo evaluates: never on a rule the server runs too. */
+  /**
+   * The fields only eXo evaluates: never on a rule the server runs too. The category is
+   * one: the mail server knows nothing of eXo's categories.
+   */
   private static final Set<String>    EXO_ONLY_FIELDS            = Set.of(FilterConditionEvaluator.BODY,
                                                                           FilterConditionEvaluator.SUBJECT_OR_BODY,
-                                                                          FilterConditionEvaluator.HAS_ATTACHMENT);
+                                                                          FilterConditionEvaluator.HAS_ATTACHMENT,
+                                                                          FilterConditionEvaluator.CATEGORY);
 
   /**
    * The actions a mail server may run itself, when its capabilities say so; the forward
@@ -952,10 +956,11 @@ public class EmailFilterService {
     }
     List<ServerRule.Condition> conditions = validatedConditions(draft.getConditions(), kind);
     List<Email> window = emailBoxService.getCachedInbox(username);
+    Map<Long, String> categoryKeys = categoryKeys(conditions);
     int total = 0;
     List<FilterPreview.Row> sample = new ArrayList<>();
     for (Email email : window) {
-      if (FilterConditionEvaluator.evaluate(conditions, draft.isMatchAll(), cachedMail(username, email)) == Result.TRUE) {
+      if (FilterConditionEvaluator.evaluate(conditions, draft.isMatchAll(), cachedMail(username, email, categoryKeys)) == Result.TRUE) {
         total++;
         if (sample.size() < PREVIEW_SAMPLE) {
           sample.add(new FilterPreview.Row(email.getId(),
@@ -1003,12 +1008,15 @@ public class EmailFilterService {
       throw new IllegalArgumentException(UNREADABLE);
     }
     List<Email> window = emailBoxService.getCachedInbox(username);
+    Map<Long, String> categoryKeys = categoryKeys(filter.getConditions());
     Run run = new Run(username, now(), false, withAgent);
     for (Email email : window) {
       if (StringUtils.isBlank(email.getMailHeaderId()) || email.getMailRemoteId() == null) {
         continue;
       }
-      evaluate(run, List.of(filter), cachedMail(username, email));
+      // A rule on a category matches the mails that already carry it: the one-off pass is
+      // how it reaches mail categorised before it was switched on.
+      evaluate(run, List.of(filter), cachedMail(username, email, categoryKeys));
     }
     execute(run);
     LOG.info("Mail filter {} of user {} applied to the cached inbox: {} matched, {} queued", id, username, run.matched, run.queued.size());
@@ -1033,7 +1041,9 @@ public class EmailFilterService {
       if (emailFilterStorage.countEnabled(username) == 0) {
         return Set.of();
       }
-      List<EmailFilter> filters = runnableFilters(username, context);
+      // A rule on a category runs when the mail gets it (applyToCategorizedMail), never at
+      // sync: a mail just synced has no category yet.
+      List<EmailFilter> filters = runnableFilters(username, context).stream().filter(filter -> !onCategory(filter)).toList();
       if (filters.isEmpty()) {
         return Set.of();
       }
@@ -1057,6 +1067,75 @@ public class EmailFilterService {
     } catch (Exception e) {
       LOG.warn("The mail filters of user {} failed on {} new mail(s)", username, mails.size(), e);
       return Set.of();
+    }
+  }
+
+  /**
+   * Runs the owner's rules on a category on the inbox mails that just got it, whoever
+   * added it -- the AI categorizer, the user, the MCP tool, another rule's action. Only
+   * the enabled rules with a condition on that very category run, and only on a mail that
+   * still carries it when they do, in the owner's inbox (never Junk): every other
+   * condition must hold too, as the rule joins them. A match is recorded, its actions run
+   * and its assistant is queued exactly as at sync; a mail never matches the same rule
+   * twice, even when the category is removed and added again, the match being recorded
+   * once per rule and mail.
+   * <p>
+   * The rule's start is the categorisation, not the mail's arrival: a rule switched on
+   * runs on every mail categorised after that, however old the mail; the mails
+   * categorised before are reached by the one-off pass ({@link #applyOnce}). Called by
+   * the listener of {@link EmailConnectorUtils#EMAIL_CATEGORY_ADDED}, off the thread
+   * that added the category; never throws.
+   *
+   * @param username the mailbox's owner
+   * @param categoryId the category added
+   * @param mailRemoteIds the INBOX UIDs of the mails that got it
+   */
+  public void applyToCategorizedMail(String username, long categoryId, List<Long> mailRemoteIds) {
+    if (!isEnabled() || StringUtils.isBlank(username) || mailRemoteIds == null || mailRemoteIds.isEmpty()) {
+      return;
+    }
+    try {
+      if (emailFilterStorage.countEnabled(username) == 0) {
+        return;
+      }
+      Map<Long, String> categoryKeys = emailBoxService.getDefaultEmailCategoryNameIds();
+      String key = categoryKeys.get(categoryId);
+      if (key == null) {
+        return;
+      }
+      List<EmailFilter> filters = runnableFilters(username, FilterRunContext.OWN_INBOX).stream()
+                                                                                        .filter(filter -> onCategory(filter, key))
+                                                                                        .toList();
+      if (filters.isEmpty()) {
+        return;
+      }
+      Run run = new Run(username, now(), false, true);
+      for (Long uid : mailRemoteIds) {
+        Email email = uid == null ? null
+                                  : emailBoxService.getEmailByMailRemoteIdAndUserId(uid,
+                                                                                    username,
+                                                                                    MailFolder.INBOX,
+                                                                                    true,
+                                                                                    true,
+                                                                                    false,
+                                                                                    false);
+        if (email == null || StringUtils.isBlank(email.getMailHeaderId()) || email.getCategoryIds() == null
+            || !email.getCategoryIds().contains(categoryId)) {
+          // Gone from the inbox, or the category was taken off again before the rules ran.
+          continue;
+        }
+        evaluate(run, filters, new EmailFilterMail(email, null, Set.of(), null, null, categoryKeys::get));
+      }
+      execute(run);
+      if (run.matched > 0) {
+        LOG.info("Mail filters on category {} of user {}: {} match(es) on {} mail(s) just categorised",
+                 key,
+                 username,
+                 run.matched,
+                 mailRemoteIds.size());
+      }
+    } catch (Exception e) {
+      LOG.warn("The mail filters on category {} of user {} failed on {} mail(s)", categoryId, username, mailRemoteIds.size(), e);
     }
   }
 
@@ -2145,6 +2224,12 @@ public class EmailFilterService {
         clean.add(probe.validated().conditions().get(0));
       }
     }
+    boolean onCategory = clean.stream().anyMatch(condition -> FilterConditionEvaluator.CATEGORY.equals(condition.field()));
+    if (onCategory && clean.stream().anyMatch(condition -> ServerRule.HEADER.equals(condition.field()))) {
+      // A rule on a category runs when the mail gets it, long after the sync that alone
+      // reads a mail's headers: such a rule could never decide.
+      throw new IllegalArgumentException(ServerRule.INVALID_CONDITION);
+    }
     return clean;
   }
 
@@ -2158,6 +2243,14 @@ public class EmailFilterService {
    * @throws IllegalArgumentException {@value ServerRule#INVALID_CONDITION}
    */
   private static ServerRule.Condition exoCondition(String field, String operator, String value) {
+    if (FilterConditionEvaluator.CATEGORY.equals(field)) {
+      // By the category's stable key: a rename, a translation or a re-import keeps it.
+      String key = StringUtils.trimToEmpty(value);
+      if (!ServerRule.EQUALS.equals(operator) || !EmailBoxService.DEFAULT_EMAIL_CATEGORY_NAME_IDS.contains(key)) {
+        throw new IllegalArgumentException(ServerRule.INVALID_CONDITION);
+      }
+      return new ServerRule.Condition(field, operator, null, key);
+    }
     if (FilterConditionEvaluator.HAS_ATTACHMENT.equals(field)) {
       if (!ServerRule.IS_TRUE.equals(operator) && !ServerRule.IS_FALSE.equals(operator)) {
         throw new IllegalArgumentException(ServerRule.INVALID_CONDITION);
@@ -2373,14 +2466,63 @@ public class EmailFilterService {
 
   /**
    * A cached mail as the conditions read it, loading its whole row only when a condition
-   * needs its recipients or body.
+   * needs its recipients or body; its categories read through the keys given.
    *
    * @param username the owner
    * @param email the listed row
+   * @param categoryKeys the stable keys of the default categories by their ids
    * @return the mail
    */
-  private EmailFilterMail cachedMail(String username, Email email) {
-    return new EmailFilterMail(email, () -> emailBoxService.getEmailById(email.getId(), username), Set.of(), null, null);
+  private EmailFilterMail cachedMail(String username, Email email, Map<Long, String> categoryKeys) {
+    return new EmailFilterMail(email,
+                               () -> emailBoxService.getEmailById(email.getId(), username),
+                               Set.of(),
+                               null,
+                               null,
+                               categoryKeys::get);
+  }
+
+  /**
+   * The stable keys of the default categories by their ids, when a rule's conditions
+   * read a category; none otherwise, and no settings read.
+   *
+   * @param conditions the rule's conditions
+   * @return {@code id -> key}
+   */
+  private Map<Long, String> categoryKeys(List<ServerRule.Condition> conditions) {
+    boolean readsCategory = conditions != null
+        && conditions.stream().anyMatch(condition -> FilterConditionEvaluator.CATEGORY.equals(condition.field()));
+    return readsCategory ? emailBoxService.getDefaultEmailCategoryNameIds() : Map.of();
+  }
+
+  /**
+   * Whether a rule has a condition on a category: it runs when a mail gets one, never at
+   * sync.
+   *
+   * @param filter the rule
+   * @return true with a category condition
+   */
+  static boolean onCategory(EmailFilter filter) {
+    return filter.getConditions() != null
+        && filter.getConditions()
+                 .stream()
+                 .anyMatch(condition -> condition != null && FilterConditionEvaluator.CATEGORY.equals(condition.field()));
+  }
+
+  /**
+   * Whether adding a category to a mail runs a rule: an eXo rule with a condition on that
+   * very category.
+   *
+   * @param filter the rule
+   * @param key the category's stable key
+   * @return true when the rule is on that category
+   */
+  static boolean onCategory(EmailFilter filter, String key) {
+    return EmailFilter.KIND_EXO.equals(filter.getKind()) && filter.getConditions() != null
+        && filter.getConditions()
+                 .stream()
+                 .anyMatch(condition -> condition != null && FilterConditionEvaluator.CATEGORY.equals(condition.field())
+                     && key.equals(condition.value()));
   }
 
   /**
