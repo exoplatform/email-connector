@@ -215,6 +215,27 @@ public class EmailFavoriteServiceTest {
                  created.getAllValues().stream().map(Favorite::getObjectId).collect(java.util.stream.Collectors.toSet()));
   }
 
+  /**
+   * Two copies of one message, neither in the INBOX: the favorite stands on the lowest
+   * id whatever order the rows are read in, so it never moves between two reconciliations.
+   */
+  @Test
+  public void reconcileFavoritesKeepsTheSameCopyWhateverTheReadingOrder() throws Exception {
+    givenUserIdentity();
+    givenFavoritedEmailIds();
+    for (List<Email> rows : List.of(List.of(starred(41L, "CUSTOM:6", "<m@host>"), starred(40L, MailFolder.ARCHIVE, "<m@host>")),
+                                    List.of(starred(40L, MailFolder.ARCHIVE, "<m@host>"), starred(41L, "CUSTOM:6", "<m@host>")))) {
+      org.mockito.Mockito.reset(favoriteService);
+      when(emailBoxStorage.getStarredEmailKeys(anyString(), anyList())).thenReturn(rows);
+
+      emailFavoriteService.reconcileFavorites(USERNAME);
+
+      ArgumentCaptor<Favorite> created = ArgumentCaptor.forClass(Favorite.class);
+      verify(favoriteService, times(1)).createFavorite(created.capture());
+      assertEquals("40", created.getValue().getObjectId());
+    }
+  }
+
   @Test
   public void isFavorite() throws Exception {
     givenUserIdentity();

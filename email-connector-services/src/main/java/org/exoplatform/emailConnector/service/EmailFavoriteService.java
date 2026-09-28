@@ -16,8 +16,8 @@
  */
 package org.exoplatform.emailConnector.service;
 
-import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -133,32 +133,45 @@ public class EmailFavoriteService {
    * ({@link MailFolder#NOT_FAVORITED_FOLDERS}), so a starred mail stays a favorite
    * whatever folder it is filed in. One message cached in two folders — a Gmail
    * label, a copy another client made — is one favorite: the rows sharing a
-   * Message-ID count once, the INBOX one first. Rows with no Message-ID cannot be
-   * told apart, and each counts.
+   * Message-ID count once, on the INBOX one, else on the lowest id — the same row
+   * whatever order the rows are read in, so a favorite never moves from one copy to
+   * another between two reconciliations. Rows with no Message-ID cannot be told
+   * apart, and each counts.
    *
    * @param username the mailbox owner
    * @return the flagged mails' ids, as strings
    */
   private Set<String> getFlaggedEmailIds(String username) {
     List<Email> starredEmails = emailBoxStorage.getStarredEmailKeys(username, MailFolder.NOT_FAVORITED_FOLDERS);
-    Set<String> flagged = new HashSet<>();
     if (starredEmails == null) {
-      return flagged;
+      return new HashSet<>();
     }
-    Map<String, Email> byMessageId = new HashMap<>();
+    // Keyed by Message-ID, or by the row itself when it has none
+    Map<String, Email> byMessage = new LinkedHashMap<>();
     for (Email email : starredEmails) {
-      String messageId = email.getMailHeaderId();
-      if (StringUtils.isBlank(messageId)) {
-        flagged.add(String.valueOf(email.getId()));
-        continue;
-      }
-      Email kept = byMessageId.get(messageId);
-      if (kept == null || (!MailFolder.INBOX.equals(kept.getFolder()) && MailFolder.INBOX.equals(email.getFolder()))) {
-        byMessageId.put(messageId, email);
-      }
+      String key = StringUtils.isBlank(email.getMailHeaderId()) ? "#" + email.getId() : email.getMailHeaderId();
+      byMessage.merge(key, email, EmailFavoriteService::favoredCopy);
     }
-    byMessageId.values().forEach(email -> flagged.add(String.valueOf(email.getId())));
-    return flagged;
+    return byMessage.values()
+                    .stream()
+                    .map(email -> String.valueOf(email.getId()))
+                    .collect(Collectors.toCollection(HashSet::new));
+  }
+
+  /**
+   * The copy of a message its favorite stands on: the INBOX one, else the lowest id.
+   *
+   * @param kept the copy kept so far
+   * @param other another copy of the same message
+   * @return the copy to keep
+   */
+  private static Email favoredCopy(Email kept, Email other) {
+    boolean keptInInbox = MailFolder.INBOX.equals(kept.getFolder());
+    boolean otherInInbox = MailFolder.INBOX.equals(other.getFolder());
+    if (keptInInbox != otherInInbox) {
+      return keptInInbox ? kept : other;
+    }
+    return other.getId() < kept.getId() ? other : kept;
   }
 
   /**
