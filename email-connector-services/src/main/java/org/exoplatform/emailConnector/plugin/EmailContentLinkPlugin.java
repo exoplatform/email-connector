@@ -67,10 +67,18 @@ public class EmailContentLinkPlugin implements ContentLinkPlugin {
 
   private static final int                  MAX_TITLE_LENGTH = 100;
 
+  /**
+   * A drawer extension: a click on a mail chip asks the page for the
+   * {@code content-link-email-drawer}, and the mailbox answers by opening that
+   * mail in its reader over the page, so the reader of a note or a task stays
+   * where they are. The permanent link stays the chip's {@code href}, for a
+   * new tab or a copied address.
+   */
   private static final ContentLinkExtension EXTENSION        = new ContentLinkExtension(OBJECT_TYPE,
                                                                                         TITLE_KEY,
                                                                                         ICON,
-                                                                                        COMMAND);
+                                                                                        COMMAND,
+                                                                                        true);
 
   @Autowired
   private ContentLinkPluginService          contentLinkPluginService;
@@ -89,9 +97,11 @@ public class EmailContentLinkPlugin implements ContentLinkPlugin {
 
   /**
    * The {@code email} extension, listed in the editors' "/" menu as "Mail
-   * (/mail)" and searched in place, without a drawer of its own.
+   * (/mail)" and searched in place; its chips open the mail in the mailbox
+   * drawer, over the page they are on.
    *
-   * @return the {@code email} extension: its title key, icon and command
+   * @return the {@code email} extension: its title key, icon, command and
+   *         drawer flag
    */
   @Override
   public ContentLinkExtension getExtension() {
