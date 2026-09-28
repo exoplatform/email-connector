@@ -19,13 +19,17 @@
 package org.exoplatform.emailConnector.rest;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -226,6 +230,52 @@ public class UserEmailSettingRestTest {
     mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/signature/image").with(testSimpleUser()))
            .andExpect(status().isOk());
     verify(emailSignatureService).deleteSignatureLogo(SIMPLE_USER);
+  }
+
+  /** The one-click connect acts for the authenticated user only, never for a name the client sends. */
+  @Test
+  @SneakyThrows
+  void connectThroughProviderConnectsTheCaller() {
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/connect?emailConnectorId=1").with(testSimpleUser()))
+           .andExpect(status().isOk());
+    verify(userEmailSettingService).connectThroughProvider(1L, SIMPLE_USER);
+  }
+
+  /** A user who may not connect this connector gets a 401, as the endpoint documents. */
+  @Test
+  @SneakyThrows
+  void connectThroughProviderAnswers401WhenTheUserMayNotConnect() {
+    doThrow(new IllegalAccessException("not allowed")).when(userEmailSettingService).connectThroughProvider(1L, SIMPLE_USER);
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/connect?emailConnectorId=1").with(testSimpleUser()))
+           .andExpect(status().isUnauthorized());
+  }
+
+  /** A provider that expects the user to type something is a 400: the browser shows the form. */
+  @Test
+  @SneakyThrows
+  void connectThroughProviderAnswers400WhenTheProviderAsksTheUser() {
+    doThrow(new IllegalArgumentException("asks")).when(userEmailSettingService).connectThroughProvider(1L, SIMPLE_USER);
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/connect?emailConnectorId=1").with(testSimpleUser()))
+           .andExpect(status().isBadRequest());
+  }
+
+  /** A mailbox refusing the service account is a 500: nothing the user can correct. */
+  @Test
+  @SneakyThrows
+  void connectThroughProviderAnswers500WhenTheMailboxRefuses() {
+    doThrow(new IllegalStateException("refused")).when(userEmailSettingService).connectThroughProvider(1L, SIMPLE_USER);
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/connect?emailConnectorId=1").with(testSimpleUser()))
+           .andExpect(status().isInternalServerError());
+  }
+
+  /** The endpoint is for platform users: an identity without the users role never reaches the service. */
+  @Test
+  @SneakyThrows
+  void connectThroughProviderIsRefusedWithoutTheUsersRole() {
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/connect?emailConnectorId=1").with(user(SIMPLE_USER).password(TEST_PASSWORD)
+                                                                                                    .authorities(new SimpleGrantedAuthority("guests"))))
+           .andExpect(status().isForbidden());
+    verify(userEmailSettingService, never()).connectThroughProvider(anyLong(), anyString());
   }
 
   private RequestPostProcessor testSimpleUser() {

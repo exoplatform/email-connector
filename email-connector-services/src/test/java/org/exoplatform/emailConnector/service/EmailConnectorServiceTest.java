@@ -1038,6 +1038,21 @@ public class EmailConnectorServiceTest {
     }
   }
 
+  /**
+   * A provider the resolver cannot answer about is treated as one that asks: the user
+   * gets the form, never a one-click connect nobody could vouch for.
+   */
+  @Test
+  @SneakyThrows
+  public void asksTheUserWhenTheProviderCannotBeAsked() {
+    when(emailConnectorStorage.getEmailConnectors()).thenReturn(List.of(connectorWithProvider(2L, "bluemind-sudo")));
+    when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenThrow(new ConnectorCredentialsException("connector.credentials.unknownProvider"));
+
+    Map<String, Boolean> requirements = emailConnectorService.connectionRequirements();
+
+    assertEquals(Boolean.TRUE, requirements.get("bluemind-sudo"));
+  }
+
   private EmailConnector connectorWithProvider(long id, String providerName) {
     EmailConnector connector = new EmailConnector();
     connector.setId(id);
