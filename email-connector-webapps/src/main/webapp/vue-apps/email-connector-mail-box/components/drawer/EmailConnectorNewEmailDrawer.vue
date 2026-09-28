@@ -168,7 +168,26 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           text>
           {{ $t('emailConnector.mailBox.newEmail.drawer.discard.label') }}
         </v-btn>
-        <span v-if="draftStatusLabel && !scheduledEdit" class="text-caption text-sub-title ms-2">{{ draftStatusLabel }}</span>
+        <!-- One short line whatever the footer's width; the mailbox copy is an icon, not more words. -->
+        <div
+          v-if="draftStatusLabel && !scheduledEdit"
+          class="d-flex align-center flex-shrink-1 overflow-hidden ms-2">
+          <span class="text-caption text-sub-title text-no-wrap text-truncate">{{ draftStatusLabel }}</span>
+          <v-tooltip v-if="draftSyncedToMailbox" top>
+            <template #activator="{ on, attrs }">
+              <v-icon
+                :aria-label="$t('emailConnector.mailBox.newEmail.drawer.draft.savedOnServerHint')"
+                size="14"
+                class="text-sub-title flex-shrink-0 ms-1"
+                role="img"
+                v-bind="attrs"
+                v-on="on">
+                fas fa-cloud
+              </v-icon>
+            </template>
+            <span>{{ $t('emailConnector.mailBox.newEmail.drawer.draft.savedOnServerHint') }}</span>
+          </v-tooltip>
+        </div>
         <v-spacer />
         <!-- More options (⋮), before Send (EXO-90435, PO option A): what the mail asks
              of its recipients rather than when it goes -- today, a read receipt, a
@@ -586,6 +605,18 @@ export default {
         return this.$t('emailConnector.mailBox.newEmail.drawer.draft.savedOnServer');
       }
       return this.$t('emailConnector.mailBox.newEmail.drawer.draft.savedLocally');
+    },
+    /**
+     * Whether the draft's last save reached the user's mailbox, shown as a
+     * cloud icon beside the draft status rather than a longer label.
+     * False while a save is in flight, since the status then says "Saving".
+     *
+     * @returns {boolean} true when the draft is synced to the mailbox
+     */
+    draftSyncedToMailbox() {
+      return this.draftSession.pending === 0
+        && !!this.draftSession.localId
+        && this.draftSession.state === 'SYNCED';
     }
   },
   methods: {
