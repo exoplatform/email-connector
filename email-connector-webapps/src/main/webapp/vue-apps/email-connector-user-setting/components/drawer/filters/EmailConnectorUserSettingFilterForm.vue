@@ -75,6 +75,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :key="condition.key"
       v-model="conditions[index]"
       :field-items="fieldItems"
+      :categories="categories"
       :removable="conditions.length > 1"
       @remove="conditions.splice(index, 1)" />
     <div v-if="subjectSuggestion" class="mb-2">
@@ -86,6 +87,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         @click="addSuggestion">
         <v-icon size="12" class="me-2">fas fa-plus</v-icon>
         <span class="text-truncate">{{ $t('UserSettings.emailConnector.filters.exo.form.addSubject', { 0: subjectSuggestion.value }) }}</span>
+      </v-btn>
+    </div>
+    <div v-if="categorySuggestion" class="mb-2">
+      <v-btn
+        class="px-0"
+        color="primary"
+        text
+        small
+        @click="addCategorySuggestion">
+        <v-icon size="12" class="me-2">fas fa-plus</v-icon>
+        <span class="text-truncate">{{ $t('UserSettings.emailConnector.filters.exo.form.addCategory', { 0: categorySuggestion.name }) }}</span>
       </v-btn>
     </div>
     <div v-if="sizeRunsNowhere" class="error--text mb-2">
@@ -290,15 +302,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       {{ $t('UserSettings.emailConnector.filters.form.serverOnly') }}
     </div>
     <div
+      v-if="!onCategory || kind !== 'EXO'"
       class="text-subtitle mt-4"
       role="status"
       aria-live="polite">
       {{ $t(`UserSettings.emailConnector.filters.form.where.${capabilitiesUnknown ? 'UNKNOWN' : kind}`) }}
     </div>
-    <div v-if="!capabilitiesUnknown" class="text-subtitle mt-2">
+    <div v-if="!capabilitiesUnknown || onCategory" class="text-subtitle mt-2">
       {{ kind === 'SERVER'
         ? $t('UserSettings.emailConnector.filters.form.atDelivery')
-        : $t('UserSettings.emailConnector.filters.exo.form.afterSync') }}
+        : $t(onCategory ? 'UserSettings.emailConnector.filters.exo.form.onCategory' : 'UserSettings.emailConnector.filters.exo.form.afterSync') }}
     </div>
     <div v-if="publishes" class="text-subtitle mt-2">
       {{ $t('UserSettings.emailConnector.filters.form.publishes') }}
@@ -387,6 +400,8 @@ export default {
     // The actions the extensions own, by action type: the action, or null when unused.
     extensionActions: {},
     subjectSuggestion: null,
+    // The categories of the mail the rule is made from, until one is added or dismissed.
+    categorySuggestionIds: [],
     previewing: false,
     previewResult: null,
     previewError: null,
@@ -443,11 +458,36 @@ export default {
      * @returns {Object[]} the select's items
      */
     fieldItems() {
+      const hasHeader = this.conditions.some(condition => condition.field === 'HEADER');
       return ALL_FIELDS.filter(field => !this.exoDisabled || !EXO_ONLY_FIELDS.includes(field)).map(field => ({
         value: field,
         text: this.$t(`UserSettings.emailConnector.filters.field.${field}`),
-        disabled: field === 'MESSAGE_SIZE' && !isSupported(this.capabilities, field),
+        // A category and a header never go together: the rule runs when the mail gets its
+        // category, long after the sync that alone reads a mail's headers.
+        disabled: (field === 'MESSAGE_SIZE' && !isSupported(this.capabilities, field))
+          || (field === 'HEADER' && this.onCategory) || (field === 'CATEGORY' && hasHeader),
       }));
+    },
+    /**
+     * Whether the rule has a condition on a category: it runs when a mail gets that
+     * category, not after the sync.
+     *
+     * @returns {Boolean} true with a category condition
+     */
+    onCategory() {
+      return this.conditions.some(condition => condition.field === 'CATEGORY');
+    },
+    /**
+     * The default category of the mail the rule is made from, offered as a condition
+     * while the rule has none on a category.
+     *
+     * @returns {Object|null} {id, name, nameId}
+     */
+    categorySuggestion() {
+      if (this.onCategory || !this.categorySuggestionIds.length || this.conditions.length >= 10) {
+        return null;
+      }
+      return this.categories.find(category => category.nameId && this.categorySuggestionIds.includes(category.id)) || null;
     },
     /**
      * Where a mail can be filed: the user's mirrored folders, then Junk and Trash.
@@ -691,6 +731,7 @@ export default {
       this.matchAll = filter ? filter.matchAll !== false : true;
       this.stop = !!filter?.stopProcessing;
       this.subjectSuggestion = filter?.subjectSuggestion || null;
+      this.categorySuggestionIds = filter?.categorySuggestionIds || [];
       const conditions = filter?.conditions?.length ? filter.conditions : [{ field: 'FROM', operator: 'CONTAINS' }];
       this.conditions = conditions.map(condition => this.newCondition(condition));
       const actions = filter?.actions || [];
@@ -812,6 +853,17 @@ export default {
         this.conditions.push(this.newCondition(this.subjectSuggestion));
       }
       this.subjectSuggestion = null;
+    },
+    /**
+     * Adds the category condition the mail suggested, once.
+     *
+     * @returns {void}
+     */
+    addCategorySuggestion() {
+      if (this.categorySuggestion) {
+        this.conditions.push(this.newCondition({ field: 'CATEGORY', operator: 'EQUALS', value: this.categorySuggestion.nameId }));
+      }
+      this.categorySuggestionIds = [];
     },
     /**
      * Counts what the filter would match among the mail eXo keeps of the inbox.
