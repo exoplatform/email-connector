@@ -32,12 +32,15 @@ export const FILTERS_UPDATED_EVENT = 'email-filters-updated';
 /** The condition fields, in the form's order. */
 export const FIELDS = ['FROM', 'TO', 'CC', 'ANY_RECIPIENT', 'SUBJECT', 'HEADER', 'MESSAGE_SIZE', 'IS_LIST', 'IS_AUTOMATED'];
 
-/** The condition fields of a rule eXo alone runs: the server's but the size, plus three only eXo reads. */
+/** The condition fields of a rule eXo alone runs: the server's but the size, plus four only eXo reads. */
 export const EXO_FIELDS = ['FROM', 'TO', 'CC', 'ANY_RECIPIENT', 'SUBJECT', 'BODY', 'SUBJECT_OR_BODY', 'HEADER', 'IS_LIST',
-  'IS_AUTOMATED', 'HAS_ATTACHMENT'];
+  'IS_AUTOMATED', 'HAS_ATTACHMENT', 'CATEGORY'];
 
-/** The fields only eXo evaluates: a rule that also runs at delivery cannot use them. */
-export const EXO_ONLY_FIELDS = ['BODY', 'SUBJECT_OR_BODY', 'HAS_ATTACHMENT'];
+/**
+ * The fields only eXo evaluates: a rule that also runs at delivery cannot use them. The
+ * category is one: the mail server knows nothing of eXo's categories.
+ */
+export const EXO_ONLY_FIELDS = ['BODY', 'SUBJECT_OR_BODY', 'HAS_ATTACHMENT', 'CATEGORY'];
 
 /** The post-actions eXo applies itself, in the form's order; the assistant comes through the extension point. */
 export const EXO_ACTIONS = ['MOVE_TO_FOLDER', 'ADD_CATEGORY', 'MARK_READ', 'STAR', 'MARK_JUNK', 'DELETE', 'NOTIFY'];
@@ -50,7 +53,7 @@ export const FILING_ACTIONS = ['MOVE_TO_FOLDER', 'MARK_JUNK', 'DELETE'];
  * only eXo reads. Where a filter runs follows from them and from its actions (routeOf).
  */
 export const ALL_FIELDS = ['FROM', 'TO', 'CC', 'ANY_RECIPIENT', 'SUBJECT', 'BODY', 'SUBJECT_OR_BODY', 'HEADER', 'MESSAGE_SIZE',
-  'IS_LIST', 'IS_AUTOMATED', 'HAS_ATTACHMENT'];
+  'IS_LIST', 'IS_AUTOMATED', 'HAS_ATTACHMENT', 'CATEGORY'];
 
 /**
  * The actions a mail server may run itself, when its capabilities say so; FORWARD, a copy
@@ -165,6 +168,8 @@ export function operatorsOf(field) {
     return [...TEXT_OPERATORS, 'MATCHES_DOMAIN'];
   case 'MESSAGE_SIZE':
     return ['GT', 'LT'];
+  case 'CATEGORY':
+    return ['EQUALS'];
   case 'IS_LIST':
   case 'IS_AUTOMATED':
   case 'HAS_ATTACHMENT':
@@ -190,7 +195,7 @@ export function isFlagField(field) {
  * numbers taken out, left out of the rule until the user keeps it.
  *
  * @param {object} email - the mail, as the mailbox lists it
- * @returns {object} {name, matchAll, conditions, subjectSuggestion}
+ * @returns {object} {name, matchAll, conditions, subjectSuggestion, categorySuggestionIds}
  */
 export function ruleFromMail(email) {
   const address = (email?.sender?.address || '').trim().toLowerCase();
@@ -207,6 +212,8 @@ export function ruleFromMail(email) {
     subjectSuggestion: subject ? { field: 'SUBJECT', operator: 'CONTAINS', value: subject.substring(0, 500) } : null,
     // The mail the rule is made from: an action extension may try itself on it.
     sampleEmailId: email?.id || null,
+    // The mail's categories: the form offers "Category is ..." for a default one of them.
+    categorySuggestionIds: email?.categoryIds || [],
   };
 }
 
