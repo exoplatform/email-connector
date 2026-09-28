@@ -25,11 +25,13 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.stream.LongStream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -225,7 +227,7 @@ public class EmailFavoriteServiceTest {
     givenFavoritedEmailIds();
     for (List<Email> rows : List.of(List.of(starred(41L, "CUSTOM:6", "<m@host>"), starred(40L, MailFolder.ARCHIVE, "<m@host>")),
                                     List.of(starred(40L, MailFolder.ARCHIVE, "<m@host>"), starred(41L, "CUSTOM:6", "<m@host>")))) {
-      org.mockito.Mockito.reset(favoriteService);
+      reset(favoriteService);
       when(emailBoxStorage.getStarredEmailKeys(anyString(), anyList())).thenReturn(rows);
 
       emailFavoriteService.reconcileFavorites(USERNAME);
@@ -245,7 +247,7 @@ public class EmailFavoriteServiceTest {
   public void reconcileFavoritesReadsNoMoreFlaggedMailsThanFavoritesItReadsBack() throws Exception {
     givenUserIdentity();
     givenFavoritedEmailIds();
-    List<Email> rows = java.util.stream.LongStream.rangeClosed(1, 501).mapToObj(id -> starred(id, MailFolder.INBOX, "<" + id + "@host>")).toList();
+    List<Email> rows = LongStream.rangeClosed(1, 501).mapToObj(id -> starred(id, MailFolder.INBOX, "<" + id + "@host>")).toList();
     when(emailBoxStorage.getStarredEmailKeys(anyString(), anyList())).thenReturn(rows);
 
     emailFavoriteService.reconcileFavorites(USERNAME);

@@ -556,6 +556,12 @@ public class EmailBoxRestTest {
            .andExpect(jsonPath("$.failedUpdates").value(1));
     verify(emailBoxService).unstarFavorite(favorite, SIMPLE_USER);
 
+    // A mailbox the caller cannot connect, and a mail server that cannot be reached.
+    doThrow(IllegalAccessException.class).when(emailBoxService).unstarFavorite(favorite, SIMPLE_USER);
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser())).andExpect(status().isUnauthorized());
+    doThrow(IllegalStateException.class).when(emailBoxService).unstarFavorite(favorite, SIMPLE_USER);
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser())).andExpect(status().isInternalServerError());
+
     doThrow(IllegalAccessException.class).when(emailBoxService).getOwnedEmailById(anyLong(), anyString());
     mockMvc.perform(delete(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser())).andExpect(status().isNotFound());
   }

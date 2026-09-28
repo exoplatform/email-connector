@@ -1263,6 +1263,59 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * The count is the sum over the folders reached: a copy in a folder the mailbox no
+   * longer has fails, the others do not; a copy with no UID is skipped, having nothing
+   * on the server to carry the flag.
+   */
+  @Test
+  @SneakyThrows
+  void removingAFavoriteCountsTheCopiesThatCouldNotBeUnstarred() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(((UIDFolder) inbox).getMessageByUID(1212L)).thenReturn(mock(Message.class));
+    Email favorite = starredKey(7L, MailFolder.INBOX, "<m@host>", 1212L);
+    Email noUid = starredKey(8L, MailFolder.SENT, "<m@host>", 0L);
+    noUid.setMailRemoteId(null);
+    when(emailBoxStorage.getStarredEmailKeys(TEST_USER, MailFolder.NOT_FAVORITED_FOLDERS)).thenReturn(List.of(favorite,
+                                                                                                            starredKey(9L, "CUSTOM:9", "<m@host>", 77L),
+                                                                                                            noUid));
+
+    int failed = emailBoxService.unstarFavorite(favorite, TEST_USER);
+
+    assertEquals(1, failed, "the copy of the vanished folder fails; the inbox one does not; the UID-less one is skipped");
+    verify(emailBoxStorage, never()).updateEmailStarredStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), eq(MailFolder.SENT));
+  }
+
+  /**
+   * A favorite with no Message-ID cannot be matched to other copies: only its own row
+   * is unstarred, and the other rows are not read.
+   */
+  @Test
+  @SneakyThrows
+  void removingAFavoriteWithNoMessageIdUnstarsItsOwnRowOnly() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    Message message = mock(Message.class);
+    when(((UIDFolder) inbox).getMessageByUID(1212L)).thenReturn(message);
+
+    int failed = emailBoxService.unstarFavorite(starredKey(7L, MailFolder.INBOX, null, 1212L), TEST_USER);
+
+    assertEquals(0, failed);
+    verify(message).setFlag(Flags.Flag.FLAGGED, false);
+    verify(emailBoxStorage, never()).getStarredEmailKeys(anyString(), anyList());
+  }
+
+  /**
    * One light starred row, as {@code EmailBoxStorage#getStarredEmailKeys} answers it.
    *
    * @param id its technical id
