@@ -48,6 +48,8 @@
   </v-list-item>
 </template>
 <script>
+import { getFavoriteEmail, removeFavoriteEmail } from '../js/EmailConnectorFavoriteDrawerService.js';
+
 export default {
   props: {
     id: {
@@ -94,15 +96,8 @@ export default {
     // Favorites are keyed by the mail's technical id, which is the one identifier
     // the rest of this app never uses — everything else addresses a message by its
     // IMAP UID — hence the dedicated read.
-    fetch(`/email-connector/rest/email-box/favorites/${this.id}`, {
-      method: 'GET',
-      credentials: 'include',
-    }).then(response => {
-      if (!response?.ok) {
-        throw new Error('Favorited email cannot be read');
-      }
-      return response.json();
-    }).then(email => this.email = email)
+    getFavoriteEmail(this.id)
+      .then(email => this.email = email)
       .catch(() => {
         // The mail is gone from the mailbox (deleted, or aged out of the cached
         // window between two syncs). Telling the drawer drops the entry instead of
@@ -145,10 +140,10 @@ export default {
      * flag, recomputed from it at every sync — so a removal that stopped at the
      * favorites store would be undone within minutes, the row quietly back in the
      * drawer. The flag is therefore cleared too, on every copy of the message the
-     * favorite stands for, through the favorite's own endpoint — called directly, as
-     * the read above is, since this extension deliberately does not load the
-     * mailbox bundle on every page. When the server refuses the message, that
-     * endpoint reverts the row and reconciles the favorites itself — the drawer
+     * favorite stands for, through the favorite's own endpoint, reached by this
+     * extension's own service as the read above is: this extension deliberately
+     * does not load the mailbox bundle on every page. When the server refuses the
+     * message, that endpoint reverts the row and reconciles the favorites itself — the drawer
      * is only re-read to show what it decided; when it cannot reach the server
      * at all it answers before reconciling, and then the favorite is put back
      * from here first, or the row would stay gone with its flag still set.
@@ -170,15 +165,7 @@ export default {
       this.$root.$emit('favorite-removed', 'email', this.id);
       // Addressed by the favorite's own id: the server clears the star of every copy of
       // the message the favorite stands for, each in its folder.
-      fetch(`/email-connector/rest/email-box/favorites/${this.id}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      }).then(response => {
-        if (!response?.ok) {
-          throw new Error('Favorited email cannot be unstarred');
-        }
-        return response.json();
-      }).then(result => {
+      removeFavoriteEmail(this.id).then(result => {
         if (result?.failedUpdates) {
           showRowBack();
           return;
