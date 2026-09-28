@@ -72,6 +72,10 @@ import io.meeds.social.util.JsonUtils;
 @Service
 public class UserEmailSettingService {
 
+  /** What a connection with no password is refused with, when no stored one applies. */
+  public static final String        PASSWORD_REQUIRED                                  =
+                                                                                       "emailConnector.userSetting.passwordRequired";
+
   public static final String        EMAIL_CONNECTOR_SCOPE_ID                           = "EMAIL_CONNECTOR_SCOPE";
 
   public static final Scope         EMAIL_CONNECTOR_SCOPE                              =
@@ -151,6 +155,7 @@ public class UserEmailSettingService {
     if (!canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE, username));
     }
+    keepStoredPasswordWhenLeftBlank(userEmailSetting, username);
     Store store = null;
     try {
       store = connectWithTypedCredentials(userEmailSetting,
@@ -476,6 +481,7 @@ public class UserEmailSettingService {
     storedUserEmailSetting.setEmailPassword(decodePassword(storedPassword, username));
     storedUserEmailSetting.setPasswordUnreadable(StringUtils.isNotBlank(storedPassword)
         && storedUserEmailSetting.getEmailPassword() == null);
+    storedUserEmailSetting.setPasswordStored(StringUtils.isNotBlank(storedUserEmailSetting.getEmailPassword()));
     return storedUserEmailSetting;
   }
 
@@ -571,6 +577,34 @@ public class UserEmailSettingService {
                                           ConnectorCredentialsChannel.IMAP);
       return connect(emailConnector, authenticatorFor(emailConnector, username));
     }
+  }
+
+  /**
+   * Fills a blank password with the stored one when the setting names the account
+   * already stored - same connector, same address.
+   * <p>
+   * The settings read never sends the password back (EXO-90610), so a user who
+   * re-saves their connection without retyping it posts a blank one. For the same
+   * account that means "unchanged"; for another address or another connector the
+   * stored password belongs to a different mailbox and must never be tried against
+   * this one, so a password is required.
+   *
+   * @param userEmailSetting the setting as posted, completed in place
+   * @param username the user connecting
+   * @throws IllegalArgumentException carrying {@link #PASSWORD_REQUIRED} when the
+   *           password is blank and no stored password applies
+   */
+  private void keepStoredPasswordWhenLeftBlank(UserEmailSetting userEmailSetting, String username) {
+    if (StringUtils.isNotBlank(userEmailSetting.getEmailPassword())) {
+      return;
+    }
+    UserEmailSetting stored = getStoredUserEmailSetting(username);
+    if (!stored.isPasswordStored()
+        || !StringUtils.equals(stored.getEmailConnectorId(), userEmailSetting.getEmailConnectorId())
+        || !StringUtils.equalsIgnoreCase(stored.getEmailAddress(), userEmailSetting.getEmailAddress())) {
+      throw new IllegalArgumentException(PASSWORD_REQUIRED);
+    }
+    userEmailSetting.setEmailPassword(stored.getEmailPassword());
   }
 
   /**
