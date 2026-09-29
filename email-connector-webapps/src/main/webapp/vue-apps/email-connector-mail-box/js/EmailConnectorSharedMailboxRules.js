@@ -29,8 +29,8 @@
  * gone: the shared mailbox's own Trash, Archive and Spam are registered now, and every
  * destination is inside it.
  *
- * Starring stays absent whatever w says: every star control is INBOX-only, because
- * PATCH /email-box/starred takes no folder (phase-2 slice 2.2).
+ * The star is decided per folder by canStar (EmailConnectorMailBoxService): w on that
+ * folder, never in its Trash, Spam or Drafts (EXO-90550).
  */
 
 /**
@@ -38,7 +38,7 @@
  * it -- the one rule the drawer's controls and the settings' description of a share
  * both read, so the settings can never promise what the drawer does not offer:
  * reading always, read/unread with s, taking mail out only with t AND e (the server's
- * "moveOut"). Starring is not listed (see above).
+ * "moveOut"). The star is canStar's, per folder (see above).
  *
  * @param {Object} affordances a folder's (or a share's) affordances, as the server names them
  * @returns {Object} {markRead, moveOut}
