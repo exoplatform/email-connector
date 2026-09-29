@@ -28,7 +28,7 @@ import EmailConnectorMailBoxDrawerListItem from '../EmailConnectorMailBoxDrawerL
 import EmailConnectorMailBoxDrawerNavigation from '../EmailConnectorMailBoxDrawerNavigation.vue';
 import EmailConnectorMailBoxDrawerSearchResultItem from '../EmailConnectorMailBoxDrawerSearchResultItem.vue';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
-import { DRAG_MIME } from '../../../js/EmailConnectorMailBoxDragAndDrop.js';
+import { DRAG_MIME, endDrag } from '../../../js/EmailConnectorMailBoxDragAndDrop.js';
 
 Vue.config.ignoredElements.push(/^email-connector-/, 'exo-confirm-dialog');
 
@@ -106,6 +106,18 @@ function dragEvent(type, types = [DRAG_MIME]) {
     setDragImage: jest.fn(),
   };
   return event;
+}
+
+/**
+ * What the picture following the pointer says (EXO-90460), and takes it out of the page,
+ * so the next test starts without one.
+ *
+ * @returns {String} the label beside the move icon, or undefined when there is no picture
+ */
+function dragPictureLabel() {
+  const label = document.body.querySelector('.fa-arrows-alt')?.parentNode.textContent;
+  endDrag();
+  return label;
 }
 
 /**
@@ -304,8 +316,7 @@ describe('dragging a mail onto the folder column (EXO-90421)', () => {
 
     item.element.dispatchEvent(start);
 
-    const [image] = start.dataTransfer.setDragImage.mock.calls[0];
-    expect(image.textContent).toBe('emailConnector.mailBox.list.drawer.drag.emails|2');
+    expect(dragPictureLabel()).toBe('emailConnector.mailBox.list.drawer.drag.emails|2');
     expect([...fixture.wrapper.vm.emailDrag.ids].sort()).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
@@ -316,7 +327,7 @@ describe('dragging a mail onto the folder column (EXO-90421)', () => {
 
     mountRow(fixture, thread.latest.mailRemoteId, { thread, emails: fixture.wrapper.vm.emails }).element.dispatchEvent(start);
 
-    expect(start.dataTransfer.setDragImage.mock.calls[0][0].textContent).toBe('emailConnector.mailBox.list.drawer.drag.email');
+    expect(dragPictureLabel()).toBe('emailConnector.mailBox.list.drawer.drag.email');
     expect(fixture.wrapper.vm.emailDrag.ids).toHaveLength(3);
   });
 
