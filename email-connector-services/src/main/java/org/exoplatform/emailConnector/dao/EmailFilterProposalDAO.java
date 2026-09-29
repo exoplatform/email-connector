@@ -123,6 +123,36 @@ public interface EmailFilterProposalDAO extends JpaRepository<EmailFilterProposa
   String status);
 
   /**
+   * How many of a user's proposals each rule has in each status: what the owner decided
+   * on each rule's suggestions. One row per rule and status: the rule's id, the status,
+   * the count.
+   *
+   * @param userId the owner
+   * @return the rows
+   */
+  @Query("SELECT p.filterId, p.status, COUNT(p) FROM EmailFilterProposalEntity p WHERE p.userId = :userId"
+      + " GROUP BY p.filterId, p.status")
+  List<Object[]> countByFilterAndStatus(@Param("userId")
+  String userId);
+
+  /**
+   * How many of a user's proposals each rule has in a status for a reason: the expired
+   * ones a later run of the assistant set aside, told apart from those nobody answered.
+   * One row per rule: the rule's id, the count.
+   *
+   * @param userId the owner
+   * @param status the status, {@code EXPIRED}
+   * @param reason the reason, {@code SUPERSEDED}
+   * @return the rows
+   */
+  @Query("SELECT p.filterId, COUNT(p) FROM EmailFilterProposalEntity p WHERE p.userId = :userId AND p.status = :status"
+      + " AND p.lastError = :reason GROUP BY p.filterId")
+  List<Object[]> countByFilterForReason(@Param("userId")
+  String userId, @Param("status")
+  String status, @Param("reason")
+  String reason);
+
+  /**
    * Moves a proposal of its owner from a status to another, only if it is still in the
    * first and, when {@code notExpiredAt} is given, not past its expiry at that time: the
    * claim that makes one click, and one only, act on it.
