@@ -314,7 +314,6 @@ public class EmailFilterProposalStorage {
     }).toList();
   }
 
-
   /**
    * The key of a call: SHA-256, in lower-case hex, of the tool's name and of the
    * arguments' canonical JSON (objects' keys in order), so that one call made twice with
