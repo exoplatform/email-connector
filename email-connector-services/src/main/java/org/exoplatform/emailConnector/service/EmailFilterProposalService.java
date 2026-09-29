@@ -34,6 +34,7 @@ import org.springframework.stereotype.Service;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.model.EmailFilterMatch;
 import org.exoplatform.emailConnector.model.EmailFilterProposal;
+import org.exoplatform.emailConnector.model.EmailFilterSuggestionCounts;
 import org.exoplatform.emailConnector.plugin.EmailFilterAgentHandler;
 import org.exoplatform.emailConnector.storage.EmailFilterProposalStorage;
 import org.exoplatform.emailConnector.storage.EmailFilterStorage;
@@ -134,6 +135,9 @@ public class EmailFilterProposalService {
 
   @Autowired
   private ObjectProvider<EmailFilterAgentHandler> agentHandlers;
+
+  @Autowired
+  private EmailFilterSuggestionDigest             suggestionDigest;
 
   private Clock                                   clock                = Clock.systemUTC();
 
@@ -341,6 +345,7 @@ public class EmailFilterProposalService {
         // An Error, or a write that failed: the row never stays RUNNING.
         emailFilterProposalStorage.finish(id, username, EmailFilterProposal.FAILED, null, INTERRUPTED);
       }
+      refreshDigest(username);
     }
     return reread(username, id);
   }
@@ -359,6 +364,7 @@ public class EmailFilterProposalService {
   public EmailFilterProposal reject(String username, Long delegationId, long id) throws ObjectNotFoundException,
                                                                                  IllegalAccessException {
     claim(username, delegationId, id, EmailFilterProposal.REJECTED);
+    refreshDigest(username);
     return reread(username, id);
   }
 
@@ -377,7 +383,63 @@ public class EmailFilterProposalService {
   public EmailFilterProposal handOver(String username, Long delegationId, long id) throws ObjectNotFoundException,
                                                                                    IllegalAccessException {
     claim(username, delegationId, id, EmailFilterProposal.HANDED_OVER);
+    refreshDigest(username);
     return reread(username, id);
+  }
+
+  /**
+   * Tells the owner how many suggestions wait, once a run of their assistant proposed
+   * some: the one digest notification ({@link EmailFilterSuggestionDigest#publish}),
+   * never one per suggestion. The run's write, after its proposals are recorded.
+   *
+   * @param username the owner
+   */
+  public void notifyWaiting(String username) {
+    suggestionDigest.publish(username, countWaiting(username));
+  }
+
+  /**
+   * What the caller decided on each of their rules' suggestions: per rule, how many were
+   * approved, rejected, expired unanswered, continued in the chat, and how many wait --
+   * the numbers that tell whether the assistant is worth running on more mail. Kept as
+   * long as the rules' log (their matches' retention).
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @return the counts, one per rule that has any
+   * @throws ObjectNotFoundException when the feature is off or no mailbox is connected
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   */
+  public List<EmailFilterSuggestionCounts> getSuggestionCounts(String username, Long delegationId) throws ObjectNotFoundException,
+                                                                                                  IllegalAccessException {
+    emailFilterService.checkOwnMailbox(username, delegationId);
+    emailFilterProposalStorage.expireDue(username, new Date(clock.millis()));
+    return emailFilterProposalStorage.countByFilter(username);
+  }
+
+  /**
+   * How many of the owner's suggestions wait, the expired ones marked so first.
+   *
+   * @param username the owner
+   * @return the count
+   */
+  private long countWaiting(String username) {
+    emailFilterProposalStorage.expireDue(username, new Date(clock.millis()));
+    return emailFilterProposalStorage.countByStatus(username, EmailFilterProposal.PROPOSED);
+  }
+
+  /**
+   * Brings the owner's digest to what waits now, after a decision. Never throws.
+   *
+   * @param username the owner
+   */
+  private void refreshDigest(String username) {
+    try {
+      suggestionDigest.refresh(username, countWaiting(username));
+    } catch (RuntimeException e) {
+      LOG.warn("The digest of the waiting suggestions of user {} could not be refreshed", username, e);
+    }
   }
 
   /**
