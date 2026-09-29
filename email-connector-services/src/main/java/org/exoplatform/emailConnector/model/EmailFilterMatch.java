@@ -46,8 +46,16 @@ public class EmailFilterMatch {
   /** The assistant failed, after its attempts. */
   public static final String       AGENT_FAILED           = "FAILED";
 
-  /** Not run: the owner's pending or daily cap was reached. */
+  /**
+   * Not run: the mailbox's daily cap on assistant runs was reached, or too many of its
+   * mails wait for the assistant; the match's last error says which.
+   */
   public static final String       AGENT_SKIPPED_CAP      = "SKIPPED_CAP";
+
+  /**
+   * Not run: the mail is spam -- in the Junk folder, or flagged by the mail server.
+   */
+  public static final String       AGENT_SKIPPED_SPAM     = "SKIPPED_SPAM";
 
   /** Not run: assistants are switched off for filters. */
   public static final String       AGENT_SKIPPED_DISABLED = "SKIPPED_DISABLED";
@@ -59,12 +67,14 @@ public class EmailFilterMatch {
                                                                     AGENT_DONE,
                                                                     AGENT_FAILED,
                                                                     AGENT_SKIPPED_CAP,
+                                                                    AGENT_SKIPPED_SPAM,
                                                                     AGENT_SKIPPED_DISABLED);
 
   /** The statuses after which the assistant will not run again by itself. */
   public static final List<String> AGENT_TERMINAL         = List.of(AGENT_DONE,
                                                                     AGENT_FAILED,
                                                                     AGENT_SKIPPED_CAP,
+                                                                    AGENT_SKIPPED_SPAM,
                                                                     AGENT_SKIPPED_DISABLED);
 
   /** The post-actions wait for the assistant. */

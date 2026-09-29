@@ -90,7 +90,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 </a>
               </v-list-item-subtitle>
               <v-list-item-subtitle v-if="match.agentStatus && match.agentStatus !== 'NONE'" class="text-truncate">
-                {{ $t(`UserSettings.emailConnector.filters.exo.agent.${match.agentStatus}`) }}
+                {{ $t(`UserSettings.emailConnector.filters.exo.agent.${agentStatusKey(match)}`) }}
               </v-list-item-subtitle>
             </v-list-item-content>
           </v-list-item>
@@ -125,6 +125,9 @@ const UNDOABLE = ['MOVE_TO_FOLDER', 'ADD_CATEGORY', 'MARK_READ', 'STAR', 'MARK_J
 
 /** The actions that give the mail another UID: once applied, the match's UID names nothing. */
 const FILING = ['MOVE_TO_FOLDER', 'MARK_JUNK', 'DELETE'];
+
+/** Why a capped match was skipped when too many mails already waited, not for the day's limit. */
+const PENDING_LIMIT = 'emailConnector.filters.agent.pendingLimit';
 
 export default {
   data: () => ({
@@ -162,6 +165,16 @@ export default {
     this.$root.$off(OPEN_FILTER_LOG_DRAWER_EVENT, this.open);
   },
   methods: {
+    /**
+     * The key of the line saying where the assistant's run on a match stands: its status,
+     * told apart for a match skipped because too many mails waited.
+     *
+     * @param {Object} match - the match
+     * @returns {String} the key's last segment
+     */
+    agentStatusKey(match) {
+      return match.agentStatus === 'SKIPPED_CAP' && match.lastError === PENDING_LIMIT ? 'SKIPPED_CAP_PENDING' : match.agentStatus;
+    },
     /**
      * Opens the drawer on a filter's newest matches, over the filters drawer.
      *
