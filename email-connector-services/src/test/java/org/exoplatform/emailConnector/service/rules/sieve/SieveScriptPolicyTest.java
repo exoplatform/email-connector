@@ -42,12 +42,17 @@ import org.exoplatform.emailConnector.service.rules.sieve.SieveScriptPolicy.Publ
  * four cases, the vacation-token refusal, the wrapper ordering rule, and the invariant
  * that no write ever targets a script eXo does not own.
  */
-public class SieveScriptPolicyTest {
+class SieveScriptPolicyTest {
 
   private static final String   FOREIGN      = "roundcube";
 
-  private static final String   FILTERS_ONLY = "require [\"fileinto\"];\r\nif header :contains \"subject\" \"invoice\" {\r\n"
-      + "  fileinto \"Accounting\";\r\n  stop;\r\n}\r\n";
+  private static final String   FILTERS_ONLY = """
+      require ["fileinto"];\r
+      if header :contains "subject" "invoice" {\r
+        fileinto "Accounting";\r
+        stop;\r
+      }\r
+      """;
 
   private final SieveScriptPolicy policy = new SieveScriptPolicy();
 
@@ -59,7 +64,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception when it cannot start
    */
   @BeforeEach
-  public void startServer() throws Exception {
+  void startServer() throws Exception {
     server = new FakeManageSieveServer();
   }
 
@@ -67,7 +72,7 @@ public class SieveScriptPolicyTest {
    * Stops the server and checks the invariant every scenario must keep.
    */
   @AfterEach
-  public void stopServerAndCheckTheInvariant() {
+  void stopServerAndCheckTheInvariant() {
     server.close();
     for (String command : server.getCommands()) {
       if (command.startsWith("PUTSCRIPT") || command.startsWith("SETACTIVE") || command.startsWith("DELETESCRIPT")) {
@@ -84,7 +89,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testCase1NoActiveScript() throws Exception {
+  void testCase1NoActiveScript() throws Exception {
     server.script("old", "keep;", false);
     ExoSieveScript script = replyOn();
     PublishOutcome outcome = publish(script);
@@ -102,7 +107,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testCase2ExoScriptActiveIsReplacedInPlace() throws Exception {
+  void testCase2ExoScriptActiveIsReplacedInPlace() throws Exception {
     server.script(SCRIPT_NAME, replyOff().toScript(), true);
     PublishOutcome outcome = publish(replyOn());
     assertEquals(PolicyCase.EXO_ACTIVE, outcome.policyCase());
@@ -118,7 +123,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testCase3WrapsTheForeignScriptReplyFirst() throws Exception {
+  void testCase3WrapsTheForeignScriptReplyFirst() throws Exception {
     server.script(FOREIGN, FILTERS_ONLY, true);
     PublishOutcome outcome = publish(replyOn());
     assertEquals(PolicyCase.WRAPPED, outcome.policyCase());
@@ -126,8 +131,12 @@ public class SieveScriptPolicyTest {
     assertTrue(outcome.exoFirst());
     assertEquals(WRAPPER_NAME, server.getActive());
     assertEquals(FILTERS_ONLY, server.getScripts().get(FOREIGN));
-    assertEquals("# exo-managed-wrapper-v1\r\nrequire [\"include\"];\r\ninclude :personal \"exo-rules\";\r\n"
-        + "include :personal \"roundcube\";\r\n", server.getScripts().get(WRAPPER_NAME));
+    assertEquals("""
+        # exo-managed-wrapper-v1\r
+        require ["include"];\r
+        include :personal "exo-rules";\r
+        include :personal "roundcube";\r
+        """, server.getScripts().get(WRAPPER_NAME));
   }
 
   /**
@@ -138,7 +147,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testVacationTokenRefusal() throws Exception {
+  void testVacationTokenRefusal() throws Exception {
     for (Map<String, String> account : List.of(Map.of(FOREIGN, "require [\"vacation\"];\r\nvacation \"Away\";\r\n"),
                                                Map.of(FOREIGN, "require [\"vacation\"];\r\nkeep;\r\n"),
                                                Map.of(FOREIGN,
@@ -163,7 +172,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testRefusesWhenAbsenceCannotBeEstablished() throws Exception {
+  void testRefusesWhenAbsenceCannotBeEstablished() throws Exception {
     for (Map<String, String> account : List.of(Map.of(FOREIGN, "require [\"include\"];\r\ninclude :global \"ooo\";\r\n"),
                                                Map.of(FOREIGN,
                                                       "require [\"include\"];\r\ninclude \"a\";\r\n",
@@ -187,7 +196,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testAWrapperStoredWithLfStillReadsBack() throws Exception {
+  void testAWrapperStoredWithLfStillReadsBack() throws Exception {
     server.script(FOREIGN, FILTERS_ONLY, false)
           .script(SCRIPT_NAME, replyOff().toScript(), false)
           .script(WRAPPER_NAME, SieveScriptPolicy.wrapper(FOREIGN, true).replace("\r\n", "\n"), true);
@@ -202,7 +211,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testANamelessActiveScriptIsRefused() throws Exception {
+  void testANamelessActiveScriptIsRefused() throws Exception {
     server.script("", "require [\"vacation\"];\r\nvacation \"Away\";\r\n", true);
     ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class, () -> publish(replyOn()));
     assertEquals(ServerRuleConflictException.MANAGED_ELSEWHERE, e.getMessage());
@@ -220,7 +229,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testAnUnreadableActiveScriptIsRefused() throws Exception {
+  void testAnUnreadableActiveScriptIsRefused() throws Exception {
     server.script(FOREIGN, FILTERS_ONLY, true).refuse("GETSCRIPT", "NO (NONEXISTENT) \"There is no script by that name\"");
     ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class, () -> publish(replyOn()));
     assertEquals(ServerRuleConflictException.MANAGED_ELSEWHERE, e.getMessage());
@@ -234,7 +243,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testPublishUsesTheServersStringEncoding() throws Exception {
+  void testPublishUsesTheServersStringEncoding() throws Exception {
     ExoSieveScript script = ExoSieveScript.empty()
                                           .withVacation(new Vacation(true, null, null, null, "Away", "C:\\temp", "exo-vacation-1", 7));
     PublishOutcome outcome = publish(script);
@@ -250,7 +259,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testAVacationInACommentIsNotRefused() throws Exception {
+  void testAVacationInACommentIsNotRefused() throws Exception {
     server.script(FOREIGN, "# vacation: see the webmail\r\nkeep;\r\n", true);
     assertEquals(PolicyCase.WRAPPED, publish(replyOn()).policyCase());
   }
@@ -262,7 +271,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testNoRefusalWhenEXoEmitsNoReply() throws Exception {
+  void testNoRefusalWhenEXoEmitsNoReply() throws Exception {
     server.script(FOREIGN, "vacation \"Away\";\r\n", true);
     assertEquals(PolicyCase.WRAPPED, publish(replyOff()).policyCase());
     assertEquals(List.of(), server.getCommands("GETSCRIPT"));
@@ -275,7 +284,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testCase4RefusesWithoutInclude() throws Exception {
+  void testCase4RefusesWithoutInclude() throws Exception {
     server.sieveExtensions("fileinto imap4flags vacation date relational").script(FOREIGN, FILTERS_ONLY, true);
     ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class, () -> publish(replyOn()));
     assertEquals(ServerRuleConflictException.SERVER_CONFLICT, e.getMessage());
@@ -292,7 +301,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testCase2WrapperIsRegeneratedAroundTheSameScript() throws Exception {
+  void testCase2WrapperIsRegeneratedAroundTheSameScript() throws Exception {
     server.script(FOREIGN, FILTERS_ONLY, false)
           .script(SCRIPT_NAME, replyOff().toScript(), false)
           .script(WRAPPER_NAME, SieveScriptPolicy.wrapper(FOREIGN, false), true);
@@ -311,7 +320,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testCase2WrapperRefusesAForeignVacationAddedLater() throws Exception {
+  void testCase2WrapperRefusesAForeignVacationAddedLater() throws Exception {
     server.script(FOREIGN, "vacation \"Away\";\r\n", false)
           .script(SCRIPT_NAME, replyOff().toScript(), false)
           .script(WRAPPER_NAME, SieveScriptPolicy.wrapper(FOREIGN, true), true);
@@ -327,7 +336,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testWrapperAroundADeletedScriptFallsBackToCase1() throws Exception {
+  void testWrapperAroundADeletedScriptFallsBackToCase1() throws Exception {
     server.script(SCRIPT_NAME, replyOff().toScript(), false).script(WRAPPER_NAME, SieveScriptPolicy.wrapper(FOREIGN, true), true);
     PublishOutcome outcome = publish(replyOn());
     assertEquals(PolicyCase.WRAPPER_REMOVED, outcome.policyCase());
@@ -342,7 +351,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testARefusedWrapperDeletionDoesNotFailThePublish() throws Exception {
+  void testARefusedWrapperDeletionDoesNotFailThePublish() throws Exception {
     server.script(SCRIPT_NAME, replyOff().toScript(), false)
           .script(WRAPPER_NAME, SieveScriptPolicy.wrapper(FOREIGN, true), true)
           .refuse("DELETESCRIPT", "NO \"Not now\"");
@@ -359,7 +368,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testAWrapperEditedOutsideIsRefused() throws Exception {
+  void testAWrapperEditedOutsideIsRefused() throws Exception {
     server.script(FOREIGN, FILTERS_ONLY, false)
           .script(WRAPPER_NAME, SieveScriptPolicy.wrapper(FOREIGN, true) + "discard;\r\n", true);
     ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class, () -> publish(replyOn()));
@@ -373,7 +382,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testACheckScriptRefusalWritesNothing() throws Exception {
+  void testACheckScriptRefusalWritesNothing() throws Exception {
     server.refuse("CHECKSCRIPT", "NO \"line 4: error\"");
     ManageSieveException e = assertThrows(ManageSieveException.class, () -> publish(replyOn()));
     assertEquals(Kind.REFUSED, e.getKind());
@@ -386,7 +395,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testPublishesWithoutCheckScriptWhenNotAdvertised() throws Exception {
+  void testPublishesWithoutCheckScriptWhenNotAdvertised() throws Exception {
     server.advertiseVersion(false);
     assertEquals(PolicyCase.NO_ACTIVE_SCRIPT, publish(replyOn()).policyCase());
     assertEquals(List.of(), server.getCommands("CHECKSCRIPT"));
@@ -397,12 +406,16 @@ public class SieveScriptPolicyTest {
    * once it holds rules; the wrapper text follows it.
    */
   @Test
-  public void testWrapperOrderingRule() {
+  void testWrapperOrderingRule() {
     assertTrue(SieveScriptPolicy.exoFirst(replyOn()));
     ExoSieveScript withRules = ExoSieveScript.parse("# exo-managed-v1: {\"v\":1,\"rules\":[{\"id\":1}]}").orElseThrow();
     assertFalse(SieveScriptPolicy.exoFirst(withRules));
-    assertEquals("# exo-managed-wrapper-v1\r\nrequire [\"include\"];\r\ninclude :personal \"a\\\"b\";\r\n"
-        + "include :personal \"exo-rules\";\r\n", SieveScriptPolicy.wrapper("a\"b", false));
+    assertEquals("""
+        # exo-managed-wrapper-v1\r
+        require ["include"];\r
+        include :personal "a\\"b";\r
+        include :personal "exo-rules";\r
+        """, SieveScriptPolicy.wrapper("a\"b", false));
   }
 
   /**
@@ -411,7 +424,7 @@ public class SieveScriptPolicyTest {
    * @throws Exception on failure
    */
   @Test
-  public void testWrapperReadsBack() throws Exception {
+  void testWrapperReadsBack() throws Exception {
     assertEquals("a\"b", SieveScriptPolicy.wrappedScript(SieveScriptPolicy.wrapper("a\"b", true)));
     assertEquals(FOREIGN, SieveScriptPolicy.wrappedScript(SieveScriptPolicy.wrapper(FOREIGN, false)));
     assertThrows(ServerRuleConflictException.class, () -> SieveScriptPolicy.wrappedScript("keep;"));
@@ -426,7 +439,7 @@ public class SieveScriptPolicyTest {
    * that exist.
    */
   @Test
-  public void testWriteGuard() {
+  void testWriteGuard() {
     assertEquals(SCRIPT_NAME, SieveScriptPolicy.own(SCRIPT_NAME));
     assertEquals(WRAPPER_NAME, SieveScriptPolicy.own(WRAPPER_NAME));
     assertThrows(IllegalStateException.class, () -> SieveScriptPolicy.own(FOREIGN));

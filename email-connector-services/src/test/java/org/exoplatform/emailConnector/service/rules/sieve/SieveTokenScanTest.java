@@ -28,13 +28,13 @@ import org.junit.jupiter.api.Test;
  * Token detection in a foreign script: found as a command or inside a string, ignored
  * inside a comment, and never fooled by a comment marker inside a string.
  */
-public class SieveTokenScanTest {
+class SieveTokenScanTest {
 
   /**
    * The word as a command, in a {@code require} list, or hyphenated.
    */
   @Test
-  public void testFindsTheWord() {
+  void testFindsTheWord() {
     assertTrue(SieveTokenScan.containsWord("vacation \"away\";", "vacation"));
     assertTrue(SieveTokenScan.containsWord("require [\"fileinto\", \"vacation\"];", "vacation"));
     assertTrue(SieveTokenScan.containsWord("require \"vacation-seconds\";", "vacation"));
@@ -47,7 +47,7 @@ public class SieveTokenScanTest {
    * A word only in a hash or a bracket comment is not found.
    */
   @Test
-  public void testIgnoresComments() {
+  void testIgnoresComments() {
     assertFalse(SieveTokenScan.containsWord("# vacation was here\r\nkeep;\r\n", "vacation"));
     assertFalse(SieveTokenScan.containsWord("/* vacation\r\n  \"still a comment\" */ keep;", "vacation"));
     assertTrue(SieveTokenScan.containsWord("keep; # \"\r\nvacation \"x\";", "vacation"));
@@ -58,7 +58,7 @@ public class SieveTokenScanTest {
    * it on the same line is still found.
    */
   @Test
-  public void testACommentMarkerInsideAStringHidesNothing() {
+  void testACommentMarkerInsideAStringHidesNothing() {
     assertTrue(SieveTokenScan.containsWord("fileinto \"a#b\"; vacation \"x\";", "vacation"));
     assertTrue(SieveTokenScan.containsWord("fileinto \"a/*b\"; vacation \"x\"; # */", "vacation"));
     assertTrue(SieveTokenScan.containsWord("fileinto \"a\\\"#\"; vacation \"x\";", "vacation"));
@@ -71,7 +71,7 @@ public class SieveTokenScanTest {
    * after the block is found.
    */
   @Test
-  public void testACommentOpenerInsideATextBlockHidesNothing() {
+  void testACommentOpenerInsideATextBlockHidesNothing() {
     assertTrue(SieveTokenScan.containsWord("fileinto text:\r\n/* x\r\n.\r\n;\r\nvacation \"y\"; # */", "vacation"));
   }
 
@@ -80,7 +80,7 @@ public class SieveTokenScanTest {
    * the extension is not an include.
    */
   @Test
-  public void testUnreadableIncludes() {
+  void testUnreadableIncludes() {
     assertFalse(SieveTokenScan.hasUnreadableInclude("require [\"include\"];\r\ninclude :personal \"a\";"));
     assertTrue(SieveTokenScan.hasUnreadableInclude("require [\"include\"];\r\ninclude :global \"g\";"));
     assertTrue(SieveTokenScan.hasUnreadableInclude("require [\"include\", \"variables\"];\r\ninclude \"${name}\";"));
@@ -94,10 +94,31 @@ public class SieveTokenScanTest {
    * Personal includes are listed, unescaped; global ones and commented ones are not.
    */
   @Test
-  public void testIncludedPersonalScripts() {
-    String script = "require [\"include\"];\r\ninclude :personal \"a\";\r\ninclude :global \"g\";\r\n"
-        + "include :once \"b\\\"c\";\r\n# include \"d\"\r\ninclude \"e\";";
+  void testIncludedPersonalScripts() {
+    String script = """
+        require ["include"];\r
+        include :personal "a";\r
+        include :global "g";\r
+        include :once "b\\"c";\r
+        # include "d"\r
+        include "e";""";
     assertEquals(List.of("a", "b\"c", "e"), SieveTokenScan.includedPersonalScripts(script));
     assertEquals(List.of(), SieveTokenScan.includedPersonalScripts(null));
+  }
+
+  /**
+   * A script of several megabytes — one huge quoted include name full of escapes, and a
+   * huge string outside any include — is scanned without a stack overflow, and the
+   * answers are the ones a small script gets.
+   */
+  @Test
+  void testScansAVeryLargeScriptWithoutStackOverflow() {
+    String name = "a\\\"".repeat(400_000);
+    String script = "require [\"include\"];\r\ninclude :personal \"" + name + "\";\r\nfileinto \""
+        + "x\\\"".repeat(400_000) + "\";\r\n";
+    assertTrue(script.length() > 2_000_000);
+    assertEquals(List.of("a\"".repeat(400_000)), SieveTokenScan.includedPersonalScripts(script));
+    assertTrue(SieveTokenScan.includesAnything(script));
+    assertFalse(SieveTokenScan.hasUnreadableInclude(script));
   }
 }

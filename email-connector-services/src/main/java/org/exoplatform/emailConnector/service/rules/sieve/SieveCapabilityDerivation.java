@@ -16,7 +16,7 @@
  */
 package org.exoplatform.emailConnector.service.rules.sieve;
 
-import static org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport.SUPPORTED;
+import static org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport.SUPPORTED_ELEMENT;
 import static org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport.unsupported;
 
 import java.util.LinkedHashMap;
@@ -84,13 +84,13 @@ public final class SieveCapabilityDerivation {
     elements.put(ServerRuleCapabilities.VACATION_DATE_WINDOW,
                  vacation.supported() ? both(needs(capabilities, "date"), needs(capabilities, "relational")) : vacation);
     elements.put(ServerRuleCapabilities.VACATION_HTML, unsupported(NOT_IN_PHASE_1));
-    elements.put(ServerRuleCapabilities.FORWARDING_READ, SUPPORTED);
+    elements.put(ServerRuleCapabilities.FORWARDING_READ, SUPPORTED_ELEMENT);
     elements.put(ServerRuleCapabilities.FORWARDING_WRITE, unsupported(NOT_IN_PHASE_1));
     elements.put(ServerRuleCapabilities.READS_FOREIGN_VACATION, unsupported(FOREIGN_OPAQUE));
     for (String core : new String[] { ServerRuleCapabilities.FROM, ServerRuleCapabilities.TO, ServerRuleCapabilities.CC,
         ServerRuleCapabilities.ANY_RECIPIENT, ServerRuleCapabilities.SUBJECT, ServerRuleCapabilities.HEADER,
         ServerRuleCapabilities.MESSAGE_SIZE, ServerRuleCapabilities.IS_LIST, ServerRuleCapabilities.IS_AUTOMATED }) {
-      elements.put(core, SUPPORTED);
+      elements.put(core, SUPPORTED_ELEMENT);
     }
     ElementSupport body = needs(capabilities, "body");
     elements.put(ServerRuleCapabilities.BODY, body);
@@ -117,7 +117,7 @@ public final class SieveCapabilityDerivation {
    * @return supported when advertised, else unsupported naming the extension
    */
   private static ElementSupport needs(ManageSieveCapabilities capabilities, String extension) {
-    return capabilities.hasExtension(extension) ? SUPPORTED : unsupported(MISSING_EXTENSION + extension);
+    return capabilities.hasExtension(extension) ? SUPPORTED_ELEMENT : unsupported(MISSING_EXTENSION + extension);
   }
 
   /**
