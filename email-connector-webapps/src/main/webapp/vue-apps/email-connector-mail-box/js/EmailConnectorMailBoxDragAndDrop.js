@@ -251,7 +251,6 @@ export function showDragPicture(label, event) {
     pointerEvents: 'none',
     padding: '6px 12px',
     borderRadius: '16px',
-    font: '14px sans-serif',
     whiteSpace: 'nowrap',
     color: '#fff',
     background: 'var(--allPagesPrimaryColor, #578dc9)',
