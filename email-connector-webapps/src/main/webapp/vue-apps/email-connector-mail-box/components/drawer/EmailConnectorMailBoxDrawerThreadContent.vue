@@ -436,12 +436,12 @@ export default {
         provisional: true,
       });
     },
-    // Patch the favorite flag on this conversation's INBOX messages (favorite ids are
-    // INBOX UIDs; the same number in another folder is a different message).
-    applyFavoriteStatus(favorite, mailRemoteIds = []) {
+    // Patch the favorite flag on this conversation's messages of `folder` only: favorite
+    // ids are UIDs within that folder, and the same number elsewhere is another message.
+    applyFavoriteStatus(favorite, mailRemoteIds = [], folder = 'INBOX') {
       const ids = new Set(mailRemoteIds);
       this.messages.forEach(message => {
-        if ((message.folder || 'INBOX') === 'INBOX' && ids.has(message.mailRemoteId)) {
+        if ((message.folder || 'INBOX') === folder && ids.has(message.mailRemoteId)) {
           this.$set(message, 'starred', favorite);
         }
       });

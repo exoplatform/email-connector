@@ -1529,15 +1529,18 @@ export function updateEmailsReadStatus(mailRemoteIds, readStatus, folder) {
  * assuming the push succeeded: a favorite left lit that the server rejected would
  * silently vanish at the next synchronization.
  *
- * @param {Array<Number>} mailRemoteIds the INBOX IMAP UIDs of the messages
+ * @param {Array<Number>} mailRemoteIds the IMAP UIDs of the messages, within `folder`
  * @param {Boolean} favorite true to favorite, false to unfavorite
+ * @param {String} folder the folder the messages are listed in (INBOX when omitted): a
+ *          UID numbers a message within one folder, so it is part of the address
  * @returns {Promise} resolves with { failedUpdates }
  */
-export function updateEmailsFavoriteStatus(mailRemoteIds, favorite) {
+export function updateEmailsFavoriteStatus(mailRemoteIds, favorite, folder) {
   // The endpoint keeps the server's own vocabulary: it pushes the IMAP \Flagged
   // flag, so its path and parameter are named after it. Only what the user reads
   // says "favorite".
-  return fetch(`/email-connector/rest/email-box/starred?starred=${favorite}`, {
+  const folderParam = folder && folder !== 'INBOX' ? `&folder=${encodeURIComponent(folder)}` : '';
+  return fetch(`/email-connector/rest/email-box/starred?starred=${favorite}${folderParam}`, {
     headers: {
       'Content-Type': 'application/json'
     },
