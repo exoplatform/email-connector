@@ -144,6 +144,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 }"
                 :favorite="threadFavorite"
                 :can-toggle="canToggleFavorite && !selectMode"
+                :shared-owner="starSharedOwner"
                 class="me-1"
                 :size="18"
                 @toggle="toggleThreadFavorite" />
@@ -401,10 +402,20 @@ export default {
       return this.$emailConnectorMailBoxService.threadRowsInFolder(this.email, this.thread).some(message => message.starred);
     },
     // The favorite is pushed to the row's own folder, so every folder can toggle it but
-    // the read-only ones (Trash, Spam), where no action writes to the mail server; and
-    // never on a draft, which may have no message on the server to carry the flag.
+    // the read-only ones (Trash, Spam) and Drafts, and in a shared mailbox only where the
+    // user holds w (canStar, EXO-90550); never on a draft, which may have no message on
+    // the server to carry the flag.
     canToggleFavorite() {
-      return !this.readOnly && !this.isDraft;
+      return this.$emailConnectorMailBoxService.canStar(this.email.folder) && !this.isDraft;
+    },
+    /**
+     * The owner of the shared mailbox this message is in, whose star it also sets
+     * (EXO-90550) -- said on the star; empty in the user's own mailbox.
+     *
+     * @returns {String} the owner's name, or empty
+     */
+    starSharedOwner() {
+      return this.$emailConnectorMailBoxService.sharedMailboxOfFolder(this.email.folder)?.ownerFullName || '';
     },
     /**
      * Whether this row sits in a folder the interface may only read (Trash, Spam),
