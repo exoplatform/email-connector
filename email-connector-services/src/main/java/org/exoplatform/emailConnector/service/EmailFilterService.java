@@ -1598,7 +1598,8 @@ public class EmailFilterService {
       // A mail gone from the inbox is the handler's to end (MAIL_GONE); there is nothing to read.
       flagged = inInbox == null || inInbox.getMailRemoteId() == null ? Boolean.FALSE
                                                                      : emailBoxService.isFlaggedAsSpamOnServer(username,
-                                                                                                               inInbox.getMailRemoteId());
+                                                                                                               inInbox.getMailRemoteId(),
+                                                                                                               mailHeaderId);
     } catch (IllegalAccessException e) {
       // The owner may no longer read the mailbox: the handler's own read refuses it too.
       return null;
