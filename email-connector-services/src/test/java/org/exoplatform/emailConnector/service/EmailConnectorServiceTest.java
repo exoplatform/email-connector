@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -896,6 +897,34 @@ public class EmailConnectorServiceTest {
     verify(emailConnectorStorage).deleteEmailConnector(7L);
   }
 
+  /**
+   * When removing the connector just created fails too, the administrator still gets
+   * the configuration's own refusal - the provider's message code, a 400 the drawer
+   * translates - with the failed removal attached, not replaced by it.
+   */
+  @Test
+  @SneakyThrows
+  void aFailedRemovalKeepsTheConfigurationErrorOnCreate() {
+    grantAdministration();
+    EmailConnector posted = emailConnector();
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.createEmailConnector(posted)).thenReturn(stored);
+    doThrow(new ConnectorCredentialsException("connector.credentials.configurationCodecFailure")).when(providerConfigStorage)
+                                                                                                 .store(any(), any());
+    IllegalStateException removalFailure = new IllegalStateException("delete failed");
+    doThrow(removalFailure).when(emailConnectorStorage).deleteEmailConnector(7L);
+
+    IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailConnectorService.createEmailConnector(posted, TEST_USER));
+
+    assertEquals("connector.credentials.configurationCodecFailure", thrown.getMessage());
+    assertSame(removalFailure, thrown.getSuppressed()[0]);
+  }
+
   /** A configuration stored without failure keeps the connector it was written for. */
   @Test
   @SneakyThrows
@@ -984,6 +1013,34 @@ public class EmailConnectorServiceTest {
     verify(providerConfigStorage).delete(argThat(context -> context.getConnectorId() == 7L
         && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())));
     verify(providerConfigStorage, never()).delete(argThat(context -> "personal-imap".equals(context.getConnectorCredentialsProviderName())));
+  }
+
+  /**
+   * When removing the new provider's configuration fails too, the caller still gets the
+   * row write's own error, with the failed removal attached, not replaced by it.
+   */
+  @Test
+  @SneakyThrows
+  void aFailedRemovalKeepsTheRowWriteErrorOnUpdate() {
+    grantAdministration();
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("personal-imap");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+    EmailConnector posted = emailConnector();
+    posted.setId(7L);
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+    IllegalStateException rowFailure = new IllegalStateException("row write failed");
+    doThrow(rowFailure).when(emailConnectorStorage).updateEmailConnector(posted);
+    IllegalStateException removalFailure = new IllegalStateException("delete failed");
+    doThrow(removalFailure).when(providerConfigStorage).delete(any());
+
+    IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                                                 () -> emailConnectorService.updateEmailConnector(posted, TEST_USER));
+
+    assertSame(rowFailure, thrown);
+    assertSame(removalFailure, thrown.getSuppressed()[0]);
   }
 
   /**
