@@ -22,6 +22,8 @@
 // folder drops are the existing move, delete and spam events, handled where the
 // buttons' are.
 
+import { endDrag } from './EmailConnectorMailBoxDragAndDrop.js';
+
 export default {
   data: () => ({
     // The mail being dragged from the full-screen list, {folder, ids}; null when none is.
@@ -65,12 +67,14 @@ export default {
       this.emailDrag = payload || null;
     },
     /**
-     * Forgets the mail being dragged.
+     * Forgets the mail being dragged, and takes the picture following the pointer out
+     * of the page (EXO-90460): however the drag ended, nothing of it stays visible.
      *
      * @returns {void}
      */
     endEmailDrag() {
       this.emailDrag = null;
+      endDrag();
     },
     /**
      * Assigns a category to mail dropped on it: the category bar's assignment, addressed
