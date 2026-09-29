@@ -21,14 +21,17 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.stream.LongStream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -39,6 +42,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.manager.IdentityManager;
@@ -154,7 +158,7 @@ public class EmailFavoriteServiceTest {
     // The read of the flagged mails is inside the guarded block: a failure there
     // leaves the drawer as it was instead of failing the sync that called this.
     givenUserIdentity();
-    doThrow(new RuntimeException("storage unavailable")).when(emailBoxStorage).getStarredEmails(anyString(), anyString());
+    doThrow(new RuntimeException("storage unavailable")).when(emailBoxStorage).getStarredEmailKeys(anyString(), anyList());
 
     emailFavoriteService.reconcileFavorites(USERNAME);
 
@@ -172,6 +176,85 @@ public class EmailFavoriteServiceTest {
     emailFavoriteService.reconcileFavorites(USERNAME);
 
     verify(favoriteService, times(1)).deleteFavorite(any());
+  }
+
+  /**
+   * A starred mail stays a favorite whatever folder it is filed in: every folder is
+   * read but Trash, Spam, All Mail and Drafts.
+   */
+  @Test
+  public void reconcileFavoritesReadsEveryFolderButTrashSpamAllMailAndDrafts() throws Exception {
+    givenUserIdentity();
+    when(emailBoxStorage.getStarredEmailKeys(USERNAME, MailFolder.NOT_FAVORITED_FOLDERS)).thenReturn(List.of(starred(11L, "CUSTOM:6", "<a@host>")));
+    givenFavoritedEmailIds();
+
+    emailFavoriteService.reconcileFavorites(USERNAME);
+
+    ArgumentCaptor<Favorite> created = ArgumentCaptor.forClass(Favorite.class);
+    verify(favoriteService, times(1)).createFavorite(created.capture());
+    assertEquals("11", created.getValue().getObjectId(), "a mail starred in a user folder is a favorite");
+    assertEquals(List.of(MailFolder.TRASH, MailFolder.JUNK, MailFolder.ALL_MAIL, MailFolder.DRAFTS), MailFolder.NOT_FAVORITED_FOLDERS);
+  }
+
+  /**
+   * One message cached in two folders is one favorite, the INBOX row first; rows with no
+   * Message-ID cannot be told apart and each count.
+   */
+  @Test
+  public void reconcileFavoritesCountsAMessageCachedInTwoFoldersOnce() throws Exception {
+    givenUserIdentity();
+    when(emailBoxStorage.getStarredEmailKeys(anyString(), anyList())).thenReturn(List.of(starred(21L, "CUSTOM:6", "<same@host>"),
+                                                                                        starred(22L, MailFolder.INBOX, "<same@host>"),
+                                                                                        starred(23L, MailFolder.SENT, null),
+                                                                                        starred(24L, MailFolder.ARCHIVE, null)));
+    givenFavoritedEmailIds();
+
+    emailFavoriteService.reconcileFavorites(USERNAME);
+
+    ArgumentCaptor<Favorite> created = ArgumentCaptor.forClass(Favorite.class);
+    verify(favoriteService, times(3)).createFavorite(created.capture());
+    assertEquals(java.util.Set.of("22", "23", "24"),
+                 created.getAllValues().stream().map(Favorite::getObjectId).collect(java.util.stream.Collectors.toSet()));
+  }
+
+  /**
+   * Two copies of one message, neither in the INBOX: the favorite stands on the lowest
+   * id whatever order the rows are read in, so it never moves between two reconciliations.
+   */
+  @Test
+  public void reconcileFavoritesKeepsTheSameCopyWhateverTheReadingOrder() throws Exception {
+    givenUserIdentity();
+    givenFavoritedEmailIds();
+    for (List<Email> rows : List.of(List.of(starred(41L, "CUSTOM:6", "<m@host>"), starred(40L, MailFolder.ARCHIVE, "<m@host>")),
+                                    List.of(starred(40L, MailFolder.ARCHIVE, "<m@host>"), starred(41L, "CUSTOM:6", "<m@host>")))) {
+      reset(favoriteService);
+      when(emailBoxStorage.getStarredEmailKeys(anyString(), anyList())).thenReturn(rows);
+
+      emailFavoriteService.reconcileFavorites(USERNAME);
+
+      ArgumentCaptor<Favorite> created = ArgumentCaptor.forClass(Favorite.class);
+      verify(favoriteService, times(1)).createFavorite(created.capture());
+      assertEquals("40", created.getValue().getObjectId());
+    }
+  }
+
+  /**
+   * The flagged side stops where the favorites read back beside it stop: past that
+   * ceiling the two sides would never match again, and every reconciliation would
+   * try to create the same favorites anew.
+   */
+  @Test
+  public void reconcileFavoritesReadsNoMoreFlaggedMailsThanFavoritesItReadsBack() throws Exception {
+    givenUserIdentity();
+    givenFavoritedEmailIds();
+    List<Email> rows = LongStream.rangeClosed(1, 501).mapToObj(id -> starred(id, MailFolder.INBOX, "<" + id + "@host>")).toList();
+    when(emailBoxStorage.getStarredEmailKeys(anyString(), anyList())).thenReturn(rows);
+
+    emailFavoriteService.reconcileFavorites(USERNAME);
+
+    ArgumentCaptor<Favorite> created = ArgumentCaptor.forClass(Favorite.class);
+    verify(favoriteService, times(500)).createFavorite(created.capture());
+    assertFalse(created.getAllValues().stream().anyMatch(favorite -> "501".equals(favorite.getObjectId())), "the oldest one is past the ceiling");
   }
 
   @Test
@@ -229,7 +312,24 @@ public class EmailFavoriteServiceTest {
       email.setStarred(true);
       return email;
     }).toList();
-    when(emailBoxStorage.getStarredEmails(anyString(), anyString())).thenReturn(emails);
+    when(emailBoxStorage.getStarredEmailKeys(anyString(), anyList())).thenReturn(emails);
+  }
+
+  /**
+   * Mocks one starred row, in its folder and with its Message-ID.
+   *
+   * @param id the row's technical id
+   * @param folder the folder it is cached in
+   * @param mailHeaderId its Message-ID, null when it has none
+   * @return the row
+   */
+  private static Email starred(long id, String folder, String mailHeaderId) {
+    Email email = new Email();
+    email.setId(id);
+    email.setFolder(folder);
+    email.setMailHeaderId(mailHeaderId);
+    email.setStarred(true);
+    return email;
   }
 
   /**

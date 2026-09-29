@@ -113,6 +113,8 @@
   </v-hover>
 </template>
 <script>
+import { isDraftsFolder, isListedFolder, isReadOnlyFolder, updateEmailsFavoriteStatus } from '../../email-connector-mail-box/js/EmailConnectorMailBoxService.js';
+
 const HTML_ENTITIES = {
   '&': '&amp;',
   '<': '&lt;',
@@ -162,10 +164,11 @@ export default {
         || this.$t('emailConnector.mailBox.list.drawer.detail.addFavorite.label');
     },
     canFavorite() {
-      // The flag is pushed through the INBOX, so only inbox mail can be favorited
-      // from here -- the same rule the mailbox itself applies. A Sent or Archive hit
-      // simply offers nothing.
-      return !this.result?.folder || this.result.folder === 'INBOX';
+      // The flag is pushed to the hit's own folder, so every hit can be favorited but
+      // a read-only folder's (Trash, Spam) or a draft's -- the same rule the mailbox itself
+      // applies -- and an All Mail hit's: the Favorites drawer leaves that folder out, so a
+      // star set there would not show in it before the mail's own folder is synced again.
+      return isListedFolder(this.result?.folder) && !isReadOnlyFolder(this.result?.folder) && !isDraftsFolder(this.result?.folder);
     },
     unread() {
       return this.result && !this.result.read;
@@ -207,17 +210,7 @@ export default {
     toggleFavorite() {
       const wanted = !this.favorite;
       this.toggled = wanted;
-      fetch(`/email-connector/rest/email-box/starred?starred=${wanted}`, {
-        headers: {'Content-Type': 'application/json'},
-        credentials: 'include',
-        method: 'PATCH',
-        body: JSON.stringify([this.result?.mailRemoteId]),
-      }).then(response => {
-        if (!response?.ok) {
-          throw new Error('The favorite could not be updated');
-        }
-        return response.json();
-      }).then(result => {
+      updateEmailsFavoriteStatus([this.result?.mailRemoteId], wanted, this.result?.folder).then(result => {
         // The endpoint answers {"failedUpdates": n}, not a bare number. Reading the
         // object as one made every success look like a refusal: the flag was written
         // on the server and the star put straight back here.
