@@ -20,8 +20,10 @@ import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.emailConnector.event.EmailManagedModeChangedEvent;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailManagedMode;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
@@ -64,6 +66,9 @@ public class EmailManagedModeService {
 
   @Autowired
   private EmailConnectorStorage   emailConnectorStorage;
+
+  @Autowired
+  private ApplicationEventPublisher eventPublisher;
 
   /**
    * The connector the instance points everybody at, when managed mode is on.
@@ -111,6 +116,21 @@ public class EmailManagedModeService {
       return null;
     }
     return managedConnectorService.designatedConnectorFor(EmailCredentialsResolver.CONNECTOR_KIND, username);
+  }
+
+  /**
+   * The connector managed mode governs this user with in the stored state, for a
+   * decision that disconnects them: the same rule as
+   * {@link #designatedConnectorFor(String)}, except that a user whose identity cannot
+   * be resolved is refused rather than counted as excluded.
+   *
+   * @param username the eXo login
+   * @return the designated connector's id, or null when managed mode does not apply
+   * @throws IllegalStateException when exclusions apply and the identity cannot be
+   *           resolved
+   */
+  public Long governingConnectorFor(String username) {
+    return managedConnectorService.designatedConnectorFor(getManagedConnectorId(), getExcludedGroups(), username);
   }
 
   /**
@@ -164,19 +184,23 @@ public class EmailManagedModeService {
                                       connector.getAuthProviderName(),
                                       excludedGroups,
                                       username);
+    // The users managed mode attached are checked against what was just stored: another
+    // connector, or a newly excluded group, disconnects them.
+    eventPublisher.publishEvent(new EmailManagedModeChangedEvent());
   }
 
   /**
    * Switches managed mode off: users choose their own connector again, and the
-   * exclusions go with the designation they qualified. Accounts already connected are
-   * untouched — nobody is detached and nothing synchronised is removed by this; what an
-   * administrator's change does to the users it attached is EXO-89654's.
+   * exclusions go with the designation they qualified. The users managed mode attached
+   * are disconnected in the background; the users who chose a connector
+   * themselves keep it.
    *
    * @param username the eXo login of the caller
    * @throws IllegalAccessException when the caller is not an administrator
    */
   public void clearManagedConnector(String username) throws IllegalAccessException {
     managedConnectorService.clearDesignation(EmailCredentialsResolver.CONNECTOR_KIND, username);
+    eventPublisher.publishEvent(new EmailManagedModeChangedEvent());
   }
 
   /**

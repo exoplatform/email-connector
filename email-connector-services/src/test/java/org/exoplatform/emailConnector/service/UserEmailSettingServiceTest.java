@@ -830,7 +830,9 @@ public class UserEmailSettingServiceTest {
   @Test
   void deleteUserEmailSetting() {
     userEmailSettingService.deleteUserEmailSetting(TEST_USER);
-    verify(settingService).remove(any(Context.class), any(Scope.class), anyString());
+    verify(settingService).remove(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY));
+    // The managed-mode mark goes with the connection it marked.
+    verify(settingService).remove(any(Context.class), any(Scope.class), eq(UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY));
     // Disconnecting takes the signature along -- its own settings document and its
     // uploaded image file, which nothing else would ever clean up.
     verify(emailSignatureService).deleteEmailSignature(TEST_USER);
@@ -972,6 +974,134 @@ public class UserEmailSettingServiceTest {
     when(emailConnectorService.getActiveEmailConnectors()).thenReturn(list);
     userEmailSettingService.getUserEmailConnectors(frLocale, TEST_USER);
     verify(translationService).getTranslationLabelOrDefault(anyString(), anyLong(), anyString(), any(Locale.class));
+  }
+
+  /** A connection managed mode makes at login is marked as such. */
+  @Test
+  @SneakyThrows
+  void aConnectionManagedModeMakesIsMarked() {
+    connectThroughTheProvider(() -> userEmailSettingService.connectThroughProvider(1L, TEST_USER, true));
+
+    ArgumentCaptor<SettingValue> mark = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class),
+                               eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE),
+                               eq(UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY),
+                               mark.capture());
+    assertEquals("true", mark.getValue().getValue());
+  }
+
+  /**
+   * A one-click connection the user makes clears the mark, even on the
+   * connector managed mode had attached them to: it is their own choice from then on.
+   */
+  @Test
+  @SneakyThrows
+  void aOneClickConnectionTheUserMakesClearsTheMark() {
+    connectThroughTheProvider(() -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    verify(settingService).remove(any(Context.class),
+                                  eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE),
+                                  eq(UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY));
+    verify(settingService, never()).set(any(Context.class),
+                                        any(Scope.class),
+                                        eq(UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY),
+                                        any(SettingValue.class));
+  }
+
+  /** A connection the user makes with their password clears the mark too. */
+  @Test
+  @SneakyThrows
+  void aTypedConnectionClearsTheMark() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
+    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      when(session.getStore()).thenReturn(mock(Store.class));
+
+      userEmailSettingService.connectUserEmailSetting(userEmailSetting(), TEST_USER, false);
+    }
+
+    verify(settingService).remove(any(Context.class),
+                                  eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE),
+                                  eq(UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY));
+  }
+
+  /** The users managed mode attached are one query on the mark: no user document is read. */
+  @Test
+  void theUsersManagedModeAttachedAreOneQueryOnTheMark() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName("USER",
+                                                                "APPLICATION",
+                                                                "EMAIL_CONNECTOR_SCOPE",
+                                                                UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY,
+                                                                0,
+                                                                Integer.MAX_VALUE))
+        .thenReturn(List.of(Context.USER.id("alice"), Context.USER.id("bob")));
+
+    assertEquals(List.of("alice", "bob"), userEmailSettingService.getUsersConnectedByManagedMode());
+    verify(settingService, never()).get(any(Context.class), any(Scope.class), anyString());
+  }
+
+  /**
+   * The users of a connector are found from their documents alone: no
+   * password is decoded and no connector is loaded, which a walk over every user
+   * cannot afford.
+   */
+  @Test
+  void theUsersOfAConnectorAreFoundWithoutDecodingOrLoadingTheConnector() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(), anyInt(), anyInt()))
+        .thenReturn(List.of(Context.USER.id("alice"), Context.USER.id("bob"), Context.USER.id("carol")));
+    storedDocument("alice", "{\"emailConnectorId\":\"3\",\"emailPassword\":\"cipher\"}");
+    storedDocument("bob", "{\"emailConnectorId\":\"4\"}");
+    when(settingService.get(Context.USER.id("carol"), UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, UserEmailSettingService.USER_EMAIL_SETTING_KEY))
+        .thenReturn(null);
+
+    assertEquals(List.of("alice"), userEmailSettingService.getUserEmailSettingsByEmailConnectorId(3L));
+    verifyNoInteractions(codecInitializer, emailConnectorService);
+  }
+
+  /**
+   * A document that cannot be parsed leaves its user out of the walk; the
+   * other users of the connector are still found.
+   */
+  @Test
+  void aMalformedDocumentLeavesItsUserOutOfTheUsersOfAConnector() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(), anyInt(), anyInt()))
+        .thenReturn(List.of(Context.USER.id("alice"), Context.USER.id("bob"), Context.USER.id("carol")));
+    storedDocument("alice", "{\"emailConnectorId\":\"3\"}");
+    storedDocument("bob", "{not a json document");
+    storedDocument("carol", "{\"emailConnectorId\":\"3\"}");
+
+    assertEquals(List.of("alice", "carol"), userEmailSettingService.getUserEmailSettingsByEmailConnectorId(3L));
+  }
+
+  private void storedDocument(String user, String json) {
+    SettingValue value = mock(SettingValue.class);
+    when(value.getValue()).thenReturn(json);
+    when(settingService.get(Context.USER.id(user), UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, UserEmailSettingService.USER_EMAIL_SETTING_KEY))
+        .thenReturn(value);
+  }
+
+  @FunctionalInterface
+  private interface ThrowingRunnable {
+    void run() throws Exception;
+  }
+
+  @SneakyThrows
+  private void connectThroughTheProvider(ThrowingRunnable connect) {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
+    when(emailCredentialsResolver.targetAccount(1L, "bluemind-sudo", TEST_USER)).thenReturn("eric@bm.example.org");
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any())).thenReturn(mock(Authenticator.class));
+    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      when(session.getStore()).thenReturn(mock(Store.class));
+      connect.run();
+    }
   }
 
   /**
