@@ -450,15 +450,15 @@ public class EmailFilterStorage {
   }
 
   /**
-   * How many assistant runs a user's matches were queued for since a date.
+   * How many of a user's matches had their assistant called since a date.
    *
    * @param userId the owner
-   * @param statuses the statuses of a queued run
+   * @param statuses the statuses of a match whose assistant was called
    * @param since the date
    * @return the count
    */
-  public long countQueuedSince(String userId, Collection<String> statuses, Date since) {
-    return emailFilterMatchDAO.countQueuedSince(userId, statuses, since);
+  public long countAgentRunsSince(String userId, Collection<String> statuses, Date since) {
+    return emailFilterMatchDAO.countAgentRunsSince(userId, statuses, since);
   }
 
   /**
