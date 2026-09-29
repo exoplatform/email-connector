@@ -44,6 +44,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.util.Date;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -82,6 +83,7 @@ import org.exoplatform.emailConnector.model.ReadReceiptPrompt;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.FavoriteRemoval;
 import org.exoplatform.emailConnector.model.ScheduledEmail;
 import org.exoplatform.emailConnector.model.ScheduledSendStatus;
 import org.exoplatform.emailConnector.model.EmailAttachment;
@@ -257,13 +259,21 @@ public class EmailBoxRestTest {
     emailIds = List.of(123L, 456L, 789L);
     // The count of remote failures is the one part of this endpoint's contract the front end
     // reads: it drives the rollback of the optimistic star. Pin the payload, not just the status.
-    when(emailBoxService.updateEmailStarredStatus(emailIds, SIMPLE_USER, true, true)).thenReturn(2);
+    when(emailBoxService.updateEmailStarredStatus(emailIds, SIMPLE_USER, "INBOX", true, true)).thenReturn(2);
     response = mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=true").with(testSimpleUser())
                                                                               .content(asJsonString(emailIds))
                                                                               .contentType(MediaType.APPLICATION_JSON)
                                                                               .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk()).andExpect(jsonPath("$.failedUpdates").value(2));
-    verify(emailBoxService).updateEmailStarredStatus(emailIds, SIMPLE_USER, true, true);
+    verify(emailBoxService).updateEmailStarredStatus(emailIds, SIMPLE_USER, "INBOX", true, true);
+    // And the row's own folder when it is not the inbox: a star toggled in a user
+    // folder is addressed there, where its UID means that message.
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=false&folder=CUSTOM:6").with(testSimpleUser())
+                                                                                     .content(asJsonString(emailIds))
+                                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                                     .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailBoxService).updateEmailStarredStatus(emailIds, SIMPLE_USER, "CUSTOM:6", false, true);
   }
 
   @Test
@@ -532,6 +542,34 @@ public class EmailBoxRestTest {
     doThrow(IllegalAccessException.class).when(emailBoxService).getOwnedEmailById(anyLong(), anyString());
     response = mockMvc.perform(get(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser()));
     response.andExpect(status().isNotFound());
+  }
+
+  @Test
+  void removeFavoriteEmail() throws Exception {
+    // An id the mailbox no longer has, and somebody else's mail: both missing, never forbidden.
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser())).andExpect(status().isNotFound());
+    Email favorite = new Email();
+    favorite.setId(121L);
+    when(emailBoxService.getOwnedEmailById(121L, SIMPLE_USER)).thenReturn(favorite);
+    when(emailBoxService.unstarFavorite(favorite, SIMPLE_USER)).thenReturn(new FavoriteRemoval(1,
+                                                                                               Map.of("CUSTOM:6", List.of(77L),
+                                                                                                      MailFolder.INBOX, List.of(1212L))));
+
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.failedUpdates").value(1))
+           .andExpect(jsonPath("$.unstarred['CUSTOM:6'][0]").value(77))
+           .andExpect(jsonPath("$.unstarred.INBOX[0]").value(1212));
+    verify(emailBoxService).unstarFavorite(favorite, SIMPLE_USER);
+
+    // A mailbox the caller cannot connect, and a mail server that cannot be reached.
+    doThrow(IllegalAccessException.class).when(emailBoxService).unstarFavorite(favorite, SIMPLE_USER);
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser())).andExpect(status().isUnauthorized());
+    doThrow(IllegalStateException.class).when(emailBoxService).unstarFavorite(favorite, SIMPLE_USER);
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser())).andExpect(status().isInternalServerError());
+
+    doThrow(IllegalAccessException.class).when(emailBoxService).getOwnedEmailById(anyLong(), anyString());
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser())).andExpect(status().isNotFound());
   }
 
   @Test

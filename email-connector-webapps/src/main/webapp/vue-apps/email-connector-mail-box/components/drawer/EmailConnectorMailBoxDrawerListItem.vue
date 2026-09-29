@@ -395,15 +395,16 @@ export default {
     threadUnread() {
       return this.thread ? this.thread.unreadCount > 0 : !this.email.read;
     },
-    // A thread shows the favorite when any of its listed messages carries the flag,
-    // the same any-of rule as unread.
+    // A thread shows the favorite when any of its messages in the row's own folder carries
+    // the flag: the ones the star's click changes (a search row may gather other folders').
     threadFavorite() {
-      return this.thread ? this.thread.emails.some(message => message.starred) : !!this.email.starred;
+      return this.$emailConnectorMailBoxService.threadRowsInFolder(this.email, this.thread).some(message => message.starred);
     },
-    // The favorite is pushed through the INBOX folder, so only inbox rows can toggle
-    // it; in Sent/Archive/Trash it stays a read-only indicator.
+    // The favorite is pushed to the row's own folder, so every folder can toggle it but
+    // the read-only ones (Trash, Spam), where no action writes to the mail server; and
+    // never on a draft, which may have no message on the server to carry the flag.
     canToggleFavorite() {
-      return (this.email.folder || 'INBOX') === 'INBOX';
+      return !this.readOnly && !this.isDraft;
     },
     /**
      * Whether this row sits in a folder the interface may only read (Trash, Spam),
@@ -504,10 +505,12 @@ export default {
           selected,
         }));
     },
-    // Favorite/unfavorite the whole row, i.e. every listed message of the thread —
-    // matching how the row's read/unread action treats a conversation.
+    // Favorite/unfavorite the whole row, i.e. every message of the thread in the row's
+    // own folder: the flag is pushed to that folder, where only those UIDs mean these
+    // messages -- the same scoping as the row's menu.
     toggleThreadFavorite() {
-      this.$root.$emit('update-email-favorite-status', !this.threadFavorite, this.threadIds);
+      this.$root.$emit('update-email-favorite-status', !this.threadFavorite,
+        this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread), this.email.folder || 'INBOX');
     },
     openDetail() {
       if (this.selectMode) {
