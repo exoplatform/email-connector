@@ -554,6 +554,50 @@ export function saveManagedMode(connectorId, excludedGroups = []) {
 }
 
 /**
+ * Counts, before anything is stored, the accounts a managed-mode change would
+ * disconnect: the users managed mode attached that the proposed state no longer
+ * governs. Administrators only.
+ *
+ * @param {Number} connectorId the connector the change designates, null to preview switching off
+ * @param {Array<String>} excludedGroups eXo group ids the change excludes
+ * @returns {Promise<Number>} the number of accounts the change would disconnect
+ */
+export function previewManagedMode(connectorId, excludedGroups = []) {
+  return fetch('/email-connector/rest/connectors/managed/preview', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify({connectorId, excludedGroups}),
+    method: 'POST'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json().then(preview => preview.affectedAccounts);
+    }
+    throw new Error('Error when counting the accounts a managed-mode change disconnects');
+  });
+}
+
+/**
+ * Counts the users connected to a connector: what moving it to another credentials
+ * provider would disconnect. Administrators only.
+ *
+ * @param {Number} connectorId technical identifier of the connector
+ * @returns {Promise<Number>} the number of users connected to it
+ */
+export function countConnectedUsers(connectorId) {
+  return fetch(`/email-connector/rest/connectors/${connectorId}/connected-users/count`, {
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json().then(preview => preview.affectedAccounts);
+    }
+    throw new Error('Error when counting the users of a mail connector');
+  });
+}
+
+/**
  * Gives every user back the choice of their own mail connector. Administrators only.
  *
  * @returns {Promise<Object>} the mode now in force, which names no connector
