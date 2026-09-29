@@ -43,6 +43,7 @@ import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.EmailFilter;
 import org.exoplatform.emailConnector.model.EmailFilterMatch;
 import org.exoplatform.emailConnector.model.EmailFilterProposal;
+import org.exoplatform.emailConnector.model.EmailFilterSuggestionCounts;
 import org.exoplatform.emailConnector.model.FilterApplyReport;
 import org.exoplatform.emailConnector.model.FilterPreview;
 import org.exoplatform.emailConnector.model.ServerRule;
@@ -780,6 +781,29 @@ public class EmailFilterRest {
                                       @RequestParam(name = "delegationId", required = false)
                                       Long delegationId) {
     return read(() -> emailFilterProposalService.getWaitingMails(request.getRemoteUser(), delegationId));
+  }
+
+  /**
+   * What the caller decided on each of their rules' suggestions.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param delegationId the share the request is made from; refused
+   * @return the counts, one per rule that has any
+   */
+  @GetMapping("/proposals/counts")
+  @Secured("users")
+  @Operation(summary = "Counts the caller's decisions on each rule's suggestions", method = "GET",
+      description = "Per rule (filterId): how many of its assistant's suggestions were approved (whatever the tool then did), "
+          + "rejected, expired unanswered (not those a later run set aside), continued in the chat, and how many still wait. "
+          + "Counted over the rules' log retention. Own mailbox only.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = FORBIDDEN_DESCRIPTION),
+      @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected") })
+  public List<EmailFilterSuggestionCounts> getSuggestionCounts(HttpServletRequest request,
+                                                               @Parameter(description = DELEGATION_DESCRIPTION)
+                                                               @RequestParam(name = "delegationId", required = false)
+                                                               Long delegationId) {
+    return read(() -> emailFilterProposalService.getSuggestionCounts(request.getRemoteUser(), delegationId));
   }
 
   /**

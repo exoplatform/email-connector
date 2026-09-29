@@ -25,8 +25,11 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Clock;
@@ -46,6 +49,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -54,6 +58,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.model.EmailFilterMatch;
 import org.exoplatform.emailConnector.model.EmailFilterProposal;
+import org.exoplatform.emailConnector.model.EmailFilterSuggestionCounts;
 import org.exoplatform.emailConnector.plugin.EmailFilterAgentHandler;
 import org.exoplatform.emailConnector.storage.EmailFilterProposalStorage;
 import org.exoplatform.emailConnector.storage.EmailFilterStorage;
@@ -92,6 +97,9 @@ public class EmailFilterProposalServiceTest {
 
   @Mock
   private EmailFilterAgentHandler                 handler;
+
+  @Mock
+  private EmailFilterSuggestionDigest             suggestionDigest;
 
   @InjectMocks
   private EmailFilterProposalService              service;
@@ -379,6 +387,53 @@ public class EmailFilterProposalServiceTest {
                  assertThrows(IllegalStateException.class, () -> service.approve(OWNER, null, proposal.getId())).getMessage());
     assertEquals(EmailFilterProposal.EXPIRED, rows.get(proposal.getId()).getStatus());
     verify(handler, never()).executeProposal(anyString(), any());
+  }
+
+  /**
+   * The waiting suggestions are told as one digest (EXO-90668): recording a run's calls
+   * notifies nothing, the run's end publishes the one digest with the count that waits;
+   * each decision brings it to the new count, down to none.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theWaitingSuggestionsAreToldAsOneDigestAndEachDecisionUpdatesIt() throws Exception {
+    EmailFilterProposal first = propose("t1", "{}");
+    EmailFilterProposal second = propose("t2", "{}");
+    EmailFilterProposal third = propose("t3", "{}");
+    verifyNoInteractions(suggestionDigest);
+
+    service.notifyWaiting(OWNER);
+
+    verify(suggestionDigest).publish(OWNER, 3L);
+    service.reject(OWNER, null, first.getId());
+    verify(suggestionDigest).refresh(OWNER, 2L);
+    service.approve(OWNER, null, second.getId());
+    verify(suggestionDigest).refresh(OWNER, 1L);
+    service.handOver(OWNER, null, third.getId());
+    verify(suggestionDigest).refresh(OWNER, 0L);
+    verify(suggestionDigest, times(1)).publish(anyString(), anyLong());
+  }
+
+  /**
+   * The counts per rule (EXO-90668) are the caller's own mailbox's, read once the due
+   * proposals are marked expired so an unanswered one counts as expired.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theCountsPerRuleAreTheCallersOnceTheDueOnesExpired() throws Exception {
+    List<EmailFilterSuggestionCounts> counts = List.of(new EmailFilterSuggestionCounts(3L, 2, 1, 1, 0, 4));
+    when(storage.countByFilter(OWNER)).thenReturn(counts);
+
+    assertEquals(counts, service.getSuggestionCounts(OWNER, null));
+
+    InOrder order = inOrder(emailFilterService, storage);
+    order.verify(emailFilterService).checkOwnMailbox(OWNER, null);
+    order.verify(storage).expireDue(eq(OWNER), any());
+    order.verify(storage).countByFilter(OWNER);
+    doThrow(new IllegalAccessException("emailConnector.rules.ownMailboxOnly")).when(emailFilterService).checkOwnMailbox(OWNER, 9L);
+    assertThrows(IllegalAccessException.class, () -> service.getSuggestionCounts(OWNER, 9L));
   }
 
   /**
