@@ -25,6 +25,7 @@ extensionRegistry.registerExtension('WebNotification', 'notification-group-exten
     'DelegatedNewEmailsNotificationPlugin',
     'EmailFilterNotificationPlugin',
     'EmailForwardingNotificationPlugin',
+    'EmailFilterSuggestionsNotificationPlugin',
   ],
   icon: 'fa-envelope',
 });
@@ -62,4 +63,9 @@ extensionRegistry.registerExtension('WebNotification', 'notification-content-ext
   type: 'EmailForwardingNotificationPlugin',
   rank: 10,
   vueComponent: Vue.options.components['user-notification-email-forwarding'],
+});
+extensionRegistry.registerExtension('WebNotification', 'notification-content-extension', {
+  type: 'EmailFilterSuggestionsNotificationPlugin',
+  rank: 10,
+  vueComponent: Vue.options.components['user-notification-email-filter-suggestions'],
 });

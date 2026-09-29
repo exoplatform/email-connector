@@ -134,12 +134,33 @@ public class EmailFilterDAOTest {
     assertEquals(2, emailFilterMatchDAO.findByFilter(OWNER, 7L, PageRequest.of(0, 10)).size());
     assertEquals(1, emailFilterMatchDAO.findByAgentStatus(OWNER, "PENDING", PageRequest.of(0, 10)).size());
     assertEquals(1, emailFilterMatchDAO.countByAgentStatus(OWNER, "PENDING"));
-    assertEquals(2, emailFilterMatchDAO.countQueuedSince(OWNER, List.of("PENDING", "DONE"), new Date(0)));
-    assertEquals(1, emailFilterMatchDAO.countQueuedSince(OWNER, List.of("PENDING", "DONE"), new Date(1_500L)));
     Long id = emailFilterMatchDAO.findByMail(OTHER, "h1").get(0).getId();
     assertTrue(emailFilterMatchDAO.findByIdAndUserId(id, OWNER).isEmpty(), "someone else's match");
     assertEquals(2, emailFilterMatchDAO.deleteOlderThan(OWNER, new Date(2_500L)));
     assertEquals(1, emailFilterMatchDAO.findByMail(OTHER, "h1").size(), "another user's log is not pruned");
+  }
+
+  /**
+   * The daily cap's count, run by the engine: a match counts once its assistant was
+   * called -- it holds the run's conversation --, in one of the given statuses, with its
+   * last write of the assistant since the date; the owner's only. A match skipped, or
+   * waiting for its first run, never counts.
+   */
+  @Test
+  void theDailyCapCountsTheRunsCalledSinceTheDate() {
+    List<String> called = List.of("RUNNING", "PENDING", "DONE", "FAILED");
+    persistRun(OWNER, "h1", "DONE", 2_000L, "c1");
+    persistRun(OWNER, "h2", "FAILED", 3_000L, "c2");
+    persistRun(OWNER, "h3", "PENDING", 3_000L, "c3");
+    persistRun(OWNER, "h4", "PENDING", 3_000L, null);
+    persistRun(OWNER, "h5", "SKIPPED_CAP", 3_000L, "c5");
+    persistRun(OWNER, "h6", "DONE", 500L, "c6");
+    persistRun(OTHER, "h7", "DONE", 3_000L, "c7");
+    entityManager.clear();
+
+    assertEquals(3, emailFilterMatchDAO.countAgentRunsSince(OWNER, called, new Date(1_000L)));
+    assertEquals(2, emailFilterMatchDAO.countAgentRunsSince(OWNER, called, new Date(2_500L)));
+    assertEquals(4, emailFilterMatchDAO.countAgentRunsSince(OWNER, called, new Date(0)));
   }
 
   /**
@@ -274,6 +295,23 @@ public class EmailFilterDAOTest {
     entity.setMatchedDate(new Date(date));
     entity.setAgentStatus(status);
     entity.setCreatedDate(new Date(date));
+    return entityManager.persistAndFlush(entity).getId();
+  }
+
+  /**
+   * Stores a match of rule 7 whose assistant last wrote it at a date, in a conversation.
+   *
+   * @param userId the owner
+   * @param hash the mail's hash
+   * @param status the assistant's status
+   * @param agentDate when the assistant last wrote it
+   * @param conversationId the run's conversation, or null when it never ran
+   * @return its id
+   */
+  private Long persistRun(String userId, String hash, String status, long agentDate, String conversationId) {
+    Long id = persistMatch(userId, 7L, hash, status, 100L, agentDate);
+    EmailFilterMatchEntity entity = entityManager.find(EmailFilterMatchEntity.class, id);
+    entity.setAgentConversationId(conversationId);
     return entityManager.persistAndFlush(entity).getId();
   }
 }
