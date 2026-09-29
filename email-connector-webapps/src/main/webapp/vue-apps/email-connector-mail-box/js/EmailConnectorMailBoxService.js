@@ -262,6 +262,23 @@ export function canMarkAsJunk(folder) {
 }
 
 /**
+ * Whether a row may be starred: in every folder but the read-only ones (Trash, Spam) and
+ * Drafts, where the IMAP \Flagged flag is not pushed. In a folder of a mailbox shared
+ * with the user, the star is its owner's too (EXO-90550, Benjamin's decision: the owner's
+ * favorites follow), so it also needs w there -- never in a shared Trash, Spam or Drafts,
+ * which a delegate only reads.
+ *
+ * @param {String} folder the folder a row carries; blank means INBOX
+ * @returns {Boolean} true when the star may be toggled on those messages
+ */
+export function canStar(folder) {
+  if (isReadOnlyFolder(folder) || isDraftsFolder(folder)) {
+    return false;
+  }
+  return !isSharedMailboxFolder(folder) || sharedMailboxAllows(folder, 'star');
+}
+
+/**
  * Whether a row may be deleted -- filed into the Trash: where mail may be taken out of
  * its folder (canMoveOutOf), and in a shared mailbox only where its owner shares a Trash
  * the user may file into (EXO-90548). The one answer the row menu, the swipe, the
