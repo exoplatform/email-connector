@@ -171,6 +171,35 @@ public class EmailBoxDAOTest {
   }
 
   /**
+   * The read a favorite's removal unstars through: the owner's starred rows carrying one
+   * Message-ID, in every folder but the excluded ones -- executed against the engine for
+   * the equality on the Message-ID column beside the {@code NOT IN} and the projection.
+   */
+  @Test
+  void theStarredCopiesReadKeepsOneMessageIdOnly() {
+    Long inInbox = starredRow(40L, MailFolder.INBOX, "<a@host>");
+    Long inProjets = starredRow(41L, "CUSTOM:6", "<a@host>");
+    starredRow(42L, MailFolder.SENT, "<other@host>");
+    starredRow(43L, MailFolder.ALL_MAIL, "<a@host>");
+    persistEmailCarrying(44L, MailFolder.ARCHIVE, "<a@host>");
+    entityManager.clear();
+
+    List<Object[]> rows = emailBoxDAO.findStarredKeysByUserIdAndMailHeaderIdExcludingFolders(USERNAME,
+                                                                                          "<a@host>",
+                                                                                          MailFolder.NOT_FAVORITED_FOLDERS);
+
+    assertEquals(List.of(inInbox, inProjets), rows.stream().map(row -> (Long) row[0]).sorted().toList(),
+                 "the two starred copies of the message; not another message's row, the All Mail copy, nor the unstarred one");
+    Object[] projets = rows.stream().filter(row -> inProjets.equals(row[0])).findFirst().orElseThrow();
+    assertEquals("CUSTOM:6", projets[1]);
+    assertEquals("<a@host>", projets[2]);
+    assertEquals(41L, projets[3]);
+    assertTrue(emailBoxDAO.findStarredKeysByUserIdAndMailHeaderIdExcludingFolders("bob", "<a@host>", MailFolder.NOT_FAVORITED_FOLDERS)
+                          .isEmpty(),
+               "another user's read answers none of these rows");
+  }
+
+  /**
    * A starred row of the test user.
    *
    * @param remoteId its UID

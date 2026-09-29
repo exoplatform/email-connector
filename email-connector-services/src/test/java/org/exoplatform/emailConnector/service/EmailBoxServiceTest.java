@@ -1248,9 +1248,9 @@ public class EmailBoxServiceTest {
     Message projetsCopy = mock(Message.class);
     when(projets.getMessageByUID(77L)).thenReturn(projetsCopy);
     Email favorite = starredKey(7L, MailFolder.INBOX, "<m@host>", 1212L);
-    when(emailBoxStorage.getStarredEmailKeys(TEST_USER, MailFolder.NOT_FAVORITED_FOLDERS)).thenReturn(List.of(favorite,
-                                                                                                            starredKey(8L, "CUSTOM:6", "<m@host>", 77L),
-                                                                                                            starredKey(9L, MailFolder.SENT, "<other@host>", 5L)));
+    // The copies are read by the favorite's Message-ID, never from every starred row.
+    when(emailBoxStorage.getStarredCopyKeys(TEST_USER, "<m@host>", MailFolder.NOT_FAVORITED_FOLDERS)).thenReturn(List.of(favorite,
+                                                                                                                       starredKey(8L, "CUSTOM:6", "<m@host>", 77L)));
 
     int failed = emailBoxService.unstarFavorite(favorite, TEST_USER);
 
@@ -1259,7 +1259,7 @@ public class EmailBoxServiceTest {
     verify(projetsCopy).setFlag(Flags.Flag.FLAGGED, false);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L), TEST_USER, false, MailFolder.INBOX);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(77L), TEST_USER, false, "CUSTOM:6");
-    verify(emailBoxStorage, never()).updateEmailStarredStatusByMailRemoteIds(eq(List.of(5L)), anyString(), anyBoolean(), anyString());
+    verify(emailBoxStorage, never()).getStarredEmailKeys(anyString(), anyList());
     // The favorite's own row goes last, so the drawer never shows the other copy in between.
     InOrder order = inOrder(projetsCopy, inboxCopy);
     order.verify(projetsCopy).setFlag(Flags.Flag.FLAGGED, false);
@@ -1286,9 +1286,9 @@ public class EmailBoxServiceTest {
     Email favorite = starredKey(7L, MailFolder.INBOX, "<m@host>", 1212L);
     Email noUid = starredKey(8L, MailFolder.SENT, "<m@host>", 0L);
     noUid.setMailRemoteId(null);
-    when(emailBoxStorage.getStarredEmailKeys(TEST_USER, MailFolder.NOT_FAVORITED_FOLDERS)).thenReturn(List.of(favorite,
-                                                                                                            starredKey(9L, "CUSTOM:9", "<m@host>", 77L),
-                                                                                                            noUid));
+    when(emailBoxStorage.getStarredCopyKeys(TEST_USER, "<m@host>", MailFolder.NOT_FAVORITED_FOLDERS)).thenReturn(List.of(favorite,
+                                                                                                                       starredKey(9L, "CUSTOM:9", "<m@host>", 77L),
+                                                                                                                       noUid));
 
     int failed = emailBoxService.unstarFavorite(favorite, TEST_USER);
 
@@ -1316,7 +1316,7 @@ public class EmailBoxServiceTest {
 
     assertEquals(0, failed);
     verify(message).setFlag(Flags.Flag.FLAGGED, false);
-    verify(emailBoxStorage, never()).getStarredEmailKeys(anyString(), anyList());
+    verify(emailBoxStorage, never()).getStarredCopyKeys(anyString(), anyString(), anyList());
   }
 
   /**

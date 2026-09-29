@@ -1467,7 +1467,31 @@ public class EmailBoxStorage {
    * @return the starred rows, newest first
    */
   public List<Email> getStarredEmailKeys(String userId, List<String> excludedFolders) {
-    return emailBoxDao.findStarredKeysByUserIdExcludingFolders(userId, excludedFolders).stream().map(row -> {
+    return toStarredKeys(emailBoxDao.findStarredKeysByUserIdExcludingFolders(userId, excludedFolders));
+  }
+
+  /**
+   * The user's starred copies of one message outside the given folders, as the same
+   * light rows: what a favorite's removal unstars, read by the Message-ID the copies
+   * share rather than from every starred row of the mailbox.
+   *
+   * @param userId the mailbox owner
+   * @param mailHeaderId the Message-ID the copies share
+   * @param excludedFolders the folders left out
+   * @return the starred copies, newest first
+   */
+  public List<Email> getStarredCopyKeys(String userId, String mailHeaderId, List<String> excludedFolders) {
+    return toStarredKeys(emailBoxDao.findStarredKeysByUserIdAndMailHeaderIdExcludingFolders(userId, mailHeaderId, excludedFolders));
+  }
+
+  /**
+   * Light starred rows out of the key projection {@code [id, folder, mailHeaderId, mailRemoteId]}.
+   *
+   * @param rows the projected rows
+   * @return the rows as starred emails carrying those four fields only
+   */
+  private static List<Email> toStarredKeys(List<Object[]> rows) {
+    return rows.stream().map(row -> {
       Email email = new Email();
       email.setId((Long) row[0]);
       email.setFolder((String) row[1]);
