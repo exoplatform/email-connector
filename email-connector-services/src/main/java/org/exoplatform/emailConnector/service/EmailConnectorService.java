@@ -692,19 +692,32 @@ public class EmailConnectorService {
     if (emailConnector.getId() == null) {
       throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
     }
+    // Refused before anything is written: a configuration stored for a connector that
+    // no longer exists would sit under an id nothing reads or deletes again.
+    EmailConnector previousEmailConnector = emailConnectorStorage.getEmailConnector(emailConnector.getId());
+    if (previousEmailConnector == null) {
+      throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
+    }
     // Before the row is written, for the reason the create path already carries: the
     // connector and its configuration are two writes, and a refusal on the second
     // would otherwise leave the connector on a provider whose configuration was never
     // stored - an authentication nothing can perform, that no screen shows as broken.
     validateProviderConfig(emailConnector);
-    EmailConnector previousEmailConnector = emailConnectorStorage.getEmailConnector(emailConnector.getId());
-    // The configuration is written before the row, under the provider being selected:
-    // its keys carry the provider name, so this write never touches the configuration
-    // the connector still uses. A failure here therefore leaves the connector exactly as
-    // it was; the configuration of the provider being left is removed only once the
-    // connector no longer points at it.
+    // The configuration is written before the row. When the provider changes, its keys
+    // carry the new provider's name, so the configuration the connector still uses is
+    // untouched: a failed configuration write leaves the connector as it was, and a
+    // failed row write removes the configuration just stored for the new provider. When
+    // the provider is unchanged the keys are the same, so the write replaces the
+    // configuration in use, and a failed row write leaves the stored row with the new
+    // configuration of the same provider. The configuration of the provider being left
+    // is removed only once the connector no longer points at it.
     storeProviderConfig(emailConnector, emailConnector.getProviderConfig());
-    emailConnectorStorage.updateEmailConnector(emailConnector);
+    try {
+      emailConnectorStorage.updateEmailConnector(emailConnector);
+    } catch (RuntimeException e) {
+      discardConfigOfProviderNotReached(previousEmailConnector, emailConnector, e);
+      throw e;
+    }
     discardConfigOfProviderBeingLeft(previousEmailConnector, emailConnector);
   }
 
@@ -758,6 +771,38 @@ public class EmailConnectorService {
     String newProvider = StringUtils.defaultIfBlank(emailConnector.getAuthProviderName(), previousProvider);
     if (StringUtils.isNotBlank(previousProvider) && !StringUtils.equals(previousProvider, newProvider)) {
       providerConfigStorage.delete(providerConfigContext(previousEmailConnector.getId(), previousProvider));
+    }
+  }
+
+  /**
+   * Removes the configuration just stored for the provider a connector was being moved
+   * to, when the row write that would have pointed the connector at it failed.
+   * <p>
+   * Left alone it would stay under the connector's id and the new provider's name: not
+   * the provider the connector uses, so no screen shows it and deleting the connector
+   * does not remove it. With the provider unchanged there is nothing to remove - the
+   * configuration stored is the one the connector uses.
+   *
+   * @param previousEmailConnector the connector as it was stored
+   * @param emailConnector the connector as posted
+   * @param cause the failure of the row write, which the caller rethrows
+   */
+  private void discardConfigOfProviderNotReached(EmailConnector previousEmailConnector,
+                                                 EmailConnector emailConnector,
+                                                 RuntimeException cause) {
+    String newProvider = emailConnector.getAuthProviderName();
+    if (providerConfigStorage == null || MapUtils.isEmpty(emailConnector.getProviderConfig())
+        || StringUtils.isBlank(newProvider) || StringUtils.equals(previousEmailConnector.getAuthProviderName(), newProvider)) {
+      return;
+    }
+    try {
+      providerConfigStorage.delete(providerConfigContext(emailConnector.getId(), newProvider));
+    } catch (RuntimeException e) {
+      cause.addSuppressed(e);
+      LOG.warn("Email connector {} could not be updated, and removing the configuration stored for provider '{}' failed",
+               emailConnector.getId(),
+               newProvider,
+               e);
     }
   }
 
