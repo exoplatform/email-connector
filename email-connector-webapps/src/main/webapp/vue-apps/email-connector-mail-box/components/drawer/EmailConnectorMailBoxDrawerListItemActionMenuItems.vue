@@ -65,7 +65,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </span>
     </v-list-item>
     <!-- Favorite/unfavorite the conversation: the mail server's own \Flagged flag, so it
-         shows in every client. Inbox only — the flag is pushed through INBOX. -->
+         shows in every client. Pushed to the row's own folder. -->
     <v-list-item
       v-if="canFavorite"
       class="ps-2 pe-3 height-auto"
@@ -323,14 +323,17 @@ export default {
     threadRead() {
       return this.thread ? this.thread.unreadCount === 0 : this.email.read;
     },
-    // A thread shows as favorite when any of its listed messages carries the flag.
+    // A thread shows the favorite when any of its messages in the row's own folder carries
+    // the flag: the ones the star's click changes (a search row may gather other folders').
     threadFavorite() {
-      return this.thread ? this.thread.emails.some(message => message.starred) : !!this.email.starred;
+      return this.$emailConnectorMailBoxService.threadRowsInFolder(this.email, this.thread).some(message => message.starred);
     },
-    // The favorite is pushed through the INBOX folder, so only inbox rows offer it —
-    // which already keeps it off a Trash row, before readOnly below has any say.
+    // The favorite is pushed to the row's own folder, so every folder offers it but the
+    // read-only ones (Trash, Spam), like every other action that writes to the server;
+    // and never on a draft, which may have no message on the server to carry the flag
+    // (the read item's rule, EXO-90438).
     canFavorite() {
-      return (this.email.folder || 'INBOX') === 'INBOX';
+      return !this.readOnly && !this.inDrafts;
     },
     /**
      * Whether this row sits in a folder the interface may only read (Trash, Spam), in
@@ -459,7 +462,7 @@ export default {
     },
     updateEmailFavoriteStatus() {
       this.$emit('close');
-      this.$root.$emit('update-email-favorite-status', !this.threadFavorite, this.threadIds);
+      this.$root.$emit('update-email-favorite-status', !this.threadFavorite, this.threadIds, this.actingFolder);
     },
     deleteEmail() {
       this.$emit('close');
