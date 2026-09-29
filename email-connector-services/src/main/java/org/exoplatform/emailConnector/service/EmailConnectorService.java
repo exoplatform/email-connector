@@ -713,7 +713,7 @@ public class EmailConnectorService {
     storeProviderConfig(emailConnector, emailConnector.getProviderConfig());
     if (isProviderChange(previousEmailConnector, emailConnector)) {
       // Every user of the connector is disconnected, whoever made the connection: the
-      // authentication changed for all of them (EXO-89654).
+      // authentication changed for all of them.
       eventPublisher.publishEvent(new EmailConnectorProviderChangedEvent(previousEmailConnector.getId()));
     }
   }

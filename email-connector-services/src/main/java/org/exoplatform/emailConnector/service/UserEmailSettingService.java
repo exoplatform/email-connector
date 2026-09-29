@@ -84,8 +84,8 @@ public class UserEmailSettingService {
   public static final String        USER_EMAIL_SETTING_KEY                             = "userEmailSetting";
 
   /**
-   * The setting that marks a connection made by managed mode rather than by the user
-   * (EXO-89654), stored beside the user's email setting. Its presence is the whole
+   * The setting that marks a connection made by managed mode rather than by the user,
+   * stored beside the user's email setting. Its presence is the whole
    * fact: the users it marks are listed by one query on the key, and they are always
    * connected to the designated connector, since changing the designation disconnects
    * them.
@@ -171,7 +171,7 @@ public class UserEmailSettingService {
                                           emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId())));
       setUserEmailSetting(userEmailSetting, username, broadcast);
       // A connection the user makes is their own choice, even on the connector managed
-      // mode had attached them to (EXO-89654).
+      // mode had attached them to.
       markConnectedByManagedMode(username, false);
       eventPublisher.publishEvent(new EmailBoxSyncEvent(username));
     } catch (Exception e) {
@@ -219,7 +219,7 @@ public class UserEmailSettingService {
   /**
    * Connects a user through the connector's provider, as
    * {@link #connectThroughProvider(long, String)} does, and records who made the
-   * connection: managed mode at login, or the user themselves (EXO-89654). Only a
+   * connection: managed mode at login, or the user themselves. Only a
    * connection made by managed mode is marked; one the user makes clears the mark,
    * since it is their own choice from then on.
    *
@@ -582,7 +582,7 @@ public class UserEmailSettingService {
   }
 
   /**
-   * The users whose mail connection managed mode made (EXO-89654), by one query on
+   * The users whose mail connection managed mode made, by one query on
    * the {@link #CONNECTED_BY_MANAGED_MODE_KEY} setting - no user document is read.
    *
    * @return the eXo logins, empty when nobody was attached by managed mode

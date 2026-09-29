@@ -831,7 +831,7 @@ public class UserEmailSettingServiceTest {
   void deleteUserEmailSetting() {
     userEmailSettingService.deleteUserEmailSetting(TEST_USER);
     verify(settingService).remove(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY));
-    // The managed-mode mark goes with the connection it marked (EXO-89654).
+    // The managed-mode mark goes with the connection it marked.
     verify(settingService).remove(any(Context.class), any(Scope.class), eq(UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY));
     // Disconnecting takes the signature along -- its own settings document and its
     // uploaded image file, which nothing else would ever clean up.
@@ -976,7 +976,7 @@ public class UserEmailSettingServiceTest {
     verify(translationService).getTranslationLabelOrDefault(anyString(), anyLong(), anyString(), any(Locale.class));
   }
 
-  /** EXO-89654. A connection managed mode makes at login is marked as such. */
+  /** A connection managed mode makes at login is marked as such. */
   @Test
   @SneakyThrows
   void aConnectionManagedModeMakesIsMarked() {
@@ -991,7 +991,7 @@ public class UserEmailSettingServiceTest {
   }
 
   /**
-   * EXO-89654. A one-click connection the user makes clears the mark, even on the
+   * A one-click connection the user makes clears the mark, even on the
    * connector managed mode had attached them to: it is their own choice from then on.
    */
   @Test
@@ -1008,7 +1008,7 @@ public class UserEmailSettingServiceTest {
                                         any(SettingValue.class));
   }
 
-  /** EXO-89654. A connection the user makes with their password clears the mark too. */
+  /** A connection the user makes with their password clears the mark too. */
   @Test
   @SneakyThrows
   void aTypedConnectionClearsTheMark() {
@@ -1028,7 +1028,7 @@ public class UserEmailSettingServiceTest {
                                   eq(UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY));
   }
 
-  /** EXO-89654. The users managed mode attached are one query on the mark: no user document is read. */
+  /** The users managed mode attached are one query on the mark: no user document is read. */
   @Test
   void theUsersManagedModeAttachedAreOneQueryOnTheMark() {
     when(settingService.getContextsByTypeAndScopeAndSettingName("USER",
@@ -1044,7 +1044,7 @@ public class UserEmailSettingServiceTest {
   }
 
   /**
-   * EXO-89654. The users of a connector are found from their documents alone: no
+   * The users of a connector are found from their documents alone: no
    * password is decoded and no connector is loaded, which a walk over every user
    * cannot afford.
    */
@@ -1062,7 +1062,7 @@ public class UserEmailSettingServiceTest {
   }
 
   /**
-   * EXO-89654. A document that cannot be parsed leaves its user out of the walk; the
+   * A document that cannot be parsed leaves its user out of the walk; the
    * other users of the connector are still found.
    */
   @Test

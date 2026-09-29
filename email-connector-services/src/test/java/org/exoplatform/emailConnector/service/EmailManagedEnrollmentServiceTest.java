@@ -107,7 +107,7 @@ class EmailManagedEnrollmentServiceTest {
   }
 
   /**
-   * EXO-89654. A user managed mode attached, who has joined an excluded group since, is
+   * A user managed mode attached, who has joined an excluded group since, is
    * disconnected at login and not attached again.
    */
   @Test
@@ -124,7 +124,7 @@ class EmailManagedEnrollmentServiceTest {
   }
 
   /**
-   * EXO-89654. A user managed mode attached whose identity cannot be resolved - the
+   * A user managed mode attached whose identity cannot be resolved - the
    * directory failed - is not disconnected: the enrolment fails and the next login
    * decides.
    */
@@ -139,7 +139,7 @@ class EmailManagedEnrollmentServiceTest {
     verify(userEmailSettingService, never()).deleteUserEmailSetting(anyString());
   }
 
-  /** EXO-89654. The same situation for a user who chose their connector: they are not touched. */
+  /** The same situation for a user who chose their connector: they are not touched. */
   @Test
   void neverDisconnectsAUserWhoChoseTheirConnector() {
     when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(null);
@@ -151,7 +151,7 @@ class EmailManagedEnrollmentServiceTest {
   }
 
   /**
-   * EXO-89654. A user managed mode attached to a connector no longer designated - a
+   * A user managed mode attached to a connector no longer designated - a
    * disconnection the administrator's change asked for did not go through - is
    * disconnected, then attached to the connector designated now.
    */
@@ -170,7 +170,7 @@ class EmailManagedEnrollmentServiceTest {
     order.verify(userEmailSettingService).connectThroughProvider(7L, USER, true);
   }
 
-  /** EXO-89654. A user managed mode attached, still on the designated connector, is left alone. */
+  /** A user managed mode attached, still on the designated connector, is left alone. */
   @Test
   void leavesAloneAUserManagedModeAttachedToTheDesignatedConnector() throws Exception {
     when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(7L);

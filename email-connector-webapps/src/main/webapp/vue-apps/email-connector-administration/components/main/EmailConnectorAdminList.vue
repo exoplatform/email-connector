@@ -38,9 +38,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </template>
       <template #[`item.active`]="{ item }">
         <!--
-          The connector managed mode points at can be neither deactivated nor deleted
-          (EXO-89654): both are greyed out on its row, and the tooltip says why, before
-          any click.
+          The connector managed mode points at can be neither deactivated nor deleted:
+          both are greyed out on its row, and the tooltip says why, before any
+          click.
         -->
         <v-tooltip :disabled="!isManaged(item)" bottom>
           <template #activator="{on, attrs}">

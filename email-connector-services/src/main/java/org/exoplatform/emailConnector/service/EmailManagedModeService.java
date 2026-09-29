@@ -185,14 +185,14 @@ public class EmailManagedModeService {
                                       excludedGroups,
                                       username);
     // The users managed mode attached are checked against what was just stored: another
-    // connector, or a newly excluded group, disconnects them (EXO-89654).
+    // connector, or a newly excluded group, disconnects them.
     eventPublisher.publishEvent(new EmailManagedModeChangedEvent());
   }
 
   /**
    * Switches managed mode off: users choose their own connector again, and the
    * exclusions go with the designation they qualified. The users managed mode attached
-   * are disconnected in the background (EXO-89654); the users who chose a connector
+   * are disconnected in the background; the users who chose a connector
    * themselves keep it.
    *
    * @param username the eXo login of the caller

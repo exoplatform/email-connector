@@ -26,7 +26,7 @@ import org.exoplatform.emailConnector.event.EmailManagedModeChangedEvent;
 import org.exoplatform.emailConnector.service.EmailManagedDisconnectionService;
 
 /**
- * Hands the disconnections an administrator's change causes (EXO-89654) to
+ * Hands the disconnections an administrator's change causes to
  * {@link EmailManagedDisconnectionService}, which runs them in the background.
  * <p>
  * After the commit, with {@code fallbackExecution}: the change being answered must be

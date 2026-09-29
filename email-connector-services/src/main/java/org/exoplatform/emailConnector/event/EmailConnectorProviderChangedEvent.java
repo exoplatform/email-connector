@@ -17,8 +17,8 @@
 package org.exoplatform.emailConnector.event;
 
 /**
- * Published when an administrator moves a connector to another credentials provider
- * (EXO-89654). Every user of that connector is then disconnected: the authentication
+ * Published when an administrator moves a connector to another credentials provider.
+ * Every user of that connector is then disconnected: the authentication
  * changed for all of them, and a connection left in place would fail at every sync for
  * the users the new provider does not know.
  */

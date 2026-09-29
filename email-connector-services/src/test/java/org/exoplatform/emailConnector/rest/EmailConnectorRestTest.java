@@ -285,7 +285,7 @@ public class EmailConnectorRestTest {
     verify(emailManagedModeService).clearManagedConnector(ADMIN_USER);
   }
 
-  /** EXO-89654. The preview answers how many accounts the proposed managed-mode state would disconnect. */
+  /** The preview answers how many accounts the proposed managed-mode state would disconnect. */
   @Test
   void previewManagedModeAnswersTheAccountCount() throws Exception {
     when(emailManagedDisconnectionService.countUsersNoLongerManaged(9L, List.of("/externals"), ADMIN_USER)).thenReturn(3);
@@ -304,7 +304,7 @@ public class EmailConnectorRestTest {
            .andExpect(jsonPath("$.affectedAccounts").value(5));
   }
 
-  /** EXO-89654. The count of a connector's users is what a provider change would disconnect. */
+  /** The count of a connector's users is what a provider change would disconnect. */
   @Test
   void countConnectedUsersAnswersTheUsersOfTheConnector() throws Exception {
     when(emailManagedDisconnectionService.countUsersOf(7L, ADMIN_USER)).thenReturn(2);
@@ -314,7 +314,7 @@ public class EmailConnectorRestTest {
            .andExpect(jsonPath("$.affectedAccounts").value(2));
   }
 
-  /** EXO-89654. Both previews are administration acts. */
+  /** Both previews are administration acts. */
   @Test
   void thePreviewsAreForAdministratorsOnly() throws Exception {
     mockMvc.perform(post(EMAIL_CONNECTOR_PATH + "/managed/preview").with(testSimpleUser())
@@ -326,7 +326,7 @@ public class EmailConnectorRestTest {
     verifyNoInteractions(emailManagedDisconnectionService);
   }
 
-  /** EXO-89654. Counting the users of a connector that does not exist is a 404. */
+  /** Counting the users of a connector that does not exist is a 404. */
   @Test
   void countConnectedUsersOfAnUnknownConnectorIsFourHundredFour() throws Exception {
     when(emailManagedDisconnectionService.countUsersOf(99L, ADMIN_USER))
@@ -336,7 +336,7 @@ public class EmailConnectorRestTest {
            .andExpect(status().isNotFound());
   }
 
-  /** EXO-89654. A refusal from the service is a 403 too, whatever the caller's role says. */
+  /** A refusal from the service is a 403 too, whatever the caller's role says. */
   @Test
   void aRefusedPreviewIsFourHundredThree() throws Exception {
     when(emailManagedDisconnectionService.countUsersOf(7L, ADMIN_USER)).thenThrow(new IllegalAccessException("not an administrator"));

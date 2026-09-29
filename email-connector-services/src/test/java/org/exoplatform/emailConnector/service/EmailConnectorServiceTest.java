@@ -765,7 +765,7 @@ public class EmailConnectorServiceTest {
   }
 
   /**
-   * EXO-89654. Moving a connector to another provider disconnects every user of it:
+   * Moving a connector to another provider disconnects every user of it:
    * the event names the connector, and the disconnections follow in the background.
    */
   @Test
@@ -785,7 +785,7 @@ public class EmailConnectorServiceTest {
     assertEquals(List.of(7L), events.stream(EmailConnectorProviderChangedEvent.class).map(EmailConnectorProviderChangedEvent::getEmailConnectorId).toList());
   }
 
-  /** EXO-89654. An edit that keeps the provider - or leaves it blank, which keeps it - disconnects nobody. */
+  /** An edit that keeps the provider - or leaves it blank, which keeps it - disconnects nobody. */
   @Test
   @SneakyThrows
   void anEditThatKeepsTheProviderDisconnectsNobody() {

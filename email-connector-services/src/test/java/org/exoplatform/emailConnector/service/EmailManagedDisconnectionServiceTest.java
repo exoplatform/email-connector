@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
@@ -28,6 +29,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -41,6 +43,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.container.ExoContainer;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
@@ -50,7 +53,7 @@ import org.exoplatform.services.security.Identity;
 import org.exoplatform.services.security.MembershipEntry;
 
 /**
- * EXO-89654. What an administrator's change does to the users managed mode attached,
+ * What an administrator's change does to the users managed mode attached,
  * and to the users of a connector moved to another provider. The verdict is the real
  * {@link ManagedConnectorService}'s: only the user's groups are stubbed.
  */
@@ -217,6 +220,20 @@ class EmailManagedDisconnectionServiceTest {
     verify(userEmailSettingService).deleteUserEmailSetting("bob");
   }
 
+  /** A checked exception thrown sneakily by one disconnection does not abandon the others either. */
+  @Test
+  void aCheckedFailureOfOneDisconnectionDoesNotStopTheOthers() {
+    attachedByManagedMode("3", "alice", "bob");
+    inForce(null);
+    doAnswer(invocation -> {
+      throw new IOException("store unreachable");
+    }).when(userEmailSettingService).deleteUserEmailSetting("alice");
+
+    service.disconnectUsersNoLongerManaged();
+
+    verify(userEmailSettingService).deleteUserEmailSetting("bob");
+  }
+
   /**
    * A user whose verdict cannot be computed - an unreadable setting, an identity the
    * platform cannot resolve - is skipped: the others are still disconnected.
@@ -242,7 +259,7 @@ class EmailManagedDisconnectionServiceTest {
   void aUserWhoseDocumentIsMalformedIsSkippedAndTheOthersProcessed() {
     when(userEmailSettingService.getUsersConnectedByManagedMode()).thenReturn(List.of("alice", "bob"));
     when(userEmailSettingService.getStoredEmailConnectorId("alice")).thenAnswer(invocation -> {
-      throw new java.io.IOException("malformed document");
+      throw new IOException("malformed document");
     });
     when(userEmailSettingService.getStoredEmailConnectorId("bob")).thenReturn("3");
     inForce(5L);
@@ -258,7 +275,7 @@ class EmailManagedDisconnectionServiceTest {
   void countingTheUsersOfAnUnknownConnectorIsNotFound() {
     when(emailConnectorService.getEmailConnector(99L)).thenReturn(null);
 
-    assertThrows(org.exoplatform.commons.exception.ObjectNotFoundException.class, () -> service.countUsersOf(99L, ADMIN));
+    assertThrows(ObjectNotFoundException.class, () -> service.countUsersOf(99L, ADMIN));
   }
 
   /** The selection and the disconnections run on the executor, not in the administrator's request. */

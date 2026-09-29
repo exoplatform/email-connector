@@ -18,7 +18,7 @@ package org.exoplatform.emailConnector.event;
 
 /**
  * Published when an administrator changes the mail managed mode - the designated
- * connector, its exclusions, or managed mode switched off (EXO-89654). The users managed
+ * connector, its exclusions, or managed mode switched off. The users managed
  * mode attached are then checked against the new state, and those it no longer governs
  * are disconnected.
  */

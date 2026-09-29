@@ -150,7 +150,7 @@ public class EmailManagedModeServiceTest {
   }
 
   /**
-   * EXO-89654. The verdict that decides a disconnection at login is the strict one, on
+   * The verdict that decides a disconnection at login is the strict one, on
    * the stored designation and exclusions; its refusal of an unresolvable user reaches
    * the caller unchanged.
    */
@@ -204,7 +204,7 @@ public class EmailManagedModeServiceTest {
     verify(managedConnectorService).designate(KIND, 7, "bluemind-sudo", List.of("/externals"), ADMIN);
   }
 
-  /** EXO-89654. A saved change is announced, so that the users it no longer governs are disconnected. */
+  /** A saved change is announced, so that the users it no longer governs are disconnected. */
   @Test
   public void aSavedChangeIsAnnounced() throws Exception {
     when(emailConnectorStorage.getEmailConnector(7)).thenReturn(connector(7, true));
@@ -215,7 +215,7 @@ public class EmailManagedModeServiceTest {
     verify(eventPublisher, times(2)).publishEvent(any(EmailManagedModeChangedEvent.class));
   }
 
-  /** EXO-89654. A refused change is not announced: nothing changed, nobody is disconnected. */
+  /** A refused change is not announced: nothing changed, nobody is disconnected. */
   @Test
   public void aRefusedChangeIsNotAnnounced() throws Exception {
     when(emailConnectorStorage.getEmailConnector(7)).thenReturn(connector(7, false));

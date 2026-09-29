@@ -556,7 +556,7 @@ export function saveManagedMode(connectorId, excludedGroups = []) {
 /**
  * Counts, before anything is stored, the accounts a managed-mode change would
  * disconnect: the users managed mode attached that the proposed state no longer
- * governs (EXO-89654). Administrators only.
+ * governs. Administrators only.
  *
  * @param {Number} connectorId the connector the change designates, null to preview switching off
  * @param {Array<String>} excludedGroups eXo group ids the change excludes
@@ -580,7 +580,7 @@ export function previewManagedMode(connectorId, excludedGroups = []) {
 
 /**
  * Counts the users connected to a connector: what moving it to another credentials
- * provider would disconnect (EXO-89654). Administrators only.
+ * provider would disconnect. Administrators only.
  *
  * @param {Number} connectorId technical identifier of the connector
  * @returns {Promise<Number>} the number of users connected to it

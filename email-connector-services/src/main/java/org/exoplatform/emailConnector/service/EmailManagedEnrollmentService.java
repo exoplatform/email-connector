@@ -53,7 +53,7 @@ import jakarta.annotation.PreDestroy;
  * alone.
  * <p>
  * An attachment is marked as made by managed mode
- * ({@link UserEmailSettingService#CONNECTED_BY_MANAGED_MODE_KEY}, EXO-89654), and the
+ * ({@link UserEmailSettingService#CONNECTED_BY_MANAGED_MODE_KEY}), and the
  * mark is checked first: a marked user managed mode no longer governs - they joined an
  * excluded group, or an administrator's change could not disconnect them - is
  * disconnected, then attached again when another connector is designated for them.
@@ -120,7 +120,7 @@ public class EmailManagedEnrollmentService {
       if (isNoLongerGoverned(username)) {
         // Managed mode attached this user and no longer governs them - they joined an
         // excluded group since, or a disconnection an administrator's change asked for
-        // did not go through (EXO-89654). Disconnected here, then attached again below
+        // did not go through. Disconnected here, then attached again below
         // when another connector is designated for them.
         userEmailSettingService.deleteUserEmailSetting(username);
         LOG.info("User {} disconnected from the mail connector managed mode attached them to: it no longer applies to them",
