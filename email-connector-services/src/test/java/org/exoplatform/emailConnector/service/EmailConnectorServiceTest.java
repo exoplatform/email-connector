@@ -180,7 +180,14 @@ public class EmailConnectorServiceTest {
     ArgumentCaptor<EmailConnector> updated = ArgumentCaptor.forClass(EmailConnector.class);
 
     emailConnectorService.createEmailConnector(spacedPreset(), TEST_USER);
-    emailConnectorService.updateEmailConnector(spacedPreset(), TEST_USER);
+    // An update names an existing preset: the service refuses one with no id, or whose
+    // row is gone, before writing anything (EXO-89648).
+    EmailConnector spacedUpdate = spacedPreset();
+    spacedUpdate.setId(1L);
+    EmailConnector stored = emailConnector();
+    stored.setId(1L);
+    when(emailConnectorStorage.getEmailConnector(1L)).thenReturn(stored);
+    emailConnectorService.updateEmailConnector(spacedUpdate, TEST_USER);
 
     verify(emailConnectorStorage).createEmailConnector(created.capture());
     verify(emailConnectorStorage).updateEmailConnector(updated.capture());
