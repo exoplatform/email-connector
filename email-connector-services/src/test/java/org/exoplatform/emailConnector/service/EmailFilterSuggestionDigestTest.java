@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -130,7 +131,19 @@ class EmailFilterSuggestionDigestTest {
     lenient().when(settingService.get(any(Context.class), any(Scope.class), anyString()))
              .thenAnswer(invocation -> settings.containsKey(invocation.<String> getArgument(2)) ? SettingValue.create(String.valueOf(settings.get(invocation.<String> getArgument(2))))
                                                                                                  : null);
+    lenient().doAnswer(invocation -> settings.remove(invocation.<String> getArgument(2)))
+             .when(settingService)
+             .remove(any(Context.class), any(Scope.class), anyString());
     digest.setClock(Clock.fixed(Instant.ofEpochMilli(NOW), ZoneOffset.UTC));
+  }
+
+  /**
+   * Moves the digest's clock.
+   *
+   * @param millis the epoch millis
+   */
+  private void at(long millis) {
+    digest.setClock(Clock.fixed(Instant.ofEpochMilli(millis), ZoneOffset.UTC));
   }
 
   /**
@@ -249,5 +262,74 @@ class EmailFilterSuggestionDigestTest {
     info.setId(id);
     info.setRead(read);
     return info;
+  }
+
+  /**
+   * With the web channel off no digest is ever stored (EXO-90668), so the batch a mail or
+   * push digest told is kept unacknowledged: the runs after it send nothing while no more
+   * suggestions wait, nor while fewer than four hours passed; once more wait and the four
+   * hours passed, one new digest goes, and it becomes the batch.
+   */
+  @Test
+  void withTheWebChannelOffAnUnacknowledgedBatchIsNotSentAgainAfterEveryRun() {
+    digest.publish(USERNAME, 5);
+    verify(digest, times(1)).send(USERNAME, 5);
+    assertEquals(5L, Long.parseLong(String.valueOf(settings.get(EmailFilterSuggestionDigest.SENT_COUNT_KEY))));
+
+    at(NOW + EmailFilterSuggestionDigest.SEND_GRACE_MILLIS + 1);
+    digest.publish(USERNAME, 5);
+    at(NOW + EmailFilterSuggestionDigest.SEND_GRACE_MILLIS + 2);
+    digest.publish(USERNAME, 7);
+    at(NOW + EmailFilterSuggestionDigest.RESEND_AFTER_MILLIS + 1);
+    digest.publish(USERNAME, 5);
+    verify(digest, times(1)).send(anyString(), anyLong());
+
+    digest.publish(USERNAME, 7);
+    verify(digest).send(USERNAME, 7);
+    assertEquals(7L, Long.parseLong(String.valueOf(settings.get(EmailFilterSuggestionDigest.SENT_COUNT_KEY))));
+
+    at(NOW + EmailFilterSuggestionDigest.RESEND_AFTER_MILLIS * 3);
+    digest.publish(USERNAME, 7);
+    verify(digest, times(2)).send(anyString(), anyLong());
+    verify(webNotificationService, never()).update(any(), anyBoolean());
+  }
+
+  /**
+   * A decision acknowledges the batch, and so does nothing waiting any more: the next run
+   * that proposes sends a digest again, past the send's grace.
+   */
+  @Test
+  void aDecisionOrNothingWaitingAcknowledgesTheBatch() {
+    digest.publish(USERNAME, 5);
+    digest.refresh(USERNAME, 4);
+    assertFalse(settings.containsKey(EmailFilterSuggestionDigest.SENT_COUNT_KEY), "acknowledged by the decision");
+
+    at(NOW + EmailFilterSuggestionDigest.SEND_GRACE_MILLIS + 1);
+    digest.publish(USERNAME, 5);
+    verify(digest, times(2)).send(USERNAME, 5);
+
+    digest.recount(USERNAME, 0);
+    assertFalse(settings.containsKey(EmailFilterSuggestionDigest.SENT_COUNT_KEY), "nothing waits");
+    at(NOW + EmailFilterSuggestionDigest.SEND_GRACE_MILLIS * 3);
+    digest.publish(USERNAME, 1);
+    verify(digest).send(USERNAME, 1);
+  }
+
+  /**
+   * Suggestions that stop waiting without a decision keep the batch, lowered to what
+   * still waits: a later run proposing more is measured against what is still there.
+   */
+  @Test
+  void anExpiryLowersTheBatchWithoutAcknowledgingIt() {
+    digest.publish(USERNAME, 10);
+    digest.recount(USERNAME, 4);
+    assertEquals(4L, Long.parseLong(String.valueOf(settings.get(EmailFilterSuggestionDigest.SENT_COUNT_KEY))));
+
+    digest.recount(USERNAME, 6);
+    assertEquals(4L, Long.parseLong(String.valueOf(settings.get(EmailFilterSuggestionDigest.SENT_COUNT_KEY))), "never raised");
+
+    at(NOW + EmailFilterSuggestionDigest.RESEND_AFTER_MILLIS + 1);
+    digest.publish(USERNAME, 5);
+    verify(digest).send(USERNAME, 5);
   }
 }
