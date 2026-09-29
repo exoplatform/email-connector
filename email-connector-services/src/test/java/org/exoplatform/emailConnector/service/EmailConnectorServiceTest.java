@@ -680,6 +680,29 @@ public class EmailConnectorServiceTest {
         && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())));
   }
 
+  /**
+   * The connector and its new configuration are written before the old provider's
+   * configuration is removed: when only that removal fails, the save worked and the
+   * administrator gets no error for it.
+   */
+  @Test
+  @SneakyThrows
+  void aFailedRemovalOfTheProviderBeingLeftDoesNotFailTheSave() {
+    grantAdministration();
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+    EmailConnector posted = emailConnector();
+    posted.setId(7L);
+    posted.setAuthProviderName("personal");
+    doThrow(new IllegalStateException("delete failed")).when(providerConfigStorage).delete(any());
+
+    assertDoesNotThrow(() -> emailConnectorService.updateEmailConnector(posted, TEST_USER));
+
+    verify(emailConnectorStorage).updateEmailConnector(posted);
+  }
+
   /** The provider unchanged, nothing is removed - the update is not a reset. */
   @Test
   @SneakyThrows

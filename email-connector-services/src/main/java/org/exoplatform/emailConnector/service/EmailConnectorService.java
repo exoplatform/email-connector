@@ -770,7 +770,18 @@ public class EmailConnectorService {
     String previousProvider = previousEmailConnector.getAuthProviderName();
     String newProvider = StringUtils.defaultIfBlank(emailConnector.getAuthProviderName(), previousProvider);
     if (StringUtils.isNotBlank(previousProvider) && !StringUtils.equals(previousProvider, newProvider)) {
-      providerConfigStorage.delete(providerConfigContext(previousEmailConnector.getId(), previousProvider));
+      try {
+        providerConfigStorage.delete(providerConfigContext(previousEmailConnector.getId(), previousProvider));
+      } catch (RuntimeException e) {
+        // The connector and its new configuration are already written: the save
+        // worked, and answering it with an error would only make the administrator
+        // retry a change that is in place. The configuration left behind is named
+        // here so that it can be removed.
+        LOG.warn("Email connector {} moved away from provider '{}', but removing that provider's configuration failed",
+                 previousEmailConnector.getId(),
+                 previousProvider,
+                 e);
+      }
     }
   }
 
