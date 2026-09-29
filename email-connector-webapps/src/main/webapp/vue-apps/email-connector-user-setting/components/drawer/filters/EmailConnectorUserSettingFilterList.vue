@@ -60,6 +60,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             <v-list-item-subtitle v-if="item.kind !== 'SERVER'" class="text-wrap">
               {{ $t('UserSettings.emailConnector.filters.exo.matches', { 0: item.matchCount || 0 }) }}
             </v-list-item-subtitle>
+            <!-- What the user decided on the rule's suggestions (EXO-90668), once it has any. -->
+            <v-list-item-subtitle v-if="suggestionCounts[item.id]" class="text-wrap">
+              {{ suggestionLine(suggestionCounts[item.id]) }}
+            </v-list-item-subtitle>
             <div v-if="item.lastError" class="d-flex flex-wrap mt-1">
               <v-chip
                 class="ma-0 me-1 px-2 text-subtitle"
@@ -189,6 +193,8 @@ export default {
   },
   data: () => ({
     filters: null,
+    // What the user decided on each rule's suggestions, by rule id.
+    suggestionCounts: {},
     loading: false,
     saving: false,
     error: null,
@@ -240,6 +246,35 @@ export default {
   },
   methods: {
     /**
+     * Reads what the user decided on each rule's suggestions; the list shows without them
+     * when they cannot be read.
+     *
+     * @returns {Promise<void>} resolved once read
+     */
+    readSuggestionCounts() {
+      return this.$emailConnectorUserSettingService.getFilterSuggestionCounts()
+        .then(counts => {
+          this.suggestionCounts = Object.fromEntries((counts || [])
+            .filter(count => count.approved || count.rejected || count.expired || count.handedOver || count.waiting)
+            .map(count => [count.filterId, count]));
+        })
+        .catch(() => this.suggestionCounts = {});
+    },
+    /**
+     * The line saying what the user decided on a rule's suggestions.
+     *
+     * @param {Object} counts - {approved, rejected, expired, handedOver, waiting}
+     * @returns {String} the localized line
+     */
+    suggestionLine(counts) {
+      return this.$t('UserSettings.emailConnector.filters.exo.suggestions', {
+        0: counts.approved || 0,
+        1: counts.rejected || 0,
+        2: counts.expired || 0,
+        3: counts.waiting || 0,
+      });
+    },
+    /**
      * Reads eXo's filters; a deployment that switched them off is told to the drawer,
      * not shown as an error.
      *
@@ -251,6 +286,7 @@ export default {
         .then(filters => {
           this.filters = filters || [];
           this.error = null;
+          this.readSuggestionCounts();
         })
         .catch(error => {
           this.filters = this.filters || [];
