@@ -25,8 +25,10 @@ import org.exoplatform.commons.api.notification.model.ArgumentLiteral;
 import org.exoplatform.commons.api.notification.model.NotificationInfo;
 import org.exoplatform.commons.api.notification.plugin.BaseNotificationPlugin;
 import org.exoplatform.commons.api.notification.plugin.NotificationPluginUtils;
+import org.exoplatform.commons.api.notification.service.WebNotificationService;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.container.xml.InitParams;
+import org.exoplatform.emailConnector.service.EmailFilterSuggestionDigest;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
 import org.exoplatform.services.resources.ResourceBundleService;
@@ -92,15 +94,21 @@ public class EmailFilterSuggestionsNotificationPlugin extends BaseNotificationPl
 
   /**
    * Builds the digest in the receiver's language: a heading, "N suggestions waiting",
-   * and the link to the mailbox.
+   * and the link to the mailbox -- unless the receiver already holds an unread digest,
+   * which is then updated in place with the count and none is built: the platform builds
+   * a digest on its own executor, after the sender looked, so a second run close to the
+   * first would otherwise stack a second digest.
    *
    * @param ctx the notification context
-   * @return the notification
+   * @return the notification, or null when an unread digest took the count
    */
   @Override
   protected NotificationInfo makeNotification(NotificationContext ctx) {
     String receiver = ctx.value(RECEIVER);
     int count = parseCount(ctx.value(COUNT));
+    if (EmailFilterSuggestionDigest.updateUnread(CommonsUtils.getService(WebNotificationService.class), receiver, count)) {
+      return null;
+    }
     return NotificationInfo.instance()
                            .setFrom("")
                            .to(receiver)
