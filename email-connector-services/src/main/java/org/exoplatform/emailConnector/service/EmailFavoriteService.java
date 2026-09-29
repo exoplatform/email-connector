@@ -73,6 +73,9 @@ public class EmailFavoriteService {
   private EmailBoxStorage       emailBoxStorage;
 
   @Autowired
+  private EmailDelegationService emailDelegationService;
+
+  @Autowired
   private FavoriteService       favoriteService;
 
   @Autowired
@@ -131,7 +134,9 @@ public class EmailFavoriteService {
    * <p>
    * Every folder is read but Trash, Spam, All Mail and Drafts
    * ({@link MailFolder#NOT_FAVORITED_FOLDERS}), so a starred mail stays a favorite
-   * whatever folder it is filed in. One message cached in two folders — a Gmail
+   * whatever folder it is filed in; the folders of a mailbox shared with the user are
+   * left out too ({@link MailFolder#notFavoritedFolders}, EXO-90550), their stars being
+   * the owner's favorites. One message cached in two folders — a Gmail
    * label, a copy another client made — is one favorite: the rows sharing a
    * Message-ID count once, on the INBOX one, else on the lowest id — the same row
    * whatever order the rows are read in, so a favorite never moves from one copy to
@@ -143,7 +148,9 @@ public class EmailFavoriteService {
    * @return the flagged mails' ids, as strings
    */
   private Set<String> getFlaggedEmailIds(String username) {
-    List<Email> starredEmails = emailBoxStorage.getStarredEmailKeys(username, MailFolder.NOT_FAVORITED_FOLDERS);
+    List<Email> starredEmails =
+                              emailBoxStorage.getStarredEmailKeys(username,
+                                                                  MailFolder.notFavoritedFolders(emailDelegationService.getDelegatedFolderKeys(username)));
     if (starredEmails == null) {
       return new HashSet<>();
     }

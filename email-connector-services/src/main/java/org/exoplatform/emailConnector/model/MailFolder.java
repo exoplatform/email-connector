@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.model;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -112,6 +113,26 @@ public final class MailFolder {
    * DRAFTS, where the mailbox offers no star.
    */
   public static final List<String> NOT_FAVORITED_FOLDERS = List.of(TRASH, JUNK, ALL_MAIL, DRAFTS);
+
+  /**
+   * The folders a user's Favorites leave out: {@link #NOT_FAVORITED_FOLDERS}, and the
+   * folders of every mailbox shared with them (EXO-90550). A star set in a shared
+   * mailbox is its owner's flag, and enters the owner's Favorites through her own rows;
+   * the delegate's cached copy of it never becomes the delegate's favorite, and removing
+   * one of their own favorites never unstars the owner's copy of the same message.
+   *
+   * @param sharedFolderKeys the {@code CUSTOM:<id>} keys of the mailboxes shared with the
+   *          user, possibly empty or null
+   * @return the folders to leave out
+   */
+  public static List<String> notFavoritedFolders(List<String> sharedFolderKeys) {
+    if (sharedFolderKeys == null || sharedFolderKeys.isEmpty()) {
+      return NOT_FAVORITED_FOLDERS;
+    }
+    List<String> folders = new ArrayList<>(NOT_FAVORITED_FOLDERS);
+    folders.addAll(sharedFolderKeys);
+    return folders;
+  }
 
   // The prefix of a CUSTOM folder's key -- a folder the user made in their own mailbox
   // ("Factures", "Customers/Acme", a Gmail label), mirrored here on their say-so.
