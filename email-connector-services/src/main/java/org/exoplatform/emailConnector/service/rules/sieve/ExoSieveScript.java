@@ -200,13 +200,8 @@ public final class ExoSieveScript {
     if (text == null || !text.startsWith(HEADER_PREFIX)) {
       return Optional.empty();
     }
-    int end = text.indexOf('\n');
-    String json = text.substring(HEADER_PREFIX.length(), end < 0 ? text.length() : end);
-    if (json.endsWith("\r")) {
-      json = json.substring(0, json.length() - 1);
-    }
     try {
-      JsonNode root = JSON.readTree(json);
+      JsonNode root = JSON.readTree(headerJsonOf(text));
       if (!(root instanceof ObjectNode header) || !header.path(KEY_VERSION).isInt()
           || header.path(KEY_VERSION).intValue() != HEADER_VERSION) {
         return Optional.empty();
@@ -233,6 +228,19 @@ public final class ExoSieveScript {
     } catch (JacksonException | IllegalArgumentException e) {
       return Optional.empty();
     }
+  }
+
+  /**
+   * The JSON the header line carries: the first line past {@link #HEADER_PREFIX}, its
+   * line break left out.
+   *
+   * @param text the script text, starting with {@link #HEADER_PREFIX}
+   * @return the header JSON, unparsed
+   */
+  private static String headerJsonOf(String text) {
+    int end = text.indexOf('\n');
+    String json = text.substring(HEADER_PREFIX.length(), end < 0 ? text.length() : end);
+    return json.endsWith("\r") ? json.substring(0, json.length() - 1) : json;
   }
 
   /**
@@ -263,7 +271,8 @@ public final class ExoSieveScript {
     script.append(HEADER_PREFIX).append(headerJson()).append(EOL);
     List<String> require = new ArrayList<>();
     if (emitsVacation()) {
-      require.add("vacation");
+      // The Sieve extension carries the same name as the header key.
+      require.add(KEY_VACATION);
       if (vacation.start() != null || vacation.end() != null) {
         require.add("date");
         require.add("relational");
@@ -462,7 +471,11 @@ public final class ExoSieveScript {
     /** The largest {@code :days} accepted. */
     public static final int      MAX_DAYS           = 365;
 
-    private static final Pattern HANDLE             = Pattern.compile("[A-Za-z0-9._-]{1,64}");
+    /** The characters and length a reply handle may carry. */
+    private static final Pattern HANDLE_PATTERN     = Pattern.compile("[A-Za-z0-9._-]{1,64}");
+
+    /** The header JSON field of the on/off switch. */
+    private static final String  FIELD_ENABLED      = "enabled";
 
     /**
      * Validates the reply and normalises the text's line breaks to CRLF.
@@ -485,11 +498,8 @@ public final class ExoSieveScript {
       if (text.length() > MAX_TEXT_LENGTH) {
         throw new IllegalArgumentException("emailConnector.absence.text.invalid");
       }
-      if (subject == null || subject.isBlank() || subject.length() > MAX_SUBJECT_LENGTH || subject.indexOf('\r') >= 0
-          || subject.indexOf('\n') >= 0 || subject.indexOf('\0') >= 0) {
-        throw new IllegalArgumentException("emailConnector.absence.subject.invalid");
-      }
-      if (handle == null || !HANDLE.matcher(handle).matches()) {
+      validateSubject(subject);
+      if (handle == null || !HANDLE_PATTERN.matcher(handle).matches()) {
         throw new IllegalArgumentException("emailConnector.absence.handle.invalid");
       }
       if (days < 1 || days > MAX_DAYS) {
@@ -498,6 +508,32 @@ public final class ExoSieveScript {
       if (start != null && end != null && start.isAfter(end)) {
         throw new IllegalArgumentException("emailConnector.absence.window.invalid");
       }
+      validateZone(zone, start, end);
+    }
+
+    /**
+     * Checks the subject: present, bounded, on one line, without a NUL.
+     *
+     * @param subject the subject
+     * @throws IllegalArgumentException with a message code when it is invalid
+     */
+    private static void validateSubject(String subject) {
+      if (subject == null || subject.isBlank() || subject.length() > MAX_SUBJECT_LENGTH || subject.indexOf('\r') >= 0
+          || subject.indexOf('\n') >= 0 || subject.indexOf('\0') >= 0) {
+        throw new IllegalArgumentException("emailConnector.absence.subject.invalid");
+      }
+    }
+
+    /**
+     * Checks the zone whenever the reply has one or a date window needs one.
+     *
+     * @param zone the zone, may be null
+     * @param start the first day, may be null
+     * @param end the last day, may be null
+     * @throws IllegalArgumentException with a message code when the zone is required and
+     *           unknown
+     */
+    private static void validateZone(String zone, LocalDate start, LocalDate end) {
       if (zone != null || start != null || end != null) {
         try {
           ZoneId.of(zone == null ? "" : zone);
@@ -534,7 +570,7 @@ public final class ExoSieveScript {
      */
     ObjectNode toJson() {
       ObjectNode node = JsonNodeFactory.instance.objectNode();
-      node.put("enabled", enabled);
+      node.put(FIELD_ENABLED, enabled);
       if (start != null) {
         node.put("start", start.toString());
       }
@@ -561,11 +597,11 @@ public final class ExoSieveScript {
      * @throws IllegalArgumentException when a field is missing or invalid
      */
     static Vacation fromJson(JsonNode node) {
-      if (!node.isObject() || !node.path("enabled").isBoolean() || !node.path("days").isInt()) {
+      if (!node.isObject() || !node.path(FIELD_ENABLED).isBoolean() || !node.path("days").isInt()) {
         throw new IllegalArgumentException("emailConnector.absence.header.invalid");
       }
       try {
-        return new Vacation(node.path("enabled").booleanValue(),
+        return new Vacation(node.path(FIELD_ENABLED).booleanValue(),
                             date(node, "start"),
                             date(node, "end"),
                             string(node, "zone"),
