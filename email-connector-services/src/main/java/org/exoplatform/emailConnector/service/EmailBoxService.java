@@ -4011,15 +4011,20 @@ public class EmailBoxService {
   /**
    * Whether the mail server flagged one of the owner's inbox mails as spam, read live from
    * the server: its keywords and its spam verdict headers ({@link SpamSignals}). One
-   * connection, the inbox opened read-only, one message fetched; nothing is written.
+   * connection, the inbox opened read-only, one message fetched; nothing is written. The
+   * cached UID is not trusted alone: the message found there must carry the expected
+   * Message-ID, or the mail is taken as gone -- a mailbox that renumbered itself would
+   * otherwise have another mail's marks read for this one.
    *
    * @param username the mailbox owner
-   * @param inboxUid the mail's UID in the inbox
-   * @return true or false; null when the inbox holds no such mail any more
+   * @param inboxUid the mail's UID in the inbox, as the cache holds it
+   * @param mailHeaderId the mail's Message-ID; blank, or one eXo minted for a mail that
+   *          had none, when it cannot be checked
+   * @return true or false; null when the inbox holds no such mail at that UID any more
    * @throws IllegalAccessException if the user may not read their mailbox
    * @throws IllegalStateException when the server cannot be reached or read
    */
-  public Boolean isFlaggedAsSpamOnServer(String username, long inboxUid) throws IllegalAccessException {
+  public Boolean isFlaggedAsSpamOnServer(String username, long inboxUid, String mailHeaderId) throws IllegalAccessException {
     checkCanReadMailbox(username);
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     Store store = null;
@@ -4034,8 +4039,13 @@ public class EmailBoxService {
       }
       FetchProfile profile = new FetchProfile();
       profile.add(FetchProfile.Item.FLAGS);
+      profile.add(HEADER_MESSAGE_ID);
       SpamSignals.VERDICT_HEADERS.forEach(profile::add);
       inbox.fetch(new Message[] { message }, profile);
+      String expected = EmailThreadingUtils.isSynthesizedMessageId(mailHeaderId) ? null : mailHeaderId;
+      if (!isExpectedMessageAtUid(message, expected, inboxUid, MailFolder.INBOX, username)) {
+        return null;
+      }
       return SpamSignals.isFlagged(userKeywords(message), name -> headerValues(message, name));
     } catch (MessagingException | ConnectorCredentialsException | RuntimeException e) {
       LOG.debug("The spam marks of inbox mail {} of user {} could not be read", inboxUid, username, e);
