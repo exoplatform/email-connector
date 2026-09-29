@@ -10283,7 +10283,7 @@ public class EmailBoxService {
     int at = bare.lastIndexOf('@');
     if (at > 0) {
       String domain = StringUtils.removeEnd(StringUtils.removeStart(bare.substring(at + 1), "["), "]");
-      boolean literal = domain.matches("[0-9.]+") || domain.contains(":") || bare.substring(at + 1).startsWith("[");
+      boolean literal = domain.matches("[0-9.]+") || domain.contains(":") || bare.startsWith("[", at + 1);
       if (literal) {
         keys.add(bare.substring(0, at + 1));
       }
