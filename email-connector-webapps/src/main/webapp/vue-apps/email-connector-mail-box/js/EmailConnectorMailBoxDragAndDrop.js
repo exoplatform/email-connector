@@ -242,7 +242,8 @@ export function showDragPicture(label, event) {
   const icon = document.createElement('i');
   icon.className = 'fas fa-arrows-alt';
   icon.setAttribute('aria-hidden', 'true');
-  icon.style.marginRight = '8px';
+  // After the icon in the page's own direction, right-to-left included.
+  icon.style.marginInlineEnd = '8px';
   chip.appendChild(icon);
   chip.appendChild(document.createTextNode(label));
   Object.assign(chip.style, {
