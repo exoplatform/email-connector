@@ -41,6 +41,7 @@ import static org.mockito.Mockito.when;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Locale;
 
 import org.springframework.test.util.ReflectionTestUtils;
@@ -64,6 +65,7 @@ import org.exoplatform.commons.file.services.FileStorageException;
 import org.exoplatform.emailConnector.event.EmailConnectorProviderChangedEvent;
 import org.exoplatform.emailConnector.model.ConnectorForwarding;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.EmailConnectorProviderConfig;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.storage.ConnectorEngineChoiceStorage;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
@@ -1078,7 +1080,8 @@ public class EmailConnectorServiceTest {
   /**
    * What the drawer reads back to repopulate its fields: everything but the secret, and
    * on a path that never decrypts one. A value the screen cannot receive is a value that
-   * cannot leak through it.
+   * cannot leak through it. Which secrets are stored comes along, so the drawer asks for
+   * a missing one instead of guessing it is there because the connector exists.
    */
   @Test
   @SneakyThrows
@@ -1095,9 +1098,30 @@ public class EmailConnectorServiceTest {
                                                                                                       "targetLoginField",
                                                                                                       "email"));
 
-    assertEquals(Map.of("technicalLogin", "svc", "targetLoginField", "email"),
+    when(providerConfigStorage.readStoredSecretKeys(argThat(context -> context.getConnectorId() == 7L
+        && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())))).thenReturn(Set.of("technicalSecret"));
+
+    assertEquals(new EmailConnectorProviderConfig(Map.of("technicalLogin", "svc", "targetLoginField", "email"),
+                                                  Set.of("technicalSecret")),
                  emailConnectorService.getProviderConfig(7L, TEST_USER));
     verify(providerConfigStorage, never()).readDecrypted(any());
+  }
+
+  /**
+   * A connector with no provider has nothing stored for any: an empty answer, and no
+   * read for a provider named by nobody.
+   */
+  @Test
+  @SneakyThrows
+  void providerConfigIsEmptyForAConnectorWithNoProvider() {
+    grantAdministration();
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName(null);
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+
+    assertEquals(EmailConnectorProviderConfig.EMPTY, emailConnectorService.getProviderConfig(7L, TEST_USER));
+    verify(providerConfigStorage, never()).readStoredSecretKeys(any());
   }
 
   /** Reading a technical account is an administration act, ACL-checked like the writes. */
