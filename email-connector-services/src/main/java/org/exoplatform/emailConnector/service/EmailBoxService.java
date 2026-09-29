@@ -5865,8 +5865,8 @@ public class EmailBoxService {
 
   /**
    * Clears the star of every copy a favorite stands for: its own row, and the rows of
-   * the user's other folders carrying its Message-ID, Trash, Spam, All Mail and Drafts left out
-   * as the Favorites drawer leaves them out. The drawer counts the copies of a message
+   * the user's other folders carrying its Message-ID, Trash, Spam, All Mail, Drafts and a
+   * shared mailbox's folders left out as the Favorites drawer leaves them out. The drawer counts the copies of a message
    * as one favorite ({@code EmailFavoriteService}), so clearing one copy only would
    * leave the favorite standing on another, and the entry the user just removed would
    * be back at the next reconciliation. Each copy is unstarred in its own folder,
@@ -5885,7 +5885,8 @@ public class EmailBoxService {
   public FavoriteRemoval unstarFavorite(Email favorite, String username) throws IllegalAccessException {
     Map<String, List<Long>> uidsByFolder = new LinkedHashMap<>();
     if (StringUtils.isNotBlank(favorite.getMailHeaderId())) {
-      emailBoxStorage.getStarredCopyKeys(username, favorite.getMailHeaderId(), MailFolder.NOT_FAVORITED_FOLDERS)
+      List<String> excludedFolders = MailFolder.notFavoritedFolders(emailDelegationService.getDelegatedFolderKeys(username));
+      emailBoxStorage.getStarredCopyKeys(username, favorite.getMailHeaderId(), excludedFolders)
                      .forEach(copy -> addCopy(uidsByFolder, copy.getFolder(), copy.getMailRemoteId()));
     }
     // Its own folder last: each call realigns the drawer, and while the favorite's own
