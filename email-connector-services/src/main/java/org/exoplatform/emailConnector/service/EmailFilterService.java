@@ -134,9 +134,12 @@ public class EmailFilterService {
   public static final String          MAX_PENDING_PROPERTY       = "exo.email.filters.agent.maxPending";
 
   /**
-   * How many times a day the assistant may be called on one mailbox's mails, default
-   * {@value #DEFAULT_DAILY_CAP}; the day is UTC's. Past it, a matched mail is skipped
-   * with {@value #DAILY_LIMIT}, no attempt spent, and can be run again later.
+   * How many of one mailbox's matches the assistant may run on per day, default
+   * {@value #DEFAULT_DAILY_CAP}; the day is UTC's. What is bounded is the number of
+   * matched mails the assistant ran on today, not the number of model calls: a mail run
+   * again today -- a "Run again", or an attempt given back and retried -- is not charged a
+   * second time. Past it, a matched mail is skipped with {@value #DAILY_LIMIT}, no attempt
+   * spent, and can be run again later.
    */
   public static final String          DAILY_CAP_PROPERTY         = "exo.email.filters.agent.dailyCap";
 
@@ -146,7 +149,7 @@ public class EmailFilterService {
   /** The default of {@value #MAX_PENDING_PROPERTY}. */
   public static final int             DEFAULT_MAX_PENDING        = 200;
 
-  /** Why the assistant was skipped: the mailbox's daily cap on runs was reached. */
+  /** Why the assistant was skipped: the mailbox's daily cap on matches run was reached. */
   public static final String          DAILY_LIMIT                = "emailConnector.filters.agent.dailyLimit";
 
   /** Why the assistant was skipped: too many of the mailbox's mails wait for it. */
@@ -155,8 +158,27 @@ public class EmailFilterService {
   /** Why the assistant was skipped: the mail is in Junk, or the server flagged it as spam. */
   public static final String          SPAM                       = "emailConnector.filters.agent.spam";
 
-  /** Why a mail waits: its spam marks could not be read from the mail server. */
+  /**
+   * Why a mail waits: its spam marks could not be read from the mail server. The first
+   * give-back carries the code as it is; the next ones carry it followed by
+   * {@code :<n>}, the number of give-backs in a row, so that the count survives the
+   * mailbox's wait, whichever node runs it next.
+   */
   public static final String          SPAM_UNCHECKED             = "emailConnector.filters.agent.spamUnchecked";
+
+  /**
+   * Why the assistant was skipped: the mail's spam marks could not be read
+   * {@value #MAX_SPAM_UNCHECKED} times in a row. Fail-safe: no model call, the held
+   * actions run, and the owner can run the assistant again from the mail.
+   */
+  public static final String          SPAM_UNCHECKED_LIMIT       = "emailConnector.filters.agent.spamUncheckedLimit";
+
+  /**
+   * How many times in a row a match is given back because its spam marks could not be
+   * read before it is skipped ({@value #SPAM_UNCHECKED_LIMIT}). The mailbox waits a minute
+   * doubled per give-back, so five is about half an hour of an unreadable mail.
+   */
+  public static final int             MAX_SPAM_UNCHECKED         = 5;
 
   /** How many of the newest mails a one-off pass may queue for the assistant. */
   public static final String          RETROACTIVE_MAX_PROPERTY   = "exo.email.filters.agent.retroactiveMax";
@@ -303,11 +325,20 @@ public class EmailFilterService {
 
   /**
    * The assistant statuses of a match whose assistant was called -- running, given back
-   * for another attempt, done or failed --, counted by the daily cap with its
+   * for another attempt, done or failed --, counted once each by the daily cap with its
    * conversation.
    */
   private static final List<String>   CALLED_STATUSES            = List.of(EmailFilterMatch.AGENT_PENDING,
                                                                            EmailFilterMatch.AGENT_RUNNING,
+                                                                           EmailFilterMatch.AGENT_DONE,
+                                                                           EmailFilterMatch.AGENT_FAILED);
+
+  /**
+   * The statuses of a match the assistant ran on today and that no longer waits for it:
+   * the sync counts these beside the waiting ones, so a match given back {@code PENDING}
+   * after a run today is counted once, as waiting.
+   */
+  private static final List<String>   RAN_STATUSES               = List.of(EmailFilterMatch.AGENT_RUNNING,
                                                                            EmailFilterMatch.AGENT_DONE,
                                                                            EmailFilterMatch.AGENT_FAILED);
 
@@ -1515,17 +1546,25 @@ public class EmailFilterService {
 
   /**
    * The guard rails the assistant's handler passes a match through before it calls the
-   * model, as the owner. In order:
+   * model, as the owner. In order, the reads of eXo's own data first and the mail server
+   * last:
    * <ol>
-   * <li><b>Never on spam.</b> A mail the cache holds in the Junk folder, or one the mail
-   * server flagged as spam ({@link SpamSignals}, read live: the categoriser, the user or a
-   * one-off pass may have queued a mail the sync never looked at), is skipped
-   * {@code SKIPPED_SPAM} ({@value #SPAM}). When the server cannot be read, the match is
-   * given back {@code PENDING} ({@value #SPAM_UNCHECKED}), no attempt spent, for the
-   * handler to wait: the assistant is never run on a mail whose marks are unknown.</li>
-   * <li><b>The daily cap.</b> Once the assistant was called {@value #DAILY_CAP_PROPERTY}
-   * times today on the owner's mails, the match is skipped {@code SKIPPED_CAP}
-   * ({@value #DAILY_LIMIT}).</li>
+   * <li><b>Never on spam, from the cache.</b> A mail the cache holds in the Junk folder is
+   * skipped {@code SKIPPED_SPAM} ({@value #SPAM}).</li>
+   * <li><b>The daily cap.</b> Once the assistant ran on {@value #DAILY_CAP_PROPERTY} of the
+   * owner's matches today, the match is skipped {@code SKIPPED_CAP} ({@value #DAILY_LIMIT});
+   * a match the assistant already ran on today is not charged again.</li>
+   * <li><b>Never on spam, from the server.</b> A mail the mail server flagged as spam
+   * ({@link SpamSignals}, read live: the categoriser, the user or a one-off pass may have
+   * queued a mail the sync never looked at) is skipped {@code SKIPPED_SPAM}. When the
+   * server cannot be reached, the match is given back {@code PENDING}
+   * ({@value #SPAM_UNCHECKED}), no attempt spent, for the handler to wait; after
+   * {@value #MAX_SPAM_UNCHECKED} such give-backs in a row, it is skipped
+   * {@code SKIPPED_SPAM} ({@value #SPAM_UNCHECKED_LIMIT}), so that one mail cannot hold its
+   * mailbox for ever. The read is fail-open on what the server does answer: a keyword or
+   * header the server returns but that cannot be parsed counts as not set, and a mail the
+   * server no longer holds at its cached UID is not read and passes (the handler ends it
+   * when it is gone from the cache too).</li>
    * </ol>
    * A skip spends no attempt and calls no model; the rule's held actions then run, and the
    * owner can run the assistant again from the mail's Automations box. The count is exact
@@ -1540,11 +1579,21 @@ public class EmailFilterService {
    */
   public EmailFilterMatch skipIfGuarded(String username, EmailFilterMatch match) throws ObjectNotFoundException {
     String mailHeaderId = match.getMailHeaderId();
+    boolean inJunk;
+    try {
+      inJunk = emailBoxService.hasOwnEmailInFolder(username, mailHeaderId, MailFolder.JUNK);
+    } catch (IllegalAccessException e) {
+      // The owner may no longer read the mailbox: the handler's own read refuses it too.
+      return null;
+    }
+    if (inJunk) {
+      return skipAgent(username, match.getId(), EmailFilterMatch.AGENT_SKIPPED_SPAM, SPAM);
+    }
+    if (isPastDailyCap(username, match)) {
+      return skipAgent(username, match.getId(), EmailFilterMatch.AGENT_SKIPPED_CAP, DAILY_LIMIT);
+    }
     Boolean flagged;
     try {
-      if (emailBoxService.hasOwnEmailInFolder(username, mailHeaderId, MailFolder.JUNK)) {
-        return skipAgent(username, match.getId(), EmailFilterMatch.AGENT_SKIPPED_SPAM, SPAM);
-      }
       Email inInbox = emailBoxService.getOwnEmailByMailHeaderId(username, mailHeaderId, MailFolder.INBOX);
       // A mail gone from the inbox is the handler's to end (MAIL_GONE); there is nothing to read.
       flagged = inInbox == null || inInbox.getMailRemoteId() == null ? Boolean.FALSE
@@ -1554,31 +1603,90 @@ public class EmailFilterService {
       // The owner may no longer read the mailbox: the handler's own read refuses it too.
       return null;
     } catch (RuntimeException e) {
-      LOG.info("The spam marks of mail filter match {} of user {} could not be read; the mail waits: {}",
-               match.getId(),
-               username,
-               e.getMessage());
-      return parkAgentMatch(match.getId(), username, SPAM_UNCHECKED);
+      return giveBackSpamUnchecked(username, match, e);
     }
     if (Boolean.TRUE.equals(flagged)) {
       return skipAgent(username, match.getId(), EmailFilterMatch.AGENT_SKIPPED_SPAM, SPAM);
-    }
-    long runs = emailFilterStorage.countAgentRunsSince(username,
-                                                       CALLED_STATUSES,
-                                                       Date.from(clock.instant().truncatedTo(ChronoUnit.DAYS)));
-    // A match given back after a call today already counts itself: it is not a new run.
-    boolean countsItself = match.getAgentConversationId() != null && match.getAgentDate() != null
-        && match.getAgentDate() >= clock.instant().truncatedTo(ChronoUnit.DAYS).toEpochMilli()
-        && CALLED_STATUSES.contains(match.getAgentStatus());
-    if (runs - (countsItself ? 1 : 0) >= dailyCap()) {
-      return skipAgent(username, match.getId(), EmailFilterMatch.AGENT_SKIPPED_CAP, DAILY_LIMIT);
     }
     return null;
   }
 
   /**
+   * Whether running the assistant on this match would take the owner's mailbox past its
+   * daily cap: the matches the assistant ran on today, this one left out when it is one
+   * of them -- given back after a run today, it is not a new one.
+   *
+   * @param username the owner
+   * @param match the match, about to run
+   * @return true when the cap is reached
+   */
+  private boolean isPastDailyCap(String username, EmailFilterMatch match) {
+    Instant startOfDay = clock.instant().truncatedTo(ChronoUnit.DAYS);
+    long runs = emailFilterStorage.countAgentRunsSince(username, CALLED_STATUSES, Date.from(startOfDay));
+    boolean countsItself = match.getAgentConversationId() != null && match.getAgentDate() != null
+        && match.getAgentDate() >= startOfDay.toEpochMilli() && CALLED_STATUSES.contains(match.getAgentStatus());
+    return runs - (countsItself ? 1 : 0) >= dailyCap();
+  }
+
+  /**
+   * Gives a match back {@code PENDING} because its spam marks could not be read, counting
+   * the give-backs in a row in its last error ({@value #SPAM_UNCHECKED}); once
+   * {@value #MAX_SPAM_UNCHECKED} of them were counted, skips it instead
+   * ({@value #SPAM_UNCHECKED_LIMIT}), so one mail the server keeps failing to read cannot
+   * hold its mailbox for ever.
+   *
+   * @param username the owner
+   * @param match the match, as read before this run
+   * @param cause why the marks could not be read
+   * @return the match as written: waiting, or skipped with its held actions run
+   * @throws ObjectNotFoundException when the match is not this user's
+   */
+  private EmailFilterMatch giveBackSpamUnchecked(String username,
+                                                 EmailFilterMatch match,
+                                                 RuntimeException cause) throws ObjectNotFoundException {
+    int givenBack = spamUncheckedCount(match.getLastError());
+    if (givenBack >= MAX_SPAM_UNCHECKED) {
+      LOG.warn("The spam marks of mail filter match {} of user {} could not be read {} times in a row; its assistant is skipped: {}",
+               match.getId(),
+               username,
+               givenBack + 1,
+               cause.getMessage());
+      return skipAgent(username, match.getId(), EmailFilterMatch.AGENT_SKIPPED_SPAM, SPAM_UNCHECKED_LIMIT);
+    }
+    LOG.info("The spam marks of mail filter match {} of user {} could not be read; the mail waits: {}",
+             match.getId(),
+             username,
+             cause.getMessage());
+    int count = givenBack + 1;
+    return parkAgentMatch(match.getId(), username, count == 1 ? SPAM_UNCHECKED : SPAM_UNCHECKED + ":" + count);
+  }
+
+  /**
+   * How many times in a row a match was given back because its spam marks could not be
+   * read, from its last error.
+   *
+   * @param lastError the match's last error
+   * @return the count, 0 when its last give-back was for something else
+   */
+  static int spamUncheckedCount(String lastError) {
+    if (SPAM_UNCHECKED.equals(lastError)) {
+      return 1;
+    }
+    if (lastError == null || !lastError.startsWith(SPAM_UNCHECKED + ":")) {
+      return 0;
+    }
+    try {
+      return Math.max(1, Integer.parseInt(lastError.substring(SPAM_UNCHECKED.length() + 1)));
+    } catch (NumberFormatException e) {
+      return 1;
+    }
+  }
+
+  /**
    * Skips a match's assistant without spending an attempt, then runs the actions the rule
-   * held for it.
+   * held for it. A failure of those actions is logged and leaves the match skipped, as
+   * the assistant's runner does: the skip is written first, so it is never undone by
+   * them, and the match is never given back to wait for a run it will not get.
    *
    * @param username the owner
    * @param matchId the match
@@ -1600,6 +1708,9 @@ public class EmailFilterService {
       return applyPostActions(matchId, username);
     } catch (IllegalAccessException e) {
       LOG.info("The held actions of mail filter match {} of user {} cannot run: {}", matchId, username, e.getMessage());
+      return skipped;
+    } catch (RuntimeException e) {
+      LOG.warn("The held actions of mail filter match {} of user {} could not run", matchId, username, e);
       return skipped;
     }
   }
@@ -2956,8 +3067,9 @@ public class EmailFilterService {
       match.setLastError(PENDING_LIMIT);
       return EmailFilterMatch.AGENT_SKIPPED_CAP;
     }
-    // The waiting mails run today too: they are counted with today's runs, so a mail is
-    // never queued only to be skipped by the handler.
+    // The waiting mails run today too: they are counted with the matches run today, so a
+    // mail is never queued only to be skipped by the handler. Each once: a match given
+    // back waiting after a run today is among the waiting, not among those run.
     if (run.runsToday + run.pendingBefore + queuedNow >= dailyCap()) {
       match.setLastError(DAILY_LIMIT);
       return EmailFilterMatch.AGENT_SKIPPED_CAP;
@@ -2966,20 +3078,21 @@ public class EmailFilterService {
   }
 
   /**
-   * How many times the assistant was called today on the owner's mails: the matches
-   * holding a run's conversation, written by the assistant since the start of the UTC
-   * day, in a status of a called run.
+   * How many of the owner's matches the assistant ran on today and that no longer wait
+   * for it: the matches holding a run's conversation, written by the assistant since the
+   * start of the UTC day, running, done or failed. The ones given back {@code PENDING}
+   * are left out: the sync counts them with the waiting ones.
    *
    * @param username the owner
    * @return the count
    */
   private long countRunsToday(String username) {
     Instant startOfDay = clock.instant().truncatedTo(ChronoUnit.DAYS);
-    return emailFilterStorage.countAgentRunsSince(username, CALLED_STATUSES, Date.from(startOfDay));
+    return emailFilterStorage.countAgentRunsSince(username, RAN_STATUSES, Date.from(startOfDay));
   }
 
   /**
-   * The mailbox's daily cap on assistant runs ({@value #DAILY_CAP_PROPERTY}).
+   * The mailbox's daily cap on the matches the assistant runs on ({@value #DAILY_CAP_PROPERTY}).
    *
    * @return the cap, 0 or more
    */
