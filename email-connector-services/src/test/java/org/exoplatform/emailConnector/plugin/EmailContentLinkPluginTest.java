@@ -120,6 +120,16 @@ class EmailContentLinkPluginTest {
   }
 
   /**
+   * A chip whose mail its reader cannot see, or which does not exist, is a
+   * "Private mail" chip: the extension declares that label, so Social renders
+   * the envelope and the label alike for both, never the subject.
+   */
+  @Test
+  void extensionPrivateLabel() {
+    assertEquals("contentLink.email.private", plugin.getExtension().getPrivateTitleKey());
+  }
+
+  /**
    * The owner searching their mail id finds it, with its subject as title.
    */
   @Test
