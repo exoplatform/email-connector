@@ -184,17 +184,20 @@ public interface EmailFilterMatchDAO extends JpaRepository<EmailFilterMatchEntit
   String agentStatus);
 
   /**
-   * How many assistant runs a user's matches were queued for since a date: the daily
-   * cap. A match counts from the moment it is queued, whatever became of the run.
+   * How many of a user's matches had their assistant called since a date: the daily cap.
+   * A match counts once its run started -- it holds the run's conversation -- and its
+   * last write of the assistant is that recent; a match skipped, or still waiting for
+   * its first run, holds no conversation or is not in the given statuses.
    *
    * @param userId the owner
-   * @param statuses the statuses of a queued run
+   * @param statuses the statuses of a match whose assistant was called: running, given
+   *          back for another attempt, done, failed
    * @param since the start of the day
    * @return the count
    */
   @Query("SELECT COUNT(fm) FROM EmailFilterMatchEntity fm WHERE fm.userId = :userId AND fm.agentStatus IN :statuses"
-      + " AND fm.matchedDate >= :since")
-  long countQueuedSince(@Param("userId")
+      + " AND fm.agentConversationId IS NOT NULL AND fm.agentDate >= :since")
+  long countAgentRunsSince(@Param("userId")
   String userId, @Param("statuses")
   Collection<String> statuses, @Param("since")
   Date since);

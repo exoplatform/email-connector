@@ -741,6 +741,16 @@ export function getExoFilters() {
 }
 
 /**
+ * What the user decided on each of their rules' suggestions: per rule, how many were
+ * approved, rejected, expired unanswered, continued in the chat, and how many wait.
+ *
+ * @returns {Promise<object[]>} the counts, {filterId, approved, rejected, expired, handedOver, waiting}
+ */
+export function getFilterSuggestionCounts() {
+  return filterRequest('/proposals/counts', 'GET', null, 'Error when reading the suggestions counts');
+}
+
+/**
  * Creates, or replaces, one rule eXo runs after each sync. A rule of kind HOP also runs
  * at delivery: its server half is written first, and nothing is stored when the server
  * refuses (409 {message, scriptName}, 502).

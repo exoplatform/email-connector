@@ -152,7 +152,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :width="2"
               indeterminate
               class="me-2 icon-default-color" />
-            <span>{{ $t(`emailConnector.mailBox.automations.agent.${match.agentStatus}`) }}</span>
+            <span>{{ $t(`emailConnector.mailBox.automations.agent.${agentStatusKey(match)}`) }}</span>
             <a
               v-if="terminal(match)"
               :class="linkClass"
@@ -246,7 +246,10 @@ import { FILTER_OUTCOME_EXTENSION, filtersMessage } from '../../../email-connect
 import { isOwnMailboxMail } from '../../js/EmailConnectorMailFilters.js';
 
 /** The assistant statuses after which it runs again only when asked. */
-const TERMINAL = ['DONE', 'FAILED', 'SKIPPED_CAP', 'SKIPPED_DISABLED'];
+const TERMINAL = ['DONE', 'FAILED', 'SKIPPED_CAP', 'SKIPPED_SPAM', 'SKIPPED_DISABLED'];
+
+/** Why a capped match was skipped when too many mails already waited, not for the day's limit. */
+const PENDING_LIMIT = 'emailConnector.filters.agent.pendingLimit';
 
 /** The brand colour, with the skin's default when the portal publishes none -- as the AI summary box reads it. */
 const PRIMARY_COLOR = 'var(--allPagesPrimaryColor, #3f8487)';
@@ -612,6 +615,17 @@ export default {
      */
     canUndo(action) {
       return action.ok && !action.undone && UNDOABLE.includes(action.type);
+    },
+    /**
+     * The key of the line saying where the assistant's run on a match stands: its status,
+     * told apart for a match skipped because too many mails waited -- the daily limit is
+     * the status's own line.
+     *
+     * @param {Object} match - the match
+     * @returns {String} the key's last segment
+     */
+    agentStatusKey(match) {
+      return match.agentStatus === 'SKIPPED_CAP' && match.lastError === PENDING_LIMIT ? 'SKIPPED_CAP_PENDING' : match.agentStatus;
     },
     /**
      * Whether the assistant's run on a match is over.
