@@ -23,11 +23,13 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.util.concurrent.RejectedExecutionException;
@@ -39,6 +41,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.InjectMocks;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -112,7 +115,88 @@ class EmailManagedEnrollmentServiceTest {
 
     assertEquals(EmailManagedEnrollmentOutcome.NOT_MANAGED, service.enrollOnLogin(USER));
 
-    verifyNoInteractions(userEmailSettingService);
+    // Only the managed-mode mark is read: a user managed mode never attached is left alone.
+    verify(userEmailSettingService).isConnectedByManagedMode(USER);
+    verifyNoMoreInteractions(userEmailSettingService);
+  }
+
+  /**
+   * A user managed mode attached, who has joined an excluded group since, is
+   * disconnected at login and not attached again.
+   */
+  @Test
+  void disconnectsAtLoginAUserManagedModeAttachedAndNoLongerGoverns() throws Exception {
+    when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(null);
+    when(userEmailSettingService.isConnectedByManagedMode(USER)).thenReturn(true);
+    when(emailManagedModeService.governingConnectorFor(USER)).thenReturn(null);
+    when(userEmailSettingService.getStoredEmailConnectorId(USER)).thenReturn("7");
+
+    assertEquals(EmailManagedEnrollmentOutcome.DETACHED, service.enrollOnLogin(USER));
+
+    verify(userEmailSettingService).deleteUserEmailSetting(USER);
+    verify(userEmailSettingService, never()).connectThroughProvider(anyLong(), anyString(), anyBoolean());
+  }
+
+  /**
+   * A user managed mode attached whose identity cannot be resolved - the
+   * directory failed - is not disconnected: the enrolment fails and the next login
+   * decides.
+   */
+  @Test
+  void neverDisconnectsAtLoginAUserWhoseIdentityCannotBeResolved() throws Exception {
+    when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(null);
+    when(userEmailSettingService.isConnectedByManagedMode(USER)).thenReturn(true);
+    when(emailManagedModeService.governingConnectorFor(USER)).thenThrow(new IllegalStateException("no identity"));
+
+    assertEquals(EmailManagedEnrollmentOutcome.FAILED, service.enrollOnLogin(USER));
+
+    verify(userEmailSettingService, never()).deleteUserEmailSetting(anyString());
+  }
+
+  /** The same situation for a user who chose their connector: they are not touched. */
+  @Test
+  void neverDisconnectsAUserWhoChoseTheirConnector() {
+    when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(null);
+    when(userEmailSettingService.isConnectedByManagedMode(USER)).thenReturn(false);
+
+    assertEquals(EmailManagedEnrollmentOutcome.NOT_MANAGED, service.enrollOnLogin(USER));
+
+    verify(userEmailSettingService, never()).deleteUserEmailSetting(anyString());
+  }
+
+  /**
+   * A user managed mode attached to a connector no longer designated - a
+   * disconnection the administrator's change asked for did not go through - is
+   * disconnected, then attached to the connector designated now.
+   */
+  @Test
+  void movesAtLoginAUserManagedModeAttachedToAConnectorNoLongerDesignated() throws Exception {
+    when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(7L);
+    when(userEmailSettingService.isConnectedByManagedMode(USER)).thenReturn(true);
+    when(emailManagedModeService.governingConnectorFor(USER)).thenReturn(7L);
+    when(userEmailSettingService.getStoredEmailConnectorId(USER)).thenReturn("3");
+    configured(false);
+    when(userEmailSettingService.connectThroughProvider(7L, USER, true)).thenReturn(true);
+
+    assertEquals(EmailManagedEnrollmentOutcome.ATTACHED, service.enrollOnLogin(USER));
+
+    InOrder order = inOrder(userEmailSettingService);
+    order.verify(userEmailSettingService).deleteUserEmailSetting(USER);
+    order.verify(userEmailSettingService).connectThroughProvider(7L, USER, true);
+  }
+
+  /** A user managed mode attached, still on the designated connector, is left alone. */
+  @Test
+  void leavesAloneAUserManagedModeAttachedToTheDesignatedConnector() throws Exception {
+    when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(7L);
+    when(userEmailSettingService.isConnectedByManagedMode(USER)).thenReturn(true);
+    when(emailManagedModeService.governingConnectorFor(USER)).thenReturn(7L);
+    when(userEmailSettingService.getStoredEmailConnectorId(USER)).thenReturn("7");
+    configured(true);
+
+    assertEquals(EmailManagedEnrollmentOutcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
+
+    verify(userEmailSettingService, never()).deleteUserEmailSetting(anyString());
   }
 
   /** Rule one: a configuration exists, whatever connector it names, and nothing happens. */
