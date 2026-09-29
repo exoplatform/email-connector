@@ -209,6 +209,7 @@ import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailReadReceiptAnswerStorage;
 import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
 import org.exoplatform.emailConnector.service.filters.FilterRunContext;
+import org.exoplatform.emailConnector.service.filters.SpamSignals;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
@@ -3990,6 +3991,74 @@ public class EmailBoxService {
     }
     Email email = getEmailById(ids.get(0), username);
     return email != null && username.equals(email.getUserId()) ? email : null;
+  }
+
+  /**
+   * Whether the cache of one folder of the owner's own mailbox holds a mail with this
+   * Message-ID: a read of the cache, never of the server.
+   *
+   * @param username the mailbox owner
+   * @param mailHeaderId the Message-ID
+   * @param folder the folder key, e.g. {@link MailFolder#JUNK}
+   * @return true when that folder's cache holds one
+   * @throws IllegalAccessException if the user may not read their mailbox
+   */
+  public boolean hasOwnEmailInFolder(String username, String mailHeaderId, String folder) throws IllegalAccessException {
+    checkCanReadMailbox(username);
+    return StringUtils.isNotBlank(mailHeaderId) && !emailBoxStorage.getEmailIdsByMailHeaderId(username, mailHeaderId, folder).isEmpty();
+  }
+
+  /**
+   * Whether the mail server flagged one of the owner's inbox mails as spam, read live from
+   * the server: its keywords and its spam verdict headers ({@link SpamSignals}). One
+   * connection, the inbox opened read-only, one message fetched; nothing is written.
+   *
+   * @param username the mailbox owner
+   * @param inboxUid the mail's UID in the inbox
+   * @return true or false; null when the inbox holds no such mail any more
+   * @throws IllegalAccessException if the user may not read their mailbox
+   * @throws IllegalStateException when the server cannot be reached or read
+   */
+  public Boolean isFlaggedAsSpamOnServer(String username, long inboxUid) throws IllegalAccessException {
+    checkCanReadMailbox(username);
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    Store store = null;
+    Folder inbox = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      inbox = store.getFolder(MailFolder.INBOX);
+      inbox.open(Folder.READ_ONLY);
+      Message message = ((UIDFolder) inbox).getMessageByUID(inboxUid);
+      if (message == null) {
+        return null;
+      }
+      FetchProfile profile = new FetchProfile();
+      profile.add(FetchProfile.Item.FLAGS);
+      SpamSignals.VERDICT_HEADERS.forEach(profile::add);
+      inbox.fetch(new Message[] { message }, profile);
+      return SpamSignals.isFlagged(userKeywords(message), name -> headerValues(message, name));
+    } catch (MessagingException | ConnectorCredentialsException | RuntimeException e) {
+      LOG.debug("The spam marks of inbox mail {} of user {} could not be read", inboxUid, username, e);
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username), e);
+    } finally {
+      try {
+        if (inbox != null && inbox.isOpen()) {
+          inbox.close(false);
+        }
+      } catch (MessagingException messagingException) {
+        LOG.debug("Error when closing the inbox", messagingException);
+      }
+      try {
+        if (store != null) {
+          rediscoveries.remove(store);
+          if (store.isConnected()) {
+            store.close();
+          }
+        }
+      } catch (MessagingException messagingException) {
+        LOG.debug("Error when closing the store", messagingException);
+      }
+    }
   }
 
   /**

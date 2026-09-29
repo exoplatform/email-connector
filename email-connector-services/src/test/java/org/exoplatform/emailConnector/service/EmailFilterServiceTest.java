@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -201,6 +202,7 @@ public class EmailFilterServiceTest {
   void tearDown() {
     System.clearProperty(EmailFilterService.AGENT_ENABLED_PROPERTY);
     System.clearProperty(EmailFilterService.MAX_PENDING_PROPERTY);
+    System.clearProperty(EmailFilterService.DAILY_CAP_PROPERTY);
     System.clearProperty(EmailFilterService.ENABLED_PROPERTY);
     System.clearProperty(EmailFilterService.SEED_IMPORTANT_PROPERTY);
   }
@@ -564,7 +566,171 @@ public class EmailFilterServiceTest {
 
     assertEquals(Set.of(2L), service.applyToNewMail(USERNAME, List.of(inbox(2L)), FilterRunContext.OWN_INBOX));
     assertEquals(EmailFilterMatch.AGENT_SKIPPED_CAP, new ArrayList<>(matches.values()).get(1).getAgentStatus());
+    assertEquals(EmailFilterService.PENDING_LIMIT, new ArrayList<>(matches.values()).get(1).getLastError(), "told apart from the day's limit");
     verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.FILTER_AGENT_REQUESTED), any(), any());
+  }
+
+  /**
+   * The daily cap at sync (EXO-90668): the assistant's runs today and the mails already
+   * waiting for it count, so a mail past the cap is skipped "daily limit" at once -- no
+   * request, no attempt, its other actions run in the pass -- and one under it is queued.
+   * Both sides of the guard.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aMailPastTheDailyCapIsSkippedWithTheDailyLimitAndItsActionsRun() throws Exception {
+    stored(rule("Invoices", EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of(agent(), move("CUSTOM:3"))));
+    givenNewMail(mail(1L, "a@acme.com", "One"), mail(2L, "a@acme.com", "Two"));
+    System.setProperty(EmailFilterService.DAILY_CAP_PROPERTY, "3");
+    when(emailFilterStorage.countByAgentStatus(USERNAME, EmailFilterMatch.AGENT_PENDING)).thenReturn(1L);
+    when(emailFilterStorage.countAgentRunsSince(eq(USERNAME), any(), eq(Date.from(Instant.ofEpochMilli(NOW).truncatedTo(java.time.temporal.ChronoUnit.DAYS)))))
+                                                                                                                                  .thenReturn(1L);
+
+    assertEquals(Set.of(), service.applyToNewMail(USERNAME, List.of(inbox(1L)), FilterRunContext.OWN_INBOX), "under the cap: queued");
+    EmailFilterMatch queued = matches.values().iterator().next();
+    assertEquals(EmailFilterMatch.AGENT_PENDING, queued.getAgentStatus());
+
+    when(emailFilterStorage.countAgentRunsSince(eq(USERNAME), any(), any())).thenReturn(2L);
+    assertEquals(Set.of(2L), service.applyToNewMail(USERNAME, List.of(inbox(2L)), FilterRunContext.OWN_INBOX), "the move ran in the pass");
+    EmailFilterMatch skipped = new ArrayList<>(matches.values()).get(1);
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_CAP, skipped.getAgentStatus());
+    assertEquals(EmailFilterService.DAILY_LIMIT, skipped.getLastError());
+    assertEquals(0, skipped.getAgentAttempts(), "no attempt spent");
+    assertEquals(EmailFilterMatch.POST_DONE, skipped.getPostActionsState());
+    verify(listenerService, times(1)).broadcast(eq(EmailConnectorUtils.FILTER_AGENT_REQUESTED), any(), any());
+  }
+
+  /**
+   * Never on spam, at sync (EXO-90668): a mail the server marked -- the {@code $Junk}
+   * keyword, or an {@code X-Spam-Flag: YES} header -- is skipped "spam", nothing
+   * requested, its other actions run; a {@code $NotJunk} mark from the user wins over the
+   * header, and an unmarked mail is queued.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aMailTheServerFlaggedAsSpamNeverQueuesTheAssistant() throws Exception {
+    stored(rule("Invoices", EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of(agent(), move("CUSTOM:3"))));
+    givenNewMail(mail(1L, "a@acme.com", "One"), mail(2L, "a@acme.com", "Two"), mail(3L, "a@acme.com", "Three"),
+                 mail(4L, "a@acme.com", "Four"));
+    InboxMail headerFlagged = new InboxMail(2L, Set.of(), name -> "X-Spam-Flag".equals(name) ? List.of("YES") : List.of(), () -> null);
+    InboxMail notJunk = new InboxMail(3L, Set.of("$NotJunk"), name -> "X-Spam-Flag".equals(name) ? List.of("YES") : List.of(), () -> null);
+
+    Set<Long> filed = service.applyToNewMail(USERNAME,
+                                             List.of(inbox(1L, "$Junk"), headerFlagged, notJunk, inbox(4L)),
+                                             FilterRunContext.OWN_INBOX);
+
+    List<EmailFilterMatch> recorded = new ArrayList<>(matches.values());
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_SPAM, recorded.get(0).getAgentStatus(), "the keyword");
+    assertEquals(EmailFilterService.SPAM, recorded.get(0).getLastError());
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_SPAM, recorded.get(1).getAgentStatus(), "the header");
+    assertEquals(EmailFilterMatch.AGENT_PENDING, recorded.get(2).getAgentStatus(), "the user said not spam");
+    assertEquals(EmailFilterMatch.AGENT_PENDING, recorded.get(3).getAgentStatus());
+    assertEquals(Set.of(1L, 2L), filed, "the spam's other actions ran in the pass");
+    verify(listenerService).broadcast(EmailConnectorUtils.FILTER_AGENT_REQUESTED,
+                                      USERNAME,
+                                      List.of(recorded.get(2).getId(), recorded.get(3).getId()));
+  }
+
+  /**
+   * The handler's guard, spam first (EXO-90668): a mail the cache holds in Junk, or one
+   * the server flags when read live, is skipped "spam" -- no attempt spent, its held
+   * actions run --, whatever path queued it; an unflagged mail passes.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theHandlersGuardSkipsAMailInJunkOrFlaggedAsSpam() throws Exception {
+    EmailFilterMatch inJunk = waitingMatch(1L, EmailFilterMatch.AGENT_PENDING);
+    when(emailBoxService.hasOwnEmailInFolder(USERNAME, inJunk.getMailHeaderId(), MailFolder.JUNK)).thenReturn(true);
+
+    EmailFilterMatch skipped = service.skipIfGuarded(USERNAME, inJunk);
+    assertNotNull(skipped, "a mail in Junk is not run");
+
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_SPAM, skipped.getAgentStatus());
+    assertEquals(0, skipped.getAgentAttempts(), "no attempt spent");
+    verify(emailBoxService, never()).isFlaggedAsSpamOnServer(any(), anyLong());
+
+    EmailFilterMatch flagged = waitingMatch(2L, EmailFilterMatch.AGENT_PENDING);
+    Email mail = mail(2L, "a@acme.com", "Two");
+    when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, flagged.getMailHeaderId(), MailFolder.INBOX)).thenReturn(mail);
+    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 2L)).thenReturn(true);
+
+    skipped = service.skipIfGuarded(USERNAME, flagged);
+    assertNotNull(skipped, "a mail the server flagged is not run");
+
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_SPAM, skipped.getAgentStatus());
+    assertEquals(EmailFilterMatch.POST_DONE, matches.get(flagged.getId()).getPostActionsState(), "its held actions ran");
+    verify(emailBoxService).moveToFolder(List.of(2L), USERNAME, MailFolder.INBOX, "CUSTOM:3");
+
+    EmailFilterMatch clean = waitingMatch(3L, EmailFilterMatch.AGENT_PENDING);
+    when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, clean.getMailHeaderId(), MailFolder.INBOX)).thenReturn(mail(3L, "a@acme.com", "Three"));
+    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 3L)).thenReturn(false);
+
+    assertNull(service.skipIfGuarded(USERNAME, clean), "a clean mail runs");
+    assertEquals(EmailFilterMatch.AGENT_PENDING, matches.get(clean.getId()).getAgentStatus());
+  }
+
+  /**
+   * The handler's guard never runs on a mail whose marks are unknown (EXO-90668): when
+   * the server cannot be read, the match is given back waiting, no attempt spent, its
+   * held actions still held.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theHandlersGuardHoldsAMailWhoseSpamMarksCannotBeRead() throws Exception {
+    EmailFilterMatch match = waitingMatch(1L, EmailFilterMatch.AGENT_PENDING);
+    when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, match.getMailHeaderId(), MailFolder.INBOX)).thenReturn(mail(1L, "a@acme.com", "One"));
+    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 1L)).thenThrow(new IllegalStateException("unreachable"));
+
+    EmailFilterMatch parked = service.skipIfGuarded(USERNAME, match);
+    assertNotNull(parked, "a mail whose marks are unknown is not run");
+
+    assertEquals(EmailFilterMatch.AGENT_PENDING, parked.getAgentStatus());
+    assertEquals(EmailFilterService.SPAM_UNCHECKED, parked.getLastError());
+    assertEquals(0, parked.getAgentAttempts(), "no attempt spent");
+    assertEquals(EmailFilterMatch.POST_PENDING_AGENT, parked.getPostActionsState());
+  }
+
+  /**
+   * The handler's daily cap (EXO-90668): once the assistant was called the cap's number
+   * of times today, a match is skipped "daily limit" -- no attempt spent, its held
+   * actions run -- and can be run again later by the owner; under the cap it passes, and
+   * a match given back after a call today does not count twice.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theHandlersGuardSkipsAMatchPastTheDailyCapWithoutSpendingAnAttempt() throws Exception {
+    System.setProperty(EmailFilterService.DAILY_CAP_PROPERTY, "2");
+    EmailFilterMatch match = waitingMatch(1L, EmailFilterMatch.AGENT_PENDING);
+    Email mail = mail(1L, "a@acme.com", "One");
+    when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, match.getMailHeaderId(), MailFolder.INBOX)).thenReturn(mail);
+    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 1L)).thenReturn(false);
+    Date startOfDay = Date.from(Instant.ofEpochMilli(NOW).truncatedTo(java.time.temporal.ChronoUnit.DAYS));
+    when(emailFilterStorage.countAgentRunsSince(eq(USERNAME), any(), eq(startOfDay))).thenReturn(1L);
+
+    assertNull(service.skipIfGuarded(USERNAME, match), "under the cap");
+
+    when(emailFilterStorage.countAgentRunsSince(eq(USERNAME), any(), eq(startOfDay))).thenReturn(2L);
+    EmailFilterMatch givenBack = copyOf(match);
+    givenBack.setAgentConversationId("c1");
+    givenBack.setAgentDate(NOW - 1_000L);
+    givenBack.setAgentAttempts(1);
+    assertNull(service.skipIfGuarded(USERNAME, givenBack), "a match given back today counts itself once");
+
+    EmailFilterMatch skipped = service.skipIfGuarded(USERNAME, match);
+
+    assertNotNull(skipped, "past the cap, the mail is not run");
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_CAP, skipped.getAgentStatus());
+    assertEquals(EmailFilterService.DAILY_LIMIT, skipped.getLastError());
+    assertEquals(0, skipped.getAgentAttempts(), "no attempt spent");
+    assertEquals(EmailFilterMatch.POST_DONE, matches.get(match.getId()).getPostActionsState(), "its held actions ran");
+
+    EmailFilterMatch retried = service.retry(USERNAME, null, match.getId());
+    assertEquals(EmailFilterMatch.AGENT_PENDING, retried.getAgentStatus(), "the owner can run it again later");
   }
 
   /**
