@@ -31,8 +31,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       {{ favorite ? 'fas fa-star' : 'far fa-star' }}
     </v-icon>
   </v-btn>
-  <!-- Read only (e.g. a Sent/Archive copy, whose favorite cannot be pushed from here):
-       show the flag when it is set, nothing otherwise. -->
+  <!-- Read only (a Trash or Spam message, a draft): show the flag when it is set,
+       nothing otherwise. -->
   <v-icon
     v-else-if="favorite"
     :size="size"
@@ -50,9 +50,8 @@ export default {
       type: Boolean,
       default: false,
     },
-    // Only INBOX messages can be toggled: the favorite endpoint pushes the IMAP
-    // \Flagged flag through the INBOX folder, so elsewhere the favorite is shown
-    // as a plain read-only indicator.
+    // False in a read-only folder (Trash, Spam) and on a draft, where the IMAP \Flagged
+    // flag cannot be pushed: there the favorite is shown as a plain indicator.
     canToggle: {
       type: Boolean,
       default: false,

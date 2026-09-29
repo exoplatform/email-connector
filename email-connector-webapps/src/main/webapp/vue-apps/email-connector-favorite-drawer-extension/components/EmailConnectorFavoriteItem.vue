@@ -48,6 +48,8 @@
   </v-list-item>
 </template>
 <script>
+import { getFavoriteEmail, removeFavoriteEmail } from '../js/EmailConnectorFavoriteDrawerService.js';
+
 export default {
   props: {
     id: {
@@ -94,15 +96,8 @@ export default {
     // Favorites are keyed by the mail's technical id, which is the one identifier
     // the rest of this app never uses — everything else addresses a message by its
     // IMAP UID — hence the dedicated read.
-    fetch(`/email-connector/rest/email-box/favorites/${this.id}`, {
-      method: 'GET',
-      credentials: 'include',
-    }).then(response => {
-      if (!response?.ok) {
-        throw new Error('Favorited email cannot be read');
-      }
-      return response.json();
-    }).then(email => this.email = email)
+    getFavoriteEmail(this.id)
+      .then(email => this.email = email)
       .catch(() => {
         // The mail is gone from the mailbox (deleted, or aged out of the cached
         // window between two syncs). Telling the drawer drops the entry instead of
@@ -132,7 +127,9 @@ export default {
       // than this drawer rendering a second, lesser copy of it.
       window.require(['SHARED/emailConnectorQuickActionExtension'], () =>
         document.dispatchEvent(new CustomEvent('open-email-box-mail', {
-          detail: {mailRemoteId: this.email?.mailRemoteId},
+          // The folder with the UID: a favorite may be filed in any folder, and a UID
+          // names a message within its own folder only.
+          detail: {mailRemoteId: this.email?.mailRemoteId, folder: this.email?.folder},
         })));
     },
     /**
@@ -142,11 +139,11 @@ export default {
      * The favorite of a mail is only a mirror of the mail server's own \Flagged
      * flag, recomputed from it at every sync — so a removal that stopped at the
      * favorites store would be undone within minutes, the row quietly back in the
-     * drawer. The flag is therefore cleared too, through the endpoint the mailbox
-     * star uses — called directly, as the read above is: the mailbox service that
-     * wraps it lives in the mailbox bundle, which this extension deliberately
-     * does not load on every page. When the server refuses the message, that
-     * endpoint reverts the row and reconciles the favorites itself — the drawer
+     * drawer. The flag is therefore cleared too, on every copy of the message the
+     * favorite stands for, through the favorite's own endpoint, reached by this
+     * extension's own service as the read above is: this extension deliberately
+     * does not load the mailbox bundle on every page. When the server refuses the
+     * message, that endpoint reverts the row and reconciles the favorites itself — the drawer
      * is only re-read to show what it decided; when it cannot reach the server
      * at all it answers before reconciling, and then the favorite is put back
      * from here first, or the row would stay gone with its flag still set.
@@ -166,31 +163,29 @@ export default {
       };
       this.isFavorite = false;
       this.$root.$emit('favorite-removed', 'email', this.id);
-      fetch('/email-connector/rest/email-box/starred?starred=false', {
-        method: 'PATCH',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify([this.email.mailRemoteId]),
-      }).then(response => {
-        if (!response?.ok) {
-          throw new Error('Favorited email cannot be unstarred');
-        }
-        return response.json();
-      }).then(result => {
+      // Addressed by the favorite's own id: the server clears the star of every copy of
+      // the message the favorite stands for, each in its folder, and says which.
+      removeFavoriteEmail(this.id).then(result => {
         if (result?.failedUpdates) {
           showRowBack();
           return;
         }
         // A mailbox drawer already open holds its own copy of the flag and hears
-        // only its own root; the document is the one bus the two apps share.
-        document.dispatchEvent(new CustomEvent('email-favorite-status-changed', {
-          detail: {
-            mailRemoteIds: [this.email.mailRemoteId],
-            favorite: false,
-          },
-        }));
+        // only its own root; the document is the one bus the two apps share. One
+        // event per folder the server reached, as the mailbox applies a change to
+        // the rows of one folder: the copy filed under a label must go out too.
+        const unstarred = Object.keys(result?.unstarred || {}).length
+          ? result.unstarred
+          : { [this.email.folder || 'INBOX']: [this.email.mailRemoteId] };
+        Object.entries(unstarred).forEach(([folder, mailRemoteIds]) => {
+          document.dispatchEvent(new CustomEvent('email-favorite-status-changed', {
+            detail: {
+              mailRemoteIds,
+              folder,
+              favorite: false,
+            },
+          }));
+        });
         this.displayAlert(removedMessage);
       }).catch(() => this.$favoriteService.addFavorite('email', this.id)
         .catch(() => null)
