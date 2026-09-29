@@ -59,6 +59,25 @@
     </dependency>
   </dependencies>
   <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.jacoco</groupId>
+          <artifactId>jacoco-maven-plugin</artifactId>
+          <configuration>
+            <!-- The parent leaves **/model/** out of instrumentation, but Sonar still counts
+                 those lines: logic in a model class (MailboxRights) showed 0% coverage however
+                 well it was tested. Only entities and constants stay out here. -->
+            <excludes combine.self="override">
+              <exclude>**/entity/*.class</exclude>
+              <exclude>**/constant/*.class</exclude>
+              <exclude>**/entity/**/*.class</exclude>
+              <exclude>**/constant/**/*.class</exclude>
+            </excludes>
+          </configuration>
+        </plugin>
+      </plugins>
+    </pluginManagement>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
