@@ -56,6 +56,13 @@ public class EmailContentLinkPlugin implements ContentLinkPlugin {
   private static final String               ICON             = "fa fa-envelope";
 
   /**
+   * The label of a chip whose mail its reader cannot see, "Private mail": the
+   * same for a mail of somebody else and for a mail that does not exist, so the
+   * chip shows the envelope and this label, never a subject nor a link.
+   */
+  private static final String               PRIVATE_TITLE_KEY = "contentLink.email.private";
+
+  /**
    * The word typed after the slash. It differs from the object type, as the
    * activity's {@code /post} and the news' {@code /article} do: the menu matches
    * the command, the search and the chip carry the type, so the {@code email:<id>}
@@ -72,13 +79,16 @@ public class EmailContentLinkPlugin implements ContentLinkPlugin {
    * {@code content-link-email-drawer}, and the mailbox answers by opening that
    * mail in its reader over the page, so the reader of a note or a task stays
    * where they are. The permanent link stays the chip's {@code href}, for a
-   * new tab or a copied address.
+   * new tab or a copied address. A chip its reader cannot see is a private
+   * chip: a click on it says the mail is private.
    */
   private static final ContentLinkExtension EXTENSION        = new ContentLinkExtension(OBJECT_TYPE,
                                                                                         TITLE_KEY,
                                                                                         ICON,
                                                                                         COMMAND,
-                                                                                        true);
+                                                                                        true,
+                                                                                        false,
+                                                                                        PRIVATE_TITLE_KEY);
 
   @Autowired
   private ContentLinkPluginService          contentLinkPluginService;
@@ -100,8 +110,8 @@ public class EmailContentLinkPlugin implements ContentLinkPlugin {
    * (/mail)" and searched in place; its chips open the mail in the mailbox
    * drawer, over the page they are on.
    *
-   * @return the {@code email} extension: its title key, icon, command and
-   *         drawer flag
+   * @return the {@code email} extension: its title key, icon, command, drawer
+   *         flag and private label key
    */
   @Override
   public ContentLinkExtension getExtension() {
