@@ -353,6 +353,56 @@ public class UserEmailSettingRestTest {
   }
 
   /**
+   * The remaining refusals of the delegation verbs map to the add-on's statuses: no
+   * connected mailbox is 401, a server that would not answer is 502 with its code, a row
+   * that is not the caller's is 404, a verb out of its state is 400 with its code.
+   */
+  @Test
+  void delegationRefusalsMapToTheirStatuses() throws Exception {
+    when(emailDelegationService.getGrantedDelegations(SIMPLE_USER)).thenThrow(new IllegalAccessException("not connected"),
+                                                                              new MailboxAclException(MailboxAclException.UNREACHABLE,
+                                                                                                      "timeout"));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/granted").with(testSimpleUser()))
+           .andExpect(status().isUnauthorized());
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/granted").with(testSimpleUser()))
+           .andExpect(status().isBadGateway())
+           .andExpect(status().reason(MailboxAclException.UNREACHABLE));
+
+    doThrow(new IllegalAccessException("not connected")).when(emailDelegationService).revoke(SIMPLE_USER, 8L);
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/delegations/8").with(testSimpleUser())).andExpect(status().isUnauthorized());
+
+    when(emailDelegationService.accept(SIMPLE_USER, 9L)).thenThrow(new IllegalAccessException("not connected"));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/9/accept").with(testSimpleUser()))
+           .andExpect(status().isUnauthorized());
+
+    when(emailDelegationService.accept(SIMPLE_USER, 10L)).thenThrow(new MailboxAclException(MailboxAclException.UNREACHABLE, "timeout"));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/10/accept").with(testSimpleUser()))
+           .andExpect(status().isBadGateway())
+           .andExpect(status().reason(MailboxAclException.UNREACHABLE));
+
+    when(emailDelegationService.decline(SIMPLE_USER, 6L)).thenThrow(new ObjectNotFoundException(EmailDelegationService.NOT_FOUND_MESSAGE));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/6/decline").with(testSimpleUser())).andExpect(status().isNotFound());
+    when(emailDelegationService.decline(SIMPLE_USER, 7L)).thenThrow(new IllegalArgumentException("emailConnector.delegation.notPending"));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/7/decline").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.delegation.notPending"));
+
+    when(emailDelegationService.leave(SIMPLE_USER, 6L)).thenThrow(new ObjectNotFoundException(EmailDelegationService.NOT_FOUND_MESSAGE));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/6/leave").with(testSimpleUser())).andExpect(status().isNotFound());
+    when(emailDelegationService.leave(SIMPLE_USER, 7L)).thenThrow(new IllegalArgumentException("emailConnector.delegation.notAccepted"));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/7/leave").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.delegation.notAccepted"));
+
+    when(emailDelegationService.updatePreferences(SIMPLE_USER, 6L, null, true))
+                                                                               .thenThrow(new ObjectNotFoundException(EmailDelegationService.NOT_FOUND_MESSAGE));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/6/preferences").with(testSimpleUser())
+                                                                               .content(asJsonString(new DelegationPreferencesRequest(null, true)))
+                                                                               .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isNotFound());
+  }
+
+  /**
    * The signature round trip at the HTTP level: reading answers the service's
    * model, storing hands the body to the service under the caller's own name.
    *
