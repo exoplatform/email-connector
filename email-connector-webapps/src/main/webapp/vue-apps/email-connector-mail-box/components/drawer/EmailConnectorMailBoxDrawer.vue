@@ -3273,18 +3273,8 @@ export default {
       try {
         emailBox = await this.$emailConnectorMailBoxService.getEmailBox(scheduled ? 'DRAFTS' : folder, !scheduled && favoriteOnly);
       } catch (e) {
-        // A shared mailbox whose listing fails is asked about, not guessed from the
-        // status: a share revoked, left or reconciled away has its folder rows deleted,
-        // so its listing answers 400 emailConnector.folder.unknown rather than a 410.
-        // The switcher's entries are the server's word -- ACCEPTED shares with a
-        // registered INBOX: the share gone from them, the user goes back to their own
-        // mailbox and is told why; still there, the failure is a hiccup and is thrown as
-        // it is in the user's own mailbox.
-        if (sharedMailbox && sharedMailbox.delegationId === this.currentSharedMailbox?.delegationId) {
-          await loadSharedMailboxes();
-          if (!this.currentSharedMailbox) {
-            return this.leaveUnavailableSharedMailbox();
-          }
+        if (await this.leftUnavailableSharedMailbox(sharedMailbox)) {
+          return;
         }
         throw e;
       }
@@ -3317,6 +3307,41 @@ export default {
       this.syncInProgress = !this.emailBox.emailSyncStatus || this.emailBox.emailSyncStatus === 'IN_PROGRESS';
       this.webmailUrl = this.emailBox.webmailUrl;
       this.$root.$emit('refresh-emails', this.emails);
+      this.applySyncStatus(wasSyncing);
+      this.updateRefreshWatch();
+    },
+    /**
+     * The listing of a shared mailbox has failed: asks the switcher whether the share is
+     * still there, rather than guessing from the status -- a share revoked, left or
+     * reconciled away has its folder rows deleted, so its listing answers 400
+     * emailConnector.folder.unknown rather than a 410. The switcher's entries are the
+     * server's word -- ACCEPTED shares with a registered INBOX: the share gone from them,
+     * the user goes back to their own mailbox and is told why; still there, the failure
+     * is a hiccup, which the caller throws as it would in the user's own mailbox.
+     *
+     * @param {Object} sharedMailbox the shared mailbox the failed listing was for, or null
+     * @returns {Promise<Boolean>} true once the user is back in their own mailbox
+     */
+    async leftUnavailableSharedMailbox(sharedMailbox) {
+      if (!sharedMailbox || sharedMailbox.delegationId !== this.currentSharedMailbox?.delegationId) {
+        return false;
+      }
+      await loadSharedMailboxes();
+      if (this.currentSharedMailbox) {
+        return false;
+      }
+      await this.leaveUnavailableSharedMailbox();
+      return true;
+    },
+    /**
+     * Applies the sync status a listing brought: a running sync ends any post-sync
+     * category watch; a finished one is announced, and watched for its categories when
+     * it has just finished under us or a watch armed by one is still running.
+     *
+     * @param {Boolean} wasSyncing whether a sync was running before the listing
+     * @returns {void}
+     */
+    applySyncStatus(wasSyncing) {
       if (this.syncInProgress) {
         // A new sync started: any previous post-sync watch is over.
         this.categoryWatchDeadline = null;
@@ -3333,6 +3358,14 @@ export default {
           this.watchIncomingCategories();
         }
       }
+    },
+    /**
+     * Updates the refresh watch after a listing, and ends it when it has nothing left to
+     * wait for.
+     *
+     * @returns {void}
+     */
+    updateRefreshWatch() {
       // The watch ends when the listed folder holds no remembered row any more (the
       // server lists the message, or the user moved on to another folder) unless a
       // partly failed undo asked for the whole budget; in any case once the budget is
