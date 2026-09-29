@@ -45,6 +45,7 @@ import org.exoplatform.commons.api.notification.model.PluginKey;
 import org.exoplatform.commons.api.notification.model.WebNotificationFilter;
 import org.exoplatform.commons.api.notification.plugin.NotificationPluginUtils;
 import org.exoplatform.commons.api.notification.service.WebNotificationService;
+import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.container.xml.InitParams;
@@ -88,6 +89,7 @@ class EmailFilterSuggestionsNotificationPluginTest {
     commonsUtils = mockStatic(CommonsUtils.class);
     commonsUtils.when(() -> CommonsUtils.getService(ResourceBundleService.class)).thenReturn(bundles);
     commonsUtils.when(() -> CommonsUtils.getService(WebNotificationService.class)).thenReturn(webNotifications);
+    commonsUtils.when(() -> CommonsUtils.getService(SettingService.class)).thenReturn(null);
     when(webNotifications.getNotificationInfos(any(WebNotificationFilter.class), anyInt(), anyInt())).thenAnswer(invocation -> new ArrayList<>(held));
     pluginUtils = mockStatic(NotificationPluginUtils.class);
     pluginUtils.when(() -> NotificationPluginUtils.getLanguage(anyString())).thenReturn("en");
