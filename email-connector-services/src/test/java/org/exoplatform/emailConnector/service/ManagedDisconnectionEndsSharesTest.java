@@ -62,6 +62,7 @@ import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngineRegistry;
+import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailDelegationStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 import org.exoplatform.services.connector.credentials.managed.ManagedConnectorService;
@@ -116,6 +117,9 @@ class ManagedDisconnectionEndsSharesTest {
 
   @MockitoBean
   private EmailBoxService                  emailBoxService;
+
+  @MockitoBean
+  private EmailBoxStorage                  emailBoxStorage;
 
   @MockitoBean
   private EmailContactService              emailContactService;
