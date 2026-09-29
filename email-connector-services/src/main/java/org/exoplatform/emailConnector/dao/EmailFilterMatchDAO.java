@@ -184,7 +184,8 @@ public interface EmailFilterMatchDAO extends JpaRepository<EmailFilterMatchEntit
   String agentStatus);
 
   /**
-   * How many of a user's matches had their assistant called since a date: the daily cap.
+   * How many of a user's matches the assistant ran on since a date -- each match once,
+   * however many times it was run: the daily cap.
    * A match counts once its run started -- it holds the run's conversation -- and its
    * last write of the assistant is that recent; a match skipped, or still waiting for
    * its first run, holds no conversation or is not in the given statuses.
