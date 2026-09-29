@@ -3380,7 +3380,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aMailInTheSendersNameLeavesTheOwnersCopyAsItWas() {
-    givenASendableMailbox();
+    givenASendRig();
     IMAPFolder ownerSent = givenTheOwnersSent();
 
     try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
