@@ -37,7 +37,7 @@ import java.util.regex.Pattern;
 public final class SieveTokenScan {
 
   /** {@code include}, its tagged arguments, and the quoted name of the included script. */
-  private static final Pattern INCLUDE = Pattern.compile("(?i)(?<![A-Za-z0-9_])include((?:\\s+:[a-z]+)*)\\s+\"((?:[^\"\\\\]|\\\\.)*)\"");
+  private static final Pattern INCLUDE = Pattern.compile("(?i)(?<!\\w)include((?:\\s++:[a-z]++)*+)\\s+\"((?:[^\"\\\\]|\\\\.)*+)\"");
 
   /**
    * Utility class.
@@ -127,8 +127,8 @@ public final class SieveTokenScan {
    * @return the count
    */
   private static int includeCommands(String script) {
-    String code = withoutComments(script).replaceAll("\"(?:[^\"\\\\]|\\\\.)*\"", "\"\"");
-    Matcher matcher = Pattern.compile("(?i)(?<![A-Za-z0-9_:])include(?![A-Za-z0-9_])").matcher(code);
+    String code = withoutComments(script).replaceAll("\"(?:[^\"\\\\]|\\\\.)*+\"", "\"\"");
+    Matcher matcher = Pattern.compile("(?i)(?<![\\w:])include(?!\\w)").matcher(code);
     int count = 0;
     while (matcher.find()) {
       count++;
