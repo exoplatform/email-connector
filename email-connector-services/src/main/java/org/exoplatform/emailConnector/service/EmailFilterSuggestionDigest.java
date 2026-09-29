@@ -42,7 +42,11 @@ import org.exoplatform.services.log.Log;
  * <li>a run that proposed something <b>publishes</b> it: an unread digest is updated in
  * place with the new count and moved to the top, without a second alert; when there is
  * none unread, the read ones are removed and a new one is sent through the platform's
- * channels -- one alert per batch the user has not looked at yet;</li>
+ * channels -- one alert per batch the user has not looked at yet. The platform builds a
+ * sent notification later, on its own executor, so two runs close together would both
+ * find nothing and send two: the plugin checks again when it builds the digest
+ * ({@link #updateUnread}), and a digest that finds an unread one updates it instead of
+ * being stored;</li>
  * <li>a decision <b>refreshes</b> it: the count of every digest the user holds is
  * rewritten, nothing is sent, and the digests are removed once nothing waits.</li>
  * </ul>
@@ -71,24 +75,13 @@ public class EmailFilterSuggestionDigest {
   public void publish(String username, long waiting) {
     try {
       if (waiting <= 0) {
-        removeAll(digests(username));
+        removeAll(digests(webNotificationService, username));
         return;
       }
-      List<NotificationInfo> digests = digests(username);
-      NotificationInfo unread = digests.stream().filter(digest -> !digest.isRead()).findFirst().orElse(null);
-      if (unread == null) {
-        removeAll(digests);
+      if (!updateUnread(webNotificationService, username, waiting)) {
+        removeAll(digests(webNotificationService, username));
         send(username, waiting);
-        return;
       }
-      unread.with(NotificationConstants.SUGGESTION_COUNT, String.valueOf(waiting))
-            .with(NotificationConstants.CONTENT, EmailFilterSuggestionsNotificationPlugin.content(username, (int) waiting));
-      unread.setUpdate(true);
-      unread.setRead(false);
-      unread.setResetOnBadge(false);
-      unread.setLastModifiedDate(Calendar.getInstance());
-      webNotificationService.update(unread, true);
-      removeAll(digests.stream().filter(digest -> digest != unread).toList());
     } catch (RuntimeException | LinkageError e) {
       LOG.warn("The digest of the waiting suggestions of user {} could not be written", username, e);
     }
@@ -103,7 +96,7 @@ public class EmailFilterSuggestionDigest {
    */
   public void refresh(String username, long waiting) {
     try {
-      List<NotificationInfo> digests = digests(username);
+      List<NotificationInfo> digests = digests(webNotificationService, username);
       if (waiting <= 0) {
         removeAll(digests);
         return;
@@ -122,6 +115,33 @@ public class EmailFilterSuggestionDigest {
   }
 
   /**
+   * Updates the user's unread digest in place with a new count, moved to the top without
+   * a second alert, and removes their other digests. The publisher's first choice, and
+   * the plugin's check when the platform builds a digest it was asked to send.
+   *
+   * @param webNotificationService the platform's web notifications
+   * @param username the user
+   * @param waiting how many of their suggestions wait now, more than 0
+   * @return true when an unread digest was updated; false when the user holds none
+   */
+  public static boolean updateUnread(WebNotificationService webNotificationService, String username, long waiting) {
+    List<NotificationInfo> digests = digests(webNotificationService, username);
+    NotificationInfo unread = digests.stream().filter(digest -> !digest.isRead()).findFirst().orElse(null);
+    if (unread == null) {
+      return false;
+    }
+    unread.with(NotificationConstants.SUGGESTION_COUNT, String.valueOf(waiting))
+          .with(NotificationConstants.CONTENT, EmailFilterSuggestionsNotificationPlugin.content(username, (int) waiting));
+    unread.setUpdate(true);
+    unread.setRead(false);
+    unread.setResetOnBadge(false);
+    unread.setLastModifiedDate(Calendar.getInstance());
+    webNotificationService.update(unread, true);
+    digests.stream().filter(digest -> digest != unread).forEach(digest -> webNotificationService.remove(digest.getId()));
+    return true;
+  }
+
+  /**
    * Sends a new digest through the platform's channels.
    *
    * @param username the user
@@ -137,10 +157,11 @@ public class EmailFilterSuggestionDigest {
   /**
    * The user's digests, read or not.
    *
+   * @param webNotificationService the platform's web notifications
    * @param username the user
    * @return the digests
    */
-  private List<NotificationInfo> digests(String username) {
+  private static List<NotificationInfo> digests(WebNotificationService webNotificationService, String username) {
     List<NotificationInfo> digests = webNotificationService.getNotificationInfos(new WebNotificationFilter(username, List.of(KEY), false),
                                                                                  0,
                                                                                  MAX_READ);
