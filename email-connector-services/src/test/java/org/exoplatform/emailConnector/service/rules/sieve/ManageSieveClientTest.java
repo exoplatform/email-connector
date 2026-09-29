@@ -41,7 +41,7 @@ import org.exoplatform.emailConnector.service.rules.sieve.ManageSieveException.K
  * command it sends, literal framing, and the limits that keep a hostile server from
  * hanging or flooding it.
  */
-public class ManageSieveClientTest {
+class ManageSieveClientTest {
 
   private FakeManageSieveServer server;
 
@@ -51,7 +51,7 @@ public class ManageSieveClientTest {
    * @throws Exception when it cannot start
    */
   @BeforeEach
-  public void startServer() throws Exception {
+  void startServer() throws Exception {
     server = new FakeManageSieveServer();
   }
 
@@ -59,7 +59,7 @@ public class ManageSieveClientTest {
    * Stops the server.
    */
   @AfterEach
-  public void stopServer() {
+  void stopServer() {
     server.close();
   }
 
@@ -70,7 +70,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testUsesTheCapabilitiesReissuedAfterStarttls() throws Exception {
+  void testUsesTheCapabilitiesReissuedAfterStarttls() throws Exception {
     try (ManageSieveClient client = connect()) {
       assertTrue(client.getCapabilities().supportsSasl("PLAIN"));
       assertFalse(client.getCapabilities().starttls());
@@ -88,7 +88,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testRefusesAServerWithoutStarttls() throws Exception {
+  void testRefusesAServerWithoutStarttls() throws Exception {
     server.offerStarttls(false);
     ManageSieveException e = assertThrows(ManageSieveException.class, this::connect);
     assertEquals(Kind.TLS_REQUIRED, e.getKind());
@@ -102,7 +102,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testRefusesDataInjectedAheadOfTheTlsHandshake() throws Exception {
+  void testRefusesDataInjectedAheadOfTheTlsHandshake() throws Exception {
     server.injectAfterStarttls();
     ManageSieveException e = assertThrows(ManageSieveException.class, this::connect);
     assertEquals(Kind.PROTOCOL, e.getKind());
@@ -114,7 +114,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testRefusesAnUntrustedCertificate() throws Exception {
+  void testRefusesAnUntrustedCertificate() throws Exception {
     ManageSieveException e = assertThrows(ManageSieveException.class,
                                           () -> ManageSieveClient.connect("localhost",
                                                                           server.getPort(),
@@ -131,7 +131,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testRefusesACertificateForAnotherHost() throws Exception {
+  void testRefusesACertificateForAnotherHost() throws Exception {
     try (FakeManageSieveServer otherHost = new FakeManageSieveServer(FakeManageSieveServer.OTHER_HOST_KEYSTORE)) {
       ManageSieveException e =
                              assertThrows(ManageSieveException.class,
@@ -150,7 +150,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testRefusesToAuthenticateWithoutPlainAfterTls() throws Exception {
+  void testRefusesToAuthenticateWithoutPlainAfterTls() throws Exception {
     server.postTlsSasl("OAUTHBEARER");
     try (ManageSieveClient client = connect()) {
       ManageSieveException e = assertThrows(ManageSieveException.class,
@@ -167,7 +167,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testRefusedCredentialsAreAnAuthenticationFailureWithoutThePassword() throws Exception {
+  void testRefusedCredentialsAreAnAuthenticationFailureWithoutThePassword() throws Exception {
     try (ManageSieveClient client = connect()) {
       ManageSieveException e = assertThrows(ManageSieveException.class,
                                             () -> client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN,
@@ -183,7 +183,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testNoCredentialsSendNothing() throws Exception {
+  void testNoCredentialsSendNothing() throws Exception {
     try (ManageSieveClient client = connect()) {
       assertEquals(Kind.NO_CREDENTIALS,
                    assertThrows(ManageSieveException.class, () -> client.authenticatePlain(null)).getKind());
@@ -198,9 +198,12 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testPutAndGetScriptRoundTripByteForByte() throws Exception {
-    String text = "# exo-managed-v1: {\"v\":1}\r\nrequire [\"vacation\"];\r\n"
-        + "vacation \"Absent — de retour le 15 \\\"octobre\\\" \\\\ ça va\";\r\n";
+  void testPutAndGetScriptRoundTripByteForByte() throws Exception {
+    String text = """
+        # exo-managed-v1: {"v":1}\r
+        require ["vacation"];\r
+        vacation "Absent — de retour le 15 \\"octobre\\" \\\\ ça va";\r
+        """;
     try (ManageSieveClient client = server.authenticatedClient()) {
       client.putScript("exo-rules", text);
       assertEquals(text, client.getScript("exo-rules"));
@@ -215,7 +218,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testListActivateAndDeleteScripts() throws Exception {
+  void testListActivateAndDeleteScripts() throws Exception {
     server.script("roundcube \"main\"", "keep;", true).script("old", "keep;", false);
     try (ManageSieveClient client = server.authenticatedClient()) {
       assertEquals(List.of(new SieveScriptInfo("roundcube \"main\"", true), new SieveScriptInfo("old", false)),
@@ -233,7 +236,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testNoAnswerCarriesTheResponseCode() throws Exception {
+  void testNoAnswerCarriesTheResponseCode() throws Exception {
     try (ManageSieveClient client = server.authenticatedClient()) {
       ManageSieveException e = assertThrows(ManageSieveException.class, () -> client.getScript("missing"));
       assertEquals(Kind.REFUSED, e.getKind());
@@ -247,7 +250,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testCheckScriptIsSentWhenAdvertisedAndItsRefusalPropagates() throws Exception {
+  void testCheckScriptIsSentWhenAdvertisedAndItsRefusalPropagates() throws Exception {
     try (ManageSieveClient client = server.authenticatedClient()) {
       assertTrue(client.checkScript("keep;"));
       server.refuse("CHECKSCRIPT", "NO \"line 1: unknown command\"");
@@ -263,7 +266,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testCheckScriptIsSkippedWhenNotAdvertised() throws Exception {
+  void testCheckScriptIsSkippedWhenNotAdvertised() throws Exception {
     server.advertiseVersion(false);
     try (ManageSieveClient client = server.authenticatedClient()) {
       assertFalse(client.checkScript("keep;"));
@@ -277,7 +280,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testASilentServerTimesOut() throws Exception {
+  void testASilentServerTimesOut() throws Exception {
     server.silent();
     long start = System.nanoTime();
     ManageSieveException e = assertThrows(ManageSieveException.class,
@@ -296,7 +299,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testRefusesAnOversizedLiteral() throws Exception {
+  void testRefusesAnOversizedLiteral() throws Exception {
     server.rawGetScriptAnswer("{" + (ManageSieveClient.MAX_LITERAL_OCTETS + 1) + "}\r\n");
     try (ManageSieveClient client = server.authenticatedClient()) {
       ManageSieveException e = assertThrows(ManageSieveException.class, () -> client.getScript("exo-rules"));
@@ -312,7 +315,7 @@ public class ManageSieveClientTest {
    */
   @Test
   @Timeout(value = 10, threadMode = ThreadMode.SEPARATE_THREAD)
-  public void testATricklingServerHitsTheOperationDeadline() throws Exception {
+  void testATricklingServerHitsTheOperationDeadline() throws Exception {
     server.trickleGetScript(50);
     ManageSieveClient client = ManageSieveClient.connect("localhost",
                                                          server.getPort(),
@@ -336,7 +339,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testResponseLimits() throws Exception {
+  void testResponseLimits() throws Exception {
     String literal = "{900000}\r\n" + "x".repeat(900000) + "\r\n";
     String quoted = "\"" + "x".repeat(4000) + "\"\r\n";
     Map<String, String> answers = new LinkedHashMap<>();
@@ -372,7 +375,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testAnEmptyScriptNameLists() throws Exception {
+  void testAnEmptyScriptNameLists() throws Exception {
     server.script("", "vacation \"Away\";", true).script("exo-rules", "keep;", false);
     try (ManageSieveClient client = server.authenticatedClient()) {
       assertEquals(List.of(new SieveScriptInfo("", true), new SieveScriptInfo("exo-rules", false)), client.listScripts());
@@ -385,7 +388,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testServerTextIsSanitisedInMessages() throws Exception {
+  void testServerTextIsSanitisedInMessages() throws Exception {
     String text = "line one\r\nforged: log line " + "y".repeat(500);
     server.refuse("DELETESCRIPT", "NO {" + text.length() + "}\r\n" + text);
     try (ManageSieveClient client = server.authenticatedClient()) {
@@ -402,7 +405,7 @@ public class ManageSieveClientTest {
    * @throws Exception on failure
    */
   @Test
-  public void testLogout() throws Exception {
+  void testLogout() throws Exception {
     ManageSieveClient client = server.authenticatedClient();
     client.logout();
     assertTrue(server.getCommands().contains("LOGOUT"));
@@ -413,7 +416,7 @@ public class ManageSieveClientTest {
    * longer than 1024 octets, NUL refused.
    */
   @Test
-  public void testStringEncoding() {
+  void testStringEncoding() {
     assertEquals("\"a\\\"b\\\\c\"", ManageSieveClient.string("a\"b\\c"));
     assertEquals("{3+}\r\na\nb", ManageSieveClient.string("a\nb"));
     assertTrue(ManageSieveClient.string("x".repeat(1025)).startsWith("{1025+}\r\n"));

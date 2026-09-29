@@ -103,6 +103,9 @@ public final class ManageSieveClient implements AutoCloseable {
   /** The only SASL mechanism the client speaks. */
   static final String         SASL_PLAIN                     = "PLAIN";
 
+  /** The command listing the account's scripts. */
+  private static final String CMD_LISTSCRIPTS                = "LISTSCRIPTS";
+
   private static final byte[] CRLF                           = { '\r', '\n' };
 
   /** The host the client connected to, also the name the certificate must match. */
@@ -243,7 +246,7 @@ public final class ManageSieveClient implements AutoCloseable {
     System.arraycopy(loginBytes, 0, message, 1, loginBytes.length);
     System.arraycopy(passwordBytes, 0, message, loginBytes.length + 2, passwordBytes.length);
     String initialResponse = Base64.getEncoder().encodeToString(message);
-    Response response = command("AUTHENTICATE", "AUTHENTICATE " + string("PLAIN") + " " + string(initialResponse));
+    Response response = command("AUTHENTICATE", "AUTHENTICATE " + string(SASL_PLAIN) + " " + string(initialResponse));
     if (response.status == Status.NO && "TRYLATER".equals(response.code)) {
       throw new ManageSieveException(Kind.UNAVAILABLE,
                                      response.code,
@@ -266,12 +269,12 @@ public final class ManageSieveClient implements AutoCloseable {
    * @throws ManageSieveException when the server refuses or breaks the protocol
    */
   public List<SieveScriptInfo> listScripts() throws ManageSieveException {
-    Response response = command("LISTSCRIPTS", "LISTSCRIPTS");
-    requireOk(response, "LISTSCRIPTS");
+    Response response = command(CMD_LISTSCRIPTS, CMD_LISTSCRIPTS);
+    requireOk(response, CMD_LISTSCRIPTS);
     List<SieveScriptInfo> scripts = new ArrayList<>();
     for (List<Token> line : response.lines) {
       if (line.isEmpty() || line.get(0).type != TokenType.STRING) {
-        throw new ManageSieveException(Kind.PROTOCOL, "Malformed LISTSCRIPTS line");
+        throw new ManageSieveException(Kind.PROTOCOL, "Malformed " + CMD_LISTSCRIPTS + " line");
       }
       boolean active = line.size() > 1 && line.get(1).type == TokenType.ATOM
           && "ACTIVE".equalsIgnoreCase(line.get(1).value);
@@ -410,18 +413,38 @@ public final class ManageSieveClient implements AutoCloseable {
         throw new ManageSieveException(Kind.PROTOCOL, "The ManageSieve server sent data ahead of the TLS handshake");
       }
       SSLSocket tls = (SSLSocket) tlsSocketFactory.createSocket(plain, host, port, true);
-      SSLParameters parameters = tls.getSSLParameters();
-      parameters.setEndpointIdentificationAlgorithm("HTTPS");
-      tls.setSSLParameters(parameters);
-      tls.setSoTimeout(readTimeoutMillis);
       socket = tls;
-      tls.startHandshake();
+      try {
+        SSLParameters parameters = tls.getSSLParameters();
+        parameters.setEndpointIdentificationAlgorithm("HTTPS");
+        tls.setSSLParameters(parameters);
+        tls.setSoTimeout(readTimeoutMillis);
+        tls.startHandshake();
+      } catch (IOException | RuntimeException e) {
+        closeAfterFailure(tls, e);
+        throw e;
+      }
       bindStreams();
       Response afterTls = readResponse();
       requireOk(afterTls, "capabilities after STARTTLS");
       capabilities = capabilitiesOf(afterTls);
     } catch (IOException e) {
       throw unavailable("connect", e);
+    }
+  }
+
+  /**
+   * Closes a socket whose setup failed, keeping a failure to close as suppressed by the
+   * setup failure.
+   *
+   * @param failedSocket the socket to release
+   * @param failure the failure that interrupted its setup
+   */
+  private static void closeAfterFailure(Socket failedSocket, Exception failure) {
+    try {
+      failedSocket.close();
+    } catch (IOException e) {
+      failure.addSuppressed(e);
     }
   }
 
@@ -672,21 +695,30 @@ public final class ManageSieveClient implements AutoCloseable {
       if (c == '\n') {
         return tokens;
       }
-      if (c == '"') {
-        tokens.add(new Token(TokenType.STRING, readQuoted()));
-      } else if (c == '{') {
-        tokens.add(new Token(TokenType.STRING, readLiteral()));
-      } else if (c == '(') {
-        tokens.add(new Token(TokenType.LPAREN, "("));
-      } else if (c == ')') {
-        tokens.add(new Token(TokenType.RPAREN, ")"));
-      } else {
-        tokens.add(new Token(TokenType.ATOM, readAtom(c)));
-      }
+      tokens.add(readToken(c));
       if (tokens.size() > MAX_TOKENS_PER_LINE) {
         throw new ManageSieveException(Kind.PROTOCOL, "The ManageSieve response line is too long");
       }
     }
+  }
+
+  /**
+   * Reads the token its first character opens: a quoted string, a literal, a
+   * parenthesis or an atom.
+   *
+   * @param c the token's first character, already read
+   * @return the token
+   * @throws IOException when the socket fails
+   * @throws ManageSieveException when the token is malformed or too large
+   */
+  private Token readToken(int c) throws IOException, ManageSieveException {
+    return switch (c) {
+    case '"' -> new Token(TokenType.STRING, readQuoted());
+    case '{' -> new Token(TokenType.STRING, readLiteral());
+    case '(' -> new Token(TokenType.LPAREN, "(");
+    case ')' -> new Token(TokenType.RPAREN, ")");
+    default -> new Token(TokenType.ATOM, readAtom(c));
+    };
   }
 
   /**
