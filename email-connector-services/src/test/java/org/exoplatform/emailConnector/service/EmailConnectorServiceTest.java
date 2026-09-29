@@ -45,6 +45,8 @@ import org.mockito.InOrder;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.event.ApplicationEvents;
+import org.springframework.test.context.event.RecordApplicationEvents;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import org.exoplatform.commons.api.settings.ExoFeatureService;
@@ -53,6 +55,7 @@ import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.commons.file.services.FileStorageException;
+import org.exoplatform.emailConnector.event.EmailConnectorProviderChangedEvent;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
@@ -70,6 +73,7 @@ import io.meeds.social.translation.service.TranslationService;
 import lombok.SneakyThrows;
 
 @SpringBootTest(classes = { EmailConnectorService.class })
+@RecordApplicationEvents
 @ExtendWith(MockitoExtension.class)
 public class EmailConnectorServiceTest {
 
@@ -104,6 +108,9 @@ public class EmailConnectorServiceTest {
 
   @MockitoBean
   private EmailManagedModeService  emailManagedModeService;
+
+  @Autowired
+  private ApplicationEvents         events;
 
   @Autowired
   private EmailConnectorService    emailConnectorService;
@@ -755,6 +762,49 @@ public class EmailConnectorServiceTest {
         && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())
         && "email".equals(context.getConnectorKind())),
                                         eq(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret")));
+  }
+
+  /**
+   * EXO-89654. Moving a connector to another provider disconnects every user of it:
+   * the event names the connector, and the disconnections follow in the background.
+   */
+  @Test
+  @SneakyThrows
+  void aProviderChangeAnnouncesTheDisconnectionOfEveryUser() {
+    grantAdministration();
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+    EmailConnector posted = emailConnector();
+    posted.setId(7L);
+    posted.setAuthProviderName("personal");
+
+    emailConnectorService.updateEmailConnector(posted, TEST_USER);
+
+    assertEquals(List.of(7L), events.stream(EmailConnectorProviderChangedEvent.class).map(EmailConnectorProviderChangedEvent::getEmailConnectorId).toList());
+  }
+
+  /** EXO-89654. An edit that keeps the provider - or leaves it blank, which keeps it - disconnects nobody. */
+  @Test
+  @SneakyThrows
+  void anEditThatKeepsTheProviderDisconnectsNobody() {
+    grantAdministration();
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+    EmailConnector sameProvider = emailConnector();
+    sameProvider.setId(7L);
+    sameProvider.setAuthProviderName("bluemind-sudo");
+    EmailConnector blankProvider = emailConnector();
+    blankProvider.setId(7L);
+    blankProvider.setAuthProviderName(null);
+
+    emailConnectorService.updateEmailConnector(sameProvider, TEST_USER);
+    emailConnectorService.updateEmailConnector(blankProvider, TEST_USER);
+
+    assertEquals(0, events.stream(EmailConnectorProviderChangedEvent.class).count());
   }
 
   /** The same write on the update path, against the id the drawer already knows. */

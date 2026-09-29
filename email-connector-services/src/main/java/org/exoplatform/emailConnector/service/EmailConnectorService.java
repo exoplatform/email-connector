@@ -37,6 +37,7 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
+import org.exoplatform.emailConnector.event.EmailConnectorProviderChangedEvent;
 import org.exoplatform.emailConnector.event.UserEmailSettingCleanupEvent;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
@@ -710,6 +711,29 @@ public class EmailConnectorService {
     emailConnectorStorage.updateEmailConnector(emailConnector);
     discardConfigOfProviderBeingLeft(previousEmailConnector, emailConnector);
     storeProviderConfig(emailConnector, emailConnector.getProviderConfig());
+    if (isProviderChange(previousEmailConnector, emailConnector)) {
+      // Every user of the connector is disconnected, whoever made the connection: the
+      // authentication changed for all of them (EXO-89654).
+      eventPublisher.publishEvent(new EmailConnectorProviderChangedEvent(previousEmailConnector.getId()));
+    }
+  }
+
+  /**
+   * Whether an edit moves the connector to another provider. Judged on the effective
+   * names: the storage keeps the stored provider when the payload leaves it blank, so a
+   * blank payload is not a move.
+   *
+   * @param previousEmailConnector the connector as it was stored, possibly null
+   * @param emailConnector the connector as posted
+   * @return true when the provider in force changes
+   */
+  private boolean isProviderChange(EmailConnector previousEmailConnector, EmailConnector emailConnector) {
+    if (previousEmailConnector == null) {
+      return false;
+    }
+    String previousProvider = previousEmailConnector.getAuthProviderName();
+    String newProvider = StringUtils.defaultIfBlank(emailConnector.getAuthProviderName(), previousProvider);
+    return !StringUtils.equals(StringUtils.defaultIfBlank(previousProvider, null), StringUtils.defaultIfBlank(newProvider, null));
   }
 
   /**

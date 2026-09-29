@@ -27,7 +27,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div class="text-title mt-8 mb-3">
         {{ $t('emailConnector.admin.connectors.title') }}
       </div>
-      <email-connector-admin-managed-mode :connectors="connectors" />
+      <email-connector-admin-managed-mode
+        :connectors="connectors"
+        @managed-changed="managedConnectorId = $event" />
       <div class="mb-4">
         <v-btn
           :aria-label="$t('emailConnector.admin.connectors.add')"
@@ -37,7 +39,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <span class="text-none ms-2">{{ $t('emailConnector.admin.connectors.add') }}</span>
         </v-btn>
       </div>
-      <email-connector-admin-list :connectors="connectors" />
+      <email-connector-admin-list
+        :connectors="connectors"
+        :managed-connector-id="managedConnectorId" />
     </template>
     <email-connector-admin-drawer />
     <email-connector-admin-sync-settings-drawer />
@@ -49,7 +53,9 @@ export default {
   data: () => ({
     featureName: 'email',
     emailFeatureActive: null,
-    connectors: []
+    connectors: [],
+    /** The connector managed mode points at, as the managed-mode row last read it. */
+    managedConnectorId: null,
   }),
   created() {
     this.$featureService.isFeatureEnabled(this.featureName)

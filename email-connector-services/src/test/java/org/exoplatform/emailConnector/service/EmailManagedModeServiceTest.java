@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -41,6 +42,9 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.springframework.context.ApplicationEventPublisher;
+
+import org.exoplatform.emailConnector.event.EmailManagedModeChangedEvent;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailManagedMode;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
@@ -71,6 +75,9 @@ public class EmailManagedModeServiceTest {
 
   @Mock
   private EmailConnectorStorage   emailConnectorStorage;
+
+  @Mock
+  private ApplicationEventPublisher eventPublisher;
 
   @InjectMocks
   private EmailManagedModeService emailManagedModeService;
@@ -143,6 +150,24 @@ public class EmailManagedModeServiceTest {
   }
 
   /**
+   * EXO-89654. The verdict that decides a disconnection at login is the strict one, on
+   * the stored designation and exclusions; its refusal of an unresolvable user reaches
+   * the caller unchanged.
+   */
+  @Test
+  public void judgesADisconnectionWithTheStrictVerdictOnTheStoredState() {
+    designated(700);
+    when(managedConnectorService.exclusionsOf(KIND)).thenReturn(List.of("/externals"));
+    when(managedConnectorService.designatedConnectorFor(700L, List.of("/externals"), USER)).thenReturn(700L);
+    when(managedConnectorService.designatedConnectorFor(700L, List.of("/externals"), "unknown"))
+        .thenThrow(new IllegalStateException("no identity"));
+
+    assertEquals(700L, emailManagedModeService.governingConnectorFor(USER));
+    assertThrows(IllegalStateException.class, () -> emailManagedModeService.governingConnectorFor("unknown"));
+    verify(managedConnectorService, never()).designatedConnectorFor(eq(KIND), eq(USER));
+  }
+
+  /**
    * The login-time read: the designated id when the choice applies to this user, null
    * otherwise - commons-exo's verdict passed through, the kind fixed. An anonymous
    * caller gets null without commons-exo being asked.
@@ -177,6 +202,30 @@ public class EmailManagedModeServiceTest {
     emailManagedModeService.saveManagedConnector(7, List.of("/externals"), ADMIN);
 
     verify(managedConnectorService).designate(KIND, 7, "bluemind-sudo", List.of("/externals"), ADMIN);
+  }
+
+  /** EXO-89654. A saved change is announced, so that the users it no longer governs are disconnected. */
+  @Test
+  public void aSavedChangeIsAnnounced() throws Exception {
+    when(emailConnectorStorage.getEmailConnector(7)).thenReturn(connector(7, true));
+
+    emailManagedModeService.saveManagedConnector(7, List.of("/externals"), ADMIN);
+    emailManagedModeService.clearManagedConnector(ADMIN);
+
+    verify(eventPublisher, times(2)).publishEvent(any(EmailManagedModeChangedEvent.class));
+  }
+
+  /** EXO-89654. A refused change is not announced: nothing changed, nobody is disconnected. */
+  @Test
+  public void aRefusedChangeIsNotAnnounced() throws Exception {
+    when(emailConnectorStorage.getEmailConnector(7)).thenReturn(connector(7, false));
+    doThrow(new IllegalAccessException("managedConnector.administrator.required")).when(managedConnectorService)
+                                                                                 .clearDesignation(KIND, USER);
+
+    assertThrows(IllegalArgumentException.class, () -> emailManagedModeService.saveManagedConnector(7, List.of(), ADMIN));
+    assertThrows(IllegalAccessException.class, () -> emailManagedModeService.clearManagedConnector(USER));
+
+    verify(eventPublisher, never()).publishEvent(any());
   }
 
   /** A caller commons-exo refuses is refused here, untouched. */

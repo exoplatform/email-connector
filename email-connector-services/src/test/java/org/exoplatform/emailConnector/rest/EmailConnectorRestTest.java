@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -72,6 +73,7 @@ import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailManagedMode;
 import org.exoplatform.emailConnector.model.EmailSyncExecutorStatus;
 import org.exoplatform.emailConnector.service.EmailConnectorService;
+import org.exoplatform.emailConnector.service.EmailManagedDisconnectionService;
 import org.exoplatform.emailConnector.service.EmailManagedModeService;
 import org.exoplatform.emailConnector.service.EmailSyncService;
 
@@ -116,6 +118,9 @@ public class EmailConnectorRestTest {
 
   @MockitoBean
   private EmailManagedModeService emailManagedModeService;
+
+  @MockitoBean
+  private EmailManagedDisconnectionService emailManagedDisconnectionService;
 
   @Autowired
   private SecurityFilterChain   filterChain;
@@ -278,6 +283,66 @@ public class EmailConnectorRestTest {
            .andExpect(jsonPath("$.managedForMe").value(false));
 
     verify(emailManagedModeService).clearManagedConnector(ADMIN_USER);
+  }
+
+  /** EXO-89654. The preview answers how many accounts the proposed managed-mode state would disconnect. */
+  @Test
+  void previewManagedModeAnswersTheAccountCount() throws Exception {
+    when(emailManagedDisconnectionService.countUsersNoLongerManaged(9L, List.of("/externals"), ADMIN_USER)).thenReturn(3);
+    when(emailManagedDisconnectionService.countUsersNoLongerManaged(null, List.of(), ADMIN_USER)).thenReturn(5);
+
+    mockMvc.perform(post(EMAIL_CONNECTOR_PATH + "/managed/preview").with(testAdminUser())
+                                                                  .content("{\"connectorId\":9,\"excludedGroups\":[\"/externals\"]}")
+                                                                  .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.affectedAccounts").value(3));
+    // No connector is the preview of switching managed mode off.
+    mockMvc.perform(post(EMAIL_CONNECTOR_PATH + "/managed/preview").with(testAdminUser())
+                                                                  .content("{\"excludedGroups\":[]}")
+                                                                  .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.affectedAccounts").value(5));
+  }
+
+  /** EXO-89654. The count of a connector's users is what a provider change would disconnect. */
+  @Test
+  void countConnectedUsersAnswersTheUsersOfTheConnector() throws Exception {
+    when(emailManagedDisconnectionService.countUsersOf(7L, ADMIN_USER)).thenReturn(2);
+
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/7/connected-users/count").with(testAdminUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.affectedAccounts").value(2));
+  }
+
+  /** EXO-89654. Both previews are administration acts. */
+  @Test
+  void thePreviewsAreForAdministratorsOnly() throws Exception {
+    mockMvc.perform(post(EMAIL_CONNECTOR_PATH + "/managed/preview").with(testSimpleUser())
+                                                                  .content("{}")
+                                                                  .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isForbidden());
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/7/connected-users/count").with(testSimpleUser()))
+           .andExpect(status().isForbidden());
+    verifyNoInteractions(emailManagedDisconnectionService);
+  }
+
+  /** EXO-89654. Counting the users of a connector that does not exist is a 404. */
+  @Test
+  void countConnectedUsersOfAnUnknownConnectorIsFourHundredFour() throws Exception {
+    when(emailManagedDisconnectionService.countUsersOf(99L, ADMIN_USER))
+        .thenThrow(new org.exoplatform.commons.exception.ObjectNotFoundException("No email connector 99"));
+
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/99/connected-users/count").with(testAdminUser()))
+           .andExpect(status().isNotFound());
+  }
+
+  /** EXO-89654. A refusal from the service is a 403 too, whatever the caller's role says. */
+  @Test
+  void aRefusedPreviewIsFourHundredThree() throws Exception {
+    when(emailManagedDisconnectionService.countUsersOf(7L, ADMIN_USER)).thenThrow(new IllegalAccessException("not an administrator"));
+
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/7/connected-users/count").with(testAdminUser()))
+           .andExpect(status().isForbidden());
   }
 
   @Test
