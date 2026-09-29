@@ -36,6 +36,7 @@ import static org.mockito.Mockito.when;
 import java.util.Date;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
@@ -426,6 +427,8 @@ public class EmailSyncServiceTest {
 
     private int active;
 
+    private boolean throwOnExecute;
+
     /**
      * A pool of the given size that never starts a thread.
      *
@@ -436,12 +439,17 @@ public class EmailSyncServiceTest {
     }
 
     /**
-     * Runs the task here and now.
+     * Runs the task here and now, or refuses it once when the test asked to have
+     * the hand-over fail.
      *
      * @param command the task
      */
     @Override
     public void execute(Runnable command) {
+      if (throwOnExecute) {
+        throwOnExecute = false;
+        throw new RejectedExecutionException("the executor refuses this task");
+      }
       command.run();
     }
 
@@ -454,6 +462,38 @@ public class EmailSyncServiceTest {
     public int getActiveCount() {
       return active;
     }
+  }
+
+  /**
+   * Without the Spring proxy -- this unit test calls the plain object, so no
+   * transaction synchronization is ever active -- the claim is already committed by
+   * the time {@code claim} returns: the mailbox is handed over at once instead of
+   * being registered for an {@code afterCommit} callback that would never fire.
+   */
+  @Test
+  void dispatchNowHandsOverAtOnceWithoutTheProxy() throws Exception {
+    when(emailSyncStateStorage.claim(eq(ALICE), any(Date.class), anyString(), any(Date.class))).thenReturn(true);
+
+    assertTrue(emailSyncService.dispatchNow(ALICE));
+
+    verify(emailBoxService).synchronizeClaimed(ALICE);
+  }
+
+  /**
+   * The hand-over to the executor never throws back into {@code dispatchNow}: a
+   * claim that committed but could not reach the executor still counts as claimed,
+   * only warned about, never surfaced as a failure of the immediate dispatch.
+   * Mutation-verified: with the catch in {@code handOverClaimed} removed, this
+   * fails.
+   */
+  @Test
+  void dispatchNowStillSucceedsWhenTheHandOverFails() throws Exception {
+    when(emailSyncStateStorage.claim(eq(ALICE), any(Date.class), anyString(), any(Date.class))).thenReturn(true);
+    executor.throwOnExecute = true;
+
+    assertTrue(emailSyncService.dispatchNow(ALICE));
+
+    verify(emailBoxService, never()).synchronizeClaimed(ALICE);
   }
 
   /**
