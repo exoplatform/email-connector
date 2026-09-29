@@ -41,6 +41,7 @@ import org.exoplatform.emailConnector.event.EmailConnectorProviderChangedEvent;
 import org.exoplatform.emailConnector.event.UserEmailSettingCleanupEvent;
 import org.exoplatform.emailConnector.model.ConnectorForwarding;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.EmailConnectorProviderConfig;
 import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.rules.ForwardingGuard;
@@ -879,16 +880,17 @@ public class EmailConnectorService {
 
   /**
    * The provider configuration of a connector, as an administration screen may see it:
-   * every field except the secret ones, which are never read back on this path.
+   * every field except the secret ones, which are never read back on this path, and the
+   * keys of the secret fields that have a value stored.
    *
    * @param emailConnectorId the connector whose configuration is read
    * @param username the user asking, checked against the administration ACL - reading a
    *          technical account is an administration act
-   * @return the stored values without any secret, empty when nothing is stored or when
-   *         the storage is not deployed
+   * @return the stored values without any secret and the stored secrets' keys, both
+   *         empty when nothing is stored or when the storage is not deployed
    * @throws IllegalAccessException if the user may not administer email connectors
    */
-  public Map<String, String> getProviderConfig(Long emailConnectorId, String username) throws IllegalAccessException {
+  public EmailConnectorProviderConfig getProviderConfig(Long emailConnectorId, String username) throws IllegalAccessException {
     if (emailConnectorId == null) {
       throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
     }
@@ -900,10 +902,12 @@ public class EmailConnectorService {
     EmailConnector storedEmailConnector = emailConnectorStorage.getEmailConnector(emailConnectorId);
     if (providerConfigStorage == null || storedEmailConnector == null
         || StringUtils.isBlank(storedEmailConnector.getAuthProviderName())) {
-      return Map.of();
+      return EmailConnectorProviderConfig.EMPTY;
     }
-    return providerConfigStorage.readWithoutSecrets(providerConfigContext(emailConnectorId,
-                                                                         storedEmailConnector.getAuthProviderName()));
+    ConnectorCredentialsContext context = providerConfigContext(emailConnectorId,
+                                                                storedEmailConnector.getAuthProviderName());
+    return new EmailConnectorProviderConfig(providerConfigStorage.readWithoutSecrets(context),
+                                            providerConfigStorage.readStoredSecretKeys(context));
   }
 
   /**
