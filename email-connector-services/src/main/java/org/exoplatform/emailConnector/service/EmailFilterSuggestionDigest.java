@@ -55,9 +55,17 @@ import org.exoplatform.services.log.Log;
  * is not stored yet, no second one is sent -- the count waiting is recorded instead ({@value #WAITING_KEY}), and the plugin
  * builds the digest with the latest one ({@link #latestWaiting}); the plugin also checks
  * for an unread digest when it builds one ({@link #updateUnread}) and updates it instead
- * of storing a second;</li>
+ * of storing a second. The web channel may be off, and then no digest is ever stored
+ * for the user to read: the count a send told is kept as the unacknowledged batch
+ * ({@value #SENT_COUNT_KEY}), and while no digest is stored, no new one goes by mail or
+ * push unless more suggestions wait than that batch told and
+ * {@value #RESEND_AFTER_MILLIS} ms passed since it;</li>
  * <li>a decision <b>refreshes</b> it: the count of every digest the user holds is
- * rewritten, nothing is sent, and the digests are removed once nothing waits.</li>
+ * rewritten, nothing is sent, the digests are removed once nothing waits, and the batch
+ * is acknowledged;</li>
+ * <li>suggestions that stop waiting without a decision -- expired, or superseded by a
+ * new run -- <b>recount</b> it: the same rewrite, the batch kept but never above what
+ * still waits.</li>
  * </ul>
  * Never throws: a notification that cannot be written leaves the suggestions as they
  * are, their cards in the mail and the list's marker.
@@ -79,6 +87,21 @@ public class EmailFilterSuggestionDigest {
 
   /** How many suggestions waited at the user's last publish. */
   static final String            WAITING_KEY = "suggestionDigest.waiting";
+
+  /**
+   * How many suggestions the user's last digest sent told, until a decision acknowledges
+   * it or nothing waits: the unacknowledged batch, which holds back a new mail or push
+   * digest when no web digest is stored.
+   */
+  static final String            SENT_COUNT_KEY = "suggestionDigest.sentCount";
+
+  /**
+   * How long after a digest a new one may go by mail or push while the batch it told is
+   * unacknowledged and no web digest is stored, and only when more suggestions wait:
+   * four hours, so a user with the web channel off hears of new suggestions a few times
+   * a day at most, not after every run.
+   */
+  static final long              RESEND_AFTER_MILLIS = 4 * 60 * 60 * 1000L;
 
   private static final Log       LOG      = ExoLogger.getLogger(EmailFilterSuggestionDigest.class);
 
@@ -103,6 +126,7 @@ public class EmailFilterSuggestionDigest {
       settingService.set(Context.USER.id(username), SCOPE, WAITING_KEY, SettingValue.create(Math.max(0L, waiting)));
       if (waiting <= 0) {
         removeAll(digests(webNotificationService, username));
+        clearBatch(username);
         return;
       }
       if (updateUnread(webNotificationService, username, waiting)) {
@@ -116,8 +140,12 @@ public class EmailFilterSuggestionDigest {
         // recorded above. Once stored and read, a new batch is sent at once.
         return;
       }
+      if (read.isEmpty() && isHeldBack(username, waiting, last, now)) {
+        return;
+      }
       removeAll(read);
       settingService.set(Context.USER.id(username), SCOPE, SENT_AT_KEY, SettingValue.create(now));
+      settingService.set(Context.USER.id(username), SCOPE, SENT_COUNT_KEY, SettingValue.create(waiting));
       send(username, waiting);
     } catch (RuntimeException | LinkageError e) {
       LOG.warn("The digest of the waiting suggestions of user {} could not be written", username, e);
@@ -126,12 +154,53 @@ public class EmailFilterSuggestionDigest {
 
   /**
    * Brings the user's digests to the count that waits now, after a decision: rewritten
-   * in place, never sent again, removed when nothing waits.
+   * in place, never sent again, removed when nothing waits; the batch last sent is
+   * acknowledged.
    *
    * @param username the user
    * @param waiting how many of their suggestions wait now
    */
   public void refresh(String username, long waiting) {
+    try {
+      clearBatch(username);
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("The digest batch of user {} could not be acknowledged", username, e);
+    }
+    rewrite(username, waiting);
+  }
+
+  /**
+   * Brings the user's digests to the count that waits now, when suggestions stopped
+   * waiting without a decision -- expired, or superseded by a new run: rewritten in
+   * place, never sent again, removed when nothing waits. The batch last sent stays
+   * unacknowledged, lowered to what still waits, so that a later run proposing more is
+   * measured against what the user was told and is still there.
+   *
+   * @param username the user
+   * @param waiting how many of their suggestions wait now
+   */
+  public void recount(String username, long waiting) {
+    try {
+      Long told = longValue(settingService.get(Context.USER.id(username), SCOPE, SENT_COUNT_KEY));
+      if (waiting <= 0) {
+        clearBatch(username);
+      } else if (told != null && told > waiting) {
+        settingService.set(Context.USER.id(username), SCOPE, SENT_COUNT_KEY, SettingValue.create(waiting));
+      }
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("The digest batch of user {} could not be recounted", username, e);
+    }
+    rewrite(username, waiting);
+  }
+
+  /**
+   * Rewrites the count of every digest the user holds, and removes them when nothing
+   * waits. Never throws.
+   *
+   * @param username the user
+   * @param waiting how many of their suggestions wait now
+   */
+  private void rewrite(String username, long waiting) {
     try {
       settingService.set(Context.USER.id(username), SCOPE, WAITING_KEY, SettingValue.create(Math.max(0L, waiting)));
       List<NotificationInfo> digests = digests(webNotificationService, username);
@@ -209,6 +278,35 @@ public class EmailFilterSuggestionDigest {
     } catch (NumberFormatException e) {
       return null;
     }
+  }
+
+  /**
+   * Whether a new digest is held back because the batch the last one told is still
+   * unacknowledged: no more suggestions wait than it told, or it was sent less than
+   * {@value #RESEND_AFTER_MILLIS} ms ago. Read only when no web digest is stored -- the
+   * web channel is off, or the user removed the digest.
+   *
+   * @param username the user
+   * @param waiting how many of their suggestions wait now
+   * @param last when the last digest was sent, epoch millis, or null
+   * @param now the time, epoch millis
+   * @return true when no digest is to be sent now
+   */
+  private boolean isHeldBack(String username, long waiting, Long last, long now) {
+    Long told = longValue(settingService.get(Context.USER.id(username), SCOPE, SENT_COUNT_KEY));
+    if (told == null) {
+      return false;
+    }
+    return waiting <= told || (last != null && now - last < RESEND_AFTER_MILLIS);
+  }
+
+  /**
+   * Forgets the batch the last digest told: the user acknowledged it, or nothing waits.
+   *
+   * @param username the user
+   */
+  private void clearBatch(String username) {
+    settingService.remove(Context.USER.id(username), SCOPE, SENT_COUNT_KEY);
   }
 
   /**
