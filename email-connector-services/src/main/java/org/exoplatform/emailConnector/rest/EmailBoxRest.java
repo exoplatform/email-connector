@@ -52,6 +52,7 @@ import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
+import org.exoplatform.emailConnector.model.FavoriteRemoval;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
@@ -435,14 +436,14 @@ public class EmailBoxRest {
   @DeleteMapping("/favorites/{emailId}")
   @Secured("users")
   @Operation(summary = "Removes a favorited email from the favorites", method = "DELETE",
-             description = "Clears the IMAP \\Flagged flag of the favorited email and of its copies in the caller's other folders (the rows sharing its Message-ID, Trash, Spam, All Mail and Drafts left out), each in its own folder, so the one favorite the Favorites drawer shows for them does not come back at the next reconciliation. Addressed by the technical id the favorite is stored against; answers 404 for an email that is not the caller's. Returns the number of copies whose update failed.")
+             description = "Clears the IMAP \\Flagged flag of the favorited email and of its copies in the caller's other folders (the rows sharing its Message-ID, Trash, Spam, All Mail and Drafts left out), each in its own folder, so the one favorite the Favorites drawer shows for them does not come back at the next reconciliation. Addressed by the technical id the favorite is stored against; answers 404 for an email that is not the caller's. Returns the UIDs unstarred by folder ('unstarred', the favorite's own folder last) and the number of copies whose update failed ('failedUpdates').")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
-  public Map<String, Integer> removeFavoriteEmail(HttpServletRequest request,
-                                                  @Parameter(description = "Technical id of the favorited email", required = true)
-                                                  @PathVariable("emailId")
-                                                  long emailId) {
+  public FavoriteRemoval removeFavoriteEmail(HttpServletRequest request,
+                                             @Parameter(description = "Technical id of the favorited email", required = true)
+                                             @PathVariable("emailId")
+                                             long emailId) {
     Email favorite;
     try {
       favorite = emailBoxService.getOwnedEmailById(emailId, request.getRemoteUser());
@@ -454,9 +455,7 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND);
     }
     try {
-      Map<String, Integer> response = new HashMap<>();
-      response.put("failedUpdates", emailBoxService.unstarFavorite(favorite, request.getRemoteUser()));
-      return response;
+      return emailBoxService.unstarFavorite(favorite, request.getRemoteUser());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {

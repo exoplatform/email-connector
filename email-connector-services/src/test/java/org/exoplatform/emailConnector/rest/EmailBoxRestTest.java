@@ -44,6 +44,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.util.Date;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -82,6 +83,7 @@ import org.exoplatform.emailConnector.model.ReadReceiptPrompt;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.FavoriteRemoval;
 import org.exoplatform.emailConnector.model.ScheduledEmail;
 import org.exoplatform.emailConnector.model.ScheduledSendStatus;
 import org.exoplatform.emailConnector.model.EmailAttachment;
@@ -549,11 +551,15 @@ public class EmailBoxRestTest {
     Email favorite = new Email();
     favorite.setId(121L);
     when(emailBoxService.getOwnedEmailById(121L, SIMPLE_USER)).thenReturn(favorite);
-    when(emailBoxService.unstarFavorite(favorite, SIMPLE_USER)).thenReturn(1);
+    when(emailBoxService.unstarFavorite(favorite, SIMPLE_USER)).thenReturn(new FavoriteRemoval(1,
+                                                                                               Map.of("CUSTOM:6", List.of(77L),
+                                                                                                      MailFolder.INBOX, List.of(1212L))));
 
     mockMvc.perform(delete(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser()))
            .andExpect(status().isOk())
-           .andExpect(jsonPath("$.failedUpdates").value(1));
+           .andExpect(jsonPath("$.failedUpdates").value(1))
+           .andExpect(jsonPath("$.unstarred['CUSTOM:6'][0]").value(77))
+           .andExpect(jsonPath("$.unstarred.INBOX[0]").value(1212));
     verify(emailBoxService).unstarFavorite(favorite, SIMPLE_USER);
 
     // A mailbox the caller cannot connect, and a mail server that cannot be reached.

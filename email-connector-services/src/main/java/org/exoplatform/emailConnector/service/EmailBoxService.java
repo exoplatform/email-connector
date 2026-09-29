@@ -145,6 +145,7 @@ import org.exoplatform.emailConnector.model.DiscoveredFolder;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderClassification;
+import org.exoplatform.emailConnector.model.FavoriteRemoval;
 import org.exoplatform.emailConnector.model.FolderMessageCounts;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
@@ -5346,13 +5347,17 @@ public class EmailBoxService {
    * be back at the next reconciliation. Each copy is unstarred in its own folder,
    * where its UID means that message.
    *
+   * The copies asked to be unstarred are returned by folder, so a mailbox open beside
+   * the drawer can put out the star of each of them where it is listed.
+   *
    * @param favorite the favorited email, resolved for this user with
    *          {@link #getOwnedEmailById}
    * @param username the mailbox owner
-   * @return how many copies could not be unstarred
+   * @return the UIDs asked to be unstarred by folder, the favorite's own folder last,
+   *         and how many copies could not be unstarred
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
-  public int unstarFavorite(Email favorite, String username) throws IllegalAccessException {
+  public FavoriteRemoval unstarFavorite(Email favorite, String username) throws IllegalAccessException {
     Map<String, List<Long>> uidsByFolder = new LinkedHashMap<>();
     if (StringUtils.isNotBlank(favorite.getMailHeaderId())) {
       emailBoxStorage.getStarredCopyKeys(username, favorite.getMailHeaderId(), MailFolder.NOT_FAVORITED_FOLDERS)
@@ -5371,7 +5376,7 @@ public class EmailBoxService {
     for (Map.Entry<String, List<Long>> copies : uidsByFolder.entrySet()) {
       failed += updateEmailStarredStatus(copies.getValue(), username, copies.getKey(), false, true);
     }
-    return failed;
+    return new FavoriteRemoval(failed, uidsByFolder);
   }
 
   /**

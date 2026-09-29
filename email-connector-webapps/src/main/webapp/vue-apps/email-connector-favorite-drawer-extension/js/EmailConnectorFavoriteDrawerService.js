@@ -41,7 +41,8 @@ export function getFavoriteEmail(id) {
  * the favorite stands for, each in its folder.
  *
  * @param {String} id the email's technical id
- * @returns {Promise<Object>} {failedUpdates}, how many copies could not be unstarred
+ * @returns {Promise<Object>} {failedUpdates, unstarred}: how many copies could not be
+ *   unstarred, and the UIDs the server unstarred by folder ({folder: [uids]})
  */
 export function removeFavoriteEmail(id) {
   return fetch(`/email-connector/rest/email-box/favorites/${id}`, {

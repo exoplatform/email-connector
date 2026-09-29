@@ -164,21 +164,28 @@ export default {
       this.isFavorite = false;
       this.$root.$emit('favorite-removed', 'email', this.id);
       // Addressed by the favorite's own id: the server clears the star of every copy of
-      // the message the favorite stands for, each in its folder.
+      // the message the favorite stands for, each in its folder, and says which.
       removeFavoriteEmail(this.id).then(result => {
         if (result?.failedUpdates) {
           showRowBack();
           return;
         }
         // A mailbox drawer already open holds its own copy of the flag and hears
-        // only its own root; the document is the one bus the two apps share.
-        document.dispatchEvent(new CustomEvent('email-favorite-status-changed', {
-          detail: {
-            mailRemoteIds: [this.email.mailRemoteId],
-            folder: this.email.folder,
-            favorite: false,
-          },
-        }));
+        // only its own root; the document is the one bus the two apps share. One
+        // event per folder the server reached, as the mailbox applies a change to
+        // the rows of one folder: the copy filed under a label must go out too.
+        const unstarred = Object.keys(result?.unstarred || {}).length
+          ? result.unstarred
+          : { [this.email.folder || 'INBOX']: [this.email.mailRemoteId] };
+        Object.entries(unstarred).forEach(([folder, mailRemoteIds]) => {
+          document.dispatchEvent(new CustomEvent('email-favorite-status-changed', {
+            detail: {
+              mailRemoteIds,
+              folder,
+              favorite: false,
+            },
+          }));
+        });
         this.displayAlert(removedMessage);
       }).catch(() => this.$favoriteService.addFavorite('email', this.id)
         .catch(() => null)

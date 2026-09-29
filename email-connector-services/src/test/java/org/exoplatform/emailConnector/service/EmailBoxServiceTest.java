@@ -165,6 +165,7 @@ import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
+import org.exoplatform.emailConnector.model.FavoriteRemoval;
 import org.exoplatform.emailConnector.model.FolderMessageCounts;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
@@ -1252,9 +1253,12 @@ public class EmailBoxServiceTest {
     when(emailBoxStorage.getStarredCopyKeys(TEST_USER, "<m@host>", MailFolder.NOT_FAVORITED_FOLDERS)).thenReturn(List.of(favorite,
                                                                                                                        starredKey(8L, "CUSTOM:6", "<m@host>", 77L)));
 
-    int failed = emailBoxService.unstarFavorite(favorite, TEST_USER);
+    FavoriteRemoval removal = emailBoxService.unstarFavorite(favorite, TEST_USER);
 
-    assertEquals(0, failed);
+    assertEquals(0, removal.getFailedUpdates());
+    // The copies by folder, the favorite's own last: what an open mailbox puts out.
+    assertEquals(List.of("CUSTOM:6", MailFolder.INBOX), List.copyOf(removal.getUnstarred().keySet()));
+    assertEquals(Map.of("CUSTOM:6", List.of(77L), MailFolder.INBOX, List.of(1212L)), removal.getUnstarred());
     verify(inboxCopy).setFlag(Flags.Flag.FLAGGED, false);
     verify(projetsCopy).setFlag(Flags.Flag.FLAGGED, false);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L), TEST_USER, false, MailFolder.INBOX);
@@ -1290,9 +1294,12 @@ public class EmailBoxServiceTest {
                                                                                                                        starredKey(9L, "CUSTOM:9", "<m@host>", 77L),
                                                                                                                        noUid));
 
-    int failed = emailBoxService.unstarFavorite(favorite, TEST_USER);
+    FavoriteRemoval removal = emailBoxService.unstarFavorite(favorite, TEST_USER);
 
-    assertEquals(1, failed, "the copy of the vanished folder fails; the inbox one does not; the UID-less one is skipped");
+    assertEquals(1, removal.getFailedUpdates(), "the copy of the vanished folder fails; the inbox one does not; the UID-less one is skipped");
+    assertEquals(Map.of("CUSTOM:9", List.of(77L), MailFolder.INBOX, List.of(1212L)),
+                 removal.getUnstarred(),
+                 "the UID-less copy is not among the copies asked to be unstarred");
     verify(emailBoxStorage, never()).updateEmailStarredStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), eq(MailFolder.SENT));
   }
 
@@ -1312,9 +1319,10 @@ public class EmailBoxServiceTest {
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212L)).thenReturn(message);
 
-    int failed = emailBoxService.unstarFavorite(starredKey(7L, MailFolder.INBOX, null, 1212L), TEST_USER);
+    FavoriteRemoval removal = emailBoxService.unstarFavorite(starredKey(7L, MailFolder.INBOX, null, 1212L), TEST_USER);
 
-    assertEquals(0, failed);
+    assertEquals(0, removal.getFailedUpdates());
+    assertEquals(Map.of(MailFolder.INBOX, List.of(1212L)), removal.getUnstarred());
     verify(message).setFlag(Flags.Flag.FLAGGED, false);
     verify(emailBoxStorage, never()).getStarredCopyKeys(anyString(), anyString(), anyList());
   }
