@@ -643,6 +643,9 @@ public class EmailBoxService {
   static final String             CROSS_MAILBOX_MESSAGE                                       =
                                                                              "emailConnector.folder.crossMailbox";
 
+  /** The star is not offered in that folder (EXO-90550): 400, its message is this code. */
+  static final String             STAR_FOLDER_NOT_SUPPORTED_MESSAGE                           = "emailConnector.star.folderNotSupported";
+
   /** A delete in a shared mailbox whose owner shares no Trash with the caller (EXO-90548). */
   static final String             NO_SHARED_TRASH_MESSAGE                                     = "emailConnector.delegation.noTrash";
 
@@ -6190,7 +6193,10 @@ public class EmailBoxService {
    *
    * @param mailRemoteIds the IMAP UIDs of the emails to update
    * @param username the user acting on their own mailbox
-   * @param folder the folder those UIDs are numbered in; blank means INBOX
+   * @param folder the folder those UIDs are numbered in; blank means INBOX. A folder
+   *          of the user's own mailbox, or a folder of a mailbox shared with them where
+   *          they hold {@code w} (EXO-90550) -- never a shared Trash, Spam or Drafts,
+   *          which a delegate only reads
    * @param starred {@code true} to star, {@code false} to unstar
    * @param updateRemoteStarredStatus whether the flag must also be pushed to the
    *          IMAP server (skipped, e.g., during sync where the flag comes from the
@@ -6198,6 +6204,10 @@ public class EmailBoxService {
    * @return the number of emails whose remote update failed (0 when everything
    *         succeeded or when no remote update was requested)
    * @throws IllegalAccessException if the user is not allowed to update email
+   * @throws IllegalArgumentException {@code emailConnector.star.folderNotSupported} for
+   *           a shared folder the star is not offered in
+   * @throws MailboxRightMissingException when a shared folder's letters lack {@code w}
+   * @throws DelegationRevokedException when the share is no longer accepted
    */
   public int updateEmailStarredStatus(List<Long> mailRemoteIds,
                                       String username,
@@ -6214,7 +6224,7 @@ public class EmailBoxService {
           || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
         throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_UPDATE_EMAIL_MESSAGE, username));
       }
-      String sourceFolder = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
+      String sourceFolder = starrableFolder(username, folder);
       emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(uids, username, starred, sourceFolder);
       Store store = null;
       Folder remoteFolder = null;
@@ -6289,6 +6299,36 @@ public class EmailBoxService {
       emailFavoriteService.reconcileFavorites(username);
     }
     return failedEmailUpdates;
+  }
+
+  /**
+   * The folder a star is written in, checked before anything is touched (EXO-90550).
+   * A folder of the user's own mailbox -- blank reads as INBOX -- is starred where the
+   * row is listed, as {@link #unstarFavorite} and the mailbox ask. A folder of a mailbox
+   * shared with them is starred there too, where the star is the owner's flag as well:
+   * it needs {@code w} on that folder, and is refused in a shared Trash, Spam or Drafts,
+   * which a delegate only reads -- the folders the user's own Favorites leave out
+   * ({@link MailFolder#NOT_FAVORITED_FOLDERS}; a shared folder has no All Mail role).
+   *
+   * @param username the caller
+   * @param folder the folder asked for
+   * @return the folder key to write and push in
+   * @throws MailboxRightMissingException when a shared folder's letters lack {@code w}
+   * @throws DelegationRevokedException when the share is no longer accepted
+   * @throws IllegalArgumentException {@code emailConnector.star.folderNotSupported} for
+   *           a shared Trash, Spam or Drafts
+   */
+  private String starrableFolder(String username, String folder) throws MailboxRightMissingException {
+    String key = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
+    if (!MailFolder.isCustom(key) || emailDelegationService.delegationOf(username, key) == null) {
+      return key;
+    }
+    FolderRole role = emailDelegationService.roleOf(username, key);
+    if (role == FolderRole.TRASH || role == FolderRole.JUNK || role == FolderRole.DRAFTS) {
+      throw new IllegalArgumentException(STAR_FOLDER_NOT_SUPPORTED_MESSAGE);
+    }
+    checkDelegatedRight(username, key, MailboxRights.WRITE);
+    return key;
   }
 
   /**
