@@ -45,6 +45,7 @@ import java.util.Date;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -63,6 +64,7 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
@@ -1396,6 +1398,105 @@ public class EmailBoxRestTest {
     org.junit.jupiter.api.Assertions.assertNull(sent.getValue().getReadReceiptPrompt());
     org.junit.jupiter.api.Assertions.assertNull(sent.getValue().getReadReceiptAnswer(),
                                                 "read-only: an answer is never claimed by a payload");
+  }
+
+  /**
+   * Every verb that can act in a shared mailbox answers its two delegation refusals the
+   * same way: a right the share does not give is 401 with the missing right's code, a
+   * share withdrawn meanwhile is 410 with its own (EXO-90499). The trash and junk
+   * restores also answer a refusal of the request itself -- a move between two mailboxes
+   * -- as 400 with its code.
+   *
+   * @throws Exception when a request cannot be performed
+   */
+  @Test
+  void everySharedMailboxVerbAnswersTheDelegationRefusals() throws Exception {
+    MailboxRightMissingException missing = new MailboxRightMissingException(MailboxRights.KEEP_SEEN);
+    DelegationRevokedException revoked = new DelegationRevokedException(DelegationRevokedException.REVOKED);
+    IllegalArgumentException crossMailbox = new IllegalArgumentException("emailConnector.move.crossMailbox");
+    String ids = "[1212]";
+
+    when(emailBoxService.getEmailBox(anyString(), anyString(), anyBoolean())).thenThrow(missing, revoked);
+    expectDelegationRefusals(() -> get(EMAIL_BOX_PATH).param("folder", "CUSTOM:8"));
+
+    when(emailBoxService.setCustomFolderSync(anyString(), anyLong(), anyBoolean())).thenThrow(missing, revoked);
+    expectDelegationRefusals(() -> patch(EMAIL_BOX_PATH + "/folders/8").param("sync", "true"));
+
+    when(emailBoxService.renameCustomFolder(anyString(), anyLong(), anyString())).thenThrow(missing, revoked);
+    expectDelegationRefusals(() -> patch(EMAIL_BOX_PATH + "/folders/8/name").param("name", "Projects"));
+
+    doThrow(missing).doThrow(revoked).when(emailBoxService).deleteCustomFolder(anyString(), anyLong());
+    expectDelegationRefusals(() -> delete(EMAIL_BOX_PATH + "/folders/8"));
+
+    doThrow(missing).doThrow(revoked).when(emailBoxService).synchronizeCustomFolder(anyString(), anyLong());
+    expectDelegationRefusals(() -> post(EMAIL_BOX_PATH + "/folders/8/synchronization"));
+
+    when(emailBoxService.moveToFolder(anyList(), anyString(), anyString(), anyString())).thenThrow(missing, revoked);
+    expectDelegationRefusals(() -> post(EMAIL_BOX_PATH + "/move").param("folder", "CUSTOM:8")
+                                                                  .param("target", "CUSTOM:9")
+                                                                  .contentType(MediaType.APPLICATION_JSON)
+                                                                  .content(ids));
+
+    when(emailBoxService.undoMove(anyList(), anyString(), anyString(), anyString())).thenThrow(missing, revoked);
+    expectDelegationRefusals(() -> post(EMAIL_BOX_PATH + "/move/undo").param("folder", "CUSTOM:9")
+                                                                       .contentType(MediaType.APPLICATION_JSON)
+                                                                       .content("[\"<a@b>\"]"));
+
+    when(emailBoxService.updateEmailReadStatus(anyList(), anyString(), anyString(), anyBoolean(), anyBoolean())).thenThrow(missing,
+                                                                                                                            revoked);
+    expectDelegationRefusals(() -> patch(EMAIL_BOX_PATH).param("readStatus", "true")
+                                                        .param("folder", "CUSTOM:8")
+                                                        .contentType(MediaType.APPLICATION_JSON)
+                                                        .content(ids));
+
+    when(emailBoxService.deleteEmail(anyList(), anyString(), anyString())).thenThrow(missing, revoked);
+    expectDelegationRefusals(() -> delete(EMAIL_BOX_PATH).param("folder", "CUSTOM:8")
+                                                         .contentType(MediaType.APPLICATION_JSON)
+                                                         .content(ids));
+
+    when(emailBoxService.archiveEmail(anyList(), anyString(), anyString())).thenThrow(missing, revoked);
+    expectDelegationRefusals(() -> delete(EMAIL_BOX_PATH + "/archive").param("folder", "CUSTOM:8")
+                                                                      .contentType(MediaType.APPLICATION_JSON)
+                                                                      .content(ids));
+
+    when(emailBoxService.purgeEmail(anyList(), anyString())).thenThrow(missing, revoked);
+    expectDelegationRefusals(() -> delete(EMAIL_BOX_PATH + "/trash").contentType(MediaType.APPLICATION_JSON).content(ids));
+
+    when(emailBoxService.markAsJunk(anyList(), anyString(), anyString())).thenThrow(missing, revoked, crossMailbox);
+    expectDelegationRefusals(() -> post(EMAIL_BOX_PATH + "/junk").param("folder", "CUSTOM:8")
+                                                                  .contentType(MediaType.APPLICATION_JSON)
+                                                                  .content(ids));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/junk").param("folder", "CUSTOM:8")
+                                                  .contentType(MediaType.APPLICATION_JSON)
+                                                  .content(ids)
+                                                  .with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(crossMailbox.getMessage()));
+
+    for (String restore : List.of(MailFolder.TRASH, MailFolder.JUNK)) {
+      String path = EMAIL_BOX_PATH + (MailFolder.TRASH.equals(restore) ? "/trash/restore" : "/junk/restore");
+      when(emailBoxService.restore(anyList(), anyString(), eq(restore))).thenThrow(missing, revoked, crossMailbox);
+      expectDelegationRefusals(() -> post(path).contentType(MediaType.APPLICATION_JSON).content(ids));
+      mockMvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).content(ids).with(testSimpleUser()))
+             .andExpect(status().isBadRequest())
+             .andExpect(status().reason(crossMailbox.getMessage()));
+    }
+  }
+
+  /**
+   * Sends a request twice, the service refusing it first for a missing right, then for
+   * a withdrawn share.
+   *
+   * @param request builds the request; called once per send
+   * @throws Exception when a request cannot be performed
+   */
+  private void expectDelegationRefusals(Supplier<MockHttpServletRequestBuilder> request) throws Exception {
+    mockMvc.perform(request.get().with(testSimpleUser()))
+           .andExpect(status().isUnauthorized())
+           .andExpect(status().reason(MailboxRightMissingException.CODE_PREFIX + MailboxRights.KEEP_SEEN));
+    mockMvc.perform(request.get().with(testSimpleUser()))
+           .andExpect(status().isGone())
+           .andExpect(status().reason(DelegationRevokedException.REVOKED));
   }
 
   /**
