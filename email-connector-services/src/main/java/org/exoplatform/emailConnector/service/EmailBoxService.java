@@ -10626,7 +10626,8 @@ public class EmailBoxService {
                                            emailConnector.getAuthProviderName(),
                                            username,
                                            ConnectorCredentialsChannel.SMTP);
-          message = buildScheduledMessage(stored, storedAttachments, username, userEmailSetting, emailConnector);
+          // Rebuilt in the name the draft was scheduled in, as the first attempt was (EXO-90584).
+          message = buildScheduledMessage(stored, storedAttachments, username, userEmailSetting, emailConnector, identity);
           smtpTransmitter.transmit(message);
         }
       } catch (SmtpTransmitter.TransmissionException e) {
