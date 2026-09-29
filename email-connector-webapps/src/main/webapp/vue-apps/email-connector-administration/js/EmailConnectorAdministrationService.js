@@ -517,10 +517,12 @@ export function deleteEmailConnector(emailConnectorId) {
  * Reads back the provider configuration stored for a connector.
  *
  * Secret values are never in the answer: the endpoint omits them, so a secret
- * field opens empty and an unrelated save leaves the stored one untouched.
+ * field opens empty and an unrelated save leaves the stored one untouched. It
+ * says instead which secret fields have a value stored.
  *
  * @param {number} emailConnectorId technical id of the connector
- * @returns {Promise} the stored values, keyed by descriptor field
+ * @returns {Promise} {values, storedSecretKeys}: the stored non-secret values keyed
+ *          by descriptor field, and the keys of the stored secret fields
  */
 export function getProviderConfig(emailConnectorId) {
   return fetch(`/email-connector/rest/connectors/${emailConnectorId}/provider-config`, {
