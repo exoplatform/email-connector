@@ -49,7 +49,7 @@ import org.exoplatform.services.connector.credentials.ConnectorCredentialsChanne
  * contract's refusal rule.
  */
 @ExtendWith(MockitoExtension.class)
-public class ManageSieveConnectorTest {
+class ManageSieveConnectorTest {
 
   private static final long        CONNECTOR_ID = 77L;
 
@@ -72,7 +72,7 @@ public class ManageSieveConnectorTest {
    * @throws Exception when it cannot start
    */
   @BeforeEach
-  public void setUp() throws Exception {
+  void setUp() throws Exception {
     server = new FakeManageSieveServer();
     System.setProperty(ManageSieveEndpoint.HOST_PROPERTY + "." + CONNECTOR_ID, "localhost");
     System.setProperty(ManageSieveEndpoint.PORT_PROPERTY + "." + CONNECTOR_ID, String.valueOf(server.getPort()));
@@ -88,7 +88,7 @@ public class ManageSieveConnectorTest {
    * Stops the server and clears the properties.
    */
   @AfterEach
-  public void tearDown() {
+  void tearDown() {
     server.close();
     System.clearProperty(ManageSieveEndpoint.HOST_PROPERTY + "." + CONNECTOR_ID);
     System.clearProperty(ManageSieveEndpoint.PORT_PROPERTY + "." + CONNECTOR_ID);
@@ -100,7 +100,7 @@ public class ManageSieveConnectorTest {
    * @throws Exception on failure
    */
   @Test
-  public void testAuthenticatesWithTheImapChannelMaterial() throws Exception {
+  void testAuthenticatesWithTheImapChannelMaterial() throws Exception {
     when(resolver.authenticator(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP))
                                                                                                     .thenReturn(authenticator(FakeManageSieveServer.PASSWORD));
     ManageSieveClient client = connector.open(preset, USERNAME);
@@ -117,7 +117,7 @@ public class ManageSieveConnectorTest {
    * @throws Exception on failure
    */
   @Test
-  public void testARefusedTypedPasswordIsNotRetried() throws Exception {
+  void testARefusedTypedPasswordIsNotRetried() throws Exception {
     when(resolver.authenticator(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP))
                                                                                                     .thenReturn(authenticator("stale"));
     when(resolver.retriesAfterRefusal(PROVIDER)).thenReturn(false);
@@ -134,7 +134,7 @@ public class ManageSieveConnectorTest {
    * @throws Exception on failure
    */
   @Test
-  public void testAProducedCredentialIsRetriedOnceOnFreshMaterial() throws Exception {
+  void testAProducedCredentialIsRetriedOnceOnFreshMaterial() throws Exception {
     when(resolver.authenticator(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP))
                                                                                                     .thenReturn(authenticator("stale-session"),
                                                                                                                 authenticator(FakeManageSieveServer.PASSWORD));
@@ -152,7 +152,7 @@ public class ManageSieveConnectorTest {
    * @throws Exception on failure
    */
   @Test
-  public void testNoMaterialOpensNoConnectionAndInvalidatesNothing() throws Exception {
+  void testNoMaterialOpensNoConnectionAndInvalidatesNothing() throws Exception {
     when(resolver.authenticator(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP)).thenReturn(null);
     ManageSieveException e = assertThrows(ManageSieveException.class, () -> connector.open(preset, USERNAME));
     assertEquals(Kind.NO_CREDENTIALS, e.getKind());
@@ -167,7 +167,7 @@ public class ManageSieveConnectorTest {
    * @throws Exception on failure
    */
   @Test
-  public void testTryLaterIsNotARefusedCredential() throws Exception {
+  void testTryLaterIsNotARefusedCredential() throws Exception {
     when(resolver.authenticator(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP))
                                                                                                     .thenReturn(authenticator(FakeManageSieveServer.PASSWORD));
     server.refuse("AUTHENTICATE", "NO (TRYLATER) \"Backend busy\"");
@@ -182,7 +182,7 @@ public class ManageSieveConnectorTest {
    * The endpoint: per-preset property, else global, else the IMAP host and 4190.
    */
   @Test
-  public void testEndpointResolution() {
+  void testEndpointResolution() {
     assertEquals(new ManageSieveEndpoint("localhost", server.getPort()), ManageSieveEndpoint.forConnector(preset));
     EmailConnector other = new EmailConnector();
     other.setId(78L);
