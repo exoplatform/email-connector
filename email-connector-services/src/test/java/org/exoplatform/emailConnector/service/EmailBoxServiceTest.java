@@ -165,6 +165,7 @@ import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
+import org.exoplatform.emailConnector.model.FavoriteRemoval;
 import org.exoplatform.emailConnector.model.FolderMessageCounts;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
@@ -1135,9 +1136,9 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
     List<Long> mailRemoteIds = List.of(1212l);
     assertThrows(IllegalAccessException.class,
-                 () -> emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, true, false));
+                 () -> emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, MailFolder.INBOX, true, false));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
-    emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, true, false);
+    emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, MailFolder.INBOX, true, false);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
     reset(emailBoxStorage);
     Store store = mock(Store.class);
@@ -1148,7 +1149,7 @@ public class EmailBoxServiceTest {
     when(store.isConnected()).thenReturn(true);
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
-    int failed = emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, true, true);
+    int failed = emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, MailFolder.INBOX, true, true);
     assertEquals(0, failed);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
     verify(inbox).open(Folder.READ_WRITE);
@@ -1160,10 +1161,248 @@ public class EmailBoxServiceTest {
     // must be counted as a failure and the optimistic local star reverted.
     reset(emailBoxStorage);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(null);
-    int failedWhenNotFound = emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, true, true);
+    int failedWhenNotFound = emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, MailFolder.INBOX, true, true);
     assertEquals(1, failedWhenNotFound);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212l), TEST_USER, false, "INBOX");
+  }
+
+  /**
+   * EXO-90208 -- a star toggled on a row of a user folder is pushed to that folder. A
+   * UID numbers a message within one folder, so the same number in the INBOX is another
+   * message, and it must stay untouched; the mirror is written under the row's folder.
+   */
+  @Test
+  @SneakyThrows
+  void aStarIsPushedAgainstTheFolderTheRowIsListedIn() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(registeredFolder(6L, "Projets", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder projets = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Projets");
+    when(store.getFolder("Projets")).thenReturn(projets);
+    lenient().when(projets.isOpen()).thenReturn(true);
+    Message projetsMessage = mock(Message.class);
+    when(projets.getMessageByUID(1212L)).thenReturn(projetsMessage);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(store.getFolder("INBOX")).thenReturn(inbox);
+    Message inboxMessage = mock(Message.class);
+    lenient().when(((UIDFolder) inbox).getMessageByUID(1212L)).thenReturn(inboxMessage);
+
+    int failed = emailBoxService.updateEmailStarredStatus(List.of(1212L), TEST_USER, "CUSTOM:6", true, true);
+
+    assertEquals(0, failed);
+    verify(projets).open(Folder.READ_WRITE);
+    verify(projetsMessage).setFlag(Flags.Flag.FLAGGED, true);
+    verify(inboxMessage, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L), TEST_USER, true, "CUSTOM:6");
+    verify(projets).close(false);
+  }
+
+  /**
+   * A row cached under a folder the mailbox no longer offers: nothing can be flagged, so
+   * the optimistic star goes back and every id counts as failed.
+   */
+  @Test
+  @SneakyThrows
+  void aStarOnAFolderTheMailboxNoLongerHasIsRevertedAndCounted() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+
+    int failed = emailBoxService.updateEmailStarredStatus(List.of(1212L, 1313L), TEST_USER, "CUSTOM:9", true, true);
+
+    assertEquals(2, failed);
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L, 1313L), TEST_USER, true, "CUSTOM:9");
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L, 1313L), TEST_USER, false, "CUSTOM:9");
+    // The early return skips the reconciliation at the end of the method: it runs here.
+    verify(emailFavoriteService).reconcileFavorites(TEST_USER);
+  }
+
+  /**
+   * Removing a favorite clears the star of every copy it stands for, each in its own
+   * folder: the drawer counts the copies of a message as one favorite, and a copy left
+   * starred would bring the removed entry back. Another message is left alone.
+   */
+  @Test
+  @SneakyThrows
+  void removingAFavoriteClearsTheStarOfEveryCopyOfItsMessage() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(registeredFolder(6L, "Projets", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    Message inboxCopy = mock(Message.class);
+    when(((UIDFolder) inbox).getMessageByUID(1212L)).thenReturn(inboxCopy);
+    IMAPFolder projets = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Projets");
+    when(store.getFolder("Projets")).thenReturn(projets);
+    Message projetsCopy = mock(Message.class);
+    when(projets.getMessageByUID(77L)).thenReturn(projetsCopy);
+    Email favorite = starredKey(7L, MailFolder.INBOX, "<m@host>", 1212L);
+    // The copies are read by the favorite's Message-ID, never from every starred row.
+    when(emailBoxStorage.getStarredCopyKeys(TEST_USER, "<m@host>", MailFolder.NOT_FAVORITED_FOLDERS)).thenReturn(List.of(favorite,
+                                                                                                                       starredKey(8L, "CUSTOM:6", "<m@host>", 77L)));
+
+    FavoriteRemoval removal = emailBoxService.unstarFavorite(favorite, TEST_USER);
+
+    assertEquals(0, removal.getFailedUpdates());
+    // The copies by folder, the favorite's own last: what an open mailbox puts out.
+    assertEquals(List.of("CUSTOM:6", MailFolder.INBOX), List.copyOf(removal.getUnstarred().keySet()));
+    assertEquals(Map.of("CUSTOM:6", List.of(77L), MailFolder.INBOX, List.of(1212L)), removal.getUnstarred());
+    verify(inboxCopy).setFlag(Flags.Flag.FLAGGED, false);
+    verify(projetsCopy).setFlag(Flags.Flag.FLAGGED, false);
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L), TEST_USER, false, MailFolder.INBOX);
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(77L), TEST_USER, false, "CUSTOM:6");
+    verify(emailBoxStorage, never()).getStarredEmailKeys(anyString(), anyList());
+    // The favorite's own row goes last, so the drawer never shows the other copy in between.
+    InOrder order = inOrder(projetsCopy, inboxCopy);
+    order.verify(projetsCopy).setFlag(Flags.Flag.FLAGGED, false);
+    order.verify(inboxCopy).setFlag(Flags.Flag.FLAGGED, false);
+  }
+
+  /**
+   * The count is the sum over the folders reached: a copy in a folder the mailbox no
+   * longer has fails, the others do not; a copy with no UID is skipped, having nothing
+   * on the server to carry the flag.
+   */
+  @Test
+  @SneakyThrows
+  void removingAFavoriteCountsTheCopiesThatCouldNotBeUnstarred() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(((UIDFolder) inbox).getMessageByUID(1212L)).thenReturn(mock(Message.class));
+    Email favorite = starredKey(7L, MailFolder.INBOX, "<m@host>", 1212L);
+    Email noUid = starredKey(8L, MailFolder.SENT, "<m@host>", 0L);
+    noUid.setMailRemoteId(null);
+    when(emailBoxStorage.getStarredCopyKeys(TEST_USER, "<m@host>", MailFolder.NOT_FAVORITED_FOLDERS)).thenReturn(List.of(favorite,
+                                                                                                                       starredKey(9L, "CUSTOM:9", "<m@host>", 77L),
+                                                                                                                       noUid));
+
+    FavoriteRemoval removal = emailBoxService.unstarFavorite(favorite, TEST_USER);
+
+    assertEquals(1, removal.getFailedUpdates(), "the copy of the vanished folder fails; the inbox one does not; the UID-less one is skipped");
+    assertEquals(Map.of("CUSTOM:9", List.of(77L), MailFolder.INBOX, List.of(1212L)),
+                 removal.getUnstarred(),
+                 "the UID-less copy is not among the copies asked to be unstarred");
+    verify(emailBoxStorage, never()).updateEmailStarredStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), eq(MailFolder.SENT));
+  }
+
+  /**
+   * A favorite with no Message-ID cannot be matched to other copies: only its own row
+   * is unstarred, and the other rows are not read.
+   */
+  @Test
+  @SneakyThrows
+  void removingAFavoriteWithNoMessageIdUnstarsItsOwnRowOnly() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    Message message = mock(Message.class);
+    when(((UIDFolder) inbox).getMessageByUID(1212L)).thenReturn(message);
+
+    FavoriteRemoval removal = emailBoxService.unstarFavorite(starredKey(7L, MailFolder.INBOX, null, 1212L), TEST_USER);
+
+    assertEquals(0, removal.getFailedUpdates());
+    assertEquals(Map.of(MailFolder.INBOX, List.of(1212L)), removal.getUnstarred());
+    verify(message).setFlag(Flags.Flag.FLAGGED, false);
+    verify(emailBoxStorage, never()).getStarredCopyKeys(anyString(), anyString(), anyList());
+  }
+
+  /**
+   * One light starred row, as {@code EmailBoxStorage#getStarredEmailKeys} answers it.
+   *
+   * @param id its technical id
+   * @param folder its folder
+   * @param mailHeaderId its Message-ID
+   * @param mailRemoteId its UID within that folder
+   * @return the row
+   */
+  private static Email starredKey(long id, String folder, String mailHeaderId, long mailRemoteId) {
+    Email email = new Email();
+    email.setId(id);
+    email.setFolder(folder);
+    email.setMailHeaderId(mailHeaderId);
+    email.setMailRemoteId(mailRemoteId);
+    email.setStarred(true);
+    return email;
+  }
+
+  /**
+   * No folder from the caller is the INBOX, which is what every caller written before the
+   * mailbox held other folders meant.
+   */
+  @Test
+  @SneakyThrows
+  void aStarWithNoFolderIsPushedToTheInbox() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    Message message = mock(Message.class);
+    when(((UIDFolder) inbox).getMessageByUID(1212L)).thenReturn(message);
+
+    int failed = emailBoxService.updateEmailStarredStatus(List.of(1212L), TEST_USER, null, true, true);
+
+    assertEquals(0, failed);
+    verify(message).setFlag(Flags.Flag.FLAGGED, true);
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L), TEST_USER, true, "INBOX");
+  }
+
+  /**
+   * A draft never uploaded has no UID: its null id is counted as failed and the other
+   * ids of the call are still flagged, rather than the whole call failing.
+   */
+  @Test
+  @SneakyThrows
+  void aStarOnARowWithNoUidIsCountedAndTheOthersAreStillPushed() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    Message message = mock(Message.class);
+    when(((UIDFolder) inbox).getMessageByUID(1212L)).thenReturn(message);
+
+    int failed = emailBoxService.updateEmailStarredStatus(Arrays.asList(null, 1212L), TEST_USER, "INBOX", true, true);
+
+    assertEquals(1, failed);
+    verify(message).setFlag(Flags.Flag.FLAGGED, true);
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212L), TEST_USER, true, "INBOX");
+  }
+
+  /**
+   * A call carrying only rows with no UID has nothing to push: no connection is opened.
+   */
+  @Test
+  @SneakyThrows
+  void aStarOnRowsWithNoUidOnlyOpensNoConnection() {
+    int failed = emailBoxService.updateEmailStarredStatus(Arrays.asList((Long) null), TEST_USER, "DRAFTS", true, true);
+
+    assertEquals(1, failed);
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+    verify(emailBoxStorage, never()).updateEmailStarredStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), anyString());
   }
 
   @Test
@@ -1183,7 +1422,7 @@ public class EmailBoxServiceTest {
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
     doThrow(new MessagingException("STORE rejected")).when(message).setFlag(Flags.Flag.FLAGGED, true);
-    int failed = emailBoxService.updateEmailStarredStatus(List.of(1212l), TEST_USER, true, true);
+    int failed = emailBoxService.updateEmailStarredStatus(List.of(1212l), TEST_USER, MailFolder.INBOX, true, true);
     assertEquals(1, failed);
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212l), TEST_USER, true, "INBOX");
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212l), TEST_USER, false, "INBOX");

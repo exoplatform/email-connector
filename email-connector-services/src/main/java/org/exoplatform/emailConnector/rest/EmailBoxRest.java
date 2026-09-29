@@ -52,6 +52,7 @@ import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
+import org.exoplatform.emailConnector.model.FavoriteRemoval;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
@@ -432,6 +433,36 @@ public class EmailBoxRest {
     }
   }
 
+  @DeleteMapping("/favorites/{emailId}")
+  @Secured("users")
+  @Operation(summary = "Removes a favorited email from the favorites", method = "DELETE",
+             description = "Clears the IMAP \\Flagged flag of the favorited email and of its copies in the caller's other folders (the rows sharing its Message-ID, Trash, Spam, All Mail and Drafts left out), each in its own folder, so the one favorite the Favorites drawer shows for them does not come back at the next reconciliation. Addressed by the technical id the favorite is stored against; answers 404 for an email that is not the caller's. Returns the UIDs unstarred by folder ('unstarred', the favorite's own folder last) and the number of copies whose update failed ('failedUpdates').")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public FavoriteRemoval removeFavoriteEmail(HttpServletRequest request,
+                                             @Parameter(description = "Technical id of the favorited email", required = true)
+                                             @PathVariable("emailId")
+                                             long emailId) {
+    Email favorite;
+    try {
+      favorite = emailBoxService.getOwnedEmailById(emailId, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      // As for the read above: somebody else's mail is missing, never forbidden.
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+    }
+    if (favorite == null) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+    }
+    try {
+      return emailBoxService.unstarFavorite(favorite, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
   @GetMapping("/search/cached")
   @Secured("users")
   @Operation(summary = "Searches the locally cached mail", method = "GET",
@@ -774,7 +805,7 @@ public class EmailBoxRest {
 
   @PatchMapping("/starred")
   @Secured("users")
-  @Operation(summary = "Stars or unstars emails", method = "PATCH", description = "Sets or clears the IMAP \\Flagged flag ('star') of the given emails, locally and on the mail server, so the star shows in every mail client. Returns the number of emails whose remote update failed (their local change is reverted).")
+  @Operation(summary = "Stars or unstars emails", method = "PATCH", description = "Sets or clears the IMAP \\Flagged flag ('star') of the given emails, in the folder they are listed in, locally and on the mail server, so the star shows in every mail client. The folder is part of the address: IMAP UIDs are numbered per folder. Returns the number of emails whose remote update failed (their local change is reverted).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -785,12 +816,15 @@ public class EmailBoxRest {
                                                        @RequestBody
                                                        List<Long> mailRemoteIds,
                                                        @RequestParam("starred")
-                                                       boolean starred) {
+                                                       boolean starred,
+                                                       @Parameter(description = "The folder those ids are numbered in (INBOX, SENT, ARCHIVE, a user folder's key…); INBOX when omitted")
+                                                       @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                                       String folder) {
     try {
       if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      int failedUpdates = emailBoxService.updateEmailStarredStatus(mailRemoteIds, request.getRemoteUser(), starred, true);
+      int failedUpdates = emailBoxService.updateEmailStarredStatus(mailRemoteIds, request.getRemoteUser(), folder, starred, true);
       Map<String, Integer> response = new HashMap<>();
       response.put("failedUpdates", failedUpdates);
       return response;

@@ -386,11 +386,10 @@ export default {
     isMobile() {
       return this.$vuetify.breakpoint.smAndDown;
     },
-    // Only an INBOX message can be toggled: the favorite endpoint pushes the IMAP
-    // \Flagged flag through the INBOX folder. A favorite Sent/Archive copy in a
-    // conversation still shows its (read-only) favorite.
+    // The favorite endpoint pushes the IMAP \Flagged flag to the message's own folder,
+    // so every message can be toggled but those of a read-only folder (Trash, Spam).
     canToggleFavorite() {
-      return (this.email.folder || 'INBOX') === 'INBOX';
+      return !this.$emailConnectorMailBoxService.isReadOnlyFolder(this.email.folder);
     },
   },
   methods: {
@@ -412,7 +411,7 @@ export default {
     // drawer's handler, which also rolls this very object back (through the
     // thread's own listener) if the mail server refuses the flag.
     toggleFavorite() {
-      this.$root.$emit('update-email-favorite-status', !this.email.starred, [this.email.mailRemoteId]);
+      this.$root.$emit('update-email-favorite-status', !this.email.starred, [this.email.mailRemoteId], this.email.folder || 'INBOX');
     },
     /**
      * Asks the drawer holding this message to read it again, through the same request

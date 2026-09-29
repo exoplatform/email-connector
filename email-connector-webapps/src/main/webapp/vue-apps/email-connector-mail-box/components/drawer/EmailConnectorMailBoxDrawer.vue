@@ -317,6 +317,8 @@ const TOTAL_COUNTED_FOLDERS = ['DRAFTS', SCHEDULED_VIEW];
 // The folders the mailbox may be opened on from outside it: the built-ins, the Scheduled
 // view among them -- the scheduled-mail failure notification opens it (EXO-90434).
 const OPENABLE_FOLDERS = ['INBOX', 'SENT', 'ARCHIVE', 'DRAFTS', 'TRASH', 'JUNK', SCHEDULED_VIEW];
+// The key of a favorite toggled here: a UID names a message within one folder only.
+const favoriteKey = (folder, mailRemoteId) => `${folder || 'INBOX'}/${mailRemoteId}`;
 
 // What the settings' folders drawer says when the folder list may have changed: a
 // folder created or renamed (its name drawer), one deleted or opted in or out, the
@@ -567,9 +569,10 @@ export default {
     // Which hit openSearchResult is opening, so a repeat of it is ignored while another
     // hit takes over. Plain: nothing renders it.
     this.searchOpeningKey = null;
-    // Favorites the user toggled here, each tagged with the search generation that was
-    // current when the mail server acknowledged the \Flagged push, so a search answer
-    // that left before that acknowledgement cannot roll the star back. A plain field,
+    // Favorites the user toggled here, keyed by folder and UID (favoriteKey), each
+    // tagged with the search generation that was current when the mail server
+    // acknowledged the \Flagged push, so a search answer that left before that
+    // acknowledgement cannot roll the star back. A plain field,
     // not data(): Vue 2 does not observe a Map, and nothing renders it directly —
     // withLocalFavorites() is its only reader, and it runs when a search answer lands.
     this.favoriteOverrides = new Map();
@@ -603,7 +606,7 @@ export default {
     this.onFavoriteStatusChangedOutside = event => {
       const mailRemoteIds = event?.detail?.mailRemoteIds;
       if (mailRemoteIds?.length) {
-        this.$root.$emit('apply-email-favorite-status', !!event.detail.favorite, mailRemoteIds, true);
+        this.$root.$emit('apply-email-favorite-status', !!event.detail.favorite, mailRemoteIds, event.detail.folder || 'INBOX', true);
       }
     };
     document.addEventListener('email-favorite-status-changed', this.onFavoriteStatusChangedOutside);
@@ -1487,8 +1490,8 @@ export default {
      */
     async openMailFromOutside(opening) {
       // No folder means the inbox, and anything that does not say otherwise is
-      // already cached: that is the Favorites drawer, which only holds cached inbox
-      // mail.
+      // already cached: that is the Favorites drawer, whose mails are cached rows of
+      // any folder, sent with their folder.
       const hit = {
         mailRemoteId: opening.mailRemoteId,
         folder: opening.folder || 'INBOX',
@@ -1711,22 +1714,22 @@ export default {
     // outlive a favorite changed meanwhile from another mail client. An unacknowledged
     // one is kept regardless, because the push it belongs to had not reached the server
     // when this answer was built, whether the search was issued before the
-    // acknowledgement or merely answered before it. INBOX rows only: UIDs are
+    // acknowledgement or merely answered before it. Keyed by folder and UID: UIDs are
     // per-folder, so the same number elsewhere is another message.
     withLocalFavorites(results, requestId) {
       if (!this.favoriteOverrides.size) {
         return results;
       }
-      this.favoriteOverrides.forEach((override, mailRemoteId) => {
+      this.favoriteOverrides.forEach((override, key) => {
         // An override whose push is still travelling is never stale, whatever
         // generation this answer carries — the server had not taken the flag when it
         // was built, so its starred cannot be the truth for this message yet.
         if (override.acknowledged && override.searchRequestId < requestId) {
-          this.favoriteOverrides.delete(mailRemoteId);
+          this.favoriteOverrides.delete(key);
         }
       });
       return results.map(result => {
-        const override = (result.folder || 'INBOX') === 'INBOX' && this.favoriteOverrides.get(result.mailRemoteId);
+        const override = this.favoriteOverrides.get(favoriteKey(result.folder, result.mailRemoteId));
         return override ? { ...result, starred: override.favorite } : result;
       });
     },
@@ -2369,7 +2372,8 @@ export default {
      * this is also how a refused push is rolled back visually.
      *
      * @param {boolean} favorite the flag value to show
-     * @param {Array<number>} emailIds the INBOX IMAP UIDs of the messages
+     * @param {Array<number>} emailIds the IMAP UIDs of the messages, within `folder`
+     * @param {string} folder the folder those UIDs are numbered in
      * @param {boolean} acknowledged whether the value carried here is already the
      *          mail server's: false for an optimistic toggle whose \Flagged push
      *          is still travelling, true for the revert broadcast below (which
@@ -2377,22 +2381,20 @@ export default {
      *          another app made and had confirmed
      * @returns {void}
      */
-    applyEmailsFavoriteStatus(favorite, emailIds = [], acknowledged = false) {
+    applyEmailsFavoriteStatus(favorite, emailIds = [], folder = 'INBOX', acknowledged = false) {
       const ids = new Set(emailIds);
-      // INBOX rows only, like the two copies below: the in-app star never fires
-      // while another folder is listed, but the Favorites drawer's does, and a
-      // Sent row happening to share the UID is another message.
+      // The rows of that folder only, like the two copies below: a row of another
+      // folder happening to share the UID is another message.
       (this.emailBox?.emails || []).forEach(email => {
-        if ((email.folder || this.currentFolder) === 'INBOX' && ids.has(email.mailRemoteId)) {
+        if ((email.folder || this.currentFolder) === folder && ids.has(email.mailRemoteId)) {
           this.$set(email, 'starred', favorite);
         }
       });
       // A server hit is a snapshot of the FLAGS as they were when the search ran, so
       // the toggled rows still have to be stamped even though hits now carry the
-      // flag. INBOX rows only: UIDs are per-folder, so the same number elsewhere is
-      // another message.
+      // flag. That folder's hits only: UIDs are per-folder.
       this.searchServerResults.forEach(result => {
-        if ((result.folder || 'INBOX') === 'INBOX' && ids.has(result.mailRemoteId)) {
+        if ((result.folder || 'INBOX') === folder && ids.has(result.mailRemoteId)) {
           this.$set(result, 'starred', favorite);
         }
       });
@@ -2403,12 +2405,12 @@ export default {
       // as easily as it can be issued before it, and the star was lost either way.
       // restampFavoriteOverrides() marks it acknowledged and moves it onto the
       // generation current at that moment, which is when pruning may resume.
-      ids.forEach(mailRemoteId => this.favoriteOverrides.set(mailRemoteId, {
+      ids.forEach(mailRemoteId => this.favoriteOverrides.set(favoriteKey(folder, mailRemoteId), {
         favorite,
         searchRequestId: this.searchRequestId,
         acknowledged,
       }));
-      if (this.email && ids.has(this.email.mailRemoteId) && (this.email.folder || 'INBOX') === 'INBOX') {
+      if (this.email && ids.has(this.email.mailRemoteId) && (this.email.folder || 'INBOX') === folder) {
         this.$set(this.email, 'starred', favorite);
       }
     },
@@ -2418,12 +2420,12 @@ export default {
     // already reverted those in its cache, so the interface must not leave
     // their favorite lit either, or the next synchronization silently takes it
     // away after the user believed the message was favorite.
-    onUpdateEmailFavoriteStatus(favorite, emailIds = []) {
+    onUpdateEmailFavoriteStatus(favorite, emailIds = [], folder = 'INBOX') {
       if (!emailIds.length) {
         return;
       }
-      this.applyEmailsFavoriteStatus(favorite, emailIds);
-      this.$emailConnectorMailBoxService.updateEmailsFavoriteStatus(emailIds, favorite)
+      this.applyEmailsFavoriteStatus(favorite, emailIds, folder);
+      this.$emailConnectorMailBoxService.updateEmailsFavoriteStatus(emailIds, favorite, folder)
         .then(result => {
           const failedUpdates = result?.failedUpdates ?? 0;
           if (failedUpdates > 0 && failedUpdates < emailIds.length) {
@@ -2435,25 +2437,25 @@ export default {
             // carries the truth for the listed window, and the next search answer
             // carries the server's own flags for the search rows.
             emailIds.forEach(mailRemoteId => {
-              const override = this.favoriteOverrides.get(mailRemoteId);
+              const override = this.favoriteOverrides.get(favoriteKey(folder, mailRemoteId));
               // Guarded exactly as the restamp is: an entry a later toggle replaced
               // belongs to that toggle's own confirmation, and dropping it here would
               // leave that toggle's optimistic star with nothing protecting it.
               if (override && override.favorite === favorite) {
-                this.favoriteOverrides.delete(mailRemoteId);
+                this.favoriteOverrides.delete(favoriteKey(folder, mailRemoteId));
               }
             });
           } else {
             // Every id settled the same way, so the value is known: acknowledge it. For
             // an all-failed batch the revert broadcast below overwrites this with the
             // rolled-back value, itself acknowledged.
-            this.restampFavoriteOverrides(favorite, emailIds);
+            this.restampFavoriteOverrides(favorite, emailIds, folder);
           }
           if (failedUpdates > 0) {
-            this.onFavoriteUpdateFailed(favorite, emailIds, failedUpdates);
+            this.onFavoriteUpdateFailed(favorite, emailIds, failedUpdates, folder);
           }
         })
-        .catch(() => this.onFavoriteUpdateFailed(favorite, emailIds, emailIds.length));
+        .catch(() => this.onFavoriteUpdateFailed(favorite, emailIds, emailIds.length, folder));
     },
     // Move the confirmed overrides onto the search generation in flight NOW that the
     // server has taken the flag. Until this runs an override carries the generation of
@@ -2461,9 +2463,9 @@ export default {
     // outrank -- and that search's answer, built from the FLAGS as they were before the
     // push, would put the star back out. An entry whose favorite no longer matches was
     // overwritten by a later toggle; it belongs to that toggle's own confirmation.
-    restampFavoriteOverrides(favorite, emailIds = []) {
+    restampFavoriteOverrides(favorite, emailIds = [], folder = 'INBOX') {
       emailIds.forEach(mailRemoteId => {
-        const override = this.favoriteOverrides.get(mailRemoteId);
+        const override = this.favoriteOverrides.get(favoriteKey(folder, mailRemoteId));
         if (override && override.favorite === favorite) {
           override.acknowledged = true;
           override.searchRequestId = this.searchRequestId;
@@ -2475,12 +2477,12 @@ export default {
     // list rows, reader, detail drawer — flips back. When only part of a bulk
     // toggle failed, the server does not say which ones, but its cache is
     // already truthful: reload the listed window from it.
-    onFavoriteUpdateFailed(favorite, emailIds, failedUpdates) {
+    onFavoriteUpdateFailed(favorite, emailIds, failedUpdates, folder = 'INBOX') {
       if (failedUpdates >= emailIds.length) {
         // Acknowledged: the server refusing the push is itself the answer, so the
         // reverted value is the server's own. Left unacknowledged it would be immune
         // from pruning and outlive a change made later from another mail client.
-        this.$root.$emit('apply-email-favorite-status', !favorite, emailIds, true);
+        this.$root.$emit('apply-email-favorite-status', !favorite, emailIds, folder, true);
       } else {
         this.loadEmailBox();
       }
