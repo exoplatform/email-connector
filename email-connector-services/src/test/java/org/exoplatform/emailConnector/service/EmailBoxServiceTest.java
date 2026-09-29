@@ -3326,7 +3326,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void theGuardRefusesBeforeAnythingIsSent() {
-    SendRig rig = givenASendableMailbox();
+    SendRig rig = givenASendRig();
     when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenThrow(new SendModeMissingException(SendMode.AS));
     when(emailDelegationService.checkSendMode(TEST_USER, 101L, SendMode.AS)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
 
@@ -3346,7 +3346,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void theOwnersCopyAloneNamesWhoSentIt() {
-    SendRig rig = givenASendableMailbox();
+    SendRig rig = givenASendRig();
     when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(DELEGATE_ADDRESS);
     when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(ownersIdentity(SendMode.AS, "Alice Martin"));
     IMAPFolder ownerSent = givenTheOwnersSent();
@@ -3401,7 +3401,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void stalwartsRefusalOfTheOwnersNameIsRecordedAndSaid() {
-    SendRig rig = givenASendableMailbox();
+    SendRig rig = givenASendRig();
     IMAPFolder ownerSent = givenTheOwnersSent();
     SendIdentity identity = ownersIdentity(SendMode.AS, "Alice Martin");
     when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(identity);
