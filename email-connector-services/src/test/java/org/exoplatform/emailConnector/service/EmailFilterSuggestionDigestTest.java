@@ -27,10 +27,15 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -51,6 +56,10 @@ import org.exoplatform.commons.api.notification.model.PluginKey;
 import org.exoplatform.commons.api.notification.model.WebNotificationFilter;
 import org.exoplatform.commons.api.notification.plugin.NotificationPluginUtils;
 import org.exoplatform.commons.api.notification.service.WebNotificationService;
+import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.SettingValue;
+import org.exoplatform.commons.api.settings.data.Context;
+import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
 import org.exoplatform.services.resources.ResourceBundleService;
@@ -66,8 +75,16 @@ class EmailFilterSuggestionDigestTest {
 
   private static final String                   USERNAME = "alice";
 
+  private static final long                     NOW      = 1_790_000_000_000L;
+
   @Mock
   private WebNotificationService                webNotificationService;
+
+  @Mock
+  private SettingService                        settingService;
+
+  /** The user's settings behind the mock, by key. */
+  private final Map<String, Object>             settings = new HashMap<>();
 
   @Spy
   @InjectMocks
@@ -107,6 +124,13 @@ class EmailFilterSuggestionDigestTest {
                          return new ArrayList<>(held);
                        });
     lenient().doNothing().when(digest).send(anyString(), anyLong());
+    lenient().doAnswer(invocation -> settings.put(invocation.getArgument(2), ((SettingValue<?>) invocation.getArgument(3)).getValue()))
+             .when(settingService)
+             .set(any(Context.class), any(Scope.class), anyString(), any());
+    lenient().when(settingService.get(any(Context.class), any(Scope.class), anyString()))
+             .thenAnswer(invocation -> settings.containsKey(invocation.<String> getArgument(2)) ? SettingValue.create(String.valueOf(settings.get(invocation.<String> getArgument(2))))
+                                                                                                 : null);
+    digest.setClock(Clock.fixed(Instant.ofEpochMilli(NOW), ZoneOffset.UTC));
   }
 
   /**
@@ -127,6 +151,28 @@ class EmailFilterSuggestionDigestTest {
 
     verify(digest).send(USERNAME, 3);
     verify(webNotificationService, never()).update(any(), eq(true));
+  }
+
+  /**
+   * Two runs close together, while the platform has not stored the first digest yet: one
+   * digest is sent, the second run only records its count, which the digest is built
+   * with; past the grace, or once the first is stored and read, a new batch is sent.
+   */
+  @Test
+  void twoRunsCloseTogetherSendOneDigestWithTheLatestCount() {
+    digest.publish(USERNAME, 3);
+    digest.setClock(Clock.fixed(Instant.ofEpochMilli(NOW + 5_000), ZoneOffset.UTC));
+    digest.publish(USERNAME, 5);
+
+    verify(digest, times(1)).send(anyString(), anyLong());
+    assertEquals(5L, EmailFilterSuggestionDigest.latestWaiting(settingService, USERNAME, 3));
+
+    held.add(digest("11", true, 5));
+    digest.setClock(Clock.fixed(Instant.ofEpochMilli(NOW + 10_000), ZoneOffset.UTC));
+    digest.publish(USERNAME, 6);
+
+    verify(digest).send(USERNAME, 6);
+    verify(webNotificationService).remove("11");
   }
 
   /**
