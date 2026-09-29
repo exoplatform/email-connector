@@ -652,12 +652,12 @@ public class EmailFilterServiceTest {
 
     assertEquals(EmailFilterMatch.AGENT_SKIPPED_SPAM, skipped.getAgentStatus());
     assertEquals(0, skipped.getAgentAttempts(), "no attempt spent");
-    verify(emailBoxService, never()).isFlaggedAsSpamOnServer(any(), anyLong());
+    verify(emailBoxService, never()).isFlaggedAsSpamOnServer(any(), anyLong(), any());
 
     EmailFilterMatch flagged = waitingMatch(2L, EmailFilterMatch.AGENT_PENDING);
     Email mail = mail(2L, "a@acme.com", "Two");
     when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, flagged.getMailHeaderId(), MailFolder.INBOX)).thenReturn(mail);
-    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 2L)).thenReturn(true);
+    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 2L, "<2@acme.com>")).thenReturn(true);
 
     skipped = service.skipIfGuarded(USERNAME, flagged);
     assertNotNull(skipped, "a mail the server flagged is not run");
@@ -668,7 +668,7 @@ public class EmailFilterServiceTest {
 
     EmailFilterMatch clean = waitingMatch(3L, EmailFilterMatch.AGENT_PENDING);
     when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, clean.getMailHeaderId(), MailFolder.INBOX)).thenReturn(mail(3L, "a@acme.com", "Three"));
-    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 3L)).thenReturn(false);
+    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 3L, "<3@acme.com>")).thenReturn(false);
 
     assertNull(service.skipIfGuarded(USERNAME, clean), "a clean mail runs");
     assertEquals(EmailFilterMatch.AGENT_PENDING, matches.get(clean.getId()).getAgentStatus());
@@ -685,7 +685,7 @@ public class EmailFilterServiceTest {
   void theHandlersGuardHoldsAMailWhoseSpamMarksCannotBeRead() throws Exception {
     EmailFilterMatch match = waitingMatch(1L, EmailFilterMatch.AGENT_PENDING);
     when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, match.getMailHeaderId(), MailFolder.INBOX)).thenReturn(mail(1L, "a@acme.com", "One"));
-    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 1L)).thenThrow(new IllegalStateException("unreachable"));
+    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 1L, "<1@acme.com>")).thenThrow(new IllegalStateException("unreachable"));
 
     EmailFilterMatch parked = service.skipIfGuarded(USERNAME, match);
     assertNotNull(parked, "a mail whose marks are unknown is not run");
@@ -710,7 +710,7 @@ public class EmailFilterServiceTest {
     EmailFilterMatch match = waitingMatch(1L, EmailFilterMatch.AGENT_PENDING);
     Email mail = mail(1L, "a@acme.com", "One");
     when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, match.getMailHeaderId(), MailFolder.INBOX)).thenReturn(mail);
-    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 1L)).thenReturn(false);
+    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 1L, "<1@acme.com>")).thenReturn(false);
     Date startOfDay = Date.from(Instant.ofEpochMilli(NOW).truncatedTo(java.time.temporal.ChronoUnit.DAYS));
     when(emailFilterStorage.countAgentRunsSince(eq(USERNAME), any(), eq(startOfDay))).thenReturn(1L);
 
@@ -778,7 +778,7 @@ public class EmailFilterServiceTest {
     EmailFilterMatch skipped = service.skipIfGuarded(USERNAME, match);
 
     assertEquals(EmailFilterMatch.AGENT_SKIPPED_CAP, skipped.getAgentStatus());
-    verify(emailBoxService, never()).isFlaggedAsSpamOnServer(any(), anyLong());
+    verify(emailBoxService, never()).isFlaggedAsSpamOnServer(any(), anyLong(), any());
   }
 
   /**
@@ -801,7 +801,7 @@ public class EmailFilterServiceTest {
 
     EmailFilterMatch flagged = waitingMatch(2L, EmailFilterMatch.AGENT_PENDING);
     when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, flagged.getMailHeaderId(), MailFolder.INBOX)).thenReturn(mail(2L, "a@acme.com", "Two"));
-    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 2L)).thenReturn(true);
+    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 2L, "<2@acme.com>")).thenReturn(true);
     assertEquals(EmailFilterMatch.AGENT_SKIPPED_SPAM, service.skipIfGuarded(USERNAME, flagged).getAgentStatus(), "flagged");
     assertEquals(EmailFilterMatch.AGENT_SKIPPED_SPAM, matches.get(flagged.getId()).getAgentStatus());
 
@@ -823,7 +823,7 @@ public class EmailFilterServiceTest {
   void aMailWhoseSpamMarksKeepFailingIsSkippedAfterTheLastGiveBack() throws Exception {
     EmailFilterMatch match = waitingMatch(1L, EmailFilterMatch.AGENT_PENDING);
     when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, match.getMailHeaderId(), MailFolder.INBOX)).thenReturn(mail(1L, "a@acme.com", "One"));
-    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 1L)).thenThrow(new IllegalStateException("unreadable"));
+    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 1L, "<1@acme.com>")).thenThrow(new IllegalStateException("unreadable"));
 
     for (int parks = 1; parks <= EmailFilterService.MAX_SPAM_UNCHECKED; parks++) {
       EmailFilterMatch parked = service.skipIfGuarded(USERNAME, asRead(match.getId()));
