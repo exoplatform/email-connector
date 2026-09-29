@@ -14,12 +14,13 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <gnu.org/licenses>.
  */
-package org.exoplatform.emailConnector.constant;
+package org.exoplatform.emailConnector.event;
 
 /**
- * What a login-time enrolment attempt came to: one value per branch of the three
- * rules of {@code EmailManagedEnrollmentService} and their failures.
+ * Published when an administrator changes the mail managed mode - the designated
+ * connector, its exclusions, or managed mode switched off. The users managed
+ * mode attached are then checked against the new state, and those it no longer governs
+ * are disconnected.
  */
-public enum EmailManagedEnrollmentOutcome {
-  NOT_MANAGED, ALREADY_CONFIGURED, ATTACHED, REFUSED, FAILED, DETACHED
+public class EmailManagedModeChangedEvent {
 }
