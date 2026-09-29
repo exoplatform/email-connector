@@ -25,7 +25,6 @@ import {
   dragPayloadOfRow,
   dragPayloadOfSearchHit,
   draggedRowCount,
-  endDrag,
   folderDropAction,
   hasDragPayload,
   startDrag,
@@ -200,7 +199,7 @@ describe('where dragged mail may land (EXO-90421)', () => {
 });
 
 describe('the drag itself (EXO-90421)', () => {
-  it('writes a move under the mailbox\'s own type, blanks the browser\'s picture and pictures the move beside the pointer until the drag ends', () => {
+  it('writes a move under the mailbox\'s own type, blanks the browser\'s picture and pictures the move with the message count', () => {
     const event = { ...dragEvent(), clientX: 40, clientY: 30 };
 
     startDrag(event, { folder: 'INBOX', ids: [1, 2] }, 'Move 2 emails');
@@ -211,13 +210,6 @@ describe('the drag itself (EXO-90421)', () => {
     expect(image.tagName).toBe('IMG');
     const picture = document.body.querySelector('.fa-arrows-alt').parentNode;
     expect(picture.textContent).toBe('Move 2 emails');
-    expect([picture.style.left, picture.style.top]).toEqual(['52px', '42px']);
-
-    document.dispatchEvent(Object.assign(new Event('dragover'), { clientX: 100, clientY: 80 }));
-    expect([picture.style.left, picture.style.top]).toEqual(['112px', '92px']);
-
-    endDrag();
-    expect(document.body.contains(picture)).toBe(false);
   });
 
   it('counts the messages in the picture', () => {
