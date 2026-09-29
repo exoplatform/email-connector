@@ -45,8 +45,11 @@ import org.springframework.web.server.ResponseStatusException;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailManagedMode;
 import org.exoplatform.emailConnector.model.EmailSyncExecutorStatus;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.rest.model.EmailDisconnectionPreview;
 import org.exoplatform.emailConnector.rest.model.EmailManagedModeRequest;
 import org.exoplatform.emailConnector.service.EmailConnectorService;
+import org.exoplatform.emailConnector.service.EmailManagedDisconnectionService;
 import org.exoplatform.emailConnector.service.EmailManagedModeService;
 import org.exoplatform.emailConnector.service.EmailSyncService;
 
@@ -73,6 +76,9 @@ public class EmailConnectorRest {
 
   @Autowired
   private EmailManagedModeService emailManagedModeService;
+
+  @Autowired
+  private EmailManagedDisconnectionService emailManagedDisconnectionService;
 
   @PatchMapping("/feature/activation")
   @Secured("administrators")
@@ -560,6 +566,67 @@ public class EmailConnectorRest {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * How many accounts a managed-mode change would disconnect, before it is applied: the
+   * users managed mode attached that the proposed state no longer governs. A body with
+   * no connector previews switching managed mode off.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param body the proposed connector (null to preview switching off) and excluded groups
+   * @return the number of accounts the change would disconnect
+   */
+  @PostMapping("/managed/preview")
+  @Secured("administrators")
+  @Operation(summary = "Previews a mail managed-mode change", method = "POST",
+      description = "Counts the accounts a change of the designated connector, of its exclusions, or switching managed mode "
+          + "off would disconnect: the users managed mode attached that the proposed state no longer governs. Nothing is "
+          + "written.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public EmailDisconnectionPreview previewManagedMode(HttpServletRequest request,
+                                                      @RequestBody(required = false)
+                                                      EmailManagedModeRequest body) {
+    try {
+      return new EmailDisconnectionPreview(emailManagedDisconnectionService.countUsersNoLongerManaged(body == null ? null
+                                                                                                                  : body.connectorId(),
+                                                                                                     body == null ? List.of()
+                                                                                                                  : body.excludedGroups(),
+                                                                                                     request.getRemoteUser()));
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    }
+  }
+
+  /**
+   * How many users are connected to a connector: what moving it to another credentials
+   * provider would disconnect.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param emailConnectorId the connector
+   * @return the number of users connected to it
+   */
+  @GetMapping("/{emailConnectorId}/connected-users/count")
+  @Secured("administrators")
+  @Operation(summary = "Counts the users connected to a mail connector", method = "GET",
+      description = "Counts the users a change of this connector's credentials provider would disconnect: every user "
+          + "connected to it.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "No connector has this id") })
+  public EmailDisconnectionPreview countConnectedUsers(HttpServletRequest request,
+                                                       @Parameter(description = "Email connector technical identifier", required = true)
+                                                       @PathVariable("emailConnectorId")
+                                                       long emailConnectorId) {
+    try {
+      return new EmailDisconnectionPreview(emailManagedDisconnectionService.countUsersOf(emailConnectorId,
+                                                                                         request.getRemoteUser()));
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "No email connector " + emailConnectorId);
     }
   }
 

@@ -45,13 +45,18 @@ import jakarta.annotation.PreDestroy;
  * it names - and nothing happens; the user is in a population the administrator
  * excluded and nothing happens; otherwise they are attached to the designated
  * connector. The designation is read first here because it is the cheapest read and
- * the one that is null on every instance where managed mode is off: such an instance
- * pays two setting reads per login and never opens the user's own settings.
+ * the one that is null on every instance where managed mode is off.
  * <p>
  * Having no configuration and having removed one are the same case: a user who
  * disconnects is attached again at their next login, and disconnecting stays useful
  * because whoever connects elsewhere has a configuration, which rule one leaves
- * alone. Nothing is stored about the outcome.
+ * alone.
+ * <p>
+ * An attachment is marked as made by managed mode
+ * ({@link UserEmailSettingService#CONNECTED_BY_MANAGED_MODE_KEY}), and the
+ * mark is checked first: a marked user managed mode no longer governs - they joined an
+ * excluded group, or an administrator's change could not disconnect them - is
+ * disconnected, then attached again when another connector is designated for them.
  * <p>
  * The attachment is the one-click connect of EXO-90358: the mailbox is opened with
  * the material the provider produces and the connection is recorded only if that
@@ -112,7 +117,18 @@ public class EmailManagedEnrollmentService {
   public Outcome enrollOnLogin(String username) {
     try {
       Long connectorId = emailManagedModeService.designatedConnectorFor(username);
-      if (connectorId == null) {
+      if (isNoLongerGoverned(username)) {
+        // Managed mode attached this user and no longer governs them - they joined an
+        // excluded group since, or a disconnection an administrator's change asked for
+        // did not go through. Disconnected here, then attached again below
+        // when another connector is designated for them.
+        userEmailSettingService.deleteUserEmailSetting(username);
+        LOG.info("User {} disconnected from the mail connector managed mode attached them to: it no longer applies to them",
+                 username);
+        if (connectorId == null) {
+          return Outcome.DETACHED;
+        }
+      } else if (connectorId == null) {
         LOG.debug("User {} not enrolled: no managed mail connector applies to them", username);
         return Outcome.NOT_MANAGED;
       }
@@ -139,7 +155,7 @@ public class EmailManagedEnrollmentService {
    */
   private Outcome attach(Long connectorId, String username) throws Exception {
     try {
-      userEmailSettingService.connectThroughProvider(connectorId, username);
+      userEmailSettingService.connectThroughProvider(connectorId, username, true);
       LOG.info("User {} attached to the managed mail connector {} at login", username, connectorId);
       return Outcome.ATTACHED;
     } catch (IllegalAccessException | IllegalArgumentException | IllegalStateException e) {
@@ -152,6 +168,22 @@ public class EmailManagedEnrollmentService {
       LOG.info("User {} left unattached: the managed mail connector {} refused ({})", username, connectorId, causeChain(e));
       return Outcome.REFUSED;
     }
+  }
+
+  /**
+   * Whether managed mode attached this user and no longer governs them: it designates
+   * nothing for them, or another connector than the one they are on. A user who made
+   * their own connection is never concerned. Judged by the verdict that refuses a user
+   * whose identity cannot be resolved: that refusal fails the login's enrolment, and
+   * nothing is deleted.
+   *
+   * @param username the eXo login
+   * @return true when the user is to be disconnected
+   */
+  private boolean isNoLongerGoverned(String username) {
+    return userEmailSettingService.isConnectedByManagedMode(username)
+        && !String.valueOf(emailManagedModeService.governingConnectorFor(username))
+                  .equals(userEmailSettingService.getStoredEmailConnectorId(username));
   }
 
   /**
@@ -208,6 +240,6 @@ public class EmailManagedEnrollmentService {
 
   /** What a login attempt came to, one value per branch of the three rules and their failures. */
   public enum Outcome {
-    NOT_MANAGED, ALREADY_CONFIGURED, ATTACHED, REFUSED, FAILED
+    NOT_MANAGED, ALREADY_CONFIGURED, ATTACHED, REFUSED, FAILED, DETACHED
   }
 }
