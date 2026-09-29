@@ -126,7 +126,7 @@ public record ServerRuleCapabilities(boolean supported,
   public static final String       TAG                    = "TAG";
 
   /** Every element this record knows, in the form's order. */
-  public static final List<String> ELEMENTS               = List.of(VACATION,
+  public static final List<String> ALL_ELEMENTS           = List.of(VACATION,
                                                                     VACATION_DATE_WINDOW,
                                                                     VACATION_HTML,
                                                                     FORWARDING_READ,
@@ -172,7 +172,7 @@ public record ServerRuleCapabilities(boolean supported,
   public record ElementSupport(boolean supported, String reasonKey) {
 
     /** The answer for a supported element. */
-    public static final ElementSupport SUPPORTED = new ElementSupport(true, null);
+    public static final ElementSupport SUPPORTED_ELEMENT = new ElementSupport(true, null);
 
     /**
      * The answer for an unsupported element.
@@ -209,7 +209,7 @@ public record ServerRuleCapabilities(boolean supported,
    */
   public static ServerRuleCapabilities unsupported(String reasonCode, VocabularySource vocabularySource) {
     Map<String, ElementSupport> elements = new LinkedHashMap<>();
-    ELEMENTS.forEach(element -> elements.put(element, ElementSupport.unsupported(reasonCode)));
+    ALL_ELEMENTS.forEach(element -> elements.put(element, ElementSupport.unsupported(reasonCode)));
     return new ServerRuleCapabilities(false, reasonCode, false, false, vocabularySource, elements);
   }
 
