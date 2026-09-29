@@ -251,6 +251,9 @@ const TERMINAL = ['DONE', 'FAILED', 'SKIPPED_CAP', 'SKIPPED_SPAM', 'SKIPPED_DISA
 /** Why a capped match was skipped when too many mails already waited, not for the day's limit. */
 const PENDING_LIMIT = 'emailConnector.filters.agent.pendingLimit';
 
+/** Why a match was skipped as spam when its spam marks could not be read, again and again. */
+const SPAM_UNCHECKED_LIMIT = 'emailConnector.filters.agent.spamUncheckedLimit';
+
 /** The brand colour, with the skin's default when the portal publishes none -- as the AI summary box reads it. */
 const PRIMARY_COLOR = 'var(--allPagesPrimaryColor, #3f8487)';
 
@@ -619,13 +622,20 @@ export default {
     /**
      * The key of the line saying where the assistant's run on a match stands: its status,
      * told apart for a match skipped because too many mails waited -- the daily limit is
-     * the status's own line.
+     * the status's own line -- and for one skipped because its spam marks could never be
+     * read, which is not known to be spam.
      *
      * @param {Object} match - the match
      * @returns {String} the key's last segment
      */
     agentStatusKey(match) {
-      return match.agentStatus === 'SKIPPED_CAP' && match.lastError === PENDING_LIMIT ? 'SKIPPED_CAP_PENDING' : match.agentStatus;
+      if (match.agentStatus === 'SKIPPED_CAP' && match.lastError === PENDING_LIMIT) {
+        return 'SKIPPED_CAP_PENDING';
+      }
+      if (match.agentStatus === 'SKIPPED_SPAM' && match.lastError === SPAM_UNCHECKED_LIMIT) {
+        return 'SKIPPED_SPAM_UNCHECKED';
+      }
+      return match.agentStatus;
     },
     /**
      * Whether the assistant's run on a match is over.
