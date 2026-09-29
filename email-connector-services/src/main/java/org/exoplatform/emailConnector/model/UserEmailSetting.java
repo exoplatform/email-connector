@@ -69,8 +69,9 @@ public class UserEmailSetting extends UserEmailSettingEntity {
   /**
    * The decoded password, accepted in a request body and never written in a response
    * (EXO-90610): whatever endpoint returns this model, the password stays on the
-   * server. Declared here and not on {@link UserEmailSettingEntity#getEmailPassword()},
-   * because the entity is what the settings storage serialises - the same annotation
+   * server. Declared here and not on the entity's {@code getEmailPassword()}
+   * ({@link UserEmailSettingEntity}), because the entity is what the settings
+   * storage serialises - the same annotation
    * there would drop the password from every stored setting.
    *
    * @return the decoded password, for the server's own use
