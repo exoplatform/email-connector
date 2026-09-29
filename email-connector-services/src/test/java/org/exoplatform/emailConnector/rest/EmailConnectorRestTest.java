@@ -43,6 +43,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.io.InputStream;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -62,6 +63,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.test.json.JsonCompareMode;
 import org.springframework.web.context.WebApplicationContext;
 
 import com.fasterxml.jackson.core.json.JsonReadFeature;
@@ -74,6 +76,7 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.EngineInUseException;
 import org.exoplatform.emailConnector.model.ConnectorEngines;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.EmailConnectorProviderConfig;
 import org.exoplatform.emailConnector.model.EmailManagedMode;
 import org.exoplatform.emailConnector.model.EmailSyncExecutorStatus;
 import org.exoplatform.emailConnector.service.EmailConnectorEngineService;
@@ -725,14 +728,19 @@ public class EmailConnectorRestTest {
 
   /**
    * And the read-back endpoint serialises what the service hands it - the values an
-   * administration screen may see, secrets excluded by the service itself.
+   * administration screen may see, secrets excluded by the service itself, and the keys
+   * of the secrets that are stored.
    */
   @Test
   void providerConfigIsSerialisedBackToTheCaller() throws Exception {
-    when(emailConnectorService.getProviderConfig(eq(1L), anyString())).thenReturn(Map.of("technicalLogin", "svc"));
+    when(emailConnectorService.getProviderConfig(eq(1L), anyString()))
+                                                                     .thenReturn(new EmailConnectorProviderConfig(Map.of("technicalLogin",
+                                                                                                                         "svc"),
+                                                                                                                  Set.of("technicalSecret")));
 
     mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/1/provider-config").with(testAdminUser()))
            .andExpect(status().isOk())
-           .andExpect(content().json("{\"technicalLogin\":\"svc\"}"));
+           .andExpect(content().json("{\"values\":{\"technicalLogin\":\"svc\"},\"storedSecretKeys\":[\"technicalSecret\"]}",
+                                     JsonCompareMode.STRICT));
   }
 }
