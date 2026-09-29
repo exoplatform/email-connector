@@ -204,6 +204,12 @@ let picture = null;
  * blanked, and the picture of the drag shown under the pointer (showDragPicture). The
  * picture is a nicety: a browser that refuses the blank keeps its own, behind the chip.
  *
+ * The end of the drag is also listened for on the source node itself: the browser
+ * sends dragend to that node, and only to it when the list has taken the row out of
+ * the page in the meantime (a sync re-rendering the list mid-drag) -- then the event
+ * reaches neither the document nor the row's own handler, which Vue removed with the
+ * row, and only a listener the node carries itself still takes the picture out.
+ *
  * @param {DragEvent} event the dragstart event
  * @param {Object} payload the dragged {folder, ids}
  * @param {String} label what the picture says
@@ -222,6 +228,10 @@ export function startDrag(event, payload, label) {
     }
   } catch (e) {
     // The browser's own picture of the row, then.
+  }
+  const source = event.currentTarget || event.target;
+  if (source?.addEventListener) {
+    source.addEventListener('dragend', endDrag, { once: true });
   }
   showDragPicture(label, event);
 }
