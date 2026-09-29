@@ -34,7 +34,7 @@ import org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript.Vacatio
  * round trip, the opaque treatment of anything else, and the escaping that keeps every
  * user string inside its own quoted string.
  */
-public class ExoSieveScriptTest {
+class ExoSieveScriptTest {
 
   private static final String HANDLE = "exo-vacation-1727270000";
 
@@ -43,7 +43,7 @@ public class ExoSieveScriptTest {
    * vacation section, the rules marker, CRLF line endings.
    */
   @Test
-  public void testLayoutOfAReplyWithAWindow() {
+  void testLayoutOfAReplyWithAWindow() {
     ExoSieveScript script = ExoSieveScript.empty()
                                           .withVacation(vacation(true,
                                                                  LocalDate.of(2026, 10, 1),
@@ -68,7 +68,7 @@ public class ExoSieveScriptTest {
    * unconditional; with one boundary, a single test.
    */
   @Test
-  public void testRequireIsTheUnionOfWhatIsEmitted() {
+  void testRequireIsTheUnionOfWhatIsEmitted() {
     String open = ExoSieveScript.empty().withVacation(vacation(true, null, null, "Away", "Away")).toScript();
     assertTrue(open.contains("require [\"vacation\"];\r\n# exo-vacation\r\nvacation :days 7 :subject \"Away\" :handle"));
     String fromOnly = ExoSieveScript.empty()
@@ -82,7 +82,7 @@ public class ExoSieveScriptTest {
    * A disabled reply keeps its text in the header and emits no Sieve at all.
    */
   @Test
-  public void testADisabledReplyIsRememberedAndNotEmitted() {
+  void testADisabledReplyIsRememberedAndNotEmitted() {
     String text = ExoSieveScript.empty().withVacation(vacation(false, null, null, "Absent", "Back soon")).toScript();
     assertTrue(text.startsWith("# exo-managed-v1: {\"v\":1,\"vacation\":{\"enabled\":false,"));
     assertTrue(text.contains("\"text\":\"Back soon\""));
@@ -96,7 +96,7 @@ public class ExoSieveScriptTest {
    * summer time has two offsets.
    */
   @Test
-  public void testOffsetsFollowTheZoneAtEachBoundary() {
+  void testOffsetsFollowTheZoneAtEachBoundary() {
     String text = ExoSieveScript.empty()
                                 .withVacation(vacation(true,
                                                        LocalDate.of(2026, 10, 20),
@@ -114,7 +114,7 @@ public class ExoSieveScriptTest {
    * removed, the script holds exactly the allowlisted commands and nothing else.
    */
   @Test
-  public void testHostileInputCannotEscapeItsString() {
+  void testHostileInputCannotEscapeItsString() {
     String hostile = "\"; redirect \"x@evil.example\"; # \\";
     String text = ExoSieveScript.empty()
                                 .withVacation(vacation(true, null, null, hostile, hostile + "\nline2 \\\" } discard;"))
@@ -131,7 +131,7 @@ public class ExoSieveScriptTest {
    * {@code Auto: }.
    */
   @Test
-  public void testSubjectIsMandatory() {
+  void testSubjectIsMandatory() {
     assertCode("emailConnector.absence.subject.invalid", () -> vacation(true, null, null, null, "t"));
     assertCode("emailConnector.absence.subject.invalid", () -> vacation(true, null, null, " ", "t"));
   }
@@ -143,7 +143,7 @@ public class ExoSieveScriptTest {
    * required only when a string needed it. Elsewhere, RFC escaping.
    */
   @Test
-  public void testBackslashEncodingStrategies() {
+  void testBackslashEncodingStrategies() {
     ExoSieveScript script = ExoSieveScript.empty().withVacation(vacation(true, null, null, "Dir C:\\temp", "Cost: ${hex:41} \\ \"x\""));
     String encoded = script.toScript(SieveStringEncoding.ENCODED_CHARACTER);
     assertTrue(encoded.contains("require [\"vacation\", \"encoded-character\"];"));
@@ -167,7 +167,7 @@ public class ExoSieveScriptTest {
    * The text keeps its line breaks, normalised to CRLF; the subject may not have any.
    */
   @Test
-  public void testLineBreaks() {
+  void testLineBreaks() {
     assertEquals("a\r\nb\r\nc\r\nd", vacation(true, null, null, "Away", "a\nb\r\nc\rd").text());
     assertThrows(IllegalArgumentException.class, () -> vacation(true, null, null, "a\r\nBcc: x@evil.example", "t"));
     assertThrows(IllegalArgumentException.class, () -> vacation(true, null, null, "a\nb", "t"));
@@ -177,7 +177,7 @@ public class ExoSieveScriptTest {
    * Every bound answers the message code the REST layer returns.
    */
   @Test
-  public void testValidation() {
+  void testValidation() {
     assertCode("emailConnector.absence.text.invalid", () -> vacation(true, null, null, "Away", " "));
     assertCode("emailConnector.absence.text.invalid", () -> vacation(true, null, null, "Away", "x".repeat(4001)));
     assertCode("emailConnector.absence.text.invalid", () -> vacation(true, null, null, "Away", "a\0b"));
@@ -202,7 +202,7 @@ public class ExoSieveScriptTest {
    * text → model → text is byte-equal, and the model survives.
    */
   @Test
-  public void testHeaderRoundTrip() {
+  void testHeaderRoundTrip() {
     ExoSieveScript script = ExoSieveScript.empty()
                                           .withVacation(vacation(true,
                                                                  LocalDate.of(2026, 10, 1),
@@ -221,7 +221,7 @@ public class ExoSieveScriptTest {
    * ones.
    */
   @Test
-  public void testUnknownKeysAreRoundTripped() {
+  void testUnknownKeysAreRoundTripped() {
     String text = "# exo-managed-v1: {\"v\":1,\"future\":{\"x\":[1,\"y\"]},\"rules\":[]}\r\n# exo-rules\r\n";
     String regenerated = ExoSieveScript.parse(text).orElseThrow().toScript();
     assertEquals("# exo-managed-v1: {\"v\":1,\"rules\":[],\"future\":{\"x\":[1,\"y\"]}}\r\n# exo-rules\r\n", regenerated);
@@ -231,7 +231,7 @@ public class ExoSieveScriptTest {
    * Anything that is not eXo's header, version 1, valid, is opaque: answered empty.
    */
   @Test
-  public void testForeignOrUnreadableContentIsOpaque() {
+  void testForeignOrUnreadableContentIsOpaque() {
     assertEquals(Optional.empty(), ExoSieveScript.parse(null));
     assertEquals(Optional.empty(), ExoSieveScript.parse("require [\"fileinto\"];\r\nfileinto \"x\";\r\n"));
     assertEquals(Optional.empty(), ExoSieveScript.parse("\n# exo-managed-v1: {\"v\":1}\n"));
@@ -249,7 +249,7 @@ public class ExoSieveScriptTest {
    * a script with rules files or stops mail as far as the wrapper ordering is concerned.
    */
   @Test
-  public void testRulesAreHeldButNotSerialised() {
+  void testRulesAreHeldButNotSerialised() {
     ExoSieveScript withRules = ExoSieveScript.parse("# exo-managed-v1: {\"v\":1,\"rules\":[{\"id\":1}]}\r\n").orElseThrow();
     assertTrue(withRules.filesOrStops());
     assertEquals(1, withRules.getRules().size());
@@ -261,7 +261,7 @@ public class ExoSieveScriptTest {
    * Whether a vacation action is emitted follows the enabled flag.
    */
   @Test
-  public void testEmitsVacation() {
+  void testEmitsVacation() {
     assertFalse(ExoSieveScript.empty().emitsVacation());
     assertFalse(ExoSieveScript.empty().withVacation(vacation(false, null, null, "Away", "t")).emitsVacation());
     assertTrue(ExoSieveScript.empty().withVacation(vacation(true, null, null, "Away", "t")).emitsVacation());
@@ -271,7 +271,7 @@ public class ExoSieveScriptTest {
    * The hash is the SHA-256 of the generated text, and moves with the text.
    */
   @Test
-  public void testHash() {
+  void testHash() {
     assertEquals("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ExoSieveScript.sha256(""));
     ExoSieveScript one = ExoSieveScript.empty().withVacation(vacation(true, null, null, "Away", "one"));
     ExoSieveScript two = ExoSieveScript.empty().withVacation(vacation(true, null, null, "Away", "two"));
