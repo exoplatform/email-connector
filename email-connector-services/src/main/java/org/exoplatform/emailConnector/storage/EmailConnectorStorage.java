@@ -88,12 +88,12 @@ public class EmailConnectorStorage {
       emailConnector.setImageFileId(imageFileId);
     }
 
-    // The provider the row authenticates through is kept from what is stored, not
-    // taken from the body: no admin screen carries a field for it (EXO-89648 is
-    // what will), so every save would otherwise arrive with it null and blank the
-    // column. Blanking it used to cost nothing, because nothing read it; since
-    // EXO-89645 it is what the send resolves its credentials through, so an edit
-    // to a connector's name would stop its users' mail from going out at all.
+    // The provider the row authenticates through is kept from what is stored when
+    // the body leaves it blank: the drawer shows the provider select only when more
+    // than one provider is registered, so a save can still arrive with it null and
+    // would otherwise blank the column. It is what the send resolves its credentials
+    // through, so an edit to a connector's name would stop its users' mail from
+    // going out at all.
     if (StringUtils.isBlank(emailConnector.getAuthProviderName())) {
       emailConnector.setAuthProviderName(storedEmailConnectorEntity.getAuthProviderName());
     }
@@ -153,12 +153,12 @@ public class EmailConnectorStorage {
                                       emailConnector.isActive(),
                                       emailConnector.getWebmailUrl(),
                                       emailConnector.getCarddavUrl(),
-                                      // Never null: the column is NOT NULL, no admin screen carries a
-                                      // field for it (EXO-89648 is what will), and the entity's own
-                                      // field initialiser cannot help -- @AllArgsConstructor overwrites
-                                      // it with whatever is passed. A create would fail on the
-                                      // constraint, an update would blank a row the send authenticates
-                                      // through.
+                                      // Never null: the column is NOT NULL, the drawer shows the
+                                      // provider select only when more than one provider is registered,
+                                      // and the entity's own field initialiser cannot help --
+                                      // @AllArgsConstructor overwrites it with whatever is passed. A
+                                      // create would fail on the constraint, an update would blank a row
+                                      // the send authenticates through.
                                       StringUtils.defaultIfBlank(emailConnector.getAuthProviderName(),
                                                                  PersonalCredentialsProvider.NAME));
     }
