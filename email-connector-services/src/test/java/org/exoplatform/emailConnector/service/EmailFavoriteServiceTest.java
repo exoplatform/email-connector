@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import static org.mockito.ArgumentMatchers.eq;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -67,6 +68,9 @@ public class EmailFavoriteServiceTest {
   @MockitoBean
   private IdentityManager      identityManager;
 
+  @MockitoBean
+  private EmailDelegationService emailDelegationService;
+
   @Autowired
   private EmailFavoriteService emailFavoriteService;
 
@@ -83,6 +87,34 @@ public class EmailFavoriteServiceTest {
     assertEquals("12", created.getValue().getObjectId());
     assertEquals(EmailFavoriteService.OBJECT_TYPE, created.getValue().getObjectType());
     assertEquals(IDENTITY_ID, created.getValue().getUserIdentityId());
+  }
+
+  /**
+   * EXO-90550, Benjamin's decision (a) -- a delegate's star on a shared mailbox's message
+   * is its owner's star and enters the OWNER's favorites (through her own reconcile, on
+   * her own rows), never the delegate's: the delegate's reconcile leaves the folders of
+   * every mailbox shared with them out, so a starred row of a shared mailbox's folder
+   * never becomes their favorite.
+   */
+  @Test
+  public void aDelegatesReconcileNeverAddsASharedMailboxsRow() throws Exception {
+    givenUserIdentity();
+    givenFavoritedEmailIds();
+    Email own = starred(11L, MailFolder.INBOX, "<own@host>");
+    Email shared = starred(99L, "CUSTOM:8", "<shared@host>");
+    when(emailDelegationService.getDelegatedFolderKeys(USERNAME)).thenReturn(List.of("CUSTOM:8"));
+    when(emailBoxStorage.getStarredEmailKeys(eq(USERNAME), anyList())).thenAnswer(invocation -> {
+      List<String> excluded = invocation.getArgument(1);
+      return excluded.contains("CUSTOM:8") ? List.of(own) : List.of(own, shared);
+    });
+
+    emailFavoriteService.reconcileFavorites(USERNAME);
+
+    ArgumentCaptor<Favorite> created = ArgumentCaptor.forClass(Favorite.class);
+    verify(favoriteService, times(1)).createFavorite(created.capture());
+    assertEquals("11", created.getValue().getObjectId(), "the delegate's own star only");
+    verify(emailBoxStorage).getStarredEmailKeys(USERNAME,
+                                                List.of(MailFolder.TRASH, MailFolder.JUNK, MailFolder.ALL_MAIL, MailFolder.DRAFTS, "CUSTOM:8"));
   }
 
   @Test

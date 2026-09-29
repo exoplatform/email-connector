@@ -1344,6 +1344,34 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90550 -- removing one of the user's own favorites never reads, and so never
+   * unstars, a copy of the same message in a mailbox shared with them: that copy's star
+   * is its owner's.
+   */
+  @Test
+  @SneakyThrows
+  void removingAFavoriteLeavesTheCopiesOfASharedMailboxAlone() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    Message message = mock(Message.class);
+    when(((UIDFolder) inbox).getMessageByUID(1212L)).thenReturn(message);
+    when(emailDelegationService.getDelegatedFolderKeys(TEST_USER)).thenReturn(List.of("CUSTOM:8"));
+    Email favorite = starredKey(7L, MailFolder.INBOX, "<m@host>", 1212L);
+    List<String> excluded = List.of(MailFolder.TRASH, MailFolder.JUNK, MailFolder.ALL_MAIL, MailFolder.DRAFTS, "CUSTOM:8");
+    when(emailBoxStorage.getStarredCopyKeys(TEST_USER, "<m@host>", excluded)).thenReturn(List.of(favorite));
+
+    FavoriteRemoval removal = emailBoxService.unstarFavorite(favorite, TEST_USER);
+
+    assertEquals(Map.of(MailFolder.INBOX, List.of(1212L)), removal.getUnstarred());
+    verify(emailBoxStorage).getStarredCopyKeys(TEST_USER, "<m@host>", excluded);
+    verify(emailBoxStorage, never()).updateEmailStarredStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), eq("CUSTOM:8"));
+  }
+
+  /**
    * One light starred row, as {@code EmailBoxStorage#getStarredEmailKeys} answers it.
    *
    * @param id its technical id
