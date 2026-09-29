@@ -30,7 +30,8 @@ import io.meeds.pwa.plugin.PwaNotificationPlugin;
 public class EmailFilterNotificationPwaPlugin implements PwaNotificationPlugin {
 
   /**
-   * The push message: the title, the sentence, the link to the mailbox.
+   * The push message: the title, the sentence as plain text -- a push shows no markup --,
+   * the link to the mailbox.
    *
    * @param notification the notification
    * @param localeConfig the receiver's locale, unused: the sentence is already theirs
@@ -40,7 +41,7 @@ public class EmailFilterNotificationPwaPlugin implements PwaNotificationPlugin {
   public PwaNotificationMessage process(NotificationInfo notification, LocaleConfig localeConfig) {
     PwaNotificationMessage notificationMessage = new PwaNotificationMessage();
     notificationMessage.setTitle(notification.getValueOwnerParameter(NotificationConstants.TITLE));
-    notificationMessage.setBody(notification.getValueOwnerParameter(NotificationConstants.CONTENT));
+    notificationMessage.setBody(htmlToText(notification.getValueOwnerParameter(NotificationConstants.CONTENT)));
     notificationMessage.setUrl(notification.getValueOwnerParameter(NotificationConstants.LINK));
     return notificationMessage;
   }
