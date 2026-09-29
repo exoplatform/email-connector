@@ -33,9 +33,12 @@ import org.springframework.boot.persistence.autoconfigure.EntityScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.emailConnector.entity.EmailFilterMatchEntity;
 import org.exoplatform.emailConnector.entity.EmailFilterProposalEntity;
+import org.exoplatform.emailConnector.model.EmailFilterSuggestionCounts;
+import org.exoplatform.emailConnector.storage.EmailFilterProposalStorage;
 
 import jakarta.persistence.PersistenceException;
 
@@ -254,6 +257,52 @@ public class EmailFilterProposalDAOTest {
     assertEquals(List.of("<others@x>"), emailFilterProposalDAO.findWaitingMailHeaderIds(OTHER, "PROPOSED", new Date(NOW)));
     assertTrue(emailFilterProposalDAO.findWaitingMailHeaderIds(OWNER, "PROPOSED", new Date(NOW + 1_000)).isEmpty(),
                "every one expired by then");
+  }
+
+  /**
+   * What the owner decided per rule (EXO-90668), run by the engine through the storage:
+   * approved counts every call once approved (running, done, failed), an expired call a
+   * later run set aside is not counted as expired, the waiting ones are counted, and
+   * another user's are not.
+   */
+  @Test
+  void theDecisionsAreCountedPerRule() {
+    Long match = persistMatch(OWNER, "m1");
+    Long otherMatch = persistMatch(OTHER, "m2");
+    decided(persist(OWNER, match, "a", "DONE", "r1", NOW + 1_000), 3L, null);
+    decided(persist(OWNER, match, "b", "FAILED", "r1", NOW + 1_000), 3L, "The tool refused");
+    decided(persist(OWNER, match, "c", "RUNNING", "r1", NOW + 1_000), 3L, null);
+    decided(persist(OWNER, match, "d", "REJECTED", "r1", NOW + 1_000), 3L, null);
+    decided(persist(OWNER, match, "e", "EXPIRED", "r1", NOW - 1_000), 3L, null);
+    decided(persist(OWNER, match, "f", "EXPIRED", "r1", NOW + 1_000), 3L, "emailConnector.filters.proposal.superseded");
+    decided(persist(OWNER, match, "g", "HANDED_OVER", "r1", NOW + 1_000), 3L, null);
+    decided(persist(OWNER, match, "h", "PROPOSED", "r2", NOW + 1_000), 3L, null);
+    decided(persist(OWNER, match, "i", "REJECTED", "r2", NOW + 1_000), 4L, null);
+    decided(persist(OTHER, otherMatch, "j", "DONE", "r3", NOW + 1_000), 3L, null);
+    entityManager.flush();
+    entityManager.clear();
+    EmailFilterProposalStorage storage = new EmailFilterProposalStorage();
+    ReflectionTestUtils.setField(storage, "emailFilterProposalDAO", emailFilterProposalDAO);
+
+    List<EmailFilterSuggestionCounts> counts = storage.countByFilter(OWNER);
+
+    assertEquals(List.of(new EmailFilterSuggestionCounts(3L, 3, 1, 1, 1, 1), new EmailFilterSuggestionCounts(4L, 0, 1, 0, 0, 0)),
+                 counts);
+    assertEquals(List.of(new EmailFilterSuggestionCounts(3L, 1, 0, 0, 0, 0)), storage.countByFilter(OTHER));
+  }
+
+  /**
+   * Sets a proposal's rule and last error.
+   *
+   * @param id the proposal
+   * @param filterId the rule
+   * @param lastError the last error, or null
+   */
+  private void decided(Long id, long filterId, String lastError) {
+    EmailFilterProposalEntity entity = entityManager.find(EmailFilterProposalEntity.class, id);
+    entity.setFilterId(filterId);
+    entity.setLastError(lastError);
+    entityManager.persist(entity);
   }
 
   /**
