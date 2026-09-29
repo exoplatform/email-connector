@@ -18,23 +18,33 @@ package org.exoplatform.emailConnector.notification.plugin;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.MockedStatic;
 
 import org.exoplatform.commons.api.notification.NotificationContext;
 import org.exoplatform.commons.api.notification.model.NotificationInfo;
+import org.exoplatform.commons.api.notification.model.PluginKey;
+import org.exoplatform.commons.api.notification.model.WebNotificationFilter;
 import org.exoplatform.commons.api.notification.plugin.NotificationPluginUtils;
+import org.exoplatform.commons.api.notification.service.WebNotificationService;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.container.xml.InitParams;
@@ -58,6 +68,10 @@ class EmailFilterSuggestionsNotificationPluginTest {
 
   private MockedStatic<EmailConnectorUtils>       connectorUtils;
 
+  private final WebNotificationService            webNotifications = mock(WebNotificationService.class);
+
+  private final List<NotificationInfo>            held    = new ArrayList<>();
+
   /**
    * States the bundle, the receiver's language and the mailbox link.
    */
@@ -73,6 +87,8 @@ class EmailFilterSuggestionsNotificationPluginTest {
                                  });
     commonsUtils = mockStatic(CommonsUtils.class);
     commonsUtils.when(() -> CommonsUtils.getService(ResourceBundleService.class)).thenReturn(bundles);
+    commonsUtils.when(() -> CommonsUtils.getService(WebNotificationService.class)).thenReturn(webNotifications);
+    when(webNotifications.getNotificationInfos(any(WebNotificationFilter.class), anyInt(), anyInt())).thenAnswer(invocation -> new ArrayList<>(held));
     pluginUtils = mockStatic(NotificationPluginUtils.class);
     pluginUtils.when(() -> NotificationPluginUtils.getLanguage(anyString())).thenReturn("en");
     connectorUtils = mockStatic(EmailConnectorUtils.class);
@@ -101,6 +117,28 @@ class EmailFilterSuggestionsNotificationPluginTest {
     assertEquals("Mail assistant", many.getValueOwnerParameter(NotificationConstants.TITLE));
     assertEquals(MAILBOX, many.getValueOwnerParameter(NotificationConstants.LINK));
     assertEquals("1 suggestion waiting", plugin.buildNotification(context("1")).getValueOwnerParameter(NotificationConstants.CONTENT));
+  }
+
+  /**
+   * The platform builds a digest after its sender looked: when the receiver holds an
+   * unread one by then, that one takes the count, moved to the top, and none is built --
+   * two runs close together never stack two digests.
+   */
+  @Test
+  void anUnreadDigestTakesTheCountAndNoneIsBuilt() {
+    NotificationInfo unread = NotificationInfo.instance()
+                                              .key(PluginKey.key(NotificationConstants.EMAIL_FILTER_SUGGESTIONS_NOTIFICATION_PLUGIN))
+                                              .to("ben")
+                                              .with(NotificationConstants.SUGGESTION_COUNT, "2");
+    unread.setId("7");
+    held.add(unread);
+
+    assertNull(plugin.buildNotification(context("5")));
+
+    ArgumentCaptor<NotificationInfo> updated = ArgumentCaptor.forClass(NotificationInfo.class);
+    verify(webNotifications).update(updated.capture(), eq(true));
+    assertEquals("7", updated.getValue().getId());
+    assertEquals("5 suggestions waiting", updated.getValue().getValueOwnerParameter(NotificationConstants.CONTENT));
   }
 
   /**
