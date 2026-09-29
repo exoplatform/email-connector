@@ -416,6 +416,48 @@ public class EmailFilterProposalServiceTest {
   }
 
   /**
+   * A digest never tells suggestions that expired (EXO-90668): a read that expires some
+   * recounts the digest with what still waits, without sending; a read that expires none
+   * leaves it alone.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anExpiryRecountsTheDigestWithWhatStillWaits() throws Exception {
+    EmailFilterProposal due = propose("t1", "{}");
+    propose("t2", "{}");
+
+    service.getProposalsOfMatches(OWNER, List.of(MATCH_ID));
+    verify(suggestionDigest, never()).recount(anyString(), anyLong());
+
+    rows.get(due.getId()).setExpiresDate(NOW);
+    service.getProposalsOfMatches(OWNER, List.of(MATCH_ID));
+
+    verify(suggestionDigest).recount(OWNER, 1L);
+    verify(suggestionDigest, never()).publish(anyString(), anyLong());
+    verify(suggestionDigest, never()).refresh(anyString(), anyLong());
+  }
+
+  /**
+   * A run that superseded the waiting suggestions and proposed none has the digest
+   * recounted through {@code refreshWaiting} (EXO-90668): down to what still waits,
+   * nothing sent.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void refreshWaitingRecountsTheDigestAfterASupersede() throws Exception {
+    propose("t1", "{}");
+    propose("t2", "{}");
+
+    assertEquals(2, service.supersede(OWNER, MATCH_ID));
+    service.refreshWaiting(OWNER);
+
+    verify(suggestionDigest).recount(OWNER, 0L);
+    verify(suggestionDigest, never()).publish(anyString(), anyLong());
+  }
+
+  /**
    * The counts per rule (EXO-90668) are the caller's own mailbox's, read once the due
    * proposals are marked expired so an unanswered one counts as expired.
    *

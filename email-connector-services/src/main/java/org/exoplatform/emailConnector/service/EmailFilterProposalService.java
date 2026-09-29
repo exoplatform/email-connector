@@ -261,7 +261,7 @@ public class EmailFilterProposalService {
       return List.of();
     }
     Date now = new Date(clock.millis());
-    emailFilterProposalStorage.expireDue(username, now);
+    expireDue(username, now);
     emailFilterProposalStorage.failStaleRunning(username,
                                                 INTERRUPTED,
                                                 new Date(now.getTime() - ChronoUnit.MINUTES.getDuration().toMillis() * RUNNING_CEILING_MINUTES));
@@ -399,6 +399,21 @@ public class EmailFilterProposalService {
   }
 
   /**
+   * Brings the owner's digest to the count that waits now, when suggestions stopped
+   * waiting without a decision -- a new run of the assistant superseded them and proposed
+   * nothing. Nothing is sent; the digest is removed when nothing waits. Never throws.
+   *
+   * @param username the owner
+   */
+  public void refreshWaiting(String username) {
+    try {
+      suggestionDigest.recount(username, countWaiting(username));
+    } catch (RuntimeException e) {
+      LOG.warn("The digest of the waiting suggestions of user {} could not be recounted", username, e);
+    }
+  }
+
+  /**
    * What the caller decided on each of their rules' suggestions: per rule, how many were
    * approved, rejected, expired unanswered, continued in the chat, and how many wait --
    * the numbers that tell whether the assistant is worth running on more mail. Kept as
@@ -414,12 +429,13 @@ public class EmailFilterProposalService {
   public List<EmailFilterSuggestionCounts> getSuggestionCounts(String username, Long delegationId) throws ObjectNotFoundException,
                                                                                                   IllegalAccessException {
     emailFilterService.checkOwnMailbox(username, delegationId);
-    emailFilterProposalStorage.expireDue(username, new Date(clock.millis()));
+    expireDue(username, new Date(clock.millis()));
     return emailFilterProposalStorage.countByFilter(username);
   }
 
   /**
-   * How many of the owner's suggestions wait, the expired ones marked so first.
+   * How many of the owner's suggestions wait, the expired ones marked so first. Its
+   * callers write the digest with the count themselves, so the expiry here does not.
    *
    * @param username the owner
    * @return the count
@@ -427,6 +443,26 @@ public class EmailFilterProposalService {
   private long countWaiting(String username) {
     emailFilterProposalStorage.expireDue(username, new Date(clock.millis()));
     return emailFilterProposalStorage.countByStatus(username, EmailFilterProposal.PROPOSED);
+  }
+
+  /**
+   * Expires the owner's proposals past their date and, when some were, brings the digest
+   * to the count that still waits: a digest never tells suggestions that expired.
+   *
+   * @param username the owner
+   * @param now the time
+   * @return how many were expired
+   */
+  private int expireDue(String username, Date now) {
+    int expired = emailFilterProposalStorage.expireDue(username, now);
+    if (expired > 0) {
+      try {
+        suggestionDigest.recount(username, emailFilterProposalStorage.countByStatus(username, EmailFilterProposal.PROPOSED));
+      } catch (RuntimeException e) {
+        LOG.warn("The digest of the waiting suggestions of user {} could not be recounted", username, e);
+      }
+    }
+    return expired;
   }
 
   /**
@@ -465,7 +501,7 @@ public class EmailFilterProposalService {
                                                              .orElseThrow(() -> new IllegalAccessException(NOT_YOURS));
     Date now = new Date(clock.millis());
     if (!emailFilterProposalStorage.claim(id, username, EmailFilterProposal.PROPOSED, to, now)) {
-      emailFilterProposalStorage.expireDue(username, now);
+      expireDue(username, now);
       EmailFilterProposal current = reread(username, id);
       throw new IllegalStateException(EmailFilterProposal.EXPIRED.equals(current.getStatus()) ? EXPIRED : NOT_PENDING);
     }
@@ -485,7 +521,7 @@ public class EmailFilterProposalService {
         >= intProperty(MAX_PER_RUN_PROPERTY, DEFAULT_MAX_PER_RUN)) {
       throw new IllegalStateException(RUN_CAP);
     }
-    emailFilterProposalStorage.expireDue(username, new Date(clock.millis()));
+    expireDue(username, new Date(clock.millis()));
     if (emailFilterProposalStorage.countByStatus(username, EmailFilterProposal.PROPOSED)
         >= intProperty(MAX_PENDING_PROPERTY, DEFAULT_MAX_PENDING)) {
       throw new IllegalStateException(PENDING_CAP);
