@@ -14,12 +14,13 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <gnu.org/licenses>.
  */
-package org.exoplatform.emailConnector.constant;
+package org.exoplatform.emailConnector.rest.model;
 
 /**
- * What a login-time enrolment attempt came to: one value per branch of the three
- * rules of {@code EmailManagedEnrollmentService} and their failures.
+ * How many accounts an administrator's change would disconnect, answered before the
+ * change is applied so that the screen can say so.
+ *
+ * @param affectedAccounts the number of accounts the change would disconnect
  */
-public enum EmailManagedEnrollmentOutcome {
-  NOT_MANAGED, ALREADY_CONFIGURED, ATTACHED, REFUSED, FAILED, DETACHED
+public record EmailDisconnectionPreview(int affectedAccounts) {
 }
