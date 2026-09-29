@@ -139,6 +139,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <email-connector-mail-box-drawer-favorite-toggle
             :favorite="!!email.starred"
             :can-toggle="canToggleFavorite"
+            :shared-owner="starSharedOwner"
             :size="18"
             @toggle="toggleFavorite" />
           <!-- Reply and the ⋮ menu (reply all, forward…) are withheld from a message
@@ -389,9 +390,19 @@ export default {
       return this.$vuetify.breakpoint.smAndDown;
     },
     // The favorite endpoint pushes the IMAP \Flagged flag to the message's own folder,
-    // so every message can be toggled but those of a read-only folder (Trash, Spam).
+    // so every message can be toggled but those of a read-only folder (Trash, Spam) or
+    // Drafts, and in a shared mailbox only where the user holds w (canStar, EXO-90550).
     canToggleFavorite() {
-      return !this.$emailConnectorMailBoxService.isReadOnlyFolder(this.email.folder);
+      return this.$emailConnectorMailBoxService.canStar(this.email.folder);
+    },
+    /**
+     * The owner of the shared mailbox this message is in, whose star it also sets
+     * (EXO-90550) -- said on the star; empty in the user's own mailbox.
+     *
+     * @returns {String} the owner's name, or empty
+     */
+    starSharedOwner() {
+      return this.$emailConnectorMailBoxService.sharedMailboxOfFolder(this.email.folder)?.ownerFullName || '';
     },
   },
   methods: {
