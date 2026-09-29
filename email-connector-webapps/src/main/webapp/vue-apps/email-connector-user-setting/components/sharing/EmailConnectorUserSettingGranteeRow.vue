@@ -153,7 +153,8 @@ export default {
     },
     /**
      * What the person can do in the owner's mailbox, from the rule the mail drawer's
-     * controls follow -- never a star or a move the drawer does not offer.
+     * controls follow -- never a move the drawer does not offer. The star is said by the
+     * Editor preset's description (EXO-90550).
      *
      * @returns {String} the sentence
      */
