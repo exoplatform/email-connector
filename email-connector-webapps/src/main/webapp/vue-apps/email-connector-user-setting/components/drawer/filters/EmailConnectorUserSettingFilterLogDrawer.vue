@@ -129,6 +129,9 @@ const FILING = ['MOVE_TO_FOLDER', 'MARK_JUNK', 'DELETE'];
 /** Why a capped match was skipped when too many mails already waited, not for the day's limit. */
 const PENDING_LIMIT = 'emailConnector.filters.agent.pendingLimit';
 
+/** Why a match was skipped as spam when its spam marks could not be read, again and again. */
+const SPAM_UNCHECKED_LIMIT = 'emailConnector.filters.agent.spamUncheckedLimit';
+
 export default {
   data: () => ({
     drawer: false,
@@ -167,13 +170,21 @@ export default {
   methods: {
     /**
      * The key of the line saying where the assistant's run on a match stands: its status,
-     * told apart for a match skipped because too many mails waited.
+     * told apart for a match skipped because too many mails waited -- the daily limit is
+     * the status's own line -- and for one skipped because its spam marks could never be
+     * read, which is not known to be spam.
      *
      * @param {Object} match - the match
      * @returns {String} the key's last segment
      */
     agentStatusKey(match) {
-      return match.agentStatus === 'SKIPPED_CAP' && match.lastError === PENDING_LIMIT ? 'SKIPPED_CAP_PENDING' : match.agentStatus;
+      if (match.agentStatus === 'SKIPPED_CAP' && match.lastError === PENDING_LIMIT) {
+        return 'SKIPPED_CAP_PENDING';
+      }
+      if (match.agentStatus === 'SKIPPED_SPAM' && match.lastError === SPAM_UNCHECKED_LIMIT) {
+        return 'SKIPPED_SPAM_UNCHECKED';
+      }
+      return match.agentStatus;
     },
     /**
      * Opens the drawer on a filter's newest matches, over the filters drawer.
