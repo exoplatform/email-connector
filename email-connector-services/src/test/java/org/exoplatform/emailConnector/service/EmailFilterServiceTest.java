@@ -27,9 +27,11 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -731,6 +733,139 @@ public class EmailFilterServiceTest {
 
     EmailFilterMatch retried = service.retry(USERNAME, null, match.getId());
     assertEquals(EmailFilterMatch.AGENT_PENDING, retried.getAgentStatus(), "the owner can run it again later");
+  }
+
+  /**
+   * The daily cap at sync counts each waiting mail once (EXO-90668): a match given back
+   * waiting after a run today is among the waiting ones, not also among those run. With a
+   * cap of 100 and 60 matches given back, a new mail is queued, not skipped.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aMatchGivenBackAfterARunTodayCountsOnceAtSync() throws Exception {
+    stored(rule("Invoices", EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of(agent(), move("CUSTOM:3"))));
+    givenNewMail(mail(1L, "a@acme.com", "One"));
+    System.setProperty(EmailFilterService.DAILY_CAP_PROPERTY, "100");
+    when(emailFilterStorage.countByAgentStatus(USERNAME, EmailFilterMatch.AGENT_PENDING)).thenReturn(60L);
+    // The 60 given back hold today's conversation: a count that takes PENDING in says 60.
+    lenient().when(emailFilterStorage.countAgentRunsSince(eq(USERNAME), argThat(statuses -> statuses != null
+        && statuses.contains(EmailFilterMatch.AGENT_PENDING)), any())).thenReturn(60L);
+    lenient().when(emailFilterStorage.countAgentRunsSince(eq(USERNAME), argThat(statuses -> statuses != null
+        && !statuses.contains(EmailFilterMatch.AGENT_PENDING)), any())).thenReturn(0L);
+
+    service.applyToNewMail(USERNAME, List.of(inbox(1L)), FilterRunContext.OWN_INBOX);
+
+    EmailFilterMatch queued = matches.values().iterator().next();
+    assertEquals(EmailFilterMatch.AGENT_PENDING, queued.getAgentStatus(), "60 waiting of 100: not past the cap");
+    verify(listenerService).broadcast(EmailConnectorUtils.FILTER_AGENT_REQUESTED, USERNAME, List.of(queued.getId()));
+  }
+
+  /**
+   * The handler's guard reads the cap before the mail server (EXO-90668): a match past
+   * the cap is skipped without opening a connection to read its spam marks.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theHandlersGuardChecksTheDailyCapBeforeReadingTheServer() throws Exception {
+    System.setProperty(EmailFilterService.DAILY_CAP_PROPERTY, "1");
+    EmailFilterMatch match = waitingMatch(1L, EmailFilterMatch.AGENT_PENDING);
+    lenient().when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, match.getMailHeaderId(), MailFolder.INBOX))
+             .thenReturn(mail(1L, "a@acme.com", "One"));
+    when(emailFilterStorage.countAgentRunsSince(eq(USERNAME), any(), any())).thenReturn(1L);
+
+    EmailFilterMatch skipped = service.skipIfGuarded(USERNAME, match);
+
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_CAP, skipped.getAgentStatus());
+    verify(emailBoxService, never()).isFlaggedAsSpamOnServer(any(), anyLong());
+  }
+
+  /**
+   * A skip is never undone by its held actions (EXO-90668): when they throw, the match
+   * stays skipped -- spam from the cache, spam from the server, or past the cap --, it is
+   * not given back to wait, and nothing escapes to the handler.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aSkipWhoseHeldActionsFailStaysSkipped() throws Exception {
+    doThrow(new IllegalStateException("the move failed")).when(service).applyPostActions(anyLong(), eq(USERNAME));
+
+    EmailFilterMatch inJunk = waitingMatch(1L, EmailFilterMatch.AGENT_PENDING);
+    when(emailBoxService.hasOwnEmailInFolder(USERNAME, inJunk.getMailHeaderId(), MailFolder.JUNK)).thenReturn(true);
+    EmailFilterMatch skipped = service.skipIfGuarded(USERNAME, inJunk);
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_SPAM, skipped.getAgentStatus(), "in Junk");
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_SPAM, matches.get(inJunk.getId()).getAgentStatus(), "not given back");
+    assertEquals(EmailFilterService.SPAM, matches.get(inJunk.getId()).getLastError());
+
+    EmailFilterMatch flagged = waitingMatch(2L, EmailFilterMatch.AGENT_PENDING);
+    when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, flagged.getMailHeaderId(), MailFolder.INBOX)).thenReturn(mail(2L, "a@acme.com", "Two"));
+    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 2L)).thenReturn(true);
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_SPAM, service.skipIfGuarded(USERNAME, flagged).getAgentStatus(), "flagged");
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_SPAM, matches.get(flagged.getId()).getAgentStatus());
+
+    System.setProperty(EmailFilterService.DAILY_CAP_PROPERTY, "0");
+    EmailFilterMatch capped = waitingMatch(3L, EmailFilterMatch.AGENT_PENDING);
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_CAP, service.skipIfGuarded(USERNAME, capped).getAgentStatus(), "past the cap");
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_CAP, matches.get(capped.getId()).getAgentStatus());
+  }
+
+  /**
+   * A mail whose spam marks keep failing to read cannot hold its mailbox for ever
+   * (EXO-90668): it is given back {@value EmailFilterService#MAX_SPAM_UNCHECKED} times in
+   * a row, each counted in its last error; the next time it is skipped as spam, fail-safe
+   * -- no model call --, with its own reason and its held actions run.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aMailWhoseSpamMarksKeepFailingIsSkippedAfterTheLastGiveBack() throws Exception {
+    EmailFilterMatch match = waitingMatch(1L, EmailFilterMatch.AGENT_PENDING);
+    when(emailBoxService.getOwnEmailByMailHeaderId(USERNAME, match.getMailHeaderId(), MailFolder.INBOX)).thenReturn(mail(1L, "a@acme.com", "One"));
+    when(emailBoxService.isFlaggedAsSpamOnServer(USERNAME, 1L)).thenThrow(new IllegalStateException("unreadable"));
+
+    for (int parks = 1; parks <= EmailFilterService.MAX_SPAM_UNCHECKED; parks++) {
+      EmailFilterMatch parked = service.skipIfGuarded(USERNAME, asRead(match.getId()));
+      assertEquals(EmailFilterMatch.AGENT_PENDING, parked.getAgentStatus(), "give-back " + parks);
+      assertEquals(parks, EmailFilterService.spamUncheckedCount(parked.getLastError()), "counted in a row");
+      assertEquals(0, parked.getAgentAttempts(), "no attempt spent");
+      assertEquals(EmailFilterMatch.POST_PENDING_AGENT, parked.getPostActionsState());
+    }
+
+    EmailFilterMatch skipped = service.skipIfGuarded(USERNAME, asRead(match.getId()));
+
+    assertEquals(EmailFilterMatch.AGENT_SKIPPED_SPAM, skipped.getAgentStatus());
+    assertEquals(EmailFilterService.SPAM_UNCHECKED_LIMIT, matches.get(match.getId()).getLastError());
+    assertEquals(0, skipped.getAgentAttempts(), "no attempt spent");
+    assertEquals(EmailFilterMatch.POST_DONE, matches.get(match.getId()).getPostActionsState(), "its held actions ran");
+    verify(emailBoxService).moveToFolder(List.of(1L), USERNAME, MailFolder.INBOX, "CUSTOM:3");
+  }
+
+  /**
+   * A stored match as the handler reads it for a run, its last error with it.
+   *
+   * @param id the match
+   * @return the copy
+   */
+  private EmailFilterMatch asRead(long id) {
+    EmailFilterMatch stored = matches.get(id);
+    EmailFilterMatch read = copyOf(stored);
+    read.setLastError(stored.getLastError());
+    read.setAgentAttempts(stored.getAgentAttempts());
+    return read;
+  }
+
+  /**
+   * The give-backs are counted in a row only: another reason in between starts again.
+   */
+  @Test
+  void theSpamUncheckedCountReadsOnlyItsOwnCode() {
+    assertEquals(0, EmailFilterService.spamUncheckedCount(null));
+    assertEquals(0, EmailFilterService.spamUncheckedCount("emailConnector.filters.agent.unavailable"));
+    assertEquals(1, EmailFilterService.spamUncheckedCount(EmailFilterService.SPAM_UNCHECKED));
+    assertEquals(4, EmailFilterService.spamUncheckedCount(EmailFilterService.SPAM_UNCHECKED + ":4"));
+    assertEquals(1, EmailFilterService.spamUncheckedCount(EmailFilterService.SPAM_UNCHECKED + ":x"));
   }
 
   /**
