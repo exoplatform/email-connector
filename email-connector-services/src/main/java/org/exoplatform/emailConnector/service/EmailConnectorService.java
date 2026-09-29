@@ -759,7 +759,6 @@ public class EmailConnectorService {
     String previousProvider = previousEmailConnector.getAuthProviderName();
     String newProvider = StringUtils.defaultIfBlank(emailConnector.getAuthProviderName(), previousProvider);
     return !StringUtils.equals(StringUtils.defaultIfBlank(previousProvider, null), StringUtils.defaultIfBlank(newProvider, null));
->>>>>>> eb5b4d34 (fix: disconnect the mail users managed mode no longer governs - EXO-89654 (#495))
   }
 
   /**

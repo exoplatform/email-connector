@@ -21,15 +21,9 @@
  * A refused write carries a message code - a missing required field, a value
  * outside a field's options, the connector managed mode points at. Thrown as a
  * bare sentence that code never reaches the screen, and the administrator is told
-<<<<<<< HEAD
- * "error" about a form they can in fact correct. The platform answers a refusal with
- * a JSON body whose `message` is the code; a body that is not JSON is read as the
- * code itself.
-=======
  * "error" about something they can in fact correct. Depending on the error
  * handling in front of the servlet the code reaches the browser as a JSON body
  * whose `message` is the code, or as the bare code: both are read.
->>>>>>> 7b391517 (feat: designate the mail connector through the shared managed mode - EXO-89652)
  *
  * @param {Response} resp the refused response
  * @param {string} fallback message to use when the body carries nothing
