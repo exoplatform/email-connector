@@ -261,7 +261,8 @@ export default {
         .catch(() => this.suggestionCounts = {});
     },
     /**
-     * The line saying what the user decided on a rule's suggestions.
+     * The line saying what the user decided on a rule's suggestions, those continued in
+     * the chat included.
      *
      * @param {Object} counts - {approved, rejected, expired, handedOver, waiting}
      * @returns {String} the localized line
@@ -272,6 +273,7 @@ export default {
         1: counts.rejected || 0,
         2: counts.expired || 0,
         3: counts.waiting || 0,
+        4: counts.handedOver || 0,
       });
     },
     /**
