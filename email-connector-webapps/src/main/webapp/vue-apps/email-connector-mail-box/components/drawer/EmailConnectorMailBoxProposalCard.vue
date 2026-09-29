@@ -24,8 +24,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        Everything is text: no markup, no link. One decision per card: Approve runs the
        call as the user, through the platform's own tool path; Reject; Continue in the
        chat hands it to the regular AI chat, after which it never runs from here. -->
-  <!-- Compact until opened: a pending card is one row -- the tool's title with the
-       assistant's reason on one line under it, Approve, Reject and the Details chevron --,
+  <!-- Compact until opened: a pending card is one row -- the tool's title, the call's
+       recipients, people and places under it, wrapped when long, the assistant's reason
+       on one line, Approve, Reject and the Details chevron --,
        a decided one a single line of its status icon, title and status. The details --
        the tool's id and description, the arguments as a key/value list, the whole reason,
        the error, Continue in the chat -- open under the chevron. -->
@@ -59,6 +60,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :title="title"
           class="text-body-2 font-weight-bold text-truncate">
           {{ title }}
+        </div>
+        <!-- Who and where the call reaches, before it can be approved: its recipients,
+             people and places, the first few of each; the full list is in the details.
+             An address outside the owner's domain shows in the warning colour, first
+             of its group. The line wraps rather than cut: what it names is never hidden
+             by the drawer's width. -->
+        <div
+          v-if="waiting && targetSegments.length"
+          :title="targetsTitle"
+          class="text-caption text-break"
+          style="white-space: normal;">
+          <span
+            v-for="(segment, segmentIndex) in targetSegments"
+            :key="`target-${segmentIndex}`"
+            :class="segment.class"
+            :title="segment.title">{{ segment.text }}</span>
         </div>
         <div
           v-if="waiting && proposal.rationale && !open"
@@ -214,6 +231,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { FILTER_PROPOSAL_EXTENSION } from '../../../email-connector-user-setting/js/EmailConnectorFilters.js';
+import { SHOWN_PER_GROUP, addressOf, domainOf, isExternalAddress, ownerAddress, projectName, proposalTargets } from '../../js/EmailConnectorProposalTargets.js';
 
 /** An argument naming a space by its id, as the platform's tools name them. */
 const SPACE_ID_ARGUMENT = /(^|_)space_?id$/i;
@@ -283,6 +301,10 @@ export default {
     open: false,
     // The names the platform gave the ids and usernames of the arguments, by raw value.
     names: {},
+    // The names of the task projects the arguments name, by id.
+    projectNames: {},
+    // The domain of the mailbox owner's own address: null until read, or when unknown.
+    ownerDomain: null,
   }),
   computed: {
     /**
@@ -377,6 +399,66 @@ export default {
       return Object.keys(this.parsedArguments).map(key => ({ key, text: this.valueText(this.parsedArguments[key]) }));
     },
     /**
+     * The folded row's recipients, people and places: each group the call's arguments
+     * name, its first values as shown -- the addresses outside the owner's organisation
+     * first, so a long list never pushes them under "+N" --, and how many more the
+     * details hold.
+     *
+     * @returns {Object[]} {group, shown: [{text, external}], more}
+     */
+    targetGroups() {
+      return proposalTargets(this.parsedArguments).map(({ group, values }) => {
+        const all = values.map(value => ({
+          text: this.targetText(value),
+          external: value.kind === 'address' && isExternalAddress(value.raw, this.ownerDomain),
+        }));
+        const ordered = all.filter(value => value.external).concat(all.filter(value => !value.external));
+        return {
+          group,
+          shown: ordered.slice(0, SHOWN_PER_GROUP),
+          more: Math.max(0, ordered.length - SHOWN_PER_GROUP),
+        };
+      });
+    },
+    /**
+     * The folded row's targets line, as text segments: each group's label, its values
+     * -- an address outside the owner's organisation in the warning colour, with its
+     * tooltip and the same words for screen readers --, then "+N" when it has more.
+     *
+     * @returns {Object[]} {text, class, title}
+     */
+    targetSegments() {
+      const external = this.$t('emailConnector.mailBox.automations.proposal.target.external');
+      const segments = [];
+      this.targetGroups.forEach((group, groupIndex) => {
+        if (groupIndex) {
+          segments.push({ text: ' · ', class: 'text-sub-title' });
+        }
+        segments.push({ text: `${this.$t(`emailConnector.mailBox.automations.proposal.target.${group.group}`)} `, class: 'text-sub-title' });
+        group.shown.forEach((value, valueIndex) => {
+          if (valueIndex) {
+            segments.push({ text: ', ' });
+          }
+          if (value.external) {
+            segments.push({ text: value.text, class: 'warning--text font-weight-bold', title: external });
+            segments.push({ text: ` (${external})`, class: 'd-sr-only' });
+          } else {
+            segments.push({ text: value.text });
+          }
+        });
+        if (group.more) {
+          segments.push({ text: ` ${this.$t('emailConnector.mailBox.automations.proposal.target.more', { 0: group.more })}`, class: 'text-sub-title' });
+        }
+      });
+      return segments;
+    },
+    /**
+     * @returns {String} the targets line as plain text, for its tooltip
+     */
+    targetsTitle() {
+      return this.targetSegments.filter(segment => segment.class !== 'd-sr-only').map(segment => segment.text).join('');
+    },
+    /**
      * @returns {String} how long the proposal still waits
      */
     expiryLine() {
@@ -424,6 +506,7 @@ export default {
   },
   created() {
     this.resolveNames();
+    this.readOwnerDomain();
   },
   mounted() {
     this.observeDescription();
@@ -509,27 +592,78 @@ export default {
     },
     /**
      * Asks the platform's own services for the names of the arguments that name a space
-     * by its id or a user by username -- each read with the user's own rights, so a space
-     * the user may not see stays a raw id.
+     * by its id, a user by username or a task project by its id -- each read with the
+     * user's own rights, so a space or project the user may not see stays a raw id.
      *
      * @returns {void}
      */
     resolveNames() {
       const args = this.parsedArguments || {};
+      const spaces = new Set();
+      const users = new Set();
+      const projects = new Set();
       Object.keys(args).forEach(key => {
         const values = Array.isArray(args[key]) ? args[key] : [args[key]];
         values.filter(value => typeof value === 'string' || typeof value === 'number').forEach(value => {
-          if (SPACE_ID_ARGUMENT.test(key) && /^\d+$/.test(String(value)) && this.$spaceService) {
-            this.$spaceService.getSpaceById(value)
-              .then(space => space?.displayName && this.$set(this.names, String(value), space.displayName))
-              .catch(() => null);
-          } else if (USERNAME_ARGUMENT.test(key) && this.$userService) {
-            this.$userService.getUser(value)
-              .then(user => user?.fullname && this.$set(this.names, String(value), user.fullname))
-              .catch(() => null);
+          if (SPACE_ID_ARGUMENT.test(key)) {
+            spaces.add(String(value));
+          } else if (USERNAME_ARGUMENT.test(key)) {
+            users.add(String(value));
           }
         });
       });
+      proposalTargets(args).forEach(({ values }) => values.forEach(value => {
+        if (value.kind === 'space') {
+          spaces.add(value.raw);
+        } else if (value.kind === 'user') {
+          users.add(value.raw);
+        } else if (value.kind === 'project') {
+          projects.add(value.raw);
+        }
+      }));
+      [...spaces].filter(value => /^\d+$/.test(value) && this.$spaceService).forEach(value => {
+        this.$spaceService.getSpaceById(value)
+          .then(space => space?.displayName && this.$set(this.names, value, space.displayName))
+          .catch(() => null);
+      });
+      [...users].filter(() => this.$userService).forEach(value => {
+        this.$userService.getUser(value)
+          .then(user => user?.fullname && this.$set(this.names, value, user.fullname))
+          .catch(() => null);
+      });
+      [...projects].filter(value => /^\d+$/.test(value)).forEach(value => {
+        projectName(value).then(name => name && this.$set(this.projectNames, value, name));
+      });
+    },
+    /**
+     * Reads the domain of the mailbox owner's own address, against which the folded row
+     * tells the recipients outside the organisation. Until read, or when it cannot be,
+     * every address counts as outside.
+     *
+     * @returns {void}
+     */
+    readOwnerDomain() {
+      ownerAddress(this.$emailConnectorCommonService)
+        .then(address => this.ownerDomain = address ? domainOf(address) : null);
+    },
+    /**
+     * A target as the folded row shows it: an address bare, a user, space or project by
+     * the name the platform gave it, else as given.
+     *
+     * @param {Object} value - the target {kind, raw}
+     * @returns {String} the text
+     */
+    targetText(value) {
+      if (value.kind === 'address') {
+        return addressOf(value.raw);
+      }
+      if (value.kind === 'project') {
+        return this.projectNames[value.raw] || value.raw;
+      }
+      if (value.kind === 'user' || value.kind === 'space') {
+        return this.names[value.raw] || value.raw;
+      }
+      return value.raw;
     },
     /**
      * The first link of this eXo a tool's answer carries: the answer is unwrapped first --
