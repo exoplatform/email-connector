@@ -45,6 +45,7 @@ import org.exoplatform.emailConnector.exception.EngineInUseException;
 import org.exoplatform.emailConnector.model.ConnectorEngines;
 import org.exoplatform.emailConnector.model.ConnectorForwarding;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.EmailConnectorProviderConfig;
 import org.exoplatform.emailConnector.model.EmailManagedMode;
 import org.exoplatform.emailConnector.model.EmailSyncExecutorStatus;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
@@ -759,22 +760,23 @@ public class EmailConnectorRest {
 
   /**
    * Retrieves the provider configuration of an email connector. This will return the
-   * stored provider configuration of an email connector, without any secret value.
+   * stored provider configuration of an email connector, without any secret value, and
+   * the keys of the secret fields that have a value stored.
    *
    * @param request the caller's request, for the acting user
    * @param emailConnectorId email connector technical id
-   * @return the answer, as Map&lt;String, String&gt;
+   * @return the non-secret values and the stored secrets' keys
    */
   @GetMapping(path = "/{emailConnectorId}/provider-config")
   @Secured("administrators")
-  @Operation(summary = "Retrieves the provider configuration of an email connector", method = "GET", description = "This will return the stored provider configuration of an email connector, without any secret value")
+  @Operation(summary = "Retrieves the provider configuration of an email connector", method = "GET", description = "This will return the stored provider configuration of an email connector, without any secret value, and the keys of the secret fields that have a value stored")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden operation") })
-  public Map<String, String> getProviderConfig(HttpServletRequest request,
-                                               @Parameter(description = "Email connector technical id", required = true)
-                                               @PathVariable("emailConnectorId")
-                                               Long emailConnectorId) {
+  public EmailConnectorProviderConfig getProviderConfig(HttpServletRequest request,
+                                                        @Parameter(description = "Email connector technical id", required = true)
+                                                        @PathVariable("emailConnectorId")
+                                                        Long emailConnectorId) {
     try {
       return emailConnectorService.getProviderConfig(emailConnectorId, request.getRemoteUser());
     } catch (IllegalAccessException e) {

@@ -217,7 +217,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <provider-config-fields
           v-model="providerConfig"
           :fields="selectedProviderFields"
-          :secrets-stored="!!emailConnector.id"
+          :stored-secret-keys="storedSecretKeys"
+          :stored-values="storedProviderConfig.values"
           @valid="providerConfigValid = $event" />
         <email-connector-admin-forwarding-section
           v-if="emailConnector.id && forwarding"
@@ -294,6 +295,10 @@ export default {
     // any secret, so a secret field shows empty and an unrelated save leaves
     // the stored one alone.
     providerConfig: {},
+    // What the server holds for the stored provider, as opened: its non-secret values
+    // and which of its secrets have a value. Kept apart from providerConfig, which the
+    // administrator edits, because the secret fields compare against it.
+    storedProviderConfig: {values: {}, storedSecretKeys: []},
     // Whether the selected provider's required fields are all filled. The drawer does
     // not know what those fields are - the renderer tells it, so the save button can
     // be disabled without this file learning anything about any provider.
@@ -311,6 +316,16 @@ export default {
     loadedEngines: null,
   }),
   computed: {
+    /**
+     * The secrets stored for the provider being edited. None once another provider is
+     * selected: what is stored belongs to the stored provider, and the new one has
+     * nothing yet, so its required secret must be typed.
+     *
+     * @returns {Array} the keys of the stored secret fields
+     */
+    storedSecretKeys() {
+      return this.changesProvider() ? [] : this.storedProviderConfig.storedSecretKeys || [];
+    },
     disconnectionConfirmMessage() {
       const count = this.pendingDisconnections === 1
         ? this.$t('emailConnector.admin.connectors.drawer.disconnection.one')
@@ -396,9 +411,10 @@ export default {
       this.storedProviderName = emailConnector && emailConnector.authProviderName || '';
       this.pendingDisconnections = 0;
       this.activeWebmailAccess = !!this.emailConnector.webmailUrl;
-      this.providerConfig = emailConnector && emailConnector.id
+      this.storedProviderConfig = emailConnector && emailConnector.id
         && await this.loadProviderConfig(emailConnector.id)
-        || {};
+        || {values: {}, storedSecretKeys: []};
+      this.providerConfig = {...this.storedProviderConfig.values};
       this.forwardingValid = true;
       this.forwarding = emailConnector && emailConnector.id
         && await this.$emailConnectorAdministrationService.getConnectorForwarding(emailConnector.id).catch(() => null)
@@ -434,6 +450,7 @@ export default {
       this.loadedForwarding = null;
       this.engines = null;
       this.loadedEngines = null;
+      this.storedProviderConfig = {values: {}, storedSecretKeys: []};
       this.$refs.emailConnectorDrawer.close();
     },
     /**
@@ -465,16 +482,19 @@ export default {
       this.emailConnector.imageFileId = null;
     },
     /**
-     * The configuration already stored for a connector, without its secrets.
+     * The configuration already stored for a connector, without its secrets, and which
+     * of its secrets are stored.
      *
      * @param {number} emailConnectorId technical id of the connector being edited
-     * @returns {Promise} the stored values, empty on failure
+     * @returns {Promise} the stored values and secret keys, both empty on failure - a
+     *          secret then reads as missing, and the administrator is asked for it
      */
     async loadProviderConfig(emailConnectorId) {
       try {
-        return await this.$emailConnectorAdministrationService.getProviderConfig(emailConnectorId);
+        const stored = await this.$emailConnectorAdministrationService.getProviderConfig(emailConnectorId);
+        return {values: stored?.values || {}, storedSecretKeys: stored?.storedSecretKeys || []};
       } catch (e) {
-        return {};
+        return null;
       }
     },
     /**
