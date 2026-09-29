@@ -183,10 +183,10 @@ export function dragLabel(count, t) {
 
 // The picture that follows the pointer (EXO-90460): a real element of the page -- the
 // move icon and how many rows move -- put under the pointer on every dragover, as the
-// Documents app does. Not the browser's own picture: that one is a photograph of an
-// element taken as the drag starts, and it came out as an empty square on the tester's
-// browser. The browser's picture is replaced by a transparent pixel, so nothing else
-// follows the pointer.
+// Documents app does. Not the browser's own picture (setDragImage): that is a photograph
+// of an element taken when the drag starts, and some browsers draw it empty. The
+// browser's picture is replaced by a transparent pixel, so nothing else follows the
+// pointer.
 
 // A transparent pixel, loaded as the module loads so it is ready for the first drag: an
 // image not yet loaded is refused, and the browser then photographs the row.
