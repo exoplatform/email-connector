@@ -234,6 +234,7 @@ import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
 import org.exoplatform.services.listener.ListenerService;
 
@@ -16729,5 +16730,138 @@ public class EmailBoxServiceTest {
 
     verify(smtpTransmitter, times(1)).transmit(any(MimeMessage.class));
     verify(emailCredentialsResolver, never()).invalidate(any(), any(), any(), any());
+  }
+
+  /**
+   * The live spam read of the filters' assistant (EXO-90668): one connection, the inbox
+   * opened read-only, the one message at the cached UID fetched with its flags, its
+   * Message-ID and its verdict headers, then the inbox and the store closed.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void isFlaggedAsSpamOnServerReadsTheInboxReadOnlyAndClosesIt() throws Exception {
+    Store store = spamReadStore();
+    IMAPFolder inbox = (IMAPFolder) store.getFolder(MailFolder.INBOX);
+    Message message = spamReadMessage(inbox, 77L, "<m1@acme.com>", new String[] { "YES" }, "$Junk");
+
+    assertEquals(Boolean.TRUE, emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 77L, "<m1@acme.com>"));
+
+    verify(inbox).open(Folder.READ_ONLY);
+    verify(inbox, never()).open(Folder.READ_WRITE);
+    ArgumentCaptor<FetchProfile> profile = ArgumentCaptor.forClass(FetchProfile.class);
+    verify(inbox).fetch(eq(new Message[] { message }), profile.capture());
+    assertTrue(profile.getValue().contains(FetchProfile.Item.FLAGS));
+    assertTrue(profile.getValue().contains("Message-ID"), "the Message-ID is fetched to check the UID");
+    assertTrue(profile.getValue().contains("X-Spam-Flag"));
+    verify(inbox).close(false);
+    verify(store).close();
+
+    when(message.getFlags()).thenReturn(new Flags());
+    when(message.getHeader("X-Spam-Flag")).thenReturn(null);
+    assertEquals(Boolean.FALSE, emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 77L, "<m1@acme.com>"), "an unmarked mail");
+  }
+
+  /**
+   * A UID the inbox no longer holds reads as gone (null), and the connection is closed
+   * all the same.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void isFlaggedAsSpamOnServerTellsAnUnknownUidAsGone() throws Exception {
+    Store store = spamReadStore();
+    IMAPFolder inbox = (IMAPFolder) store.getFolder(MailFolder.INBOX);
+    when(inbox.getMessageByUID(78L)).thenReturn(null);
+
+    assertNull(emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 78L, "<m1@acme.com>"));
+
+    verify(inbox).close(false);
+    verify(store).close();
+  }
+
+  /**
+   * The cached UID is not trusted alone (EXO-90668): the message found there must carry
+   * the match's Message-ID -- spelled as the server's ENVELOPE may spell it --, or the
+   * mail reads as gone rather than another mail's marks being read for it. A Message-ID
+   * eXo minted for a mail that had none cannot be checked, so the UID is trusted then.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void isFlaggedAsSpamOnServerReadsGoneWhenTheUidHoldsAnotherMail() throws Exception {
+    Store store = spamReadStore();
+    IMAPFolder inbox = (IMAPFolder) store.getFolder(MailFolder.INBOX);
+    spamReadMessage(inbox, 79L, "<other@acme.com>", new String[] { "YES" }, "$Junk");
+
+    assertNull(emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 79L, "<m1@acme.com>"), "another mail at that UID");
+    assertEquals(Boolean.TRUE, emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 79L, "<other@ACME.com>"), "the same id");
+    assertEquals(Boolean.TRUE,
+                 emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 79L, EmailThreadingUtils.synthesizeMessageId(79L, TEST_USER)),
+                 "a minted id is not checked");
+    verify(inbox, times(3)).close(false);
+    verify(store, times(3)).close();
+  }
+
+  /**
+   * A server that cannot be reached or read is an {@link IllegalStateException} for the
+   * guard to wait on -- a credentials failure too --, and whatever was opened is closed.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void isFlaggedAsSpamOnServerFailsAsIllegalStateAndClosesWhatItOpened() throws Exception {
+    Store store = spamReadStore();
+    IMAPFolder inbox = (IMAPFolder) store.getFolder(MailFolder.INBOX);
+    when(inbox.getMessageByUID(80L)).thenThrow(new MessagingException("connection reset"));
+
+    assertThrows(IllegalStateException.class, () -> emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 80L, "<m1@acme.com>"));
+    verify(inbox).close(false);
+    verify(store).close();
+
+    when(userEmailSettingService.connect(anyString(), anyString())).thenThrow(new ConnectorCredentialsException("expired"));
+    assertThrows(IllegalStateException.class, () -> emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 80L, "<m1@acme.com>"));
+  }
+
+  /**
+   * A connected owner whose inbox is an open-able mock and whose store is connected.
+   *
+   * @return the store
+   * @throws Exception never
+   */
+  private Store spamReadStore() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    lenient().when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    IMAPFolder inbox = mock(IMAPFolder.class);
+    when(store.getFolder(MailFolder.INBOX)).thenReturn(inbox);
+    lenient().when(inbox.isOpen()).thenReturn(true);
+    lenient().when(store.isConnected()).thenReturn(true);
+    return store;
+  }
+
+  /**
+   * A message of the inbox at a UID, with its Message-ID, a spam flag header and keywords.
+   *
+   * @param inbox the inbox
+   * @param uid the UID
+   * @param messageId its Message-ID header
+   * @param spamFlag its X-Spam-Flag values
+   * @param keywords its keywords
+   * @return the message
+   * @throws Exception never
+   */
+  private static Message spamReadMessage(IMAPFolder inbox, long uid, String messageId, String[] spamFlag, String... keywords) throws Exception {
+    Message message = mock(Message.class);
+    when(inbox.getMessageByUID(uid)).thenReturn(message);
+    lenient().when(message.getHeader("Message-ID")).thenReturn(new String[] { messageId });
+    Flags flags = new Flags();
+    for (String keyword : keywords) {
+      flags.add(keyword);
+    }
+    lenient().when(message.getFlags()).thenReturn(flags);
+    lenient().when(message.getHeader("X-Spam-Flag")).thenReturn(spamFlag);
+    return message;
   }
 }
