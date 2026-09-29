@@ -337,6 +337,45 @@ public class EmailBoxRestTest {
     verify(emailBoxService).updateEmailStarredStatus(emailIds, SIMPLE_USER, "CUSTOM:6", false, true);
   }
 
+  /**
+   * EXO-90550 -- the folder travels to the service, and its refusals keep their codes:
+   * a shared folder the star is not offered in (its Trash, Spam or Drafts) is a 400, a
+   * missing right a 401, a share gone a 410.
+   */
+  @Test
+  void aStarInAFolderIsAddressedThereAndItsRefusalsKeepTheirCodes() throws Exception {
+    List<Long> emailIds = List.of(7L);
+    when(emailBoxService.updateEmailStarredStatus(emailIds, SIMPLE_USER, "CUSTOM:10", true, true)).thenReturn(0);
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=true&folder=CUSTOM:10").with(testSimpleUser())
+                                                                                    .content(asJsonString(emailIds))
+                                                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                                                    .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailBoxService).updateEmailStarredStatus(emailIds, SIMPLE_USER, "CUSTOM:10", true, true);
+
+    when(emailBoxService.updateEmailStarredStatus(emailIds, SIMPLE_USER, "CUSTOM:13", true, true))
+        .thenThrow(new IllegalArgumentException("emailConnector.star.folderNotSupported"));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=true&folder=CUSTOM:13").with(testSimpleUser())
+                                                                                    .content(asJsonString(emailIds))
+                                                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                                                    .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest());
+    when(emailBoxService.updateEmailStarredStatus(emailIds, SIMPLE_USER, "CUSTOM:11", true, true))
+        .thenThrow(new MailboxRightMissingException(MailboxRights.WRITE));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=true&folder=CUSTOM:11").with(testSimpleUser())
+                                                                                    .content(asJsonString(emailIds))
+                                                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                                                    .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isUnauthorized());
+    when(emailBoxService.updateEmailStarredStatus(emailIds, SIMPLE_USER, "CUSTOM:12", true, true))
+        .thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=true&folder=CUSTOM:12").with(testSimpleUser())
+                                                                                    .content(asJsonString(emailIds))
+                                                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                                                    .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isGone());
+  }
+
   @Test
   void deleteEmail() throws Exception {
     ResultActions response = mockMvc.perform(delete(EMAIL_BOX_PATH).with(testSimpleUser()));
