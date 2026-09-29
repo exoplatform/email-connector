@@ -755,11 +755,11 @@ public class UserEmailSettingService {
    * (it warns) rather than guessing. Held weakly: a store nobody holds any more is
    * forgotten with it.
    *
-   * @param store a connected store
+   * @param store a connected store; null answers null, as the map holds no null key
    * @return the account, or null for a store not connected through that method
    */
   public ConnectedAccount getConnectedAccount(Store store) {
-    return store == null ? null : connectedAccounts.get(store);
+    return connectedAccounts.get(store);
   }
 
   /**
