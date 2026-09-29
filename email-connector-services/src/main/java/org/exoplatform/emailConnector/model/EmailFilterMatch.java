@@ -47,8 +47,8 @@ public class EmailFilterMatch {
   public static final String       AGENT_FAILED           = "FAILED";
 
   /**
-   * Not run: the mailbox's daily cap on assistant runs was reached, or too many of its
-   * mails wait for the assistant; the match's last error says which.
+   * Not run: the mailbox's daily cap on the matches the assistant runs on was reached,
+   * or too many of its mails wait for the assistant; the match's last error says which.
    */
   public static final String       AGENT_SKIPPED_CAP      = "SKIPPED_CAP";
 
