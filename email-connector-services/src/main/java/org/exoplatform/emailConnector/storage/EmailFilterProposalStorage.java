@@ -18,8 +18,11 @@ package org.exoplatform.emailConnector.storage;
 
 import java.util.Collection;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -32,6 +35,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import org.exoplatform.emailConnector.dao.EmailFilterProposalDAO;
 import org.exoplatform.emailConnector.entity.EmailFilterProposalEntity;
 import org.exoplatform.emailConnector.model.EmailFilterProposal;
+import org.exoplatform.emailConnector.model.EmailFilterSuggestionCounts;
 
 import io.meeds.social.util.JsonUtils;
 
@@ -274,6 +278,42 @@ public class EmailFilterProposalStorage {
   public int expireOfMatch(String userId, long matchId, String reason, Date now) {
     return emailFilterProposalDAO.expireOfMatch(userId, matchId, EmailFilterProposal.PROPOSED, EmailFilterProposal.EXPIRED, reason, now);
   }
+
+  /**
+   * What the owner decided on each rule's suggestions: per rule, how many were approved
+   * (running, done or failed once approved), rejected, expired unanswered, handed to the
+   * chat, and how many still wait. Read from the proposals themselves, which live as long
+   * as the matches they belong to (the rules' log retention). Call {@link #expireDue}
+   * first for the expired ones to be counted as such.
+   *
+   * @param userId the owner
+   * @return the counts, one per rule that has any, by rule id
+   */
+  public List<EmailFilterSuggestionCounts> countByFilter(String userId) {
+    Map<Long, Map<String, Long>> byFilter = new TreeMap<>();
+    for (Object[] row : emailFilterProposalDAO.countByFilterAndStatus(userId)) {
+      byFilter.computeIfAbsent((Long) row[0], key -> new HashMap<>()).merge((String) row[1], ((Number) row[2]).longValue(), Long::sum);
+    }
+    Map<Long, Long> superseded = new HashMap<>();
+    for (Object[] row : emailFilterProposalDAO.countByFilterForReason(userId,
+                                                                     EmailFilterProposal.EXPIRED,
+                                                                     EmailFilterProposal.SUPERSEDED)) {
+      superseded.put((Long) row[0], ((Number) row[1]).longValue());
+    }
+    return byFilter.entrySet().stream().map(entry -> {
+      Map<String, Long> counts = entry.getValue();
+      long approved = counts.getOrDefault(EmailFilterProposal.RUNNING, 0L) + counts.getOrDefault(EmailFilterProposal.DONE, 0L)
+          + counts.getOrDefault(EmailFilterProposal.FAILED, 0L);
+      long expired = Math.max(0L, counts.getOrDefault(EmailFilterProposal.EXPIRED, 0L) - superseded.getOrDefault(entry.getKey(), 0L));
+      return new EmailFilterSuggestionCounts(entry.getKey(),
+                                             approved,
+                                             counts.getOrDefault(EmailFilterProposal.REJECTED, 0L),
+                                             expired,
+                                             counts.getOrDefault(EmailFilterProposal.HANDED_OVER, 0L),
+                                             counts.getOrDefault(EmailFilterProposal.PROPOSED, 0L));
+    }).toList();
+  }
+
 
   /**
    * The key of a call: SHA-256, in lower-case hex, of the tool's name and of the
