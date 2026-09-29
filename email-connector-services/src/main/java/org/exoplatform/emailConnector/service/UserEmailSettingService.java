@@ -80,6 +80,15 @@ public class UserEmailSettingService {
   public static final String        USER_EMAIL_SETTING_KEY                             = "userEmailSetting";
 
   /**
+   * The setting that marks a connection made by managed mode rather than by the user,
+   * stored beside the user's email setting. Its presence is the whole
+   * fact: the users it marks are listed by one query on the key, and they are always
+   * connected to the designated connector, since changing the designation disconnects
+   * them.
+   */
+  public static final String        CONNECTED_BY_MANAGED_MODE_KEY                      = "connectedByManagedMode";
+
+  /**
    * The address-book sync's own key, deliberately NOT a field of
    * {@link #USER_EMAIL_SETTING_KEY}: the mailbox sync rewrites that whole document
    * on every status update, so sharing it would let the two syncs overwrite each
@@ -156,6 +165,9 @@ public class UserEmailSettingService {
       store = connectWithTypedCredentials(userEmailSetting,
                                           emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId())));
       setUserEmailSetting(userEmailSetting, username, broadcast);
+      // A connection the user makes is their own choice, even on the connector managed
+      // mode had attached them to.
+      markConnectedByManagedMode(username, false);
       eventPublisher.publishEvent(new EmailBoxSyncEvent(username));
     } catch (Exception e) {
       LOG.error("Error when connecting store for user {}", username, e);
@@ -196,6 +208,26 @@ public class UserEmailSettingService {
    */
   @Transactional(rollbackFor = Exception.class)
   public void connectThroughProvider(long emailConnectorId, String username) throws IllegalAccessException {
+    connectThroughProvider(emailConnectorId, username, false);
+  }
+
+  /**
+   * Connects a user through the connector's provider, as
+   * {@link #connectThroughProvider(long, String)} does, and records who made the
+   * connection: managed mode at login, or the user themselves. Only a
+   * connection made by managed mode is marked; one the user makes clears the mark,
+   * since it is their own choice from then on.
+   *
+   * @param emailConnectorId the connector preset to connect to
+   * @param username the eXo login connecting
+   * @param byManagedMode true when managed mode makes the connection at login
+   * @throws IllegalAccessException when the user may not connect this connector
+   * @throws IllegalArgumentException when the provider expects the user to supply
+   *           something, or names no mailbox
+   * @throws IllegalStateException when the mailbox refuses the service account
+   */
+  @Transactional
+  public void connectThroughProvider(long emailConnectorId, String username, boolean byManagedMode) throws IllegalAccessException {
     if (!canConnect(emailConnectorId, username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE, username));
     }
@@ -217,6 +249,7 @@ public class UserEmailSettingService {
       connected.setEmailConnectorId(String.valueOf(emailConnectorId));
       connected.setEmailAddress(address);
       setUserEmailSetting(connected, username, true);
+      markConnectedByManagedMode(username, byManagedMode);
       eventPublisher.publishEvent(new EmailBoxSyncEvent(username));
     } catch (ConnectorCredentialsException | MessagingException e) {
       // A refusal: the provider produced no material for this user, or the mail
@@ -462,6 +495,7 @@ public class UserEmailSettingService {
   @Transactional(propagation = Propagation.REQUIRES_NEW)
   public void deleteUserEmailSetting(String username) {
     settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
+    settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONNECTED_BY_MANAGED_MODE_KEY);
     // The signature belongs to the mail account's composer, so disconnecting the
     // mailbox takes it along -- its stored document AND its uploaded image file,
     // which nothing else would ever clean up.
@@ -474,7 +508,7 @@ public class UserEmailSettingService {
    *
    * @param emailConnectorId email connector id
    * @return list of users with emailConnectorId configured in their user email
-   *         setting
+   *         setting; a user whose document cannot be read is logged and left out
    */
   public List<String> getUserEmailSettingsByEmailConnectorId(long emailConnectorId) {
     List<Context> contexts =
@@ -484,11 +518,81 @@ public class UserEmailSettingService {
                                                                                   EmailConnectorService.USER_EMAIL_SETTING_KEY,
                                                                                   0,
                                                                                   Integer.MAX_VALUE);
-    List<String> users = contexts.stream().filter(context -> {
-      UserEmailSetting userEmailSetting = getUserEmailSetting(context.getId());
-      return userEmailSetting.getEmailConnectorId().equals(String.valueOf(emailConnectorId));
-    }).map(Context::getId).toList();
-    return users;
+    String connectorId = String.valueOf(emailConnectorId);
+    return contexts.stream().map(Context::getId).filter(user -> isStoredOn(user, connectorId)).toList();
+  }
+
+  private boolean isStoredOn(String username, String connectorId) {
+    try {
+      return connectorId.equals(getStoredEmailConnectorId(username));
+    } catch (Exception e) {
+      // Exception, not RuntimeException: a malformed document surfaces as Jackson's
+      // checked exception, thrown sneakily. One unreadable user must not fail the walk.
+      LOG.warn("Cannot read the mail setting of user {}; left out of the users of connector {}", username, connectorId, e);
+      return false;
+    }
+  }
+
+  /**
+   * The connector a user's stored setting names, read from the document alone: no
+   * password decode, no connector read. What a walk over every user needs, and
+   * nothing more.
+   *
+   * @param username the eXo login
+   * @return the connector id as stored, or null when the user has no mail setting
+   */
+  public String getStoredEmailConnectorId(String username) {
+    SettingValue<?> value = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
+    if (value == null || value.getValue() == null) {
+      return null;
+    }
+    UserEmailSettingEntity stored = JsonUtils.fromJsonString(value.getValue().toString(), UserEmailSettingEntity.class);
+    return stored == null ? null : stored.getEmailConnectorId();
+  }
+
+  /**
+   * The users whose mail connection managed mode made, by one query on
+   * the {@link #CONNECTED_BY_MANAGED_MODE_KEY} setting - no user document is read.
+   *
+   * @return the eXo logins, empty when nobody was attached by managed mode
+   */
+  public List<String> getUsersConnectedByManagedMode() {
+    return settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                  Scope.APPLICATION.getName(),
+                                                                  EmailConnectorService.EMAIL_CONNECTOR_SCOPE_ID,
+                                                                  CONNECTED_BY_MANAGED_MODE_KEY,
+                                                                  0,
+                                                                  Integer.MAX_VALUE)
+                         .stream()
+                         .map(Context::getId)
+                         .toList();
+  }
+
+  /**
+   * Whether this user's mail connection was made by managed mode.
+   *
+   * @param username the eXo login
+   * @return true when managed mode made it and the user has not connected since
+   */
+  public boolean isConnectedByManagedMode(String username) {
+    return settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONNECTED_BY_MANAGED_MODE_KEY) != null;
+  }
+
+  /**
+   * Records, or clears, that managed mode made this user's connection.
+   *
+   * @param username the eXo login
+   * @param byManagedMode true to mark the connection, false to clear the mark
+   */
+  private void markConnectedByManagedMode(String username, boolean byManagedMode) {
+    if (byManagedMode) {
+      settingService.set(Context.USER.id(username),
+                         EMAIL_CONNECTOR_SCOPE,
+                         CONNECTED_BY_MANAGED_MODE_KEY,
+                         SettingValue.create(Boolean.TRUE.toString()));
+    } else {
+      settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONNECTED_BY_MANAGED_MODE_KEY);
+    }
   }
 
   /**

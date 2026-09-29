@@ -54,6 +54,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :candidates="managedCandidates"
       :connection-requirements="connectionRequirements"
       :save="saveManagedMode"
+      :preview="previewManagedMode"
+      :disconnection-message="$t('emailConnector.admin.managed.disconnection.message')"
       @saved="managedApplied"
       @cancelled="managedCancelled">
       <template #icon="{candidate}">
@@ -74,19 +76,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </managed-connector-drawer>
     <!--
       Off is not an ordinary flip either: it is an instance-wide change, so the
-      switch asks before it commits - and says what happens today: users choose
-      again, the accounts already connected keep syncing. What becomes of the
-      users managed mode attached is EXO-89654's, and its wording will change
-      when that lands.
+      switch asks before it commits - and says what it does: users choose again,
+      the accounts they connected themselves keep syncing, and the accounts
+      managed mode attached are disconnected, with how many.
     -->
     <confirm-dialog
       ref="managedOffConfirm"
       :title="$t('emailConnector.admin.managed.off.confirm.title')"
-      :message="$t('emailConnector.admin.managed.off.confirm.message', {0: managed && managed.connectorName || ''})"
+      :message="managedOffMessage"
       :ok-label="$t('emailConnector.admin.managed.off.confirm.ok')"
       :cancel-label="$t('emailConnector.admin.managed.off.confirm.cancel')"
       @ok="clearManagedMode"
-      @closed="managedOffDeclined" />
+      @dialog-closed="managedOffDeclined" />
   </div>
 </template>
 
@@ -124,8 +125,35 @@ export default {
      * them must leave the switch off.
      */
     managedOffConfirmed: false,
+    /** How many accounts switching managed mode off disconnects, counted when the switch is moved. */
+    offDisconnections: 0,
   }),
+  watch: {
+    // The connectors list greys out what managed mode forbids on its connector: it
+    // is told which one, each time what the instance decided is read again.
+    managed(value) {
+      this.$emit('managed-changed', value && value.connectorId || null);
+    },
+  },
   computed: {
+    /**
+     * What the off confirmation says: always who keeps their account, and, when
+     * managed mode attached anybody, how many accounts are disconnected and what
+     * they lose.
+     *
+     * @returns {String} the message of the confirmation
+     */
+    managedOffMessage() {
+      const kept = this.$t('emailConnector.admin.managed.off.confirm.message', {0: this.managed && this.managed.connectorName || ''});
+      const question = this.$t('emailConnector.admin.managed.off.confirm.question');
+      if (!this.offDisconnections) {
+        return `${kept} ${question}`;
+      }
+      const disconnected = this.offDisconnections === 1
+        ? this.$t('emailConnector.admin.managed.off.confirm.disconnect.one')
+        : this.$t('emailConnector.admin.managed.off.confirm.disconnect.many', {0: this.offDisconnections});
+      return `${disconnected} ${kept} ${question}`;
+    },
     /**
      * Who chooses the mail connector, in one line. Three answers, not two: an
      * instance with nothing declared yet is neither "users connect their own
@@ -202,10 +230,10 @@ export default {
     /**
      * Reacts to the switch, which commits nothing by itself. On opens the
      * drawer: there is no honest way to turn managed mode on without naming a
-     * connector. Off asks first: an instance-wide change.
+     * connector. Off asks first: an instance-wide change, counted first.
      *
      * @param {Boolean} on the position the switch was moved to
-     * @returns {void}
+     * @returns {Promise|undefined} resolves once the off confirmation is open
      */
     flipManagedMode(on) {
       if (on) {
@@ -213,7 +241,29 @@ export default {
         return;
       }
       this.managedOffConfirmed = false;
-      this.$refs.managedOffConfirm.open();
+      this.offDisconnections = 0;
+      // Counted before asking, so that the question says how many accounts it
+      // disconnects; without the count nothing is asked and the mode stays on.
+      return this.$emailConnectorAdministrationService.previewManagedMode(null, [])
+        .then(count => {
+          this.offDisconnections = count || 0;
+          this.$refs.managedOffConfirm.open();
+        })
+        .catch(error => {
+          console.error('cannot count the accounts switching managed mode off disconnects', error);
+          this.managedOn = true;
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.managed.off.countFailed'), 'error');
+        });
+    },
+    /**
+     * Counts, for the drawer, the accounts a choice would disconnect.
+     *
+     * @param {Number} connectorId the chosen connector
+     * @param {Array<String>} excludedGroups the eXo group ids the choice must not reach
+     * @returns {Promise<Number>} the number of accounts it disconnects
+     */
+    previewManagedMode(connectorId, excludedGroups) {
+      return this.$emailConnectorAdministrationService.previewManagedMode(connectorId, excludedGroups);
     },
     /**
      * Switches managed mode off, once confirmed.
@@ -235,7 +285,9 @@ export default {
         });
     },
     /**
-     * Puts the switch back on when the off confirmation closed without OK.
+     * Puts the switch back on when the off confirmation closed without OK - by
+     * Cancel, the close icon, Esc or a click outside it: bound to
+     * {@code dialog-closed}, the one event every way of closing emits.
      *
      * @returns {void}
      */
