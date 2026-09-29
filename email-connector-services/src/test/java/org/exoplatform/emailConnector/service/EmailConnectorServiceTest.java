@@ -146,6 +146,7 @@ public class EmailConnectorServiceTest {
     when(userAcl.isAdministrator(identity)).thenReturn(true);
     assertThrows(IllegalArgumentException.class, () -> emailConnectorService.updateEmailConnector(emailConnector, TEST_USER));
     emailConnector.setId(1L);
+    when(emailConnectorStorage.getEmailConnector(1L)).thenReturn(emailConnector);
     emailConnectorService.updateEmailConnector(emailConnector, TEST_USER);
     verify(emailConnectorStorage).updateEmailConnector(emailConnector);
   }
@@ -937,6 +938,74 @@ public class EmailConnectorServiceTest {
     assertThrows(IllegalArgumentException.class, () -> emailConnectorService.updateEmailConnector(posted, TEST_USER));
 
     verify(emailConnectorStorage, never()).updateEmailConnector(any());
+    verify(providerConfigStorage, never()).delete(any());
+  }
+
+  /**
+   * A connector deleted while an administrator was editing it is refused before any
+   * write: a configuration stored for it would sit under an id nothing reads or deletes.
+   */
+  @Test
+  @SneakyThrows
+  void updateOfAConnectorThatNoLongerExistsWritesNothing() {
+    grantAdministration();
+    EmailConnector posted = emailConnector();
+    posted.setId(7L);
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.updateEmailConnector(posted, TEST_USER));
+
+    verify(providerConfigStorage, never()).store(any(), any());
+    verify(emailConnectorStorage, never()).updateEmailConnector(any());
+  }
+
+  /**
+   * When the row write fails after the new provider's configuration was stored, that
+   * configuration is removed: the connector still points at the old provider, so no
+   * screen would show it and deleting the connector would not remove it.
+   */
+  @Test
+  @SneakyThrows
+  void aFailedRowWriteRemovesTheConfigurationStoredForTheNewProvider() {
+    grantAdministration();
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("personal-imap");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+    EmailConnector posted = emailConnector();
+    posted.setId(7L);
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+    doThrow(new IllegalStateException("row write failed")).when(emailConnectorStorage).updateEmailConnector(posted);
+
+    assertThrows(IllegalStateException.class, () -> emailConnectorService.updateEmailConnector(posted, TEST_USER));
+
+    verify(providerConfigStorage).delete(argThat(context -> context.getConnectorId() == 7L
+        && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())));
+    verify(providerConfigStorage, never()).delete(argThat(context -> "personal-imap".equals(context.getConnectorCredentialsProviderName())));
+  }
+
+  /**
+   * With the provider unchanged the stored configuration is the one the connector uses,
+   * so a failed row write removes nothing.
+   */
+  @Test
+  @SneakyThrows
+  void aFailedRowWriteKeepsTheConfigurationWhenTheProviderIsUnchanged() {
+    grantAdministration();
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+    EmailConnector posted = emailConnector();
+    posted.setId(7L);
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+    doThrow(new IllegalStateException("row write failed")).when(emailConnectorStorage).updateEmailConnector(posted);
+
+    assertThrows(IllegalStateException.class, () -> emailConnectorService.updateEmailConnector(posted, TEST_USER));
+
     verify(providerConfigStorage, never()).delete(any());
   }
 
