@@ -85,9 +85,14 @@ public class EmailConnectorEngineService {
 
   /**
    * Keeps the engines an administrator chose for a connector. Each must be installed,
-   * or be the one already kept, which a save that changes only the other one states
-   * back. A deployment property that decides the engine still wins; the choice is kept
-   * for when it is removed.
+   * or be the one already kept. A null one is left as kept, which is how the screen
+   * saves the one it changed only. A deployment property that decides the engine still
+   * wins; the choice is kept for when it is removed.
+   * <p>
+   * A switch applies to what comes next: what the engine switched from already wrote
+   * on the mail server — mailbox access granted to colleagues, a forward or an
+   * automatic reply — stays there, and is no longer read or removed from eXo through
+   * the engine switched to.
    *
    * @param connectorId the connector
    * @param engines the engines chosen; a null one keeps the one kept
@@ -180,6 +185,8 @@ public class EmailConnectorEngineService {
     ConnectorEngines engines = new ConnectorEngines();
     engines.setRulesEngine(serverRuleEngineRegistry.engineName(connector));
     engines.setAclEngine(mailboxAclEngineRegistry.engineName(connector));
+    engines.setRulesEngineChoice(serverRuleEngineRegistry.chosenEngineName(connector));
+    engines.setAclEngineChoice(mailboxAclEngineRegistry.chosenEngineName(connector));
     engines.setRulesEngines(serverRuleEngineRegistry.engineNames());
     engines.setAclEngines(mailboxAclEngineRegistry.engineNames());
     engines.setRulesEngineProperty(serverRuleEngineRegistry.overridingProperty(connector));

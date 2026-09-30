@@ -44,6 +44,18 @@ public class ConnectorEngines {
    */
   private String       aclEngine;
 
+  /**
+   * Answered only: the server rules engine this screen chose, or the default when
+   * none was chosen; what applies once no deployment property decides.
+   */
+  private String       rulesEngineChoice;
+
+  /**
+   * Answered only: the mailbox sharing engine this screen chose, or the default when
+   * none was chosen; what applies once no deployment property decides.
+   */
+  private String       aclEngineChoice;
+
   /** Answered only: the server rules engines installed, by name. */
   private List<String> rulesEngines         = new ArrayList<>();
 
