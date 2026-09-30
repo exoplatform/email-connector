@@ -16,7 +16,7 @@
  */
 package org.exoplatform.emailConnector.service.rules.bluemind;
 
-import static org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport.SUPPORTED;
+import static org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport.SUPPORTED_ELEMENT;
 import static org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport.unsupported;
 
 import java.time.DateTimeException;
@@ -316,15 +316,15 @@ public class BlueMindRuleEngine implements ServerRuleEngine {
    */
   static ServerRuleCapabilities capabilities() {
     Map<String, ElementSupport> elements = new LinkedHashMap<>();
-    for (String element : ServerRuleCapabilities.ELEMENTS) {
+    for (String element : ServerRuleCapabilities.ALL_ELEMENTS) {
       elements.put(element, unsupported(ServerRuleUnsupportedException.RULES_UNSUPPORTED));
     }
-    elements.put(ServerRuleCapabilities.VACATION, SUPPORTED);
-    elements.put(ServerRuleCapabilities.VACATION_DATE_WINDOW, SUPPORTED);
+    elements.put(ServerRuleCapabilities.VACATION, SUPPORTED_ELEMENT);
+    elements.put(ServerRuleCapabilities.VACATION_DATE_WINDOW, SUPPORTED_ELEMENT);
     elements.put(ServerRuleCapabilities.VACATION_HTML, unsupported(NOT_IN_PHASE_1));
-    elements.put(ServerRuleCapabilities.FORWARDING_READ, SUPPORTED);
+    elements.put(ServerRuleCapabilities.FORWARDING_READ, SUPPORTED_ELEMENT);
     elements.put(ServerRuleCapabilities.FORWARDING_WRITE, unsupported(NOT_IN_PHASE_1));
-    elements.put(ServerRuleCapabilities.READS_FOREIGN_VACATION, SUPPORTED);
+    elements.put(ServerRuleCapabilities.READS_FOREIGN_VACATION, SUPPORTED_ELEMENT);
     return new ServerRuleCapabilities(true, null, false, false, VocabularySource.FIXED, elements);
   }
 
