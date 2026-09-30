@@ -18,7 +18,6 @@ package org.exoplatform.emailConnector.service.rules.bluemind;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -30,6 +29,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -45,7 +45,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
-import org.exoplatform.emailConnector.exception.ForwardingRefusedException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.EmailConnector;
@@ -66,7 +65,6 @@ import org.exoplatform.emailConnector.service.bluemind.BlueMindTransportExceptio
 import org.exoplatform.emailConnector.service.bluemind.BlueMindVacation;
 import org.exoplatform.emailConnector.service.bluemind.FakeBlueMindTransport.Call;
 import org.exoplatform.emailConnector.service.bluemind.FakeBlueMindTransport;
-import org.exoplatform.emailConnector.service.rules.ForwardingGuard;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 
 /**
@@ -173,26 +171,28 @@ public class BlueMindRuleEngineTest {
     BlueMindRuleEngine springBuilt = BlueMindRuleEngine.class.getConstructor().newInstance();
     assertEquals(BlueMindRuleEngine.TRANSPORT_MISSING, springBuilt.probe(session).reasonCode());
   }
+
   /**
    * The engine takes nothing private to the host: no constructor parameter and no field
-   * is the host's {@code EmailCredentialsResolver}, a {@code @Component} the cross-WAR
-   * bridge does not export, so the engine can be contributed from another add-on's WAR.
-   * A refused login reaches the provider through the caller's own session instead.
-   * Mutant: a constructor or a field taking the resolver back fails this test.
+   * is the host's {@code EmailCredentialsResolver} or {@code ForwardingGuard}, both
+   * {@code @Component}s the cross-WAR bridge does not export, so the engine can be
+   * contributed from another add-on's WAR. A refused login reaches the provider through
+   * the caller's own session, and the host checks a forward's destination before calling
+   * any engine. Mutant: a constructor parameter or a field of either type fails this test.
    */
   @Test
-  public void testTheEngineTakesNoHostPrivateCredentialsBean() {
-    String resolver = "org.exoplatform.emailConnector.provider.EmailCredentialsResolver";
-    for (java.lang.reflect.Constructor<?> constructor : BlueMindRuleEngine.class.getConstructors()) {
+  public void testTheEngineTakesNoHostPrivateBean() {
+    Set<String> hostPrivate = Set.of("org.exoplatform.emailConnector.provider.EmailCredentialsResolver",
+                                     "org.exoplatform.emailConnector.service.rules.ForwardingGuard");
+    for (Constructor<?> constructor : BlueMindRuleEngine.class.getConstructors()) {
       for (Class<?> parameter : constructor.getParameterTypes()) {
-        assertNotEquals(resolver, parameter.getName(), constructor.toString());
+        assertFalse(hostPrivate.contains(parameter.getName()), constructor.toString());
       }
     }
     for (Field field : BlueMindRuleEngine.class.getDeclaredFields()) {
-      assertNotEquals(resolver, field.getType().getName(), field.getName());
+      assertFalse(hostPrivate.contains(field.getType().getName()), field.getName());
     }
   }
-
 
   /**
    * The probe logs in at the configured core API with the session's login, reads the
@@ -581,33 +581,26 @@ public class BlueMindRuleEngineTest {
   }
 
   /**
-   * The forward goes through {@code _forwarding} only, always keeping a copy, to a
-   * destination the guard authorizes; any other is refused before anything is sent;
-   * removing switches it off. Without an implementation of the port it is unsupported,
-   * with no call made.
+   * The forward goes through {@code _forwarding} only, always keeping a copy, to the
+   * destination the host passes; removing switches it off. Which destinations are
+   * authorized is the host's check, made before any engine is called
+   * ({@code EmailForwardingServiceTest}). Without an implementation of the port it is
+   * unsupported, with no call made.
    *
    * @throws Exception on failure
    */
   @Test
-  public void testTheForwardKeepsACopyAndGoesOnlyWhereAuthorized() throws Exception {
-    ForwardingGuard guard = mock(ForwardingGuard.class);
-    when(guard.authorizedDestinations(session)).thenReturn(Set.of("backup@demo3.livecollab.fr"));
-    BlueMindRuleEngine guarded = new BlueMindRuleEngine(bluemind, guard);
-    ServerForwarding written = guarded.writeForwarding(session, "backup@demo3.livecollab.fr", null);
-    assertEquals(List.of(new BlueMindForwarding(true,
-                                                                                                true,
-                                                                                                Set.of("backup@demo3.livecollab.fr"))),
+  public void testTheForwardKeepsACopy() throws Exception {
+    ServerForwarding written = engine.writeForwarding(session, "backup@demo3.livecollab.fr", null);
+    assertEquals(List.of(new BlueMindForwarding(true, true, Set.of("backup@demo3.livecollab.fr"))),
                  bluemind.postedForwardings());
     assertEquals(ForwardingState.SERVER_FORWARD, written.forwarding().state());
     assertEquals(Boolean.TRUE, written.forwarding().keepCopy());
-    assertThrows(ForwardingRefusedException.class,
-                 () -> guarded.writeForwarding(session, "exfil@evil.example", null));
-    assertEquals(1, bluemind.postedForwardings().size());
-    guarded.writeForwarding(session, null, null);
+    engine.writeForwarding(session, null, null);
     assertFalse(bluemind.postedForwardings().get(1).enabled());
     assertTrue(bluemind.postedForwardings().get(1).localCopy());
     assertTrue(bluemind.calls("setVacation").isEmpty(), "the forward never touches the reply");
     assertThrows(ServerRuleUnsupportedException.class,
-                 () -> new BlueMindRuleEngine(null, guard).writeForwarding(session, "backup@demo3.livecollab.fr", null));
+                 () -> new BlueMindRuleEngine(null).writeForwarding(session, "backup@demo3.livecollab.fr", null));
   }
 }
