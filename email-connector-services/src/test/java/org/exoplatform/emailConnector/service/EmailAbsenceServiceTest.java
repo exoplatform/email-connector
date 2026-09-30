@@ -399,7 +399,7 @@ public class EmailAbsenceServiceTest {
                                       false,
                                       false,
                                       ServerRuleCapabilities.VocabularySource.DYNAMIC,
-                                      Map.of(ServerRuleCapabilities.VACATION, ServerRuleCapabilities.ElementSupport.SUPPORTED));
+                                      Map.of(ServerRuleCapabilities.VACATION, ServerRuleCapabilities.ElementSupport.SUPPORTED_ELEMENT));
   }
 
   /**
