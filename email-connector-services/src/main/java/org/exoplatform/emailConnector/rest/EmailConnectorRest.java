@@ -688,10 +688,11 @@ public class EmailConnectorRest {
   @GetMapping(path = "/{emailConnectorId}/engines")
   @Secured("administrators")
   @Operation(summary = "Reads which engines a connector's server rules and mailbox sharing go through", method = "GET",
-      description = "rulesEngine and aclEngine are the engines configured, possibly not installed; rulesEngines and aclEngines "
-          + "the ones installed; rulesEngineProperty and aclEngineProperty the deployment property that decides over the "
-          + "screen's choice, null when none is set; authProviderMissing true when the connector's credentials provider is "
-          + "not installed.")
+      description = "rulesEngine and aclEngine are the engines that apply, which a deployment property may decide, possibly "
+          + "not installed; rulesEngineChoice and aclEngineChoice the screen's choice, or the default when none was made; "
+          + "rulesEngines and aclEngines the ones installed; rulesEngineProperty and aclEngineProperty the deployment property "
+          + "that decides over the screen's choice, null when none is set; authProviderMissing true when the connector's "
+          + "credentials provider is not installed.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "404", description = "No such connector") })
