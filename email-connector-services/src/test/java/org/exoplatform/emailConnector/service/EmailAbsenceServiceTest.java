@@ -546,9 +546,9 @@ public class EmailAbsenceServiceTest {
                                       false,
                                       ServerRuleCapabilities.VocabularySource.DYNAMIC,
                                       Map.of(ServerRuleCapabilities.VACATION,
-                                             ServerRuleCapabilities.ElementSupport.SUPPORTED,
+                                             ServerRuleCapabilities.ElementSupport.SUPPORTED_ELEMENT,
                                              ServerRuleCapabilities.FORWARDING_READ,
-                                             ServerRuleCapabilities.ElementSupport.SUPPORTED));
+                                             ServerRuleCapabilities.ElementSupport.SUPPORTED_ELEMENT));
   }
 
   /**
