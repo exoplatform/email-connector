@@ -46,6 +46,7 @@ import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.rules.ForwardingGuard;
+import org.exoplatform.emailConnector.storage.ConnectorEngineChoiceStorage;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsContext;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
@@ -224,6 +225,10 @@ public class EmailConnectorService {
 
   @Autowired
   private EmailConnectorStorage     emailConnectorStorage;
+
+  /** The engines the administration screen chose per connector; absent in a bare test. */
+  @Autowired(required = false)
+  private ConnectorEngineChoiceStorage connectorEngineChoiceStorage;
 
   @Autowired
   private EmailManagedModeService   emailManagedModeService;
@@ -1064,8 +1069,27 @@ public class EmailConnectorService {
       providerConfigStorage.delete(providerConfigContext(emailConnectorId, storedEmailConnector.getAuthProviderName()));
     }
     emailConnectorStorage.deleteEmailConnector(emailConnectorId);
+    forgetEngineChoices(emailConnectorId);
     activateEmailApp();
     eventPublisher.publishEvent(new UserEmailSettingCleanupEvent(emailConnectorId));
+  }
+
+  /**
+   * Forgets the engines the administration screen chose for a deleted connector. Its
+   * id is never given again, so an entry left behind is only clutter: a failure is said
+   * and does not fail the deletion.
+   *
+   * @param emailConnectorId the deleted connector
+   */
+  private void forgetEngineChoices(Long emailConnectorId) {
+    if (connectorEngineChoiceStorage == null) {
+      return;
+    }
+    try {
+      connectorEngineChoiceStorage.removeChoices(emailConnectorId);
+    } catch (RuntimeException e) {
+      LOG.warn("The engines chosen for deleted connector {} could not be forgotten", emailConnectorId, e);
+    }
   }
 
   /**
