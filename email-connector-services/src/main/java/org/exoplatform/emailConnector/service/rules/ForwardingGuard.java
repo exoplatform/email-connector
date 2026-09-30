@@ -124,7 +124,7 @@ public class ForwardingGuard {
 
   /** A plain domain: dot-separated labels, at least two. */
   private static final Pattern DOMAIN                   = Pattern.compile(
-      "(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?");
+      "(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)++[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?");
 
   /** The most confirmed destinations kept per user; the oldest goes first. */
   static final int             MAX_CONFIRMED            = 10;
