@@ -59,8 +59,8 @@ public class MailboxAclEngineRegistry {
   @Autowired
   private List<MailboxAclEngine>  engines;
 
-  /** The engines the connector administration screen chose; absent in a bare test. */
-  @Autowired(required = false)
+  /** The engines the connector administration screen chose. */
+  @Autowired
   private ConnectorEngineChoiceStorage choices;
 
   /**
@@ -105,7 +105,7 @@ public class MailboxAclEngineRegistry {
    * @return the name, lower-case, never blank
    */
   public String engineName(EmailConnector connector) {
-    return EngineChoices.configuredName(ENGINE_PROPERTY, ConnectorEngineChoiceStorage.ACL_ENGINE, connector, choices, ImapAclEngine.NAME);
+    return EngineChoices.configuredName(ENGINE_PROPERTY_PREFIX, ConnectorEngineChoiceStorage.ACL_ENGINE, connector, choices, ImapAclEngine.NAME);
   }
 
   /**
@@ -125,6 +125,17 @@ public class MailboxAclEngineRegistry {
   }
 
   /**
+   * The engine the connector administration screen chose for a connector, whatever a
+   * deployment property decides: what applies once no property does.
+   *
+   * @param connector the connector preset
+   * @return the name, lower-case; {@value ImapAclEngine#NAME} when none was chosen
+   */
+  public String chosenEngineName(EmailConnector connector) {
+    return EngineChoices.chosenName(ConnectorEngineChoiceStorage.ACL_ENGINE, connector, choices, ImapAclEngine.NAME);
+  }
+
+  /**
    * The deployment property that decides a connector's engine over the connector
    * administration screen's choice.
    *
@@ -132,15 +143,6 @@ public class MailboxAclEngineRegistry {
    * @return the property's name, or null when none is set
    */
   public String overridingProperty(EmailConnector connector) {
-    return EngineChoices.overridingProperty(ENGINE_PROPERTY, connector);
-  }
-
-
-  /**
-   * @param connector the connector preset, possibly null
-   * @return its id, or null
-   */
-  private Long connectorId(EmailConnector connector) {
-    return connector == null ? null : connector.getId();
+    return EngineChoices.overridingProperty(ENGINE_PROPERTY_PREFIX, connector);
   }
 }

@@ -58,8 +58,8 @@ public class ServerRuleEngineRegistry {
   @Autowired
   private List<ServerRuleEngine> engines;
 
-  /** The engines the connector administration screen chose; absent in a bare test. */
-  @Autowired(required = false)
+  /** The engines the connector administration screen chose. */
+  @Autowired
   private ConnectorEngineChoiceStorage choices;
 
   /**
@@ -104,7 +104,7 @@ public class ServerRuleEngineRegistry {
    * @return the name, lower-case, never blank
    */
   public String engineName(EmailConnector connector) {
-    return EngineChoices.configuredName(ENGINE_PROPERTY, ConnectorEngineChoiceStorage.RULES_ENGINE, connector, choices, NoopRuleEngine.NAME);
+    return EngineChoices.configuredName(ENGINE_PROPERTY_PREFIX, ConnectorEngineChoiceStorage.RULES_ENGINE, connector, choices, NoopRuleEngine.NAME);
   }
 
   /**
@@ -124,6 +124,17 @@ public class ServerRuleEngineRegistry {
   }
 
   /**
+   * The engine the connector administration screen chose for a connector, whatever a
+   * deployment property decides: what applies once no property does.
+   *
+   * @param connector the connector preset
+   * @return the name, lower-case; {@value NoopRuleEngine#NAME} when none was chosen
+   */
+  public String chosenEngineName(EmailConnector connector) {
+    return EngineChoices.chosenName(ConnectorEngineChoiceStorage.RULES_ENGINE, connector, choices, NoopRuleEngine.NAME);
+  }
+
+  /**
    * The deployment property that decides a connector's engine over the connector
    * administration screen's choice.
    *
@@ -131,7 +142,6 @@ public class ServerRuleEngineRegistry {
    * @return the property's name, or null when none is set
    */
   public String overridingProperty(EmailConnector connector) {
-    return EngineChoices.overridingProperty(ENGINE_PROPERTY, connector);
+    return EngineChoices.overridingProperty(ENGINE_PROPERTY_PREFIX, connector);
   }
-
 }
