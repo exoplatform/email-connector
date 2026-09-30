@@ -86,7 +86,7 @@ public record FilterAction(String type,
   public static final Set<String>  FILING        = Set.of(MOVE_TO_FOLDER, MARK_JUNK, DELETE);
 
   /** What an assistant's answer may change, when the rule allows it. */
-  public static final List<String> AGENT_OUTPUTS = List.of("NOTE", "CATEGORY", "STAR", "MARK_READ", "DRAFT_REPLY", "NOTIFY");
+  public static final List<String> AGENT_OUTPUTS = List.of("NOTE", "CATEGORY", STAR, MARK_READ, "DRAFT_REPLY", NOTIFY);
 
   /**
    * Keeps the outputs unmodifiable, and never null.
