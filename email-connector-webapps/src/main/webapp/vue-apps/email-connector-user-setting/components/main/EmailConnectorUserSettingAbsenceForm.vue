@@ -19,8 +19,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        own time zone, a one-line subject and a plain-text message. What the mail server
        decides on its own is stated, not editable: on a Sieve server eXo's script answers
        once per sender per N days and never lists or automated mail; a server whose
-       engine answers the vacationRules element unsupported applies its own rules. Its Save and Cancel are the drawer's footer, which calls
-       submit() and reads the can-save event. Laid out like the platform's drawer forms:
+       engine does not answer the vacationRules element supported applies its own rules.
+       Its Save and Cancel are the drawer's footer, which calls submit() and reads the
+       can-save event. Laid out like the platform's drawer forms:
        a plain label above each field, the switch at the end of its label's row, the two
        optional days as two equal date pickers side by side, empty meaning no bound.
        The pickers keep the date-picker's default attach, as the task drawer's and the
@@ -165,15 +166,15 @@ export default {
   computed: {
     /**
      * What the mail server decides on its own, in words: the interval and the exclusions
-     * eXo writes, where the engine answers the vacationRules element supported; else the
-     * server's own.
+     * eXo writes, where the engine answers the vacationRules element supported; else,
+     * an unlisted element included, the server's own.
      *
      * @returns {String} the localized statement
      */
     rulesText() {
-      return this.capabilities?.elements?.vacationRules?.supported === false
-        ? this.$t('UserSettings.emailConnector.absence.form.rules.server')
-        : this.$t('UserSettings.emailConnector.absence.form.rules', { 0: this.days });
+      return this.capabilities?.elements?.vacationRules?.supported
+        ? this.$t('UserSettings.emailConnector.absence.form.rules', { 0: this.days })
+        : this.$t('UserSettings.emailConnector.absence.form.rules.server');
     },
     /**
      * Whether the server can bound the reply by days.
