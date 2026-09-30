@@ -49,7 +49,6 @@ import org.exoplatform.emailConnector.model.ServerRuleCapabilities.VocabularySou
 import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.VacationSetting;
 import org.exoplatform.emailConnector.model.VacationState;
-import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindEndpoint;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindForwarding;
@@ -132,8 +131,6 @@ public class BlueMindRuleEngine implements ServerRuleEngine {
   @Autowired(required = false)
   private ForwardingGuard          forwardingGuard;
 
-  private final EmailCredentialsResolver emailCredentialsResolver;
-
   /**
    * A job run inside one BlueMind session.
    *
@@ -154,37 +151,30 @@ public class BlueMindRuleEngine implements ServerRuleEngine {
 
   /**
    * The engine Spring builds: the port's implementation is injected when a bean provides
-   * it, and absent otherwise.
-   *
-   * @param emailCredentialsResolver told when BlueMind refuses the provider's material
+   * it, and absent otherwise. A refused login is reported through the caller's own
+   * {@link MailboxAclSession}, so the engine needs nothing private to the host.
    */
-  @Autowired
-  public BlueMindRuleEngine(EmailCredentialsResolver emailCredentialsResolver) {
-    this.emailCredentialsResolver = emailCredentialsResolver;
+  public BlueMindRuleEngine() {
+    // Field injection only: the transport and the guard are optional beans.
   }
 
   /**
    * The engine over a given implementation of the port.
    *
    * @param transport the port's implementation, possibly null for none
-   * @param emailCredentialsResolver told when BlueMind refuses the provider's material
    */
-  public BlueMindRuleEngine(BlueMindMailboxTransport transport, EmailCredentialsResolver emailCredentialsResolver) {
+  public BlueMindRuleEngine(BlueMindMailboxTransport transport) {
     this.transport = transport;
-    this.emailCredentialsResolver = emailCredentialsResolver;
   }
 
   /**
    * The engine over a given implementation of the port, with the forwarding checks.
    *
    * @param transport the port's implementation, possibly null for none
-   * @param emailCredentialsResolver told when BlueMind refuses the provider's material
    * @param forwardingGuard who may forward where
    */
-  public BlueMindRuleEngine(BlueMindMailboxTransport transport,
-                            EmailCredentialsResolver emailCredentialsResolver,
-                            ForwardingGuard forwardingGuard) {
-    this(transport, emailCredentialsResolver);
+  public BlueMindRuleEngine(BlueMindMailboxTransport transport, ForwardingGuard forwardingGuard) {
+    this(transport);
     this.forwardingGuard = forwardingGuard;
   }
 
@@ -546,11 +536,8 @@ public class BlueMindRuleEngine implements ServerRuleEngine {
       if (e.getKind() != Kind.AUTHENTICATION || connector == null) {
         throw unavailable(e);
       }
-      emailCredentialsResolver.invalidate(connector.getId(),
-                                          connector.getAuthProviderName(),
-                                          session.username(),
-                                          ConnectorCredentialsChannel.IMAP);
-      if (!emailCredentialsResolver.retriesAfterRefusal(connector.getAuthProviderName())) {
+      session.invalidateCredentials(ConnectorCredentialsChannel.IMAP);
+      if (!session.retriesAfterRefusal()) {
         throw unavailable(e);
       }
       try {

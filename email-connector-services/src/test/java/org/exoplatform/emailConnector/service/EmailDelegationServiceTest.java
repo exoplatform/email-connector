@@ -3328,8 +3328,8 @@ class EmailDelegationServiceTest {
   /**
    * The caller's own session for the automatic reply (EXO-90642): built for the caller
    * on their own connected mailbox, its mail credentials resolved through the credentials
-   * contract on the IMAP channel for that caller, and refused to a caller with no
-   * connected mailbox.
+   * contract on the IMAP channel for that caller, a refusal of that material reported for
+   * the same connector and caller, and refused to a caller with no connected mailbox.
    *
    * @throws Exception on failure
    */
@@ -3355,6 +3355,15 @@ class EmailDelegationServiceTest {
       assertFalse(own.hasOpenStore());
     }
     verify(resolver).authenticator(CONNECTOR_ID, null, OWNER, ConnectorCredentialsChannel.IMAP);
+
+    // A refusal an engine reports through the session reaches the provider for the same
+    // connector and caller; the retry is the provider's to allow.
+    when(resolver.retriesAfterRefusal(null)).thenReturn(true);
+    try (MailboxAclSession own = service.openOwnSession(OWNER)) {
+      own.invalidateCredentials(ConnectorCredentialsChannel.IMAP);
+      assertTrue(own.retriesAfterRefusal());
+    }
+    verify(resolver).invalidate(CONNECTOR_ID, null, OWNER, ConnectorCredentialsChannel.IMAP);
     when(userEmailSettingService.getUserEmailSetting("carol")).thenReturn(new UserEmailSetting());
     assertThrows(IllegalAccessException.class, () -> service.openOwnSession("carol"));
   }
