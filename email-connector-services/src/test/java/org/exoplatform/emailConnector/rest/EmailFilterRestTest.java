@@ -71,6 +71,7 @@ import org.exoplatform.emailConnector.model.FilterPreview;
 import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerRulesSettings;
+import org.exoplatform.emailConnector.service.EmailFilterProposalService;
 import org.exoplatform.emailConnector.service.EmailFilterService;
 import org.exoplatform.emailConnector.service.EmailServerRuleService;
 
@@ -114,6 +115,9 @@ public class EmailFilterRestTest {
 
   @MockitoBean
   private EmailFilterService     emailFilterService;
+
+  @MockitoBean
+  private EmailFilterProposalService emailFilterProposalService;
 
   @Autowired
   private SecurityFilterChain    filterChain;
