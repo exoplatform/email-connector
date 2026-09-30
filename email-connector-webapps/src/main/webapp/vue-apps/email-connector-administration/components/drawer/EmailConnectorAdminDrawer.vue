@@ -451,14 +451,14 @@ export default {
     /**
      * Whether the Engines section changed what was loaded.
      *
-     * @returns {boolean} true when either engine differs
+     * @returns {boolean} true when either choice differs
      */
     enginesChanged() {
       if (!this.engines || !this.loadedEngines) {
         return false;
       }
-      return this.engines.rulesEngine !== this.loadedEngines.rulesEngine
-        || this.engines.aclEngine !== this.loadedEngines.aclEngine;
+      return this.engines.rulesEngineChoice !== this.loadedEngines.rulesEngineChoice
+        || this.engines.aclEngineChoice !== this.loadedEngines.aclEngineChoice;
     },
     resetImage() {
       this.emailConnector.imageUrl = null;
@@ -565,7 +565,12 @@ export default {
             await this.$emailConnectorAdministrationService.saveConnectorForwarding(this.emailConnector.id, this.forwarding);
           }
           if (this.enginesChanged()) {
-            await this.$emailConnectorAdministrationService.saveConnectorEngines(this.emailConnector.id, this.engines);
+            // Only the choice that changed: the other one is left as kept, whatever a
+            // deployment property makes apply meanwhile.
+            await this.$emailConnectorAdministrationService.saveConnectorEngines(this.emailConnector.id, {
+              rulesEngine: this.engines.rulesEngineChoice !== this.loadedEngines.rulesEngineChoice ? this.engines.rulesEngineChoice : null,
+              aclEngine: this.engines.aclEngineChoice !== this.loadedEngines.aclEngineChoice ? this.engines.aclEngineChoice : null,
+            });
           }
         }
         await this.$translationService.saveTranslations('emailConnector',  emailConnector.id, 'name', this.emailConnectorNameTranslations);
