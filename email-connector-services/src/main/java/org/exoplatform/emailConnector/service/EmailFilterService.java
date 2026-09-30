@@ -1599,7 +1599,9 @@ public class EmailFilterService {
       flagged = inInbox == null || inInbox.getMailRemoteId() == null ? Boolean.FALSE
                                                                      : emailBoxService.isFlaggedAsSpamOnServer(username,
                                                                                                                inInbox.getMailRemoteId(),
-                                                                                                               mailHeaderId);
+                                                                                                               mailHeaderId)
+                                                                                      // Gone at that UID: the handler ends it.
+                                                                                      .orElse(Boolean.FALSE);
     } catch (IllegalAccessException e) {
       // The owner may no longer read the mailbox: the handler's own read refuses it too.
       return null;
