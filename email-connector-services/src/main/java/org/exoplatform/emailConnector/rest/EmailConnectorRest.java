@@ -41,6 +41,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+import org.exoplatform.emailConnector.exception.EngineInUseException;
 import org.exoplatform.emailConnector.model.ConnectorEngines;
 import org.exoplatform.emailConnector.model.ConnectorForwarding;
 import org.exoplatform.emailConnector.model.EmailConnector;
@@ -714,25 +715,38 @@ public class EmailConnectorRest {
    * @param request the caller's request, for the acting user
    * @param emailConnectorId email connector technical id
    * @param engines {rulesEngine, aclEngine}, a null one keeping the one kept
-   * @return the engines after the save
+   * @return the engines after the save, or a 409 with what is in use
    */
   @PutMapping(path = "/{emailConnectorId}/engines")
   @Secured("administrators")
   @Operation(summary = "Saves which engines a connector's server rules and mailbox sharing go through", method = "PUT",
       description = "Each engine must be installed, or be the one already kept. Applies at once, unless a deployment property "
-          + "decides the engine: the choice is then kept for when the property is removed.")
+          + "decides the engine: the choice is then kept for when the property is removed. A switch is refused while the "
+          + "connector's users still have what eXo set through the current engine: automatic replies, forwards and server "
+          + "rules for the rules engine, shares made from eXo for the sharing engine.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Saved"),
       @ApiResponse(responseCode = "400", description = "An engine that is not installed (emailConnector.engines.unknown)"),
+      @ApiResponse(responseCode = "409", description = "A switch while the current engine is in use (emailConnector.engines.rulesInUse, "
+          + "emailConnector.engines.aclInUse), with the counts replies, forwards, rules and shares"),
       @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "404", description = "No such connector") })
-  public ConnectorEngines saveEngines(HttpServletRequest request,
+  public ResponseEntity<Object> saveEngines(HttpServletRequest request,
                                       @Parameter(description = "Email connector technical id", required = true)
                                       @PathVariable("emailConnectorId")
                                       Long emailConnectorId,
                                       @RequestBody
                                       ConnectorEngines engines) {
     try {
-      return emailConnectorEngineService.saveEngines(emailConnectorId, engines, request.getRemoteUser());
+      return ResponseEntity.ok(emailConnectorEngineService.saveEngines(emailConnectorId, engines, request.getRemoteUser()));
+    } catch (EngineInUseException e) {
+      Map<String, Object> body = new LinkedHashMap<>();
+      body.put("status", HttpStatus.CONFLICT.value());
+      body.put("message", e.getMessage());
+      body.put("replies", e.getReplies());
+      body.put("forwards", e.getForwards());
+      body.put("rules", e.getRules());
+      body.put("shares", e.getShares());
+      return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (ObjectNotFoundException e) {

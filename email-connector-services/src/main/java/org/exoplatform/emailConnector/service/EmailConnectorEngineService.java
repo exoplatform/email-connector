@@ -18,18 +18,22 @@ package org.exoplatform.emailConnector.service;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.exception.EngineInUseException;
 import org.exoplatform.emailConnector.model.ConnectorEngines;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngineRegistry;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngineRegistry;
 import org.exoplatform.emailConnector.storage.ConnectorEngineChoiceStorage;
+import org.exoplatform.emailConnector.storage.EmailDelegationStorage;
+import org.exoplatform.emailConnector.storage.EmailFilterStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -39,7 +43,8 @@ import org.exoplatform.services.log.Log;
  * writes to the mail server on its users' behalf, so it is an administrator's, and it
  * is made among the engines installed: an engine an add-on contributes is offered only
  * while that add-on is installed. A deployment property, when set, still decides over
- * the choice, and the screen is told which one.
+ * the choice, and the screen is told which one. A switch is refused while what the
+ * current engine set on the mail server is still in use.
  */
 @Service
 public class EmailConnectorEngineService {
@@ -63,6 +68,21 @@ public class EmailConnectorEngineService {
 
   @Autowired
   private ConnectorEngineChoiceStorage connectorEngineChoiceStorage;
+
+  @Autowired
+  private UserEmailSettingService  userEmailSettingService;
+
+  @Autowired
+  private EmailAbsenceService      emailAbsenceService;
+
+  @Autowired
+  private EmailForwardingService   emailForwardingService;
+
+  @Autowired
+  private EmailFilterStorage       emailFilterStorage;
+
+  @Autowired
+  private EmailDelegationStorage   emailDelegationStorage;
 
   /** Absent where the credentials contract is not deployed; then nothing is missing. */
   @Autowired(required = false)
@@ -89,11 +109,11 @@ public class EmailConnectorEngineService {
    * saves the one it changed only. A deployment property that decides the engine still
    * wins; the choice is kept for when it is removed.
    * <p>
-   * A switch applies to what comes next: what the engine switched from already wrote
-   * on the mail server — mailbox access granted to colleagues, a forward or an
-   * automatic reply — stays there, and is no longer read or removed from eXo through
-   * the engine switched to: an automatic reply the server keeps sending is then shown
-   * as off, to its user and to their delegates.
+   * A switch is refused while the connector's users still have on the mail server what
+   * eXo set through the engine switched from, since the engine switched to could neither
+   * read nor remove it: for the server rules, an automatic reply, a forward, or a server
+   * rule eXo wrote that forwards or backs an eXo rule; for mailbox sharing, a share made
+   * from eXo. Both are read from eXo's own records, never from the server.
    *
    * @param connectorId the connector
    * @param engines the engines chosen; a null one keeps the one kept
@@ -103,10 +123,11 @@ public class EmailConnectorEngineService {
    * @throws ObjectNotFoundException when no such connector exists
    * @throws IllegalArgumentException {@value #UNKNOWN_ENGINE} when an engine is not
    *           installed
+   * @throws EngineInUseException when a switch is refused, with what is still in use
    */
   public ConnectorEngines saveEngines(Long connectorId,
                                       ConnectorEngines engines,
-                                      String username) throws IllegalAccessException, ObjectNotFoundException {
+                                      String username) throws IllegalAccessException, ObjectNotFoundException, EngineInUseException {
     EmailConnector connector = administeredConnector(connectorId, username);
     if (engines == null) {
       throw new IllegalArgumentException(UNKNOWN_ENGINE);
@@ -119,6 +140,14 @@ public class EmailConnectorEngineService {
                                connector,
                                engines.getAclEngine(),
                                mailboxAclEngineRegistry.engineNames());
+    boolean rulesSwitch = rules != null && !rules.equals(serverRuleEngineRegistry.chosenEngineName(connector));
+    boolean aclSwitch = acl != null && !acl.equals(mailboxAclEngineRegistry.chosenEngineName(connector));
+    if (rulesSwitch) {
+      checkRulesNotInUse(connector);
+    }
+    if (aclSwitch) {
+      checkSharingNotInUse(connector);
+    }
     if (rules != null) {
       connectorEngineChoiceStorage.setChoice(ConnectorEngineChoiceStorage.RULES_ENGINE, connector.getId(), rules);
     }
@@ -127,6 +156,44 @@ public class EmailConnectorEngineService {
     }
     LOG.info("Engines of connector {} set by {}: server rules {}, mailbox sharing {}", connector.getId(), username, rules, acl);
     return enginesOf(connector);
+  }
+
+  /**
+   * Refuses a switch of the server rules engine while a user of the connector has an
+   * automatic reply, a forward or a server rule eXo set that is on, as eXo's records say.
+   *
+   * @param connector the connector
+   * @throws EngineInUseException {@value EngineInUseException#RULES_IN_USE}, with the
+   *           counts, when one exists
+   */
+  private void checkRulesNotInUse(EmailConnector connector) throws EngineInUseException {
+    Set<String> hops = emailFilterStorage.usersWithServerHops();
+    long replies = 0;
+    long forwards = 0;
+    long rules = 0;
+    for (String user : userEmailSettingService.getUserEmailSettingsByEmailConnectorId(connector.getId())) {
+      replies += emailAbsenceService.hasExoReply(user) ? 1 : 0;
+      forwards += emailForwardingService.hasExoForward(user) ? 1 : 0;
+      rules += hops.contains(user) || emailForwardingService.hasExoRuleForwards(user) ? 1 : 0;
+    }
+    if (replies + forwards + rules > 0) {
+      throw new EngineInUseException(EngineInUseException.RULES_IN_USE, replies, forwards, rules, 0);
+    }
+  }
+
+  /**
+   * Refuses a switch of the mailbox sharing engine while a share made from eXo keeps
+   * access on the server.
+   *
+   * @param connector the connector
+   * @throws EngineInUseException {@value EngineInUseException#ACL_IN_USE}, with the
+   *           count, when one exists
+   */
+  private void checkSharingNotInUse(EmailConnector connector) throws EngineInUseException {
+    long shares = emailDelegationStorage.countExoSharesOnServer(connector.getId());
+    if (shares > 0) {
+      throw new EngineInUseException(EngineInUseException.ACL_IN_USE, 0, 0, 0, shares);
+    }
   }
 
   /**
