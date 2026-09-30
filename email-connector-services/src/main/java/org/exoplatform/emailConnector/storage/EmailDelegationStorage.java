@@ -121,6 +121,21 @@ public class EmailDelegationStorage {
   }
 
   /**
+   * How many shares of a connector eXo made whose access is on the server: invited,
+   * accepted, or declined, since a decline leaves the owner's grant in place.
+   *
+   * @param connectorId the connector
+   * @return the count
+   */
+  public long countExoSharesOnServer(long connectorId) {
+    return emailDelegationDAO.countByConnectorIdAndStatusInAndOrigin(connectorId,
+                                                                    List.of(DelegationStatus.PENDING.name(),
+                                                                            DelegationStatus.ACCEPTED.name(),
+                                                                            DelegationStatus.DECLINED.name()),
+                                                                    DelegationOrigin.EXO.name());
+  }
+
+  /**
    * How many delegations a grantee has in one state.
    *
    * @param granteeId the grantee's username

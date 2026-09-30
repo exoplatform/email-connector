@@ -1195,6 +1195,56 @@ public class EmailForwardingService {
   }
 
   /**
+   * Whether eXo's own records say a forward eXo set for a user is on: the last status
+   * eXo read or wrote names eXo's forward, or, on an engine without a script, eXo keeps
+   * the destination it set. Read from the settings eXo keeps, never from the server; an
+   * unreadable status reads as on.
+   *
+   * @param username the user
+   * @return true when eXo set a forward that is on
+   */
+  public boolean hasExoForward(String username) {
+    if (StringUtils.isNotBlank(global(WRITTEN_KEY_PREFIX + username))) {
+      return true;
+    }
+    String stored = global(STATUS_KEY_PREFIX + username);
+    if (stored == null) {
+      return false;
+    }
+    try {
+      ForwardingStatus status = JsonUtils.fromJsonString(stored, ForwardingStatus.class);
+      return status == null || status.isManagedByExo() && status.getState() == ForwardingState.SERVER_FORWARD;
+    } catch (Exception e) {
+      // Exception, not RuntimeException: Jackson's parse error is checked, thrown sneakily.
+      LOG.debug("The cached forward status of user {} could not be read", username, e);
+      return true;
+    }
+  }
+
+  /**
+   * Whether eXo's own records say a server rule eXo wrote for a user forwards: the
+   * rules that forwarded when eXo last wrote them. An unreadable record reads as one.
+   *
+   * @param username the user
+   * @return true when a rule eXo wrote forwards
+   */
+  @SuppressWarnings("unchecked")
+  public boolean hasExoRuleForwards(String username) {
+    String stored = global(RULES_KEY_PREFIX + username);
+    if (stored == null) {
+      return false;
+    }
+    try {
+      Map<String, Object> read = JsonUtils.fromJsonString(stored, Map.class);
+      return read == null || !(read.get("rules") instanceof Map<?, ?> rules) || !rules.isEmpty();
+    } catch (Exception e) {
+      // Exception, not RuntimeException: Jackson's parse error is checked, thrown sneakily.
+      LOG.debug("The forwarding rules last seen for user {} could not be read", username, e);
+      return true;
+    }
+  }
+
+  /**
    * Stores the band's status.
    *
    * @param username the user

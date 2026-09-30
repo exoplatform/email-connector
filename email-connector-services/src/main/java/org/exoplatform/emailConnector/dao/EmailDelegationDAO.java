@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.dao;
 
+import java.util.Collection;
 import java.util.Date;
 import java.util.List;
 
@@ -96,6 +97,23 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   @Query("SELECT d FROM EmailDelegationEntity d WHERE d.ownerId = :ownerId ORDER BY d.updatedDate DESC, d.id DESC")
   List<EmailDelegationEntity> findByOwnerId(@Param("ownerId")
   String ownerId);
+
+  /**
+   * How many rows of a connector are in one of the given states and were made from eXo
+   * (or predate the origin, which reads as eXo's): the shares whose access eXo wrote on
+   * the server.
+   *
+   * @param connectorId the connector
+   * @param statuses the states, spelled by the caller
+   * @param origin EXO, spelled by the caller
+   * @return the count
+   */
+  @Query("SELECT COUNT(d) FROM EmailDelegationEntity d WHERE d.connectorId = :connectorId AND d.status IN :statuses"
+      + " AND (d.origin IS NULL OR d.origin = :origin)")
+  long countByConnectorIdAndStatusInAndOrigin(@Param("connectorId")
+  Long connectorId, @Param("statuses")
+  Collection<String> statuses, @Param("origin")
+  String origin);
 
   /**
    * How many rows of a grantee are in one state -- what the per-grantee cap is checked

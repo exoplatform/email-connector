@@ -87,6 +87,33 @@ public class EmailFilterStorageTest {
   }
 
   /**
+   * The users with a hop rule whose server half eXo wrote are its hop rules' owners,
+   * other kinds left out (EXO-90793).
+   */
+  @Test
+  void theUsersWithServerHopsAreTheHopRulesOwners() {
+    for (String kind : List.of(EmailFilter.KIND_HOP, EmailFilter.KIND_EXO)) {
+      EmailFilterEntity rule = new EmailFilterEntity();
+      rule.setUserId("hops-" + kind);
+      rule.setMailboxScope(EmailFilter.SCOPE_OWN);
+      rule.setName("rule");
+      rule.setEnabled(true);
+      rule.setKind(kind);
+      rule.setMatchMode("ALL");
+      rule.setConditions("[]");
+      rule.setActions("[]");
+      rule.setTagKeyword("exo-hop-" + kind);
+      rule.setServerRuleRef("hop-" + kind);
+      rule.setCreatedDate(new Date());
+      rule.setUpdatedDate(new Date());
+      emailFilterDAO.saveAndFlush(rule);
+    }
+
+    assertTrue(emailFilterStorage.usersWithServerHops().contains("hops-" + EmailFilter.KIND_HOP));
+    assertFalse(emailFilterStorage.usersWithServerHops().contains("hops-" + EmailFilter.KIND_EXO));
+  }
+
+  /**
    * A second match of one rule on one mail is refused, and the pass keeps writing.
    */
   @Test
