@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.provider;
 
+import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.never;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -38,6 +39,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsContext;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsProvider;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
 import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
 import org.exoplatform.services.connector.credentials.MailConnectorCredentials;
@@ -196,6 +198,28 @@ public class EmailCredentialsResolverTest {
     assertTrue(resolver.requiresUserAction(null));
     assertTrue(resolver.requiresUserAction("  "));
     verify(connectorCredentialsService, never()).requiresUserAction(any());
+  }
+
+  /**
+   * A provider is registered only under its exact name: a connector naming one an add-on
+   * contributes, with the add-on absent, is told apart from one that is installed. A
+   * blank name names nothing; a registry that cannot be read does not claim the provider
+   * is missing, so the caller asks it and reports what it says.
+   */
+  @Test
+  public void tellsWhetherAProviderIsRegisteredUnderItsExactName() {
+    ConnectorCredentialsProvider personal = org.mockito.Mockito.mock(ConnectorCredentialsProvider.class);
+    when(personal.getName()).thenReturn("personal");
+    when(connectorCredentialsService.getProviders()).thenReturn(List.of(personal));
+
+    assertTrue(resolver.isProviderRegistered("personal"));
+    assertFalse(resolver.isProviderRegistered("bluemind-sudo"), "an add-on's provider, the add-on absent");
+    assertFalse(resolver.isProviderRegistered("Personal"), "the registry's lookup is exact");
+    assertFalse(resolver.isProviderRegistered(null));
+    assertFalse(resolver.isProviderRegistered("  "));
+
+    when(connectorCredentialsService.getProviders()).thenThrow(new IllegalStateException("registry unavailable"));
+    assertTrue(resolver.isProviderRegistered("bluemind-sudo"), "cannot tell: not reported missing");
   }
 
   /** An unknown provider is refused, exactly as every other resolution is. */
