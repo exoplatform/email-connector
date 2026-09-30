@@ -34,32 +34,30 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </v-label>
     <v-select
       id="emailConnectorRulesEngine"
-      :value="value.rulesEngine"
-      :items="items('rules', value.rulesEngines, value.rulesEngine)"
-      :disabled="!!value.rulesEngineProperty"
+      :value="value.rulesEngineChoice"
+      :items="items('rules', value.rulesEngines, value.rulesEngineChoice)"
       class="pt-0"
       outlined
       dense
       hide-details
-      @change="update({ rulesEngine: $event })" />
+      @change="update({ rulesEngineChoice: $event })" />
     <div class="caption text-light-color text-wrap mt-2 mb-4">
-      {{ overriddenOr(value.rulesEngineProperty, 'emailConnector.admin.connectors.drawer.engines.rules.help') }}
+      {{ overriddenOr('rules', value.rulesEngineProperty, value.rulesEngine, 'emailConnector.admin.connectors.drawer.engines.rules.help') }}
     </div>
     <v-label for="emailConnectorAclEngine">
       {{ $t('emailConnector.admin.connectors.drawer.engines.acl') }}
     </v-label>
     <v-select
       id="emailConnectorAclEngine"
-      :value="value.aclEngine"
-      :items="items('acl', value.aclEngines, value.aclEngine)"
-      :disabled="!!value.aclEngineProperty"
+      :value="value.aclEngineChoice"
+      :items="items('acl', value.aclEngines, value.aclEngineChoice)"
       class="pt-0"
       outlined
       dense
       hide-details
-      @change="update({ aclEngine: $event })" />
+      @change="update({ aclEngineChoice: $event })" />
     <div class="caption text-light-color text-wrap mt-2">
-      {{ overriddenOr(value.aclEngineProperty, 'emailConnector.admin.connectors.drawer.engines.acl.help') }}
+      {{ overriddenOr('acl', value.aclEngineProperty, value.aclEngine, 'emailConnector.admin.connectors.drawer.engines.acl.help') }}
     </div>
   </div>
 </template>
@@ -67,11 +65,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 export default {
   props: {
-    // {rulesEngine, aclEngine, rulesEngines, aclEngines, rulesEngineProperty,
-    //  aclEngineProperty, authProviderName, authProviderMissing}
+    // {rulesEngine, aclEngine, rulesEngineChoice, aclEngineChoice, rulesEngines,
+    //  aclEngines, rulesEngineProperty, aclEngineProperty, authProviderName,
+    //  authProviderMissing}: the choices are what this screen sets, the engines
+    //  what applies, which a deployment property may decide instead.
     value: {
       type: Object,
-      default: () => ({ rulesEngine: 'none', aclEngine: 'imap', rulesEngines: [], aclEngines: [] }),
+      default: () => ({ rulesEngineChoice: 'none', aclEngineChoice: 'imap', rulesEngines: [], aclEngines: [] }),
     },
   },
   methods: {
@@ -116,15 +116,18 @@ export default {
       return this.$te(key) ? this.$t(key) : name.charAt(0).toUpperCase() + name.slice(1);
     },
     /**
-     * The help under a choice, or, when a deployment property decides it, which one.
+     * The help under a choice, or, when a deployment property decides the engine,
+     * which property and which engine applies meanwhile.
      *
+     * @param {String} kind - 'rules' or 'acl'
      * @param {String} property - the property deciding the engine, or null
+     * @param {String} applied - the engine that applies
      * @param {String} helpKey - the help's key
      * @returns {String} the text
      */
-    overriddenOr(property, helpKey) {
+    overriddenOr(kind, property, applied, helpKey) {
       return property
-        ? this.$t('emailConnector.admin.connectors.drawer.engines.property', {0: property})
+        ? this.$t('emailConnector.admin.connectors.drawer.engines.property', {0: property, 1: this.label(kind, applied || '')})
         : this.$t(helpKey);
     },
   },
