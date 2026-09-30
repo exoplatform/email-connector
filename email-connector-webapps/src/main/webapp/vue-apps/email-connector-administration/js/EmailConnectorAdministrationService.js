@@ -710,11 +710,14 @@ export function saveConnectorForwarding(emailConnectorId, forwarding) {
 
 /**
  * Which engines a connector's server rules and mailbox sharing go through: the ones
- * configured, the ones installed, and the deployment property overriding either.
+ * that apply (rulesEngine, aclEngine, which a deployment property may decide), the
+ * screen's choices (rulesEngineChoice, aclEngineChoice, the default when none was
+ * made), the ones installed, and the deployment property overriding either.
  *
  * @param {number} emailConnectorId - the connector
- * @returns {Promise<object>} {rulesEngine, aclEngine, rulesEngines, aclEngines,
- *          rulesEngineProperty, aclEngineProperty, authProviderName, authProviderMissing}
+ * @returns {Promise<object>} {rulesEngine, aclEngine, rulesEngineChoice, aclEngineChoice,
+ *          rulesEngines, aclEngines, rulesEngineProperty, aclEngineProperty,
+ *          authProviderName, authProviderMissing}
  */
 export function getConnectorEngines(emailConnectorId) {
   return fetch(`/email-connector/rest/connectors/${emailConnectorId}/engines`, {
