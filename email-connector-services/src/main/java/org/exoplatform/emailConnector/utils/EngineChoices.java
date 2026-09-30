@@ -41,15 +41,16 @@ public final class EngineChoices {
    * The deployment property that decides a connector's engine over the screen's
    * choice: the connector's own when set, else the deployment-wide one when set.
    *
-   * @param property the deployment-wide property, such as
-   *          {@code email.connector.rulesEngine}; the connector's own is it followed
-   *          by {@code .<connectorId>}
+   * @param prefix the connector's own property without its id, such as
+   *          {@code email.connector.rulesEngine.}; the deployment-wide one is it
+   *          without its trailing dot
    * @param connector the connector, may be null
    * @return the property's name, or null when neither is set
    */
-  public static String overridingProperty(String property, EmailConnector connector) {
+  public static String overridingProperty(String prefix, EmailConnector connector) {
+    String property = StringUtils.removeEnd(prefix, ".");
     if (connector != null && connector.getId() != null) {
-      String own = property + "." + connector.getId();
+      String own = prefix + connector.getId();
       if (StringUtils.isNotBlank(System.getProperty(own))) {
         return own;
       }
@@ -60,23 +61,35 @@ public final class EngineChoices {
   /**
    * The engine a connector is configured with.
    *
-   * @param property the deployment-wide property of this kind of engine
+   * @param prefix the connector's own property without its id, as
+   *          {@link #overridingProperty} takes it
    * @param kind the kind of engine, as the storage keys it
    * @param connector the connector, may be null
-   * @param choices the screen's choices, may be null where the storage is absent
+   * @param choices the screen's choices, may be null
    * @param defaultName the engine used when nothing is configured
    * @return the name, lower-case, never blank
    */
-  public static String configuredName(String property,
+  public static String configuredName(String prefix,
                                       String kind,
                                       EmailConnector connector,
                                       ConnectorEngineChoiceStorage choices,
                                       String defaultName) {
-    String overriding = overridingProperty(property, connector);
+    String overriding = overridingProperty(prefix, connector);
     String name = overriding == null ? null : System.getProperty(overriding);
-    if (StringUtils.isBlank(name) && choices != null && connector != null && connector.getId() != null) {
-      name = choices.getChoice(kind, connector.getId());
-    }
+    return StringUtils.isBlank(name) ? chosenName(kind, connector, choices, defaultName) : name.trim().toLowerCase(Locale.ROOT);
+  }
+
+  /**
+   * The engine the screen chose for a connector, whatever a property decides.
+   *
+   * @param kind the kind of engine, as the storage keys it
+   * @param connector the connector, may be null
+   * @param choices the screen's choices, may be null
+   * @param defaultName the engine used when nothing was chosen
+   * @return the name, lower-case, never blank
+   */
+  public static String chosenName(String kind, EmailConnector connector, ConnectorEngineChoiceStorage choices, String defaultName) {
+    String name = choices == null || connector == null || connector.getId() == null ? null : choices.getChoice(kind, connector.getId());
     return StringUtils.isBlank(name) ? defaultName : name.trim().toLowerCase(Locale.ROOT);
   }
 }

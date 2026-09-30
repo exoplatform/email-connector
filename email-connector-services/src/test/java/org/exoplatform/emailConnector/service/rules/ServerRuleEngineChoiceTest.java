@@ -20,7 +20,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -104,8 +103,8 @@ public class ServerRuleEngineChoiceTest {
 
   /**
    * A deployment-wide property wins over the screen's choice, and is named as what
-   * decides; the connector's own property wins over both. The screen's choice is not
-   * even read then.
+   * decides; the connector's own property wins over both. The screen's choice is still
+   * answered apart, as what applies once no property decides.
    */
   @Test
   public void aPropertyWinsOverTheScreenTheConnectorsOwnFirst() {
@@ -114,10 +113,12 @@ public class ServerRuleEngineChoiceTest {
     assertSame(sieve, registry.engineFor(connector()));
     assertEquals(ServerRuleEngineRegistry.ENGINE_PROPERTY, registry.overridingProperty(connector()));
 
+    when(choices.getChoice(ConnectorEngineChoiceStorage.RULES_ENGINE, CONNECTOR_ID)).thenReturn("bluemind");
+    assertEquals("bluemind", registry.chosenEngineName(connector()), "the screen's choice, whatever decides");
+
     System.setProperty(ServerRuleEngineRegistry.ENGINE_PROPERTY_PREFIX + CONNECTOR_ID, "none");
     assertSame(noop, registry.engineFor(connector()));
     assertEquals(ServerRuleEngineRegistry.ENGINE_PROPERTY_PREFIX + CONNECTOR_ID, registry.overridingProperty(connector()));
-    verify(choices, never()).getChoice(ConnectorEngineChoiceStorage.RULES_ENGINE, CONNECTOR_ID);
   }
 
   /**
@@ -141,7 +142,9 @@ public class ServerRuleEngineChoiceTest {
     assertEquals(NoopRuleEngine.NAME, registry.engineName(new EmailConnector()));
     assertEquals(NoopRuleEngine.NAME, registry.engineName(null));
     assertNull(registry.overridingProperty(null));
+    assertEquals(NoopRuleEngine.NAME, registry.chosenEngineName(null));
     ReflectionTestUtils.setField(registry, "choices", null);
+    assertEquals(NoopRuleEngine.NAME, registry.chosenEngineName(connector()));
     assertEquals(NoopRuleEngine.NAME, registry.engineName(connector()));
   }
 
