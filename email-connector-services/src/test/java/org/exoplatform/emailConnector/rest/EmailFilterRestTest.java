@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.rest;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -65,6 +66,7 @@ import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.EmailFilter;
 import org.exoplatform.emailConnector.model.EmailFilterMatch;
+import org.exoplatform.emailConnector.model.EmailFilterProposal;
 import org.exoplatform.emailConnector.model.FilterApplyReport;
 import org.exoplatform.emailConnector.model.FilterPreview;
 import org.exoplatform.emailConnector.model.ServerRule;
@@ -446,6 +448,58 @@ public class EmailFilterRestTest {
   }
 
   /**
+   * Approving a proposal answers it once run, and every refusal the {@code decide}
+   * dispatcher maps: forbidden, not found, and a conflict, 409, for one no longer waiting.
+   */
+  @Test
+  void approveProposalAnswersOkOrEveryRefusal() throws Exception {
+    when(emailFilterProposalService.approve(anyString(), any(), eq(5L))).thenReturn(proposal());
+    mockMvc.perform(post(FILTERS_PATH + "/proposals/5/approve").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.status").value(EmailFilterProposal.DONE));
+
+    doThrow(new IllegalAccessException("emailConnector.filters.proposal.notYours")).when(emailFilterProposalService)
+                                                                                    .approve(anyString(), any(), anyLong());
+    mockMvc.perform(post(FILTERS_PATH + "/proposals/5/approve").with(testSimpleUser())).andExpect(status().isForbidden());
+
+    doThrow(new ObjectNotFoundException("emailConnector.filters.proposal.notFound")).when(emailFilterProposalService)
+                                                                                     .approve(anyString(), any(), anyLong());
+    mockMvc.perform(post(FILTERS_PATH + "/proposals/5/approve").with(testSimpleUser())).andExpect(status().isNotFound());
+
+    doThrow(new IllegalStateException("emailConnector.filters.proposal.notPending")).when(emailFilterProposalService)
+                                                                                     .approve(anyString(), any(), anyLong());
+    mockMvc.perform(post(FILTERS_PATH + "/proposals/5/approve").with(testSimpleUser())).andExpect(status().isConflict());
+  }
+
+  /**
+   * Rejecting a proposal answers it, rejected.
+   */
+  @Test
+  void rejectProposalAnswersOk() throws Exception {
+    EmailFilterProposal rejected = proposal();
+    rejected.setStatus(EmailFilterProposal.REJECTED);
+    when(emailFilterProposalService.reject(anyString(), any(), eq(5L))).thenReturn(rejected);
+
+    mockMvc.perform(post(FILTERS_PATH + "/proposals/5/reject").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.status").value(EmailFilterProposal.REJECTED));
+  }
+
+  /**
+   * Handing a proposal over to the AI chat answers it, handed over.
+   */
+  @Test
+  void handOverProposalAnswersOk() throws Exception {
+    EmailFilterProposal handedOver = proposal();
+    handedOver.setStatus(EmailFilterProposal.HANDED_OVER);
+    when(emailFilterProposalService.handOver(anyString(), any(), eq(5L))).thenReturn(handedOver);
+
+    mockMvc.perform(post(FILTERS_PATH + "/proposals/5/handover").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.status").value(EmailFilterProposal.HANDED_OVER));
+  }
+
+  /**
    * The authenticated simple user every call acts as.
    *
    * @return the request post-processor
@@ -504,6 +558,21 @@ public class EmailFilterRestTest {
     match.setActions(List.of());
     match.setAgentStatus(EmailFilterMatch.AGENT_NONE);
     return match;
+  }
+
+  /**
+   * A proposal, as an approval would answer it once run.
+   *
+   * @return the proposal
+   */
+  private EmailFilterProposal proposal() {
+    EmailFilterProposal proposal = new EmailFilterProposal();
+    proposal.setId(5L);
+    proposal.setMatchId(12L);
+    proposal.setToolName("create_task_in_project");
+    proposal.setArguments("{}");
+    proposal.setStatus(EmailFilterProposal.DONE);
+    return proposal;
   }
 
   /**
