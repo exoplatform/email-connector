@@ -1722,7 +1722,7 @@ public class EmailFilterService {
     }
     }
     boolean all = failures == 0;
-    boolean none = failures >= uids.size();
+    boolean none = failures >= entries.size();
     String folder = target;
     entries.forEach(entry -> record(applied,
                                     entry,
@@ -2160,9 +2160,21 @@ public class EmailFilterService {
    */
   private String ownFolder(String username, String key) {
     String folderKey = StringUtils.trimToNull(key);
-    if (MailFolder.ARCHIVE.equals(folderKey)) {
-      return folderKey;
+    if (!MailFolder.ARCHIVE.equals(folderKey)) {
+      requireMirroredCustomFolder(username, folderKey);
     }
+    return folderKey;
+  }
+
+  /**
+   * Checks that a key names one of the owner's own custom folders that they mirror.
+   *
+   * @param username the owner
+   * @param folderKey the folder's eXo key, trimmed
+   * @throws IllegalArgumentException {@code emailConnector.folder.unknown} or
+   *           {@code emailConnector.folder.notMirrored}
+   */
+  private void requireMirroredCustomFolder(String username, String folderKey) {
     if (folderKey == null || !MailFolder.isCustom(folderKey)) {
       throw new IllegalArgumentException(EmailFolderService.UNKNOWN_FOLDER_MESSAGE);
     }
@@ -2173,7 +2185,6 @@ public class EmailFilterService {
     if (!folder.isSyncEnabled()) {
       throw new IllegalArgumentException(EmailServerRuleService.FOLDER_NOT_MIRRORED);
     }
-    return folderKey;
   }
 
   /**
