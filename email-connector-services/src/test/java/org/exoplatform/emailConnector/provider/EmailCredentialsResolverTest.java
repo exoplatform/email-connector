@@ -16,8 +16,8 @@
  */
 package org.exoplatform.emailConnector.provider;
 
-import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -26,6 +26,8 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import java.util.List;
 
 import javax.mail.Authenticator;
 
@@ -208,7 +210,7 @@ public class EmailCredentialsResolverTest {
    */
   @Test
   public void tellsWhetherAProviderIsRegisteredUnderItsExactName() {
-    ConnectorCredentialsProvider personal = org.mockito.Mockito.mock(ConnectorCredentialsProvider.class);
+    ConnectorCredentialsProvider personal = mock(ConnectorCredentialsProvider.class);
     when(personal.getName()).thenReturn("personal");
     when(connectorCredentialsService.getProviders()).thenReturn(List.of(personal));
 
