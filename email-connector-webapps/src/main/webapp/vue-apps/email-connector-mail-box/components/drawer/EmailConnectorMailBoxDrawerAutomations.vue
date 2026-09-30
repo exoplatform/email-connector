@@ -44,7 +44,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         class="text-caption pa-0 font-weight-regular"
         role="button"
         href="javascript:void(0);"
-        @click.prevent="busy || undoAll()">
+        @click.prevent="busy || undoAll()"
+        @keydown.enter.prevent="busy || undoAll()">
         {{ $t('emailConnector.mailBox.automations.undoAll') }}
       </a>
     </div>
@@ -75,7 +76,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           class="ms-2 pa-0 font-weight-regular"
           role="button"
           href="javascript:void(0);"
-          @click.prevent="busy || undo(match, action.type)">
+          @click.prevent="busy || undo(match, action.type)"
+          @keydown.enter.prevent="busy || undo(match, action.type)">
           {{ $t('emailConnector.mailBox.automations.undo') }}
         </a>
       </div>
@@ -94,7 +96,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           class="ms-2 pa-0 font-weight-regular"
           role="button"
           href="javascript:void(0);"
-          @click.prevent="busy || retry(match)">
+          @click.prevent="busy || retry(match)"
+          @keydown.enter.prevent="busy || retry(match)">
           {{ $t('emailConnector.mailBox.automations.runAgain') }}
         </a>
       </div>
