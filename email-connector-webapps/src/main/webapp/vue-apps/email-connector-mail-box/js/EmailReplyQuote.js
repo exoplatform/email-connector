@@ -60,8 +60,9 @@ const BLOCKQUOTE_STYLE = 'margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-l
  * Tags whose presence means a stored body is markup rather than the plain text it
  * arrived as. The two genuinely occur: a message is cached exactly as it was
  * received, and a multipart with no text/html part is stored as its text/plain one
- * (see EmailConnectorUtils#getHtmlFromMimeMultipart), with no `html` flag surviving
- * to this side to tell us which we are holding.
+ * (see EmailConnectorUtils#getHtmlFromMimeMultipart). The reply quote tells them
+ * apart from the markup alone; the forward, like the reader, takes the server's
+ * `html` flag first and falls back to the markup (see forwardedOriginalBody).
  *
  * A named list rather than "anything between angle brackets", because the one thing
  * plain-text mail is full of is angle brackets around addresses — `<bob@acme.com>`
@@ -150,12 +151,14 @@ export function quotedOriginalBody(body) {
  * line breaks turned into `<br>`, without which the HTML editor the forward is
  * written in would show the whole message as one paragraph and send it that way.
  *
- * Which kind it is comes from the server when the server said (`html` is what the
- * message's own Content-Type recorded), and from the markup otherwise.
+ * Which kind it is comes from the server (`html` is what the message's own
+ * Content-Type recorded, always set on a message the server built), and from the
+ * markup when the caller has no server answer to pass.
  *
  * @param {string} body - the original message body, as it was received
- * @param {boolean} [html] - whether the server recorded the body as HTML; undefined
- *          when the message did not carry the answer
+ * @param {boolean} [html] - whether the server recorded the body as HTML; always
+ *          present on a message the server built, undefined only when the caller
+ *          has no server answer
  * @returns {string} the markup to place under the forwarded header, or an empty string
  */
 export function forwardedOriginalBody(body, html) {

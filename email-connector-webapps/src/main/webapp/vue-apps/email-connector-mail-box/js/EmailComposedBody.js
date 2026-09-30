@@ -24,7 +24,11 @@
 // rich editor then replaces every `&nbsp;` by a plain space on its way out, and a
 // block holding only whitespace has no height in any HTML renderer -- a mail client,
 // this product's own reader -- so the empty line, and every empty line after it,
-// vanished from the message. Attributes are kept as they are.
+// vanished from the message. Attributes are kept as they are. A truly empty block
+// (`<p></p>`) matches too, wherever it sits in the body -- a quoted or forwarded
+// original included: the editor shows every empty block one line tall
+// (CKEditor's `fillEmptyBlocks`, left at its default), so this is what makes the
+// sent mail match what the sender saw.
 const EMPTY_BLOCK = /<(div|p)(\s[^>]*)?>(?:\s|&nbsp;|&#160;)*<\/\1>/gi;
 
 /**
