@@ -190,7 +190,7 @@ public class EmailFilterRoutingTest {
   void aCategoryFilterAlwaysRunsInExo() throws Exception {
     Condition important = new Condition("CATEGORY", "EQUALS", null, "emailImportantCategory");
     Map<String, ElementSupport> elements = new HashMap<>();
-    ServerRuleCapabilities.ELEMENTS.forEach(element -> elements.put(element, new ElementSupport(true, null)));
+    ServerRuleCapabilities.ALL_ELEMENTS.forEach(element -> elements.put(element, new ElementSupport(true, null)));
     elements.put("CATEGORY", new ElementSupport(true, null));
     ServerRuleCapabilities claimsAll = new ServerRuleCapabilities(true, null, true, false, VocabularySource.FIXED, elements);
 
