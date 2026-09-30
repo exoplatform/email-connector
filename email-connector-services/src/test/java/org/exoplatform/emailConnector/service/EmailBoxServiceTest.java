@@ -85,6 +85,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.CompletionService;
@@ -16734,7 +16735,7 @@ public class EmailBoxServiceTest {
     IMAPFolder inbox = (IMAPFolder) store.getFolder(MailFolder.INBOX);
     Message message = spamReadMessage(inbox, 77L, "<m1@acme.com>", new String[] { "YES" }, "$Junk");
 
-    assertEquals(Boolean.TRUE, emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 77L, "<m1@acme.com>"));
+    assertEquals(Optional.of(Boolean.TRUE), emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 77L, "<m1@acme.com>"));
 
     verify(inbox).open(Folder.READ_ONLY);
     verify(inbox, never()).open(Folder.READ_WRITE);
@@ -16748,7 +16749,7 @@ public class EmailBoxServiceTest {
 
     when(message.getFlags()).thenReturn(new Flags());
     when(message.getHeader("X-Spam-Flag")).thenReturn(null);
-    assertEquals(Boolean.FALSE, emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 77L, "<m1@acme.com>"), "an unmarked mail");
+    assertEquals(Optional.of(Boolean.FALSE), emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 77L, "<m1@acme.com>"), "an unmarked mail");
   }
 
   /**
@@ -16763,7 +16764,7 @@ public class EmailBoxServiceTest {
     IMAPFolder inbox = (IMAPFolder) store.getFolder(MailFolder.INBOX);
     when(inbox.getMessageByUID(78L)).thenReturn(null);
 
-    assertNull(emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 78L, "<m1@acme.com>"));
+    assertEquals(Optional.empty(), emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 78L, "<m1@acme.com>"));
 
     verify(inbox).close(false);
     verify(store).close();
@@ -16783,9 +16784,9 @@ public class EmailBoxServiceTest {
     IMAPFolder inbox = (IMAPFolder) store.getFolder(MailFolder.INBOX);
     spamReadMessage(inbox, 79L, "<other@acme.com>", new String[] { "YES" }, "$Junk");
 
-    assertNull(emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 79L, "<m1@acme.com>"), "another mail at that UID");
-    assertEquals(Boolean.TRUE, emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 79L, "<other@ACME.com>"), "the same id");
-    assertEquals(Boolean.TRUE,
+    assertEquals(Optional.empty(), emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 79L, "<m1@acme.com>"), "another mail at that UID");
+    assertEquals(Optional.of(Boolean.TRUE), emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 79L, "<other@ACME.com>"), "the same id");
+    assertEquals(Optional.of(Boolean.TRUE),
                  emailBoxService.isFlaggedAsSpamOnServer(TEST_USER, 79L, EmailThreadingUtils.synthesizeMessageId(79L, TEST_USER)),
                  "a minted id is not checked");
     verify(inbox, times(3)).close(false);
