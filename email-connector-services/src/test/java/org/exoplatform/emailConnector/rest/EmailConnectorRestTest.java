@@ -71,6 +71,7 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.exception.EngineInUseException;
 import org.exoplatform.emailConnector.model.ConnectorEngines;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailManagedMode;
@@ -621,6 +622,31 @@ public class EmailConnectorRestTest {
            .andExpect(status().isNotFound());
     mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/1/engines").with(testSimpleUser()).content("{}").contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isForbidden());
+  }
+
+  /**
+   * A switch refused while the current engine is in use is a 409 carrying its code
+   * and what is in use, so that the screen can say what to remove first (EXO-90793).
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anEngineSwitchInUseIsAConflictWithTheCounts() throws Exception {
+    when(emailConnectorEngineService.saveEngines(eq(6L), any(), eq(ADMIN_USER))).thenThrow(new EngineInUseException(EngineInUseException.RULES_IN_USE,
+                                                                                                                   2,
+                                                                                                                   1,
+                                                                                                                   3,
+                                                                                                                   0));
+
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/6/engines").with(testAdminUser())
+                                                            .content("{\"rulesEngine\":\"sieve\"}")
+                                                            .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isConflict())
+           .andExpect(jsonPath("$.message").value(EngineInUseException.RULES_IN_USE))
+           .andExpect(jsonPath("$.replies").value(2))
+           .andExpect(jsonPath("$.forwards").value(1))
+           .andExpect(jsonPath("$.rules").value(3))
+           .andExpect(jsonPath("$.shares").value(0));
   }
 
   private RequestPostProcessor testAdminUser() {
