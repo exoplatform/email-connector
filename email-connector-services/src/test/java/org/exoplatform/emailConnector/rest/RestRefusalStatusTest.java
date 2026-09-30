@@ -87,7 +87,7 @@ class RestRefusalStatusTest {
    */
   private static final Map<Class<?>, Integer>               FLOORS = Map.of(EmailBoxRest.class, 48,
                                                                             UserEmailSettingRest.class, 22,
-                                                                            EmailConnectorRest.class, 20,
+                                                                            EmailConnectorRest.class, 22,
                                                                             EmailContactRest.class, 1,
                                                                             EmailFilterRest.class, 21);
 
