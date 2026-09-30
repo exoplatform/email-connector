@@ -142,6 +142,34 @@ export function quotedOriginalBody(body) {
 }
 
 /**
+ * The original message, ready to sit under a forward's header block.
+ *
+ * The same two kinds of body as {@link quotedOriginalBody}, treated the same way but
+ * for the prefixes: a forward carries the message as it was, not as a quote, so its
+ * lines get no `> `. HTML passes through untouched; plain text is escaped and its
+ * line breaks turned into `<br>`, without which the HTML editor the forward is
+ * written in would show the whole message as one paragraph and send it that way.
+ *
+ * Which kind it is comes from the server when the server said (`html` is what the
+ * message's own Content-Type recorded), and from the markup otherwise.
+ *
+ * @param {string} body - the original message body, as it was received
+ * @param {boolean} [html] - whether the server recorded the body as HTML; undefined
+ *          when the message did not carry the answer
+ * @returns {string} the markup to place under the forwarded header, or an empty string
+ */
+export function forwardedOriginalBody(body, html) {
+  const original = (body || '').trim();
+  if (!original) {
+    return '';
+  }
+  if (html === true || (html !== false && isHtmlBody(original))) {
+    return original;
+  }
+  return original.split(/\r\n|\r|\n/).map(escapeHtml).join('<br>');
+}
+
+/**
  * The whole body a reply opens with.
  *
  * The two leading breaks are the point of the exercise: the editor puts the caret at

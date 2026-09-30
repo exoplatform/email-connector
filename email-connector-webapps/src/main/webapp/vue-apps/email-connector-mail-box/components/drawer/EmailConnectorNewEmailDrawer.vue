@@ -359,7 +359,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { personName } from '../../js/EmailRecipientDisplay.js';
-import { escapeHtml, replyQuoteBody } from '../../js/EmailReplyQuote.js';
+import { escapeHtml, forwardedOriginalBody, replyQuoteBody } from '../../js/EmailReplyQuote.js';
 import { keepEmptyLines } from '../../js/EmailComposedBody.js';
 
 const DEFAULT_EDITOR_MAX_HEIGHT = 300;
@@ -1730,7 +1730,9 @@ export default {
       if (email.cc?.length) {
         bodyParts.push('<br>', `${this.$t('emailConnector.mailBox.newEmail.drawer.cc.label')} ${this.quotedRecipients(email.cc)}`);
       }
-      bodyParts.push('<br><br><br>', email.content.body || '');
+      // The message itself, made ready for the HTML editor: a plain-text original
+      // keeps its line breaks (forwardedOriginalBody), as a reply's quote already does.
+      bodyParts.push('<br><br><br>', forwardedOriginalBody(email.content?.body, email.content?.html));
       return bodyParts.join('\n');
     },
     /**
