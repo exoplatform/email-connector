@@ -522,7 +522,7 @@ public class UserEmailSettingRestTest {
            .andExpect(status().isBadRequest())
            .andExpect(status().reason("emailConnector.delegation.notAccepted"));
 
-    when(emailDelegationService.updatePreferences(SIMPLE_USER, 6L, null, true))
+    when(emailDelegationService.updatePreferences(SIMPLE_USER, 6L, null, true, null))
                                                                                .thenThrow(new ObjectNotFoundException(EmailDelegationService.NOT_FOUND_MESSAGE));
     mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/6/preferences").with(testSimpleUser())
                                                                                .content(asJsonString(new DelegationPreferencesRequest(null, true)))
