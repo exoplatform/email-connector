@@ -71,7 +71,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :vacation="absence.vacation"
             :capabilities="absence.capabilities"
             :days="absence.vacationDays || 7"
-            :engine="absence.engine"
             :error="error"
             @can-save="canSave = $event"
             @save="save($event, false)" />
