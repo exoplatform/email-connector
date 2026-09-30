@@ -263,6 +263,7 @@ public class EmailConnectorEngineServiceTest {
    */
   @Test
   public void aRulesSwitchIsRefusedWhileWhatEXoSetIsInUse() throws Exception {
+    when(serverRuleEngineRegistry.engineName(connector)).thenReturn("sieve");
     when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of("ann", "bob", "cid", "dan", "eve"));
     lenient().when(emailAbsenceService.hasExoReply("ann")).thenReturn(true);
     lenient().when(emailForwardingService.hasExoForward("bob")).thenReturn(true);
@@ -270,7 +271,7 @@ public class EmailConnectorEngineServiceTest {
     when(emailFilterStorage.usersWithServerHops()).thenReturn(java.util.Set.of("dan", "someone-else"));
 
     EngineInUseException refused = assertThrows(EngineInUseException.class,
-                                                () -> service.saveEngines(CONNECTOR_ID, choice("sieve", "none"), ADMIN));
+                                                () -> service.saveEngines(CONNECTOR_ID, choice("none", "none"), ADMIN));
 
     assertEquals(EngineInUseException.RULES_IN_USE, refused.getMessage());
     assertEquals(1, refused.getReplies());
@@ -287,25 +288,26 @@ public class EmailConnectorEngineServiceTest {
    */
   @Test
   public void eachRecordAloneRefusesARulesSwitchAndNoneLetsItThrough() throws Exception {
+    when(serverRuleEngineRegistry.engineName(connector)).thenReturn("sieve");
     when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of("ann"));
     lenient().when(emailFilterStorage.usersWithServerHops()).thenReturn(java.util.Set.of());
 
     when(emailAbsenceService.hasExoReply("ann")).thenReturn(true);
-    assertThrows(EngineInUseException.class, () -> service.saveEngines(CONNECTOR_ID, choice("sieve", null), ADMIN));
+    assertThrows(EngineInUseException.class, () -> service.saveEngines(CONNECTOR_ID, choice("none", null), ADMIN));
     when(emailAbsenceService.hasExoReply("ann")).thenReturn(false);
     when(emailForwardingService.hasExoForward("ann")).thenReturn(true);
-    assertThrows(EngineInUseException.class, () -> service.saveEngines(CONNECTOR_ID, choice("sieve", null), ADMIN));
+    assertThrows(EngineInUseException.class, () -> service.saveEngines(CONNECTOR_ID, choice("none", null), ADMIN));
     when(emailForwardingService.hasExoForward("ann")).thenReturn(false);
     when(emailForwardingService.hasExoRuleForwards("ann")).thenReturn(true);
-    assertThrows(EngineInUseException.class, () -> service.saveEngines(CONNECTOR_ID, choice("sieve", null), ADMIN));
+    assertThrows(EngineInUseException.class, () -> service.saveEngines(CONNECTOR_ID, choice("none", null), ADMIN));
     when(emailForwardingService.hasExoRuleForwards("ann")).thenReturn(false);
     when(emailFilterStorage.usersWithServerHops()).thenReturn(java.util.Set.of("ann"));
-    assertThrows(EngineInUseException.class, () -> service.saveEngines(CONNECTOR_ID, choice("sieve", null), ADMIN));
+    assertThrows(EngineInUseException.class, () -> service.saveEngines(CONNECTOR_ID, choice("none", null), ADMIN));
     verify(connectorEngineChoiceStorage, never()).setChoice(anyString(), anyLong(), anyString());
 
     when(emailFilterStorage.usersWithServerHops()).thenReturn(java.util.Set.of());
-    service.saveEngines(CONNECTOR_ID, choice("sieve", null), ADMIN);
-    verify(connectorEngineChoiceStorage).setChoice(ConnectorEngineChoiceStorage.RULES_ENGINE, CONNECTOR_ID, "sieve");
+    service.saveEngines(CONNECTOR_ID, choice("none", null), ADMIN);
+    verify(connectorEngineChoiceStorage).setChoice(ConnectorEngineChoiceStorage.RULES_ENGINE, CONNECTOR_ID, "none");
   }
 
   /**
@@ -346,7 +348,49 @@ public class EmailConnectorEngineServiceTest {
     verify(emailDelegationStorage, never()).countExoSharesOnServer(anyLong());
     verify(userEmailSettingService, never()).getUserEmailSettingsByEmailConnectorId(anyLong());
 
-    assertThrows(EngineInUseException.class, () -> service.saveEngines(CONNECTOR_ID, choice("sieve", null), ADMIN));
+    service.saveEngines(CONNECTOR_ID, choice("sieve", null), ADMIN);
+    verify(userEmailSettingService, never()).getUserEmailSettingsByEmailConnectorId(anyLong());
+    verify(emailDelegationStorage, never()).countExoSharesOnServer(anyLong());
+  }
+
+  /**
+   * While a deployment property applies an engine, choosing that engine on the screen
+   * is no switch, whatever is in use; choosing another one is, and is refused.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void choosingTheEngineAPropertyAppliesIsNoSwitchAndAnotherIs() throws Exception {
+    when(serverRuleEngineRegistry.engineName(connector)).thenReturn("sieve");
+    when(serverRuleEngineRegistry.chosenEngineName(connector)).thenReturn("none");
+    lenient().when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of("ann"));
+    lenient().when(emailAbsenceService.hasExoReply("ann")).thenReturn(true);
+
+    service.saveEngines(CONNECTOR_ID, choice("sieve", null), ADMIN);
+    verify(connectorEngineChoiceStorage).setChoice(ConnectorEngineChoiceStorage.RULES_ENGINE, CONNECTOR_ID, "sieve");
+    verify(userEmailSettingService, never()).getUserEmailSettingsByEmailConnectorId(anyLong());
+
+    assertThrows(EngineInUseException.class, () -> service.saveEngines(CONNECTOR_ID, choice("none", null), ADMIN));
+  }
+
+  /**
+   * Nothing was set through the no-op engine: leaving it is never checked, even with
+   * records left by an earlier engine, on either kind.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void leavingTheNoopEngineIsNeverChecked() throws Exception {
+    when(mailboxAclEngineRegistry.engineName(connector)).thenReturn("none");
+    lenient().when(emailDelegationStorage.countExoSharesOnServer(CONNECTOR_ID)).thenReturn(3L);
+    lenient().when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of("ann"));
+    lenient().when(emailAbsenceService.hasExoReply("ann")).thenReturn(true);
+
+    service.saveEngines(CONNECTOR_ID, choice("sieve", "imap"), ADMIN);
+
+    verify(connectorEngineChoiceStorage).setChoice(ConnectorEngineChoiceStorage.RULES_ENGINE, CONNECTOR_ID, "sieve");
+    verify(connectorEngineChoiceStorage).setChoice(ConnectorEngineChoiceStorage.ACL_ENGINE, CONNECTOR_ID, "imap");
+    verify(userEmailSettingService, never()).getUserEmailSettingsByEmailConnectorId(anyLong());
     verify(emailDelegationStorage, never()).countExoSharesOnServer(anyLong());
   }
 
