@@ -472,6 +472,18 @@ public class EmailFilterRestTest {
   }
 
   /**
+   * The mails with a suggestion waiting answer the service's Message-IDs.
+   */
+  @Test
+  void getWaitingMailsAnswersTheMessageIds() throws Exception {
+    when(emailFilterProposalService.getWaitingMails(anyString(), any())).thenReturn(List.of("<m1@acme.com>"));
+
+    mockMvc.perform(get(FILTERS_PATH + "/proposals/waiting").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$[0]").value("<m1@acme.com>"));
+  }
+
+  /**
    * Rejecting a proposal answers it, rejected.
    */
   @Test
