@@ -2480,7 +2480,6 @@ export default {
           mimeType: attachment.mimeType,
           size: attachment.size,
         }));
-      this.email.content.body = this.formatEmailBody(this.email.content.body);
       this.loading = true;
       // Nothing may push a draft of a message that is about to be sent: the close
       // handler below would otherwise upload one, and showing someone a draft of a
@@ -2506,9 +2505,14 @@ export default {
       // the send (EXO-90584): the name travels in the draft, and no query parameter can
       // then disagree with it.
       this.email.sendMode = this.draftSendMode();
+      // The body goes out formatted in the payload alone, never written back into the
+      // composer's field: that field's watcher runs after the cancel above and would
+      // start a save of a mail being sent, which on a never-saved mail leaves a draft
+      // of it behind. A failed send also keeps on screen what the user typed.
+      const outgoing = { ...this.email, content: { ...this.email.content, body: this.formatEmailBody(this.email.content.body) } };
       const send = this.draftSession.localId
-        ? this.$emailConnectorMailBoxService.sendDraft(this.draftSession.localId, this.email, delegationId, null)
-        : this.$emailConnectorMailBoxService.sendEmail(this.email, delegationId, sendMode);
+        ? this.$emailConnectorMailBoxService.sendDraft(this.draftSession.localId, outgoing, delegationId, null)
+        : this.$emailConnectorMailBoxService.sendEmail(outgoing, delegationId, sendMode);
       // What the notice promised when the composer opened (Q-3): a copy in the owner's
       // Sent. Anything short of it having been filed is said -- louder for a mail in the
       // owner's name, of which they then have no copy at all.
