@@ -569,6 +569,35 @@ export default {
         return null;
       }
     },
+    /**
+     * Saves an existing connector: the connector itself, then its forwarding and its
+     * engines when they changed.
+     *
+     * @returns {Promise} resolved once every changed part is saved
+     */
+    async updateConnector() {
+      await this.$emailConnectorAdministrationService.updateEmailConnector(this.emailConnector);
+      if (this.forwardingChanged()) {
+        await this.$emailConnectorAdministrationService.saveConnectorForwarding(this.emailConnector.id, this.forwarding);
+      }
+      if (this.enginesChanged()) {
+        await this.$emailConnectorAdministrationService.saveConnectorEngines(this.emailConnector.id, this.changedEngines());
+      }
+    },
+    /**
+     * The engine choices to save: only the one that changed, the other left null so
+     * it stays as kept, whatever a deployment property makes apply meanwhile.
+     *
+     * @returns {Object} the rules and sharing engine choices, null when unchanged
+     */
+    changedEngines() {
+      const rulesChanged = this.engines.rulesEngineChoice !== this.loadedEngines.rulesEngineChoice;
+      const aclChanged = this.engines.aclEngineChoice !== this.loadedEngines.aclEngineChoice;
+      return {
+        rulesEngine: rulesChanged ? this.engines.rulesEngineChoice : null,
+        aclEngine: aclChanged ? this.engines.aclEngineChoice : null,
+      };
+    },
     async saveConnector(confirmed) {
       if (!await this.mayStoreConnector(confirmed)) {
         return;
@@ -590,18 +619,7 @@ export default {
           emailConnector = await this.$emailConnectorAdministrationService.createEmailConnector(this.emailConnector);
         }
         else {
-          await this.$emailConnectorAdministrationService.updateEmailConnector(this.emailConnector);
-          if (this.forwardingChanged()) {
-            await this.$emailConnectorAdministrationService.saveConnectorForwarding(this.emailConnector.id, this.forwarding);
-          }
-          if (this.enginesChanged()) {
-            // Only the choice that changed: the other one is left as kept, whatever a
-            // deployment property makes apply meanwhile.
-            await this.$emailConnectorAdministrationService.saveConnectorEngines(this.emailConnector.id, {
-              rulesEngine: this.engines.rulesEngineChoice !== this.loadedEngines.rulesEngineChoice ? this.engines.rulesEngineChoice : null,
-              aclEngine: this.engines.aclEngineChoice !== this.loadedEngines.aclEngineChoice ? this.engines.aclEngineChoice : null,
-            });
-          }
+          await this.updateConnector();
         }
         await this.$translationService.saveTranslations('emailConnector',  emailConnector.id, 'name', this.emailConnectorNameTranslations);
         if (isNew) {
