@@ -37,7 +37,6 @@ import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.VacationSetting;
 import org.exoplatform.emailConnector.model.VacationState;
-import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindMailboxTransport;
 import org.exoplatform.emailConnector.service.rules.bluemind.BlueMindRuleEngine;
@@ -55,8 +54,7 @@ public class ServerRuleEngineRegistryTest {
 
   private final NoopRuleEngine     noop         = new NoopRuleEngine();
 
-  private final BlueMindRuleEngine bluemind     = new BlueMindRuleEngine(mock(BlueMindMailboxTransport.class),
-                                                                         mock(EmailCredentialsResolver.class));
+  private final BlueMindRuleEngine bluemind     = new BlueMindRuleEngine(mock(BlueMindMailboxTransport.class));
 
   private ServerRuleEngineRegistry registry;
 
