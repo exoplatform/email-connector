@@ -38,8 +38,6 @@ import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.VacationSetting;
 import org.exoplatform.emailConnector.model.VacationState;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
-import org.exoplatform.emailConnector.service.bluemind.BlueMindMailboxTransport;
-import org.exoplatform.emailConnector.service.rules.bluemind.BlueMindRuleEngine;
 
 /**
  * The engine a preset uses is the property's, per preset first, {@code none} by default;
@@ -54,7 +52,8 @@ public class ServerRuleEngineRegistryTest {
 
   private final NoopRuleEngine     noop         = new NoopRuleEngine();
 
-  private final BlueMindRuleEngine bluemind     = new BlueMindRuleEngine(mock(BlueMindMailboxTransport.class));
+  /** An engine another add-on contributes, as the BlueMind add-on does. */
+  private final ServerRuleEngine   bluemind     = mock(ServerRuleEngine.class);
 
   private ServerRuleEngineRegistry registry;
 
@@ -64,6 +63,7 @@ public class ServerRuleEngineRegistryTest {
   @BeforeEach
   public void setUp() {
     when(sieve.getName()).thenReturn("sieve");
+    when(bluemind.getName()).thenReturn("bluemind");
     registry = new ServerRuleEngineRegistry();
     ReflectionTestUtils.setField(registry, "engines", List.of(sieve, bluemind, noop));
   }
@@ -108,13 +108,29 @@ public class ServerRuleEngineRegistryTest {
   }
 
   /**
-   * {@code bluemind} selects the BlueMind engine, per preset, whatever the global one.
+   * An engine another add-on contributes is selected by its name like the host's own,
+   * per preset, whatever the global one: {@code bluemind} selects the BlueMind add-on's.
    */
   @Test
-  public void testBlueMindIsSelectedByName() {
+  public void testAnAddOnsEngineIsSelectedByName() {
     System.setProperty(ServerRuleEngineRegistry.ENGINE_PROPERTY, "sieve");
     System.setProperty(ServerRuleEngineRegistry.ENGINE_PROPERTY_PREFIX + CONNECTOR_ID, "bluemind");
     assertSame(bluemind, registry.engineFor(preset()));
+  }
+
+  /**
+   * Two engines of one name: the first of the collected list answers, which is the
+   * order the context sorts its engines in. An add-on engine that must win over one of
+   * the same name states an order ahead of it.
+   */
+  @Test
+  public void testTheFirstOfTwoEnginesOfOneNameAnswers() {
+    ServerRuleEngine second = mock(ServerRuleEngine.class);
+    when(second.getName()).thenReturn("bluemind");
+    ReflectionTestUtils.setField(registry, "engines", List.of(sieve, bluemind, second, noop));
+    System.setProperty(ServerRuleEngineRegistry.ENGINE_PROPERTY, "bluemind");
+    assertSame(bluemind, registry.engineFor(preset()));
+    verifyNoInteractions(second);
   }
 
   /**
