@@ -44,6 +44,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
 
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
@@ -55,6 +56,8 @@ import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.VacationSetting;
 import org.exoplatform.emailConnector.model.VacationState;
+import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
+import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.service.acl.MailCredentialsRefusal;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindEndpoint;
@@ -65,6 +68,7 @@ import org.exoplatform.emailConnector.service.bluemind.BlueMindTransportExceptio
 import org.exoplatform.emailConnector.service.bluemind.BlueMindVacation;
 import org.exoplatform.emailConnector.service.bluemind.FakeBlueMindTransport.Call;
 import org.exoplatform.emailConnector.service.bluemind.FakeBlueMindTransport;
+import org.exoplatform.emailConnector.service.rules.ForwardingGuard;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 
 /**
@@ -174,23 +178,27 @@ public class BlueMindRuleEngineTest {
 
   /**
    * The engine takes nothing private to the host: no constructor parameter and no field
-   * is the host's {@code EmailCredentialsResolver} or {@code ForwardingGuard}, both
-   * {@code @Component}s the cross-WAR bridge does not export, so the engine can be
-   * contributed from another add-on's WAR. A refused login reaches the provider through
-   * the caller's own session, and the host checks a forward's destination before calling
-   * any engine. Mutant: a constructor parameter or a field of either type fails this test.
+   * is of a type annotated {@code @Component} itself, as the host's
+   * {@code EmailCredentialsResolver} and {@code ForwardingGuard} are, since the cross-WAR
+   * bridge exports only {@code @Service} beans and the engine is to be contributed from
+   * another add-on's WAR. A {@code @Service} is only meta-annotated {@code @Component},
+   * which {@link Class#isAnnotationPresent} does not see, so it passes. A refused login
+   * reaches the provider through the caller's own session, and the host checks a
+   * forward's destination before calling any engine. Mutant: a constructor parameter or
+   * a field of any such type fails this test.
    */
   @Test
   public void testTheEngineTakesNoHostPrivateBean() {
-    Set<String> hostPrivate = Set.of("org.exoplatform.emailConnector.provider.EmailCredentialsResolver",
-                                     "org.exoplatform.emailConnector.service.rules.ForwardingGuard");
+    assertTrue(EmailCredentialsResolver.class.isAnnotationPresent(Component.class));
+    assertTrue(ForwardingGuard.class.isAnnotationPresent(Component.class));
+    assertFalse(EmailDelegationService.class.isAnnotationPresent(Component.class));
     for (Constructor<?> constructor : BlueMindRuleEngine.class.getConstructors()) {
       for (Class<?> parameter : constructor.getParameterTypes()) {
-        assertFalse(hostPrivate.contains(parameter.getName()), constructor.toString());
+        assertFalse(parameter.isAnnotationPresent(Component.class), constructor.toString());
       }
     }
     for (Field field : BlueMindRuleEngine.class.getDeclaredFields()) {
-      assertFalse(hostPrivate.contains(field.getType().getName()), field.getName());
+      assertFalse(field.getType().isAnnotationPresent(Component.class), field.getName());
     }
   }
 
