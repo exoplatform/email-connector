@@ -374,8 +374,8 @@ public class BlueMindRuleEngine implements ServerRuleEngine {
 
   /**
    * What this engine offers: the reply with its window, read whoever set it, and the
-   * forward read only; neither HTML nor a forward write in this phase, and no server rules
-   * until the server-rules eXip implements them here.
+   * forward, read and written; no HTML reply in this phase, and no server rules until the
+   * server-rules eXip implements them here.
    *
    * @return the capabilities
    */
