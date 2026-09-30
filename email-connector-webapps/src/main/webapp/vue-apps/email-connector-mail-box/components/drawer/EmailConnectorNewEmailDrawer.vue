@@ -360,6 +360,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 import { personName } from '../../js/EmailRecipientDisplay.js';
 import { escapeHtml, replyQuoteBody } from '../../js/EmailReplyQuote.js';
+import { keepEmptyLines } from '../../js/EmailComposedBody.js';
 
 const DEFAULT_EDITOR_MAX_HEIGHT = 300;
 
@@ -1923,7 +1924,9 @@ export default {
     snapshotDraft() {
       return {
         subject: this.email.subject,
-        body: this.email.content.body,
+        // With its empty lines made visible (keepEmptyLines): the row is what a resumed
+        // draft, a scheduled send and the Sent copy are built from.
+        body: keepEmptyLines(this.email.content.body),
         // Names as well as addresses, unlike the send payload. A draft is read back
         // into these very fields when it is resumed, so what is not stored is what the
         // user sees disappear from a chip they typed. The send API has no use for them
@@ -2989,8 +2992,9 @@ export default {
       }).filter(recipient => recipient.address);
     },
     /**
-     * Widens the quoted blocks the editor produced into something a mail client
-     * renders as a quote.
+     * Makes the composed body travel as the sender saw it: its empty lines kept
+     * (keepEmptyLines), and the quoted blocks the editor produced widened into
+     * something a mail client renders as a quote.
      *
      * @param {string} html - the composed body
      * @returns {string} the body to send
@@ -2999,7 +3003,7 @@ export default {
       if (!html) {
         return html;
       }
-      return html.replace(/<blockquote>/g, `
+      return keepEmptyLines(html).replace(/<blockquote>/g, `
       <blockquote style="
         margin: 0 0 0 6px;
         padding-left: 8px;
