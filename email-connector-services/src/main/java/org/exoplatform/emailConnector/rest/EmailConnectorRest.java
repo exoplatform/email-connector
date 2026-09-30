@@ -41,6 +41,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+import org.exoplatform.emailConnector.model.ConnectorEngines;
 import org.exoplatform.emailConnector.model.ConnectorForwarding;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailManagedMode;
@@ -48,6 +49,7 @@ import org.exoplatform.emailConnector.model.EmailSyncExecutorStatus;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.rest.model.EmailDisconnectionPreview;
 import org.exoplatform.emailConnector.rest.model.EmailManagedModeRequest;
+import org.exoplatform.emailConnector.service.EmailConnectorEngineService;
 import org.exoplatform.emailConnector.service.EmailConnectorService;
 import org.exoplatform.emailConnector.service.EmailManagedDisconnectionService;
 import org.exoplatform.emailConnector.service.EmailManagedModeService;
@@ -70,6 +72,9 @@ public class EmailConnectorRest {
 
   @Autowired
   private EmailConnectorService emailConnectorService;
+
+  @Autowired
+  private EmailConnectorEngineService emailConnectorEngineService;
 
   @Autowired
   private EmailSyncService      emailSyncService;
@@ -667,6 +672,71 @@ public class EmailConnectorRest {
       return emailConnectorService.saveForwarding(emailConnectorId, forwarding, request.getRemoteUser());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Which engines a connector's server rules and mailbox sharing go through.
+   *
+   * @param request the caller's request, for the acting user
+   * @param emailConnectorId email connector technical id
+   * @return the engines configured and installed, and what overrides them
+   */
+  @GetMapping(path = "/{emailConnectorId}/engines")
+  @Secured("administrators")
+  @Operation(summary = "Reads which engines a connector's server rules and mailbox sharing go through", method = "GET",
+      description = "rulesEngine and aclEngine are the engines configured, possibly not installed; rulesEngines and aclEngines "
+          + "the ones installed; rulesEngineProperty and aclEngineProperty the deployment property that decides over the "
+          + "screen's choice, null when none is set; authProviderMissing true when the connector's credentials provider is "
+          + "not installed.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
+      @ApiResponse(responseCode = "404", description = "No such connector") })
+  public ConnectorEngines getEngines(HttpServletRequest request,
+                                     @Parameter(description = "Email connector technical id", required = true)
+                                     @PathVariable("emailConnectorId")
+                                     Long emailConnectorId) {
+    try {
+      return emailConnectorEngineService.getEngines(emailConnectorId, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    }
+  }
+
+  /**
+   * Keeps the engines an administrator chose for a connector's server rules and
+   * mailbox sharing.
+   *
+   * @param request the caller's request, for the acting user
+   * @param emailConnectorId email connector technical id
+   * @param engines {rulesEngine, aclEngine}, a null one keeping the one kept
+   * @return the engines after the save
+   */
+  @PutMapping(path = "/{emailConnectorId}/engines")
+  @Secured("administrators")
+  @Operation(summary = "Saves which engines a connector's server rules and mailbox sharing go through", method = "PUT",
+      description = "Each engine must be installed, or be the one already kept. Applies at once, unless a deployment property "
+          + "decides the engine: the choice is then kept for when the property is removed.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Saved"),
+      @ApiResponse(responseCode = "400", description = "An engine that is not installed (emailConnector.engines.unknown)"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
+      @ApiResponse(responseCode = "404", description = "No such connector") })
+  public ConnectorEngines saveEngines(HttpServletRequest request,
+                                      @Parameter(description = "Email connector technical id", required = true)
+                                      @PathVariable("emailConnectorId")
+                                      Long emailConnectorId,
+                                      @RequestBody
+                                      ConnectorEngines engines) {
+    try {
+      return emailConnectorEngineService.saveEngines(emailConnectorId, engines, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }

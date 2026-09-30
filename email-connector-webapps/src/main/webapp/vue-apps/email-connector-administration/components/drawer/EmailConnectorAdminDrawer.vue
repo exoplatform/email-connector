@@ -223,6 +223,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           v-if="emailConnector.id && forwarding"
           v-model="forwarding"
           @valid="forwardingValid = $event" />
+        <email-connector-admin-engines-section
+          v-if="emailConnector.id && engines"
+          v-model="engines" />
       </form>
     </template>
     <template #footer>
@@ -302,6 +305,10 @@ export default {
     // so editing another field never turns the properties' values into saved ones.
     loadedForwarding: null,
     forwardingValid: true,
+    // The connector's engines (EXO-90793), as the server answers them: saved again only
+    // when the section changed them.
+    engines: null,
+    loadedEngines: null,
   }),
   computed: {
     disconnectionConfirmMessage() {
@@ -397,6 +404,10 @@ export default {
         && await this.$emailConnectorAdministrationService.getConnectorForwarding(emailConnector.id).catch(() => null)
         || null;
       this.loadedForwarding = this.forwarding && { ...this.forwarding, allowedDomains: [...(this.forwarding.allowedDomains || [])] };
+      this.engines = emailConnector && emailConnector.id
+        && await this.$emailConnectorAdministrationService.getConnectorEngines(emailConnector.id).catch(() => null)
+        || null;
+      this.loadedEngines = this.engines && { ...this.engines };
       this.$refs.emailConnectorDrawer.open();
     },
     close() {
@@ -421,6 +432,8 @@ export default {
       this.providerConfig = {};
       this.forwarding = null;
       this.loadedForwarding = null;
+      this.engines = null;
+      this.loadedEngines = null;
       this.$refs.emailConnectorDrawer.close();
     },
     /**
@@ -434,6 +447,18 @@ export default {
       }
       return this.forwarding.authoringEnabled !== this.loadedForwarding.authoringEnabled
         || JSON.stringify(this.forwarding.allowedDomains || []) !== JSON.stringify(this.loadedForwarding.allowedDomains || []);
+    },
+    /**
+     * Whether the Engines section changed what was loaded.
+     *
+     * @returns {boolean} true when either engine differs
+     */
+    enginesChanged() {
+      if (!this.engines || !this.loadedEngines) {
+        return false;
+      }
+      return this.engines.rulesEngine !== this.loadedEngines.rulesEngine
+        || this.engines.aclEngine !== this.loadedEngines.aclEngine;
     },
     resetImage() {
       this.emailConnector.imageUrl = null;
@@ -510,6 +535,9 @@ export default {
       if (e?.message === 'emailConnector.forwarding.domain.invalid') {
         return this.$t('emailConnector.admin.connectors.drawer.forwarding.domains.invalid');
       }
+      if (e?.message === 'emailConnector.engines.unknown') {
+        return this.$t('emailConnector.admin.connectors.drawer.engines.unknown');
+      }
       if (e?.messageCode && this.$te(e.messageCode)) {
         return this.$t(e.messageCode);
       }
@@ -539,6 +567,9 @@ export default {
           await this.$emailConnectorAdministrationService.updateEmailConnector(this.emailConnector);
           if (this.forwardingChanged()) {
             await this.$emailConnectorAdministrationService.saveConnectorForwarding(this.emailConnector.id, this.forwarding);
+          }
+          if (this.enginesChanged()) {
+            await this.$emailConnectorAdministrationService.saveConnectorEngines(this.emailConnector.id, this.engines);
           }
         }
         await this.$translationService.saveTranslations('emailConnector',  emailConnector.id, 'name', this.emailConnectorNameTranslations);
