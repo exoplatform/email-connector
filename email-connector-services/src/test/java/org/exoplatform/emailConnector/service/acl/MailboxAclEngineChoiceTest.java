@@ -20,7 +20,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -104,8 +103,8 @@ public class MailboxAclEngineChoiceTest {
 
   /**
    * A deployment-wide property wins over the screen's choice, and is named as what
-   * decides; the connector's own property wins over both. The screen's choice is not
-   * even read then.
+   * decides; the connector's own property wins over both. The screen's choice is still
+   * answered apart, as what applies once no property decides.
    */
   @Test
   public void aPropertyWinsOverTheScreenTheConnectorsOwnFirst() {
@@ -114,10 +113,12 @@ public class MailboxAclEngineChoiceTest {
     assertSame(imap, registry.engineFor(connector()));
     assertEquals(MailboxAclEngineRegistry.ENGINE_PROPERTY, registry.overridingProperty(connector()));
 
+    when(choices.getChoice(ConnectorEngineChoiceStorage.ACL_ENGINE, CONNECTOR_ID)).thenReturn("bluemind");
+    assertEquals("bluemind", registry.chosenEngineName(connector()), "the screen's choice, whatever decides");
+
     System.setProperty(MailboxAclEngineRegistry.ENGINE_PROPERTY_PREFIX + CONNECTOR_ID, "none");
     assertSame(noop, registry.engineFor(connector()));
     assertEquals(MailboxAclEngineRegistry.ENGINE_PROPERTY_PREFIX + CONNECTOR_ID, registry.overridingProperty(connector()));
-    verify(choices, never()).getChoice(ConnectorEngineChoiceStorage.ACL_ENGINE, CONNECTOR_ID);
   }
 
   /**
@@ -141,7 +142,9 @@ public class MailboxAclEngineChoiceTest {
     assertEquals(ImapAclEngine.NAME, registry.engineName(new EmailConnector()));
     assertEquals(ImapAclEngine.NAME, registry.engineName(null));
     assertNull(registry.overridingProperty(null));
+    assertEquals(ImapAclEngine.NAME, registry.chosenEngineName(null));
     ReflectionTestUtils.setField(registry, "choices", null);
+    assertEquals(ImapAclEngine.NAME, registry.chosenEngineName(connector()));
     assertEquals(ImapAclEngine.NAME, registry.engineName(connector()));
   }
 
