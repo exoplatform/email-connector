@@ -21,6 +21,8 @@ import java.io.InputStream;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 import org.apache.commons.collections4.MapUtils;
@@ -190,6 +192,9 @@ public class EmailConnectorService {
 
   private static final Log          LOG                                          =
                                         ExoLogger.getLogger(EmailConnectorService.class);
+
+  /** The provider names already reported as not installed, so each is said once. */
+  private final Set<String>         unregisteredProvidersReported                = ConcurrentHashMap.newKeySet();
 
   @Autowired
   private SettingService            settingService;
@@ -1200,13 +1205,23 @@ public class EmailConnectorService {
   }
 
   /**
-   * Whether that provider asks, answering true whenever nobody can tell.
+   * Whether that provider asks, answering true whenever nobody can tell, a provider that
+   * is not installed included.
    *
    * @param providerName the provider to ask about
    * @return true when the user must supply something
    */
   private boolean asksTheUser(String providerName) {
     if (emailCredentialsResolver == null) {
+      return true;
+    }
+    if (StringUtils.isNotBlank(providerName) && !emailCredentialsResolver.isProviderRegistered(providerName)) {
+      // A provider an add-on contributes, and the add-on is not installed: expected, not
+      // an incident, and asked on every listing. Said once per name, without a stack.
+      if (unregisteredProvidersReported.add(providerName)) {
+        LOG.warn("No credentials provider named '{}' is installed: the connectors configured with it ask the user for credentials until it is",
+                 providerName);
+      }
       return true;
     }
     try {
