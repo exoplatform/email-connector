@@ -704,3 +704,51 @@ export function saveConnectorForwarding(emailConnectorId, forwarding) {
     return resp.json();
   });
 }
+
+/**
+ * Which engines a connector's server rules and mailbox sharing go through: the ones
+ * configured, the ones installed, and the deployment property overriding either.
+ *
+ * @param {number} emailConnectorId - the connector
+ * @returns {Promise<object>} {rulesEngine, aclEngine, rulesEngines, aclEngines,
+ *          rulesEngineProperty, aclEngineProperty, authProviderName, authProviderMissing}
+ */
+export function getConnectorEngines(emailConnectorId) {
+  return fetch(`/email-connector/rest/connectors/${emailConnectorId}/engines`, {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when retrieving the connector engines');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * Saves the engines chosen for a connector's server rules and mailbox sharing; they
+ * apply at once, unless a deployment property decides them.
+ *
+ * @param {number} emailConnectorId - the connector
+ * @param {object} engines - {rulesEngine, aclEngine}
+ * @returns {Promise<object>} the engines after the save
+ */
+export function saveConnectorEngines(emailConnectorId, engines) {
+  return fetch(`/email-connector/rest/connectors/${emailConnectorId}/engines`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({
+      rulesEngine: engines?.rulesEngine || null,
+      aclEngine: engines?.aclEngine || null,
+    }),
+  }).then((resp) => {
+    if (!resp?.ok) {
+      return refusal(resp, 'Error when saving the connector engines');
+    }
+    return resp.json();
+  });
+}
