@@ -17,6 +17,8 @@
 package org.exoplatform.emailConnector.notification.plugin;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -121,6 +123,57 @@ public class EmailFilterNotificationPluginTest {
     assertEquals(MAILBOX, plugin.buildNotification(context("", "CUSTOM:3")).getValueOwnerParameter(NotificationConstants.LINK));
     assertEquals(MAILBOX, plugin.buildNotification(context("4&x=1", "")).getValueOwnerParameter(NotificationConstants.LINK));
     assertEquals(MAILBOX, plugin.buildNotification(context("", "")).getValueOwnerParameter(NotificationConstants.LINK));
+  }
+
+  /**
+   * The assistant's line, when there is one, is appended to the sentence, escaped.
+   */
+  @Test
+  void theAssistantsLineIsAppendedToTheSentence() {
+    NotificationContext ctx = NotificationContextImpl.cloneInstance()
+                                                      .append(EmailFilterNotificationPlugin.RECEIVER, "ben")
+                                                      .append(EmailFilterNotificationPlugin.FILTER_NAME, "Acme")
+                                                      .append(EmailFilterNotificationPlugin.COUNT, "3")
+                                                      .append(EmailFilterNotificationPlugin.LINE, "<b>urgent</b>")
+                                                      .append(EmailFilterNotificationPlugin.MAIL_REMOTE_ID, "")
+                                                      .append(EmailFilterNotificationPlugin.MAIL_FOLDER, "");
+
+    assertEquals("Acme matched 3 new mails &lt;b&gt;urgent&lt;/b&gt;",
+                plugin.buildNotification(ctx).getValueOwnerParameter(NotificationConstants.CONTENT));
+  }
+
+  /**
+   * A count that is not a number never fails the notification: it falls back to one, the
+   * singular sentence.
+   */
+  @Test
+  void aNonNumericCountFallsBackToOne() {
+    NotificationContext ctx = NotificationContextImpl.cloneInstance()
+                                                      .append(EmailFilterNotificationPlugin.RECEIVER, "ben")
+                                                      .append(EmailFilterNotificationPlugin.FILTER_NAME, "Acme")
+                                                      .append(EmailFilterNotificationPlugin.COUNT, "not-a-number")
+                                                      .append(EmailFilterNotificationPlugin.LINE, "")
+                                                      .append(EmailFilterNotificationPlugin.MAIL_REMOTE_ID, "")
+                                                      .append(EmailFilterNotificationPlugin.MAIL_FOLDER, "");
+
+    assertEquals("Acme matched a new mail", plugin.buildNotification(ctx).getValueOwnerParameter(NotificationConstants.CONTENT));
+  }
+
+  /**
+   * A notification needs somebody to go to and a filter to name; either blank makes the
+   * context invalid.
+   */
+  @Test
+  void isValidNeedsBothAReceiverAndAFilterName() {
+    assertTrue(plugin.isValid(context("", "")));
+    assertFalse(plugin.isValid(NotificationContextImpl.cloneInstance()
+                                                       .append(EmailFilterNotificationPlugin.RECEIVER, "")
+                                                       .append(EmailFilterNotificationPlugin.FILTER_NAME, "Acme")),
+               "no receiver");
+    assertFalse(plugin.isValid(NotificationContextImpl.cloneInstance()
+                                                       .append(EmailFilterNotificationPlugin.RECEIVER, "ben")
+                                                       .append(EmailFilterNotificationPlugin.FILTER_NAME, "")),
+               "no filter name");
   }
 
   /**
