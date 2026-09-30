@@ -100,7 +100,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         class="text-caption ms-2 flex-shrink-0"
         role="button"
         href="javascript:void(0);"
-        @click.prevent="busy || fixInChat()">
+        @click.prevent="busy || fixInChat()"
+        @keydown.enter.prevent="busy || fixInChat()">
         {{ $t('emailConnector.mailBox.automations.proposal.fix') }}
       </a>
       <a
@@ -160,7 +161,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           class="text-caption primary--text"
           role="button"
           href="javascript:void(0);"
-          @click.prevent.stop="toggleDescription">
+          @click.prevent.stop="toggleDescription"
+          @keydown.enter.prevent.stop="toggleDescription">
           {{ $t(descriptionOpen ? 'emailConnector.mailBox.automations.proposal.less' : 'emailConnector.mailBox.automations.proposal.more') }}
         </a>
         <div
