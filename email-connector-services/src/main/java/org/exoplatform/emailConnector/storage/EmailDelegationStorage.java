@@ -121,8 +121,11 @@ public class EmailDelegationStorage {
   }
 
   /**
-   * How many shares of a connector eXo made whose access is on the server: invited,
-   * accepted, or declined, since a decline leaves the owner's grant in place.
+   * How many shares of a connector eXo made whose access may be on the server: invited,
+   * accepted, declined (a decline leaves the owner's grant in place), offered again (the
+   * owner's grant was seen again) and gone from the grantee's listing (a rename or a
+   * hidden folder leaves the grant). Only a revoke says the grant is gone; a row of no
+   * origin, which predates the column, counts as eXo's.
    *
    * @param connectorId the connector
    * @return the count
@@ -131,7 +134,9 @@ public class EmailDelegationStorage {
     return emailDelegationDAO.countByConnectorIdAndStatusInAndOrigin(connectorId,
                                                                     List.of(DelegationStatus.PENDING.name(),
                                                                             DelegationStatus.ACCEPTED.name(),
-                                                                            DelegationStatus.DECLINED.name()),
+                                                                            DelegationStatus.DECLINED.name(),
+                                                                            DelegationStatus.AVAILABLE.name(),
+                                                                            DelegationStatus.GONE.name()),
                                                                     DelegationOrigin.EXO.name());
   }
 
