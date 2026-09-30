@@ -61,8 +61,9 @@ const BLOCKQUOTE_STYLE = 'margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-l
  * arrived as. The two genuinely occur: a message is cached exactly as it was
  * received, and a multipart with no text/html part is stored as its text/plain one
  * (see EmailConnectorUtils#getHtmlFromMimeMultipart). The reply quote tells them
- * apart from the markup alone; the forward, like the reader, takes the server's
- * `html` flag first and falls back to the markup (see forwardedOriginalBody).
+ * apart from the markup alone; the forward takes the server's `html` flag, as the
+ * reader does, and only when the flag is missing guesses from the markup (see
+ * forwardedOriginalBody), where the reader assumes HTML.
  *
  * A named list rather than "anything between angle brackets", because the one thing
  * plain-text mail is full of is angle brackets around addresses — `<bob@acme.com>`
