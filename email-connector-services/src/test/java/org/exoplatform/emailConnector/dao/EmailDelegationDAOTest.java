@@ -126,6 +126,34 @@ public class EmailDelegationDAOTest {
   }
 
   /**
+   * The shares of a connector eXo made whose access is on the server: counted by
+   * connector, state and origin, a row predating the origin read as eXo's
+   * (EXO-90793).
+   */
+  @Test
+  void theSharesOnTheServerAreCountedByConnectorStateAndOrigin() {
+    persist(GRANTEE, OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    persist(OTHER, OWNER, "alice@acme.com", 7L, "PENDING");
+    persist("dave", OWNER, "alice@acme.com", 7L, "DECLINED");
+    persist("erin", OWNER, "alice@acme.com", 7L, "REVOKED");
+    persist("fred", OWNER, "alice@acme.com", 8L, "ACCEPTED");
+    Long server = persist("gina", OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    Long legacy = persist("hugo", OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    entityManager.clear();
+    EmailDelegationEntity fromServer = emailDelegationDAO.findById(server).orElseThrow();
+    fromServer.setOrigin("SERVER");
+    emailDelegationDAO.saveAndFlush(fromServer);
+    EmailDelegationEntity old = emailDelegationDAO.findById(legacy).orElseThrow();
+    old.setOrigin(null);
+    emailDelegationDAO.saveAndFlush(old);
+    entityManager.clear();
+
+    assertEquals(4, emailDelegationDAO.countByConnectorIdAndStatusInAndOrigin(7L, List.of("PENDING", "ACCEPTED", "DECLINED"), "EXO"));
+    assertEquals(1, emailDelegationDAO.countByConnectorIdAndStatusInAndOrigin(8L, List.of("PENDING", "ACCEPTED", "DECLINED"), "EXO"));
+    assertEquals(0, emailDelegationDAO.countByConnectorIdAndStatusInAndOrigin(9L, List.of("PENDING", "ACCEPTED", "DECLINED"), "EXO"));
+  }
+
+  /**
    * #432-2 -- the grantee's toggles are written alone, in SQL: a revoke committed since
    * the grantee's read stays revoked, and only that grantee's row is touched.
    */

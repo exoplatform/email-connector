@@ -71,6 +71,18 @@ public interface EmailFilterDAO extends JpaRepository<EmailFilterEntity, Long> {
   String tagKeyword);
 
   /**
+   * The users with an enabled rule of a kind that has its server half named: for a hop
+   * rule, the rule eXo wrote on the server.
+   *
+   * @param kind the kind, spelled by the caller
+   * @return the users, each once
+   */
+  @Query("SELECT DISTINCT f.userId FROM EmailFilterEntity f WHERE f.kind = :kind AND f.enabled = true"
+      + " AND f.serverRuleRef IS NOT NULL AND f.tagKeyword IS NOT NULL")
+  List<String> findUserIdsWithServerHalf(@Param("kind")
+  String kind);
+
+  /**
    * How many enabled rules a user has: the sync asks it before reading anything else,
    * so a user without rules costs one count.
    *
