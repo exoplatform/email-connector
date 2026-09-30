@@ -37,7 +37,7 @@ public final class ForwardingDestination {
 
   /** A plain address: a simple local part, dot-separated domain labels, lower-case. */
   private static final Pattern ADDRESS     = Pattern.compile("[a-z0-9._%+-]{1,64}@"
-      + "((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)");
+      + "((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)++[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)");
 
   /**
    * Utility class.

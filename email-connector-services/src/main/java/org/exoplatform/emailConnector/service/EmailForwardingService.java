@@ -113,6 +113,12 @@ import io.meeds.social.util.JsonUtils;
 @Service
 public class EmailForwardingService {
 
+  /** The pending confirmation's count of wrong codes typed. */
+  private static final String FIELD_ATTEMPTS = "attempts";
+
+  /** The pending confirmation's times a code was sent, for the send limit. */
+  private static final String FIELD_SENDS    = "sends";
+
   private static final Log         LOG                     = ExoLogger.getLogger(EmailForwardingService.class);
 
   /** How long a confirmation code can be entered, in seconds. */
@@ -346,8 +352,8 @@ public class EmailForwardingService {
       stored.put("salt", salt);
       stored.put("hash", hash(salt, code));
       stored.put("expiresAt", expiresAt);
-      stored.put("attempts", 0);
-      stored.put("sends", sends);
+      stored.put(FIELD_ATTEMPTS, 0);
+      stored.put(FIELD_SENDS, sends);
       storePending(username, stored);
     }
     try {
@@ -808,7 +814,7 @@ public class EmailForwardingService {
       usedUp(username, pending);
       throw new IllegalArgumentException(CODE_EXPIRED);
     }
-    int attempts = (int) number(pending.get("attempts"));
+    int attempts = (int) number(pending.get(FIELD_ATTEMPTS));
     int maxTries = intProperty(CODE_MAX_TRIES_PROPERTY, DEFAULT_MAX_TRIES);
     if (attempts >= maxTries) {
       usedUp(username, pending);
@@ -816,7 +822,7 @@ public class EmailForwardingService {
     }
     // The try is counted before the comparison.
     attempts++;
-    pending.put("attempts", attempts);
+    pending.put(FIELD_ATTEMPTS, attempts);
     storePending(username, pending);
     String typed = StringUtils.deleteWhitespace(StringUtils.defaultString(code));
     if (!MessageDigest.isEqual(hash.getBytes(StandardCharsets.US_ASCII), hash(salt, typed).getBytes(StandardCharsets.US_ASCII))) {
@@ -864,7 +870,7 @@ public class EmailForwardingService {
    */
   private void usedUp(String username, Map<String, Object> pending) {
     Map<String, Object> kept = new LinkedHashMap<>();
-    kept.put("sends", pending.getOrDefault("sends", List.of()));
+    kept.put(FIELD_SENDS, pending.getOrDefault(FIELD_SENDS, List.of()));
     storePending(username, kept);
   }
 
@@ -1149,7 +1155,7 @@ public class EmailForwardingService {
    */
   private static List<Long> recentSends(Map<String, Object> pending, long now) {
     List<Long> sends = new ArrayList<>();
-    if (pending.get("sends") instanceof List<?> list) {
+    if (pending.get(FIELD_SENDS) instanceof List<?> list) {
       for (Object item : list) {
         long at = number(item);
         if (now - at < 3_600_000L) {
