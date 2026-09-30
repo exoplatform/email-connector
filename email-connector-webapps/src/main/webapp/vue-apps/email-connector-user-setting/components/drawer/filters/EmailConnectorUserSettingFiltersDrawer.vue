@@ -215,7 +215,6 @@ import { folderPath } from '../../../../email-connector-mail-box/js/EmailConnect
 /** The refusal of a deployment that switched server rules off: not an error, eXo runs every filter. */
 const RULES_DISABLED = 'emailConnector.rules.disabled';
 
-
 /** The refusal of a server write the user has not consented to yet. */
 const CONSENT_REQUIRED = 'emailConnector.rules.consentRequired';
 
