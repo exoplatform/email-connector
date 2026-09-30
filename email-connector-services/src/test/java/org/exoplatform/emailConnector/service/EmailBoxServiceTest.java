@@ -3040,9 +3040,15 @@ public class EmailBoxServiceTest {
         MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
       sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
       emailBoxService.sendEmail(email, TEST_USER);
-      transportMock.verify(() -> Transport.send(any(Message.class)));
+      ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sent.capture()));
       verify(sentFolder).open(Folder.READ_WRITE);
-      verify(sentFolder).appendMessages(any(Message[].class));
+      ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
+      verify(sentFolder).appendMessages(filed.capture());
+      assertSame(sent.getValue(), filed.getValue()[0], "the very message that went out");
+      // EXO-90209 -- filed as read: a server that keeps only what the client appends
+      // (BlueMind) showed every sent mail unread in Sent.
+      assertTrue(filed.getValue()[0].isSet(Flags.Flag.SEEN), "filed as read: it is sent mail, not new mail");
       verify(sentFolder).close(false);
       verify(store).close();
     }
