@@ -210,7 +210,6 @@ import { CLOSE_FILTERS_DRAWER_EVENT, OPEN_FILTERS_DRAWER_EVENT, filtersMessage, 
 /** The refusal of a deployment that switched server rules off: not an error, eXo runs every filter. */
 const RULES_DISABLED = 'emailConnector.rules.disabled';
 
-
 /** The refusal of a server write the user has not consented to yet. */
 const CONSENT_REQUIRED = 'emailConnector.rules.consentRequired';
 
