@@ -485,7 +485,7 @@ public class EmailFilterRoutingTest {
    */
   private static ServerRuleCapabilities capabilities(Set<String> unsupported) {
     Map<String, ElementSupport> elements = new HashMap<>();
-    ServerRuleCapabilities.ELEMENTS.forEach(element -> elements.put(element, new ElementSupport(!unsupported.contains(element), null)));
+    ServerRuleCapabilities.ALL_ELEMENTS.forEach(element -> elements.put(element, new ElementSupport(!unsupported.contains(element), null)));
     return new ServerRuleCapabilities(true, null, true, false, VocabularySource.FIXED, elements);
   }
 
