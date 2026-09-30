@@ -31,6 +31,7 @@ import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
@@ -64,6 +65,7 @@ import org.exoplatform.emailConnector.event.EmailConnectorProviderChangedEvent;
 import org.exoplatform.emailConnector.model.ConnectorForwarding;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
+import org.exoplatform.emailConnector.storage.ConnectorEngineChoiceStorage;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.portal.config.UserACL;
@@ -114,6 +116,9 @@ public class EmailConnectorServiceTest {
 
   @MockitoBean
   private EmailManagedModeService  emailManagedModeService;
+
+  @MockitoBean
+  private ConnectorEngineChoiceStorage connectorEngineChoiceStorage;
 
   @Autowired
   private ApplicationEvents         events;
@@ -253,6 +258,27 @@ public class EmailConnectorServiceTest {
     emailConnectorService.deleteEmailConnector(1L, TEST_USER);
     verify(emailConnectorStorage).deleteEmailConnector(1L);
     verify(applicationCenterService).getApplications(0, 0, null);
+  }
+
+  /**
+   * A deleted connector's engine choices are forgotten; one that cannot be forgotten
+   * does not fail the deletion, which already happened.
+   */
+  @Test
+  @SneakyThrows
+  void deletingAConnectorForgetsItsEngineChoices() {
+    when(emailConnectorStorage.getEmailConnector(1L)).thenReturn(emailConnector());
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(mock(ApplicationList.class));
+
+    emailConnectorService.deleteEmailConnector(1L, TEST_USER);
+    verify(connectorEngineChoiceStorage).removeChoices(1L);
+
+    doThrow(new IllegalStateException("settings down")).when(connectorEngineChoiceStorage).removeChoices(1L);
+    emailConnectorService.deleteEmailConnector(1L, TEST_USER);
+    verify(emailConnectorStorage, times(2)).deleteEmailConnector(1L);
   }
 
   /**
