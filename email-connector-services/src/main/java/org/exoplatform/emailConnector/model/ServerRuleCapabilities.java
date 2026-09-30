@@ -56,6 +56,13 @@ public record ServerRuleCapabilities(boolean supported,
   /** An HTML automatic reply. */
   public static final String       VACATION_HTML          = "vacationHtml";
 
+  /**
+   * The reply's interval and exclusions are eXo's to write: how many days between two
+   * replies to one sender, and the lists and automated mail it never answers. Where
+   * unsupported, the mail server applies its own.
+   */
+  public static final String       VACATION_RULES         = "vacationRules";
+
   /** Reading an existing forward. */
   public static final String       FORWARDING_READ        = "forwardingRead";
 
@@ -136,6 +143,7 @@ public record ServerRuleCapabilities(boolean supported,
   public static final List<String> ALL_ELEMENTS           = List.of(VACATION,
                                                                     VACATION_DATE_WINDOW,
                                                                     VACATION_HTML,
+                                                                    VACATION_RULES,
                                                                     FORWARDING_READ,
                                                                     FORWARDING_WRITE,
                                                                     READS_FOREIGN_VACATION,
