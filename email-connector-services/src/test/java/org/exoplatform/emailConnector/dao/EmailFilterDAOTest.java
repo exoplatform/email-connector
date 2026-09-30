@@ -235,6 +235,32 @@ public class EmailFilterDAOTest {
   }
 
   /**
+   * The users with an enabled hop rule whose server half is named, each once: a rule
+   * of another kind, a disabled one, and one without its server name are left out
+   * (EXO-90793).
+   */
+  @Test
+  void theUsersWithAServerHalfAreListedOnce() {
+    persistRule("mary", 1, "exo-hop-1", true);
+    persistRule("mary", 2, "exo-hop-2", true);
+    persistRule("john", 1, "exo-hop-3", false);
+    persistRule("paul", 1, null, true);
+    Long unnamed = persistRule("rita", 1, "exo-hop-4", true);
+    entityManager.clear();
+    for (String user : List.of("mary", "john", "paul")) {
+      emailFilterDAO.findByUserId(user).forEach(rule -> {
+        rule.setServerRuleRef("hop-" + rule.getId());
+        emailFilterDAO.saveAndFlush(rule);
+      });
+    }
+    entityManager.clear();
+
+    List<String> users = emailFilterDAO.findUserIdsWithServerHalf("HOP");
+
+    assertEquals(List.of("mary"), users, "rita's hop has no server name: " + unnamed);
+  }
+
+  /**
    * Stores a rule.
    *
    * @param userId the owner
