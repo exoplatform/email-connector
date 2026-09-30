@@ -462,27 +462,62 @@ export default {
       const chosen = this.emailConnector.authProviderName || this.storedProviderName;
       return !!this.emailConnector.id && !!this.storedProviderName && chosen !== this.storedProviderName;
     },
-    async saveConnector(confirmed) {
+    /**
+     * Whether the save may go on: a provider change first counts the users it
+     * disconnects, and asks the administrator when there are any.
+     *
+     * @param {Boolean} confirmed true only from the confirmation's OK
+     * @returns {Promise<Boolean>} true when the save goes on now
+     */
+    async mayStoreConnector(confirmed) {
       // Only the confirmation's OK passes a provider change: the Save button hands in
       // its click event, and a dialog dismissed any other way leaves nothing behind.
-      if (confirmed !== true && this.changesProvider()) {
-        // Counted before anything is stored: a provider change disconnects every
-        // user of the connector, and the administrator is told how many first.
-        this.loading = true;
-        try {
-          this.pendingDisconnections = await this.$emailConnectorAdministrationService.countConnectedUsers(this.emailConnector.id);
-        } catch (e) {
-          // Without the count the administrator cannot be told what the change
-          // costs: nothing is stored.
-          this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.disconnection.countFailed'), 'error');
-          return;
-        } finally {
-          this.loading = false;
-        }
-        if (this.pendingDisconnections) {
-          this.$refs.disconnectionConfirm.open();
-          return;
-        }
+      if (confirmed === true || !this.changesProvider()) {
+        return true;
+      }
+      // Counted before anything is stored: a provider change disconnects every
+      // user of the connector, and the administrator is told how many first.
+      this.loading = true;
+      try {
+        this.pendingDisconnections = await this.$emailConnectorAdministrationService.countConnectedUsers(this.emailConnector.id);
+      } catch (e) {
+        // Without the count the administrator cannot be told what the change
+        // costs: nothing is stored.
+        this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.disconnection.countFailed'), 'error');
+        return false;
+      } finally {
+        this.loading = false;
+      }
+      if (this.pendingDisconnections) {
+        this.$refs.disconnectionConfirm.open();
+        return false;
+      }
+      return true;
+    },
+    /**
+     * The message a refused save shows.
+     *
+     * @param {Error} e the refusal
+     * @param {Boolean} isNew whether the connector was being created
+     * @returns {String} the translated message
+     */
+    saveErrorMessage(e, isNew) {
+      // A refusal comes back as a message code some bundle translates - the
+      // provider's (a configuration field), or this add-on's (the managed
+      // connector may not move to a provider that asks the user). Whatever the
+      // bundle, a translatable code beats the generic "error" that tells the
+      // administrator nothing about a form they can correct.
+      if (e?.message === 'emailConnector.forwarding.domain.invalid') {
+        return this.$t('emailConnector.admin.connectors.drawer.forwarding.domains.invalid');
+      }
+      if (e?.messageCode && this.$te(e.messageCode)) {
+        return this.$t(e.messageCode);
+      }
+      return this.$t(isNew ? 'emailConnector.admin.connectors.drawer.add.error' : 'emailConnector.admin.connectors.drawer.edit.error');
+    },
+    async saveConnector(confirmed) {
+      if (!await this.mayStoreConnector(confirmed)) {
+        return;
       }
       this.pendingDisconnections = 0;
       this.loading = true;
@@ -516,23 +551,7 @@ export default {
         this.$root.$emit('refresh-connectors-list');
         this.close();
       } catch (e) {
-        // A refusal comes back as a message code some bundle translates - the
-        // provider's (a configuration field), or this add-on's (the managed
-        // connector may not move to a provider that asks the user). Whatever the
-        // bundle, a translatable code beats the generic "error" that tells the
-        // administrator nothing about a form they can correct.
-        if (e?.message === 'emailConnector.forwarding.domain.invalid') {
-          this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.forwarding.domains.invalid'), 'error');
-        }
-        else if (e?.messageCode && this.$te(e.messageCode)) {
-          this.$root.$emit('alert-message', this.$t(e.messageCode), 'error');
-        }
-        else if (isNew) {
-          this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.add.error'), 'error');
-        }
-        else {
-          this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.edit.error'), 'error');
-        } 
+        this.$root.$emit('alert-message', this.saveErrorMessage(e, isNew), 'error');
       } finally {
         this.loading = false;
       }
