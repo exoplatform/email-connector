@@ -84,6 +84,7 @@ import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngine;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngineRegistry;
+import org.exoplatform.emailConnector.service.acl.MailCredentialsRefusal;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailDelegationStorage;
@@ -4560,7 +4561,9 @@ public class EmailDelegationService {
    * material is the caller's own, through the platform's credentials contract on the
    * channel the CardDAV sync uses. Nothing here can name anyone but the caller, which
    * is what lets the engine be handed the session without a second thought about
-   * whose identity it acts under. Nothing is opened until an engine asks; the
+   * whose identity it acts under; a refusal the engine reports through the session
+   * reaches the provider for the same connector and caller. Nothing is opened until an
+   * engine asks; the
    * try-with-resources at each call site closes what was.
    *
    * @param connector the caller's connector preset
@@ -4581,7 +4584,18 @@ public class EmailDelegationService {
                                                                                                                                                                             connector.getAuthProviderName(),
                                                                                                                                                                             username,
                                                                                                                                                                             ConnectorCredentialsChannel.IMAP));
-    return new MailboxAclSession(connector, username, mailboxIdentifier, opener, http, mail);
+    MailCredentialsRefusal refusal = emailCredentialsResolver == null ? null : new MailCredentialsRefusal() {
+      @Override
+      public void invalidate(ConnectorCredentialsChannel channel) {
+        emailCredentialsResolver.invalidate(connector.getId(), connector.getAuthProviderName(), username, channel);
+      }
+
+      @Override
+      public boolean retriesAfterRefusal() {
+        return emailCredentialsResolver.retriesAfterRefusal(connector.getAuthProviderName());
+      }
+    };
+    return new MailboxAclSession(connector, username, mailboxIdentifier, opener, http, mail, refusal);
   }
 
   /**
