@@ -122,6 +122,34 @@ public class EmailDelegationStorageTest {
   }
 
   /**
+   * The shares of a connector eXo made whose grant is on the server, over the shipped
+   * schema: invited, accepted and declined ones count; revoked, gone and discovered
+   * ones, and another connector's, do not (EXO-90793).
+   */
+  @Test
+  void theExoSharesOnTheServerAreCountedPerConnector() {
+    long connector = 7_190_793L;
+    for (DelegationStatus status : DelegationStatus.values()) {
+      EmailDelegation row = newRow("grantee-" + status, "owner-" + status + "@acme.com");
+      row.setConnectorId(connector);
+      row.setStatus(status);
+      emailDelegationStorage.create(row);
+    }
+    EmailDelegation discovered = newRow("grantee-server", "owner-server@acme.com");
+    discovered.setConnectorId(connector);
+    discovered.setStatus(DelegationStatus.ACCEPTED);
+    discovered.setOrigin(DelegationOrigin.SERVER);
+    emailDelegationStorage.create(discovered);
+    EmailDelegation elsewhere = newRow("grantee-elsewhere", "owner-elsewhere@acme.com");
+    elsewhere.setConnectorId(connector + 1);
+    elsewhere.setStatus(DelegationStatus.ACCEPTED);
+    emailDelegationStorage.create(elsewhere);
+
+    assertEquals(3, emailDelegationStorage.countExoSharesOnServer(connector));
+    assertEquals(1, emailDelegationStorage.countExoSharesOnServer(connector + 1));
+  }
+
+  /**
    * A fresh row of a grantee on one mailbox.
    *
    * @param granteeId the grantee
