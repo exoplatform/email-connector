@@ -41,12 +41,15 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.exception.EngineInUseException;
 import org.exoplatform.emailConnector.model.ConnectorEngines;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngineRegistry;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngineRegistry;
 import org.exoplatform.emailConnector.storage.ConnectorEngineChoiceStorage;
+import org.exoplatform.emailConnector.storage.EmailDelegationStorage;
+import org.exoplatform.emailConnector.storage.EmailFilterStorage;
 
 /**
  * The connector administration screen's engines (EXO-90793): only an administrator
@@ -75,6 +78,21 @@ public class EmailConnectorEngineServiceTest {
 
   @Mock
   private EmailCredentialsResolver     emailCredentialsResolver;
+
+  @Mock
+  private UserEmailSettingService      userEmailSettingService;
+
+  @Mock
+  private EmailAbsenceService          emailAbsenceService;
+
+  @Mock
+  private EmailForwardingService       emailForwardingService;
+
+  @Mock
+  private EmailFilterStorage           emailFilterStorage;
+
+  @Mock
+  private EmailDelegationStorage       emailDelegationStorage;
 
   @InjectMocks
   private EmailConnectorEngineService  service;
@@ -233,6 +251,103 @@ public class EmailConnectorEngineServiceTest {
     service.saveEngines(CONNECTOR_ID, choice("bluemind", "none"), ADMIN);
     verify(connectorEngineChoiceStorage, never()).setChoice(ConnectorEngineChoiceStorage.RULES_ENGINE, CONNECTOR_ID, "bluemind");
     verify(connectorEngineChoiceStorage).setChoice(ConnectorEngineChoiceStorage.ACL_ENGINE, CONNECTOR_ID, "none");
+  }
+
+  /**
+   * A switch of the server rules engine is refused, with the counts, while a user of the
+   * connector has what eXo set through it: an automatic reply, a forward, a rule that
+   * forwards, a rule backing an eXo rule. Nothing is written, not even the sharing
+   * engine saved beside it.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aRulesSwitchIsRefusedWhileWhatEXoSetIsInUse() throws Exception {
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of("ann", "bob", "cid", "dan", "eve"));
+    lenient().when(emailAbsenceService.hasExoReply("ann")).thenReturn(true);
+    lenient().when(emailForwardingService.hasExoForward("bob")).thenReturn(true);
+    lenient().when(emailForwardingService.hasExoRuleForwards("cid")).thenReturn(true);
+    when(emailFilterStorage.usersWithServerHops()).thenReturn(java.util.Set.of("dan", "someone-else"));
+
+    EngineInUseException refused = assertThrows(EngineInUseException.class,
+                                                () -> service.saveEngines(CONNECTOR_ID, choice("sieve", "none"), ADMIN));
+
+    assertEquals(EngineInUseException.RULES_IN_USE, refused.getMessage());
+    assertEquals(1, refused.getReplies());
+    assertEquals(1, refused.getForwards());
+    assertEquals(2, refused.getRules());
+    assertEquals(0, refused.getShares());
+    verify(connectorEngineChoiceStorage, never()).setChoice(anyString(), anyLong(), anyString());
+  }
+
+  /**
+   * Each record on its own refuses the switch, and nothing in use lets it through.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void eachRecordAloneRefusesARulesSwitchAndNoneLetsItThrough() throws Exception {
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of("ann"));
+    lenient().when(emailFilterStorage.usersWithServerHops()).thenReturn(java.util.Set.of());
+
+    when(emailAbsenceService.hasExoReply("ann")).thenReturn(true);
+    assertThrows(EngineInUseException.class, () -> service.saveEngines(CONNECTOR_ID, choice("sieve", null), ADMIN));
+    when(emailAbsenceService.hasExoReply("ann")).thenReturn(false);
+    when(emailForwardingService.hasExoForward("ann")).thenReturn(true);
+    assertThrows(EngineInUseException.class, () -> service.saveEngines(CONNECTOR_ID, choice("sieve", null), ADMIN));
+    when(emailForwardingService.hasExoForward("ann")).thenReturn(false);
+    when(emailForwardingService.hasExoRuleForwards("ann")).thenReturn(true);
+    assertThrows(EngineInUseException.class, () -> service.saveEngines(CONNECTOR_ID, choice("sieve", null), ADMIN));
+    when(emailForwardingService.hasExoRuleForwards("ann")).thenReturn(false);
+    when(emailFilterStorage.usersWithServerHops()).thenReturn(java.util.Set.of("ann"));
+    assertThrows(EngineInUseException.class, () -> service.saveEngines(CONNECTOR_ID, choice("sieve", null), ADMIN));
+    verify(connectorEngineChoiceStorage, never()).setChoice(anyString(), anyLong(), anyString());
+
+    when(emailFilterStorage.usersWithServerHops()).thenReturn(java.util.Set.of());
+    service.saveEngines(CONNECTOR_ID, choice("sieve", null), ADMIN);
+    verify(connectorEngineChoiceStorage).setChoice(ConnectorEngineChoiceStorage.RULES_ENGINE, CONNECTOR_ID, "sieve");
+  }
+
+  /**
+   * A switch of the sharing engine is refused, with the count, while shares made from
+   * eXo keep access on the server, and goes through once there are none.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aSharingSwitchIsRefusedWhileSharesMadeFromEXoRemain() throws Exception {
+    when(emailDelegationStorage.countExoSharesOnServer(CONNECTOR_ID)).thenReturn(3L, 0L);
+
+    EngineInUseException refused = assertThrows(EngineInUseException.class,
+                                                () -> service.saveEngines(CONNECTOR_ID, choice(null, "none"), ADMIN));
+    assertEquals(EngineInUseException.ACL_IN_USE, refused.getMessage());
+    assertEquals(3, refused.getShares());
+    verify(connectorEngineChoiceStorage, never()).setChoice(anyString(), anyLong(), anyString());
+
+    service.saveEngines(CONNECTOR_ID, choice(null, "none"), ADMIN);
+    verify(connectorEngineChoiceStorage).setChoice(ConnectorEngineChoiceStorage.ACL_ENGINE, CONNECTOR_ID, "none");
+  }
+
+  /**
+   * Stating back the engine already chosen is no switch: nothing is checked, even with
+   * everything in use, and a save of the one kind never checks the other.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void keepingAnEngineIsNoSwitchAndChecksNothing() throws Exception {
+    lenient().when(emailDelegationStorage.countExoSharesOnServer(CONNECTOR_ID)).thenReturn(3L);
+    lenient().when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of("ann"));
+    lenient().when(emailAbsenceService.hasExoReply("ann")).thenReturn(true);
+
+    service.saveEngines(CONNECTOR_ID, choice("none", "imap"), ADMIN);
+    verify(connectorEngineChoiceStorage).setChoice(ConnectorEngineChoiceStorage.RULES_ENGINE, CONNECTOR_ID, "none");
+    verify(connectorEngineChoiceStorage).setChoice(ConnectorEngineChoiceStorage.ACL_ENGINE, CONNECTOR_ID, "imap");
+    verify(emailDelegationStorage, never()).countExoSharesOnServer(anyLong());
+    verify(userEmailSettingService, never()).getUserEmailSettingsByEmailConnectorId(anyLong());
+
+    assertThrows(EngineInUseException.class, () -> service.saveEngines(CONNECTOR_ID, choice("sieve", null), ADMIN));
+    verify(emailDelegationStorage, never()).countExoSharesOnServer(anyLong());
   }
 
   /**
