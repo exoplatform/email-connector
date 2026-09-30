@@ -122,9 +122,10 @@ public class EmailDelegationStorageTest {
   }
 
   /**
-   * The shares of a connector eXo made whose grant is on the server, over the shipped
-   * schema: invited, accepted and declined ones count; revoked, gone and discovered
-   * ones, and another connector's, do not (EXO-90793).
+   * The shares of a connector eXo made whose grant may be on the server, over the
+   * shipped schema: invited, accepted, declined, offered again and gone ones count; a
+   * revoked one, one discovered on the server, and another connector's do not
+   * (EXO-90793).
    */
   @Test
   void theExoSharesOnTheServerAreCountedPerConnector() {
@@ -145,7 +146,7 @@ public class EmailDelegationStorageTest {
     elsewhere.setStatus(DelegationStatus.ACCEPTED);
     emailDelegationStorage.create(elsewhere);
 
-    assertEquals(3, emailDelegationStorage.countExoSharesOnServer(connector));
+    assertEquals(5, emailDelegationStorage.countExoSharesOnServer(connector));
     assertEquals(1, emailDelegationStorage.countExoSharesOnServer(connector + 1));
   }
 
