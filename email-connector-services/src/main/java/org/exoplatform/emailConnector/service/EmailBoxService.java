@@ -188,6 +188,7 @@ import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.ThreadFingerprint;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.notification.plugin.BaseEmailDelegationNotificationPlugin;
 import org.exoplatform.emailConnector.notification.plugin.DelegatedNewEmailsNotificationPlugin;
 import org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationPlugin;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
@@ -2127,12 +2128,12 @@ public class EmailBoxService {
                                          .count();
     if (newUnreadCount > 0) {
       NotificationContext ctx = NotificationContextImpl.cloneInstance()
-                                                       .append(DelegatedNewEmailsNotificationPlugin.RECEIVER, username)
-                                                       .append(DelegatedNewEmailsNotificationPlugin.ACTOR,
+                                                       .append(BaseEmailDelegationNotificationPlugin.RECEIVER, username)
+                                                       .append(BaseEmailDelegationNotificationPlugin.ACTOR,
                                                                StringUtils.defaultString(current.getOwnerId()))
                                                        .append(DelegatedNewEmailsNotificationPlugin.OWNER_MAILBOX,
                                                                StringUtils.defaultString(current.getOwnerMailbox()))
-                                                       .append(DelegatedNewEmailsNotificationPlugin.DELEGATION_ID,
+                                                       .append(BaseEmailDelegationNotificationPlugin.DELEGATION_ID,
                                                                String.valueOf(current.getId()))
                                                        .append(DelegatedNewEmailsNotificationPlugin.NEW_EMAILS,
                                                                String.valueOf(newUnreadCount));
