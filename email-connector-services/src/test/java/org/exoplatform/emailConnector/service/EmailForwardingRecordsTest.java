@@ -81,8 +81,8 @@ public class EmailForwardingRecordsTest {
   }
 
   /**
-   * On an engine without a script, the destination eXo set is the record: kept while
-   * the forward is on, blank once eXo removed it.
+   * With no status kept, on an engine without a script, the destination eXo set is the
+   * record: kept while the forward is on, blank once eXo removed it.
    */
   @Test
   public void theDestinationEXoSetIsARecordToo() {
@@ -90,6 +90,22 @@ public class EmailForwardingRecordsTest {
     assertTrue(service.hasExoForward(USER));
 
     record(EmailForwardingService.WRITTEN_KEY_PREFIX + USER, "");
+    assertFalse(service.hasExoForward(USER));
+  }
+
+  /**
+   * A status kept decides over the destination eXo set: once a read found no forward
+   * of eXo's there — removed or edited outside eXo — the destination left behind no
+   * longer counts.
+   */
+  @Test
+  @SuppressWarnings({ "rawtypes", "unchecked" })
+  public void aStatusKeptDecidesOverTheDestinationEXoSet() {
+    // Lenient: with a status kept, the destination is not even read.
+    lenient().when(settingService.get(Context.GLOBAL, ForwardingGuard.FORWARDING_SCOPE, EmailForwardingService.WRITTEN_KEY_PREFIX + USER))
+             .thenReturn((SettingValue) SettingValue.create("partner@example.com"));
+    record(EmailForwardingService.STATUS_KEY_PREFIX + USER, "{\"state\":\"NONE\",\"managedByExo\":false}");
+
     assertFalse(service.hasExoForward(USER));
   }
 

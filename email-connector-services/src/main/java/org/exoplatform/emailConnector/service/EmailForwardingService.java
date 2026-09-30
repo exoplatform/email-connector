@@ -1196,20 +1196,18 @@ public class EmailForwardingService {
 
   /**
    * Whether eXo's own records say a forward eXo set for a user is on: the last status
-   * eXo read or wrote names eXo's forward, or, on an engine without a script, eXo keeps
-   * the destination it set. Read from the settings eXo keeps, never from the server; an
-   * unreadable status reads as on.
+   * eXo read or wrote names eXo's forward — on an engine without a script, recognised
+   * from the destination eXo set — or, with no status kept, eXo still keeps that
+   * destination. Read from the settings eXo keeps, never from the server; an unreadable
+   * status reads as on.
    *
    * @param username the user
    * @return true when eXo set a forward that is on
    */
   public boolean hasExoForward(String username) {
-    if (StringUtils.isNotBlank(global(WRITTEN_KEY_PREFIX + username))) {
-      return true;
-    }
     String stored = global(STATUS_KEY_PREFIX + username);
     if (stored == null) {
-      return false;
+      return StringUtils.isNotBlank(global(WRITTEN_KEY_PREFIX + username));
     }
     try {
       ForwardingStatus status = JsonUtils.fromJsonString(stored, ForwardingStatus.class);
