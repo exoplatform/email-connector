@@ -122,6 +122,10 @@ public class EmailForwardingNotificationPlugin extends BaseNotificationPlugin {
   protected NotificationInfo makeNotification(NotificationContext ctx) {
     String receiver = ctx.value(RECEIVER);
     Change change = change(ctx.value(CHANGE));
+    if (change == null) {
+      // isValid refuses an unknown change first; a direct call answers nothing.
+      return null;
+    }
     String destination = StringUtils.defaultString(ctx.value(DESTINATION));
     String source = StringUtils.defaultString(ctx.value(SOURCE));
     Locale locale = Locale.of(NotificationPluginUtils.getLanguage(receiver));
