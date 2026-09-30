@@ -4563,8 +4563,7 @@ public class EmailDelegationService {
    * is what lets the engine be handed the session without a second thought about
    * whose identity it acts under; a refusal the engine reports through the session
    * reaches the provider for the same connector and caller. Nothing is opened until an
-   * engine asks; the
-   * try-with-resources at each call site closes what was.
+   * engine asks; the try-with-resources at each call site closes what was.
    *
    * @param connector the caller's connector preset
    * @param username the caller
