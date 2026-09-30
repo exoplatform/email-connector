@@ -680,6 +680,31 @@ public class EmailAbsenceService {
   }
 
   /**
+   * Whether eXo's own records say an automatic reply eXo set for a user is on: the last
+   * summary eXo read or wrote. Read from the settings eXo keeps, never from the server;
+   * an unreadable summary reads as on.
+   *
+   * @param username the user
+   * @return true when eXo's reply is on
+   */
+  public boolean hasExoReply(String username) {
+    SettingValue<?> value = settingService.get(Context.USER.id(username),
+                                               UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                               ABSENCE_SETTING_KEY);
+    if (value == null || value.getValue() == null) {
+      return false;
+    }
+    try {
+      AbsenceStatus status = JsonUtils.fromJsonString(value.getValue().toString(), AbsenceStatus.class);
+      return status == null || status.isEnabled();
+    } catch (Exception e) {
+      // Exception, not RuntimeException: Jackson's parse error is checked, thrown sneakily.
+      LOG.debug("The cached automatic reply summary of user {} could not be read", username, e);
+      return true;
+    }
+  }
+
+  /**
    * The zone a read states the reply's days in: the caller's own when given and known,
    * else the zone of the last reply eXo wrote or read for the caller, else null.
    *
