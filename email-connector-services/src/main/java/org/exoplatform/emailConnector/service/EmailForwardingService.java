@@ -43,6 +43,7 @@ import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
+import org.exoplatform.emailConnector.exception.ForwardingRefusedException;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
@@ -423,6 +424,10 @@ public class EmailForwardingService {
    * @throws ServerRuleConflictException when another client may forward too, or eXo's
    *           script changed outside eXo; nothing was written
    * @throws ServerRuleUnsupportedException when the server cannot keep a copy
+   * @throws ForwardingRefusedException {@value ForwardingRefusedException#NOT_AUTHORIZED}
+   *           when the destination is not one the {@link ForwardingGuard} authorizes for
+   *           the caller's own session; checked here, before any engine is called, so
+   *           every engine writes only an authorized destination
    */
   public ForwardingSetting setForwarding(String username,
                                          Long delegationId,
@@ -444,6 +449,9 @@ public class EmailForwardingService {
     }
     ServerRuleEngine engine = serverRuleEngineRegistry.engineFor(mailbox.connector());
     try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
+      if (!forwardingGuard.authorizedDestinations(session).contains(to)) {
+        throw new ForwardingRefusedException(ForwardingRefusedException.NOT_AUTHORIZED);
+      }
       ForwardingSetting before = safeRead(engine, session);
       ServerForwarding written = engine.writeForwarding(session, to, republish ? null : storedHash(username));
       written = recordWrite(username, written, to);
