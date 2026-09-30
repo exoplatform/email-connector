@@ -96,6 +96,8 @@ public class EmailConnectorEngineServiceTest {
     lenient().when(mailboxAclEngineRegistry.engineNames()).thenReturn(List.of("imap", "none"));
     lenient().when(serverRuleEngineRegistry.engineName(connector)).thenReturn("none");
     lenient().when(mailboxAclEngineRegistry.engineName(connector)).thenReturn("imap");
+    lenient().when(serverRuleEngineRegistry.chosenEngineName(connector)).thenReturn("none");
+    lenient().when(mailboxAclEngineRegistry.chosenEngineName(connector)).thenReturn("imap");
     lenient().when(emailCredentialsResolver.isProviderRegistered("bluemind-sudo")).thenReturn(true);
   }
 
@@ -119,6 +121,32 @@ public class EmailConnectorEngineServiceTest {
     assertNull(engines.getAclEngineProperty());
     assertEquals("bluemind-sudo", engines.getAuthProviderName());
     assertFalse(engines.isAuthProviderMissing());
+  }
+
+  /**
+   * While a property decides the rules engine, the answer tells what applies from what
+   * the screen chose, so that a save of the other engine states nothing for this one:
+   * a null engine is not written, and the screen's choice is kept for when the property
+   * is removed.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aChoiceOverriddenByAPropertyIsAnsweredApartAndKeptBySavingTheOther() throws Exception {
+    when(serverRuleEngineRegistry.engineName(connector)).thenReturn("none");
+    when(serverRuleEngineRegistry.chosenEngineName(connector)).thenReturn("sieve");
+    when(serverRuleEngineRegistry.overridingProperty(connector)).thenReturn("email.connector.rulesEngine");
+
+    ConnectorEngines engines = service.getEngines(CONNECTOR_ID, ADMIN);
+    assertEquals("none", engines.getRulesEngine());
+    assertEquals("sieve", engines.getRulesEngineChoice());
+    assertEquals("imap", engines.getAclEngineChoice());
+
+    service.saveEngines(CONNECTOR_ID, choice(null, "none"), ADMIN);
+    verify(connectorEngineChoiceStorage, never()).setChoice(org.mockito.ArgumentMatchers.eq(ConnectorEngineChoiceStorage.RULES_ENGINE),
+                                                            anyLong(),
+                                                            anyString());
+    verify(connectorEngineChoiceStorage).setChoice(ConnectorEngineChoiceStorage.ACL_ENGINE, CONNECTOR_ID, "none");
   }
 
   /**
