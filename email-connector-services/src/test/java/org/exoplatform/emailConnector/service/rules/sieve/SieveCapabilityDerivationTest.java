@@ -91,9 +91,12 @@ class SieveCapabilityDerivationTest {
     assertTrue(capabilities.isSupported(ServerRuleCapabilities.MOVE_TO_FOLDER));
     assertFalse(capabilities.isSupported(ServerRuleCapabilities.STAR));
     assertFalse(capabilities.isSupported(ServerRuleCapabilities.BODY));
+    // eXo writes the reply's interval and exclusions wherever it writes the reply.
+    assertTrue(capabilities.isSupported(ServerRuleCapabilities.VACATION_RULES));
     ServerRuleCapabilities noVacation = SieveCapabilityDerivation.derive(caps("PLAIN", "date relational"));
     assertEquals("emailConnector.rules.unsupported.sieveExtension.vacation",
                  noVacation.elements().get(ServerRuleCapabilities.VACATION_DATE_WINDOW).reasonKey());
+    assertFalse(noVacation.isSupported(ServerRuleCapabilities.VACATION_RULES));
   }
 
   /**

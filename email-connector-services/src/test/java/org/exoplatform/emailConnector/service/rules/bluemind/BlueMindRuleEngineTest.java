@@ -210,6 +210,8 @@ public class BlueMindRuleEngineTest {
     assertTrue(capabilities.isSupported(ServerRuleCapabilities.READS_FOREIGN_VACATION));
     assertTrue(capabilities.isSupported(ServerRuleCapabilities.FORWARDING_READ));
     assertFalse(capabilities.isSupported(ServerRuleCapabilities.VACATION_HTML));
+    // BlueMind applies its own interval and exclusions: eXo writes neither.
+    assertFalse(capabilities.isSupported(ServerRuleCapabilities.VACATION_RULES));
     // With a transport, a forward that keeps a copy can be written through _forwarding.
     assertTrue(capabilities.isSupported(ServerRuleCapabilities.FORWARDING_WRITE));
     assertFalse(capabilities.isSupported(ServerRuleCapabilities.FORWARD));
