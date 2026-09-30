@@ -84,7 +84,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                   class="ms-2 pa-0 font-weight-regular"
                   role="button"
                   href="javascript:void(0);"
-                  @click.prevent.stop="busy || undo(match, action.type)">
+                  @click.prevent.stop="busy || undo(match, action.type)"
+                  @keydown.enter.prevent.stop="busy || undo(match, action.type)">
                   {{ $t('UserSettings.emailConnector.filters.exo.log.undo') }}
                 </a>
               </v-list-item-subtitle>
