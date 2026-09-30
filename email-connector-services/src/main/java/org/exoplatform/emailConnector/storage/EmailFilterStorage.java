@@ -23,12 +23,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -122,6 +124,15 @@ public class EmailFilterStorage {
    */
   public Optional<EmailFilter> getFilterByTag(String userId, String tagKeyword) {
     return emailFilterDAO.findByUserIdAndTagKeyword(userId, tagKeyword).stream().findFirst().map(EmailFilterStorage::toDto);
+  }
+
+  /**
+   * The users with an enabled hop rule, whose server half eXo wrote on the mail server.
+   *
+   * @return the users, each once
+   */
+  public Set<String> usersWithServerHops() {
+    return new HashSet<>(emailFilterDAO.findUserIdsWithServerHalf(EmailFilter.KIND_HOP));
   }
 
   /**

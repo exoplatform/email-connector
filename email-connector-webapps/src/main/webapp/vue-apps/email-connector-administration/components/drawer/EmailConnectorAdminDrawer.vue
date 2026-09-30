@@ -532,6 +532,16 @@ export default {
       if (e?.message === 'emailConnector.engines.unknown') {
         return this.$t('emailConnector.admin.connectors.drawer.engines.unknown');
       }
+      if (e?.message === 'emailConnector.engines.rulesInUse') {
+        return this.$t('emailConnector.admin.connectors.drawer.engines.rulesInUse', {
+          0: e.details?.replies || 0,
+          1: e.details?.forwards || 0,
+          2: e.details?.rules || 0,
+        });
+      }
+      if (e?.message === 'emailConnector.engines.aclInUse') {
+        return this.$t('emailConnector.admin.connectors.drawer.engines.aclInUse', {0: e.details?.shares || 0});
+      }
       if (e?.messageCode && this.$te(e.messageCode)) {
         return this.$t(e.messageCode);
       }
