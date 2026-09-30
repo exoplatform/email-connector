@@ -92,7 +92,8 @@ public class EmailConnectorEngineService {
    * A switch applies to what comes next: what the engine switched from already wrote
    * on the mail server — mailbox access granted to colleagues, a forward or an
    * automatic reply — stays there, and is no longer read or removed from eXo through
-   * the engine switched to.
+   * the engine switched to: an automatic reply the server keeps sending is then shown
+   * as off, to its user and to their delegates.
    *
    * @param connectorId the connector
    * @param engines the engines chosen; a null one keeps the one kept
