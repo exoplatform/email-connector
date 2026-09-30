@@ -87,6 +87,8 @@ public final class SieveCapabilityDerivation {
     elements.put(ServerRuleCapabilities.VACATION_DATE_WINDOW,
                  vacation.supported() ? both(needs(capabilities, "date"), needs(capabilities, "relational")) : vacation);
     elements.put(ServerRuleCapabilities.VACATION_HTML, unsupported(NOT_IN_PHASE_1));
+    // eXo writes the interval and the exclusions into the script wherever it writes a reply.
+    elements.put(ServerRuleCapabilities.VACATION_RULES, vacation);
     elements.put(ServerRuleCapabilities.FORWARDING_READ, SUPPORTED_ELEMENT);
     ElementSupport copy = needs(capabilities, SieveRulesSection.COPY_EXTENSION);
     elements.put(ServerRuleCapabilities.FORWARDING_WRITE, copy);
