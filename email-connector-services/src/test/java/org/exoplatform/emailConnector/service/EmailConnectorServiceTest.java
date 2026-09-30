@@ -1468,7 +1468,8 @@ public class EmailConnectorServiceTest {
   /**
    * A provider that is not installed (the BlueMind add-on absent) sends the user to the
    * form without being asked anything: asking it would throw on every listing. Listed
-   * twice, it is still never asked.
+   * twice, it is still never asked. The WARN that names it once per name is not pinned
+   * here: it is a log line only, and the answer is the same with or without it.
    */
   @Test
   @SneakyThrows
