@@ -30,6 +30,8 @@ import org.exoplatform.emailConnector.model.ConnectorEngines;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngineRegistry;
+import org.exoplatform.emailConnector.service.acl.NoopAclEngine;
+import org.exoplatform.emailConnector.service.rules.NoopRuleEngine;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngineRegistry;
 import org.exoplatform.emailConnector.storage.ConnectorEngineChoiceStorage;
 import org.exoplatform.emailConnector.storage.EmailDelegationStorage;
@@ -109,11 +111,14 @@ public class EmailConnectorEngineService {
    * saves the one it changed only. A deployment property that decides the engine still
    * wins; the choice is kept for when it is removed.
    * <p>
-   * A switch is refused while the connector's users still have on the mail server what
-   * eXo set through the engine switched from, since the engine switched to could neither
-   * read nor remove it: for the server rules, an automatic reply, a forward, or a server
+   * A switch — a choice other than the engine that applies now, unless that one is the
+   * no-op engine — is refused while the connector's users still have on the mail server
+   * what eXo set through the engine switched from, since the engine switched to could
+   * neither read nor remove it: for the server rules, an automatic reply, a forward, or a server
    * rule eXo wrote that forwards or backs an eXo rule; for mailbox sharing, a share made
-   * from eXo. Both are read from eXo's own records, never from the server.
+   * from eXo whose grant may be on the server (invited, accepted, declined, offered again
+   * or gone from the grantee's listing). Both are read from eXo's own records, never
+   * from the server.
    *
    * @param connectorId the connector
    * @param engines the engines chosen; a null one keeps the one kept
@@ -140,8 +145,13 @@ public class EmailConnectorEngineService {
                                connector,
                                engines.getAclEngine(),
                                mailboxAclEngineRegistry.engineNames());
-    boolean rulesSwitch = rules != null && !rules.equals(serverRuleEngineRegistry.chosenEngineName(connector));
-    boolean aclSwitch = acl != null && !acl.equals(mailboxAclEngineRegistry.chosenEngineName(connector));
+    // Judged against the engine that applies now, which wrote the records: choosing the
+    // engine a property already applies is no switch, and nothing was set through the
+    // no-op engine, so leaving it never is one.
+    String rulesApplied = serverRuleEngineRegistry.engineName(connector);
+    String aclApplied = mailboxAclEngineRegistry.engineName(connector);
+    boolean rulesSwitch = rules != null && !rules.equals(rulesApplied) && !NoopRuleEngine.NAME.equals(rulesApplied);
+    boolean aclSwitch = acl != null && !acl.equals(aclApplied) && !NoopAclEngine.NAME.equals(aclApplied);
     if (rulesSwitch) {
       checkRulesNotInUse(connector);
     }
