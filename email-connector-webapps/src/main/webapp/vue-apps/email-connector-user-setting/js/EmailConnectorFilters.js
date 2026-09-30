@@ -267,7 +267,7 @@ export function isSupported(capabilities, element) {
 /**
  * Whether the mail server can hold a filter at all: an engine that publishes, and at
  * least one action it runs itself or eXo's keyword for a hop. An engine that publishes
- * only the automatic reply (BlueMind in this phase) answers supported with every rule
+ * only the automatic reply answers supported with every rule
  * element unsupported: it holds no filter.
  *
  * @param {object} capabilities - the probe's answer, or null

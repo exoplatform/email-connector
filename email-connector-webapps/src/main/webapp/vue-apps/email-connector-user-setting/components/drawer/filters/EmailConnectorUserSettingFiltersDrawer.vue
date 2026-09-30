@@ -210,8 +210,6 @@ import { CLOSE_FILTERS_DRAWER_EVENT, OPEN_FILTERS_DRAWER_EVENT, filtersMessage, 
 /** The refusal of a deployment that switched server rules off: not an error, eXo runs every filter. */
 const RULES_DISABLED = 'emailConnector.rules.disabled';
 
-/** Why BlueMind holds no rule: the engine's transport is not deployed yet. */
-const BLUEMIND_TRANSPORT_MISSING = 'emailConnector.rules.bluemind.transportMissing';
 
 /** The refusal of a server write the user has not consented to yet. */
 const CONSENT_REQUIRED = 'emailConnector.rules.consentRequired';
@@ -275,8 +273,8 @@ export default {
     },
     /**
      * Whether a filter may run on the mail server: its engine publishes, and runs a rule
-     * action or eXo's keyword. False for BlueMind, whose engine publishes only the
-     * automatic reply in this phase.
+     * action or eXo's keyword. False for an engine that publishes only the automatic
+     * reply.
      *
      * @returns {Boolean} true when the server holds filters
      */
@@ -284,16 +282,20 @@ export default {
       return this.supported && holdsFilters(this.group.capabilities);
     },
     /**
-     * Why every filter runs in eXo: not available yet from eXo (BlueMind, whose engine
-     * has no transport, or publishes only the automatic reply), or a mail server that
-     * does not let eXo manage its rules.
+     * Why every filter runs in eXo: the line the engine's reason code has in the bundle
+     * (UserSettings.emailConnector.filters.exoOnly.reason.<code>, shipped by whoever
+     * produces that code); else not available yet from eXo, for an engine that publishes
+     * only the automatic reply; else a mail server that does not let eXo manage its rules.
      *
      * @returns {String} the localized line
      */
     exoOnlyMessage() {
       const capabilities = this.group?.capabilities;
-      const notYet = capabilities?.reasonCode === BLUEMIND_TRANSPORT_MISSING || !!capabilities?.supported;
-      return this.$t(notYet ? 'UserSettings.emailConnector.filters.exoOnly.notYet' : 'UserSettings.emailConnector.filters.exoOnly');
+      const reasonKey = `UserSettings.emailConnector.filters.exoOnly.reason.${capabilities?.reasonCode}`;
+      if (capabilities?.reasonCode && this.$te(reasonKey)) {
+        return this.$t(reasonKey);
+      }
+      return this.$t(capabilities?.supported ? 'UserSettings.emailConnector.filters.exoOnly.notYet' : 'UserSettings.emailConnector.filters.exoOnly');
     },
     /**
      * What the user must know about the server's state.
