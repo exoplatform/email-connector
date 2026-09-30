@@ -3357,13 +3357,15 @@ class EmailDelegationServiceTest {
     verify(resolver).authenticator(CONNECTOR_ID, null, OWNER, ConnectorCredentialsChannel.IMAP);
 
     // A refusal an engine reports through the session reaches the provider for the same
-    // connector and caller; the retry is the provider's to allow.
-    when(resolver.retriesAfterRefusal(null)).thenReturn(true);
+    // connector's provider and caller, on the channel the engine names; the retry is that
+    // provider's to allow.
+    connector.setAuthProviderName("bluemind-sudo");
+    when(resolver.retriesAfterRefusal("bluemind-sudo")).thenReturn(true);
     try (MailboxAclSession own = service.openOwnSession(OWNER)) {
-      own.invalidateCredentials(ConnectorCredentialsChannel.IMAP);
+      own.invalidateCredentials(ConnectorCredentialsChannel.HTTP);
       assertTrue(own.retriesAfterRefusal());
     }
-    verify(resolver).invalidate(CONNECTOR_ID, null, OWNER, ConnectorCredentialsChannel.IMAP);
+    verify(resolver).invalidate(CONNECTOR_ID, "bluemind-sudo", OWNER, ConnectorCredentialsChannel.HTTP);
     when(userEmailSettingService.getUserEmailSetting("carol")).thenReturn(new UserEmailSetting());
     assertThrows(IllegalAccessException.class, () -> service.openOwnSession("carol"));
   }
