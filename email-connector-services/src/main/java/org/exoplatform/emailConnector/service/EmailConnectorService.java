@@ -221,8 +221,8 @@ public class EmailConnectorService {
   @Autowired
   private EmailConnectorStorage     emailConnectorStorage;
 
-  /** The engines the administration screen chose per connector; absent in a bare test. */
-  @Autowired(required = false)
+  /** The engines the administration screen chose per connector. */
+  @Autowired
   private ConnectorEngineChoiceStorage connectorEngineChoiceStorage;
 
   @Autowired
@@ -1077,9 +1077,6 @@ public class EmailConnectorService {
    * @param emailConnectorId the deleted connector
    */
   private void forgetEngineChoices(Long emailConnectorId) {
-    if (connectorEngineChoiceStorage == null) {
-      return;
-    }
     try {
       connectorEngineChoiceStorage.removeChoices(emailConnectorId);
     } catch (RuntimeException e) {
