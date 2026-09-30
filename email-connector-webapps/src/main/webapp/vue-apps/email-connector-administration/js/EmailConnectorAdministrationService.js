@@ -32,14 +32,17 @@
 function refusal(resp, fallback) {
   return resp.text().then(body => {
     let code = body || '';
+    let parsed = null;
     try {
-      const parsed = JSON.parse(body);
+      parsed = JSON.parse(body);
       code = parsed && parsed.message || '';
     } catch (e) {
       // not JSON: the body is the code itself
     }
     const error = new Error(code || fallback);
     error.messageCode = code || null;
+    // What else the refusal says, such as the counts of a 409 on the engines.
+    error.details = parsed && typeof parsed === 'object' ? parsed : null;
     throw error;
   }, () => {
     throw new Error(fallback);
