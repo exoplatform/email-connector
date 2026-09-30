@@ -39,7 +39,9 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.exoplatform.emailConnector.dao.EmailFilterMatchDAO;
 import org.exoplatform.emailConnector.dao.EmailFilterProposalDAO;
+import org.exoplatform.emailConnector.entity.EmailFilterMatchEntity;
 import org.exoplatform.emailConnector.entity.EmailFilterProposalEntity;
 import org.exoplatform.emailConnector.model.EmailFilterProposal;
 
@@ -64,6 +66,9 @@ public class EmailFilterProposalStorageTest {
   @Autowired
   private EmailFilterProposalDAO emailFilterProposalDAO;
 
+  @Autowired
+  private EmailFilterMatchDAO    emailFilterMatchDAO;
+
   /**
    * The minimal Spring slice: the entity, its repository and the storage.
    */
@@ -81,6 +86,7 @@ public class EmailFilterProposalStorageTest {
   @AfterEach
   void cleanUp() {
     emailFilterProposalDAO.deleteAll();
+    emailFilterMatchDAO.deleteAll();
   }
 
   /**
@@ -310,6 +316,42 @@ public class EmailFilterProposalStorageTest {
     assertEquals("T".repeat(EmailFilterProposalStorage.MAX_TITLE_LENGTH), stored.getToolTitle());
     assertNull(stored.getToolDescription());
     assertNull(stored.getRationale());
+  }
+
+  /**
+   * The mails the mailbox list marks: the Message-IDs of the owner's mails with a
+   * proposal still waiting and not expired -- neither another owner's, nor an expired one.
+   */
+  @Test
+  void getWaitingMailHeaderIdsReadsTheOwnersUnexpiredProposals() {
+    long waiting = storeMatch("fred", "waiting");
+    long expired = storeMatch("fred", "expired");
+    long others = storeMatch("gina", "others");
+    emailFilterProposalStorage.create(proposal(waiting, "t1", "{}", NOW + 100_000), "fred").orElseThrow();
+    emailFilterProposalStorage.create(proposal(expired, "t1", "{}", NOW - 1_000), "fred").orElseThrow();
+    emailFilterProposalStorage.create(proposal(others, "t1", "{}", NOW + 100_000), "gina").orElseThrow();
+
+    assertEquals(List.of("<waiting@x>"), emailFilterProposalStorage.getWaitingMailHeaderIds("fred", new Date(NOW)));
+    assertEquals(List.of("<others@x>"), emailFilterProposalStorage.getWaitingMailHeaderIds("gina", new Date(NOW)));
+  }
+
+  /**
+   * Stores a filter match of a user, the row a proposal is attached to.
+   *
+   * @param userId the owner
+   * @param mail the mail's name, its Message-ID being {@code <mail@x>}
+   * @return the match's id
+   */
+  private long storeMatch(String userId, String mail) {
+    EmailFilterMatchEntity entity = new EmailFilterMatchEntity();
+    entity.setUserId(userId);
+    entity.setFilterId(3L);
+    entity.setMailHeaderId("<" + mail + "@x>");
+    entity.setMailHeaderHash(mail);
+    entity.setMatchedDate(new Date(NOW - 10_000));
+    entity.setAgentStatus("DONE");
+    entity.setCreatedDate(new Date(NOW - 10_000));
+    return emailFilterMatchDAO.saveAndFlush(entity).getId();
   }
 
   /**
