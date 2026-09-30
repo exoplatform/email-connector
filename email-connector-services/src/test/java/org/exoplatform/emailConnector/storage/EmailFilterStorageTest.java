@@ -259,8 +259,8 @@ public class EmailFilterStorageTest {
 
   /**
    * A match's lifecycle in the assistant's queue: it moves from PENDING to RUNNING only
-   * while it is still PENDING, is counted while it is in a status, and is counted as
-   * queued since a date whatever the queue's outcome.
+   * while it is still PENDING, is counted while it is in a status, and counts as a run
+   * since a date only once its run holds a conversation.
    */
   @Test
   void aMatchMovesBetweenAgentStatusesOnlyWhileInTheExpectedOne() {
@@ -273,8 +273,18 @@ public class EmailFilterStorageTest {
     assertFalse(emailFilterStorage.updateAgentStatusIf(created.getId(), EmailFilterMatch.AGENT_PENDING, EmailFilterMatch.AGENT_RUNNING),
                "no longer pending, refused");
     assertEquals(1, emailFilterStorage.countByAgentStatus("iris", EmailFilterMatch.AGENT_RUNNING));
+    Date beforeTheRun = new Date(created.getMatchedDate() - 1);
+    assertEquals(0,
+                 emailFilterStorage.countAgentRunsSince("iris", List.of(EmailFilterMatch.AGENT_RUNNING), beforeTheRun),
+                 "running, but its run holds no conversation yet");
+
+    created.setAgentStatus(EmailFilterMatch.AGENT_RUNNING);
+    created.setAgentConversationId("conversation-1");
+    created.setAgentDate(created.getMatchedDate());
+    emailFilterStorage.updateMatch(created, "iris");
     assertEquals(1,
-                emailFilterStorage.countQueuedSince("iris", List.of(EmailFilterMatch.AGENT_RUNNING), new Date(created.getMatchedDate() - 1)));
+                 emailFilterStorage.countAgentRunsSince("iris", List.of(EmailFilterMatch.AGENT_RUNNING), beforeTheRun),
+                 "its run started: counted against the day's cap");
   }
 
   /**
