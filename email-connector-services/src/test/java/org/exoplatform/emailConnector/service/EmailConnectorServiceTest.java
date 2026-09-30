@@ -1415,6 +1415,7 @@ public class EmailConnectorServiceTest {
   public void tellsWhichDeclaredProvidersAskTheUserForSomething() {
     when(emailConnectorStorage.getEmailConnectors()).thenReturn(List.of(connectorWithProvider(1L, "personal"),
                                                                         connectorWithProvider(2L, "bluemind-sudo")));
+    when(emailCredentialsResolver.isProviderRegistered(anyString())).thenReturn(true);
     when(emailCredentialsResolver.requiresUserAction("personal")).thenReturn(true);
     when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
 
@@ -1456,11 +1457,29 @@ public class EmailConnectorServiceTest {
   @SneakyThrows
   public void asksTheUserWhenTheProviderCannotBeAsked() {
     when(emailConnectorStorage.getEmailConnectors()).thenReturn(List.of(connectorWithProvider(2L, "bluemind-sudo")));
+    when(emailCredentialsResolver.isProviderRegistered("bluemind-sudo")).thenReturn(true);
     when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenThrow(new ConnectorCredentialsException("connector.credentials.unknownProvider"));
 
     Map<String, Boolean> requirements = emailConnectorService.connectionRequirements();
 
     assertEquals(Boolean.TRUE, requirements.get("bluemind-sudo"));
+  }
+
+  /**
+   * A provider that is not installed (the BlueMind add-on absent) sends the user to the
+   * form without being asked anything: asking it would throw on every listing. Listed
+   * twice, it is still never asked.
+   */
+  @Test
+  @SneakyThrows
+  public void asksTheUserWhenTheProviderIsNotInstalled() {
+    when(emailConnectorStorage.getEmailConnectors()).thenReturn(List.of(connectorWithProvider(2L, "bluemind-sudo")));
+    when(emailCredentialsResolver.isProviderRegistered("bluemind-sudo")).thenReturn(false);
+
+    assertEquals(Boolean.TRUE, emailConnectorService.connectionRequirements().get("bluemind-sudo"));
+    assertEquals(Boolean.TRUE, emailConnectorService.connectionRequirements().get("bluemind-sudo"));
+
+    verify(emailCredentialsResolver, never()).requiresUserAction("bluemind-sudo");
   }
 
   private EmailConnector connectorWithProvider(long id, String providerName) {
