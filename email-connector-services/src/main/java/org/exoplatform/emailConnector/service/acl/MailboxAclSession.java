@@ -26,6 +26,7 @@ import javax.mail.Store;
 
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -41,7 +42,10 @@ import org.exoplatform.services.log.Log;
  * nothing at all).
  * The server-rule engines (automatic reply, server rules) take the same session: their
  * protocols authenticate with the IMAP channel's login and password, which
- * {@link #mailCredentials()} resolves the same way, for the same caller.
+ * {@link #mailCredentials()} resolves the same way, for the same caller. When the server
+ * refuses that material, {@link #invalidateCredentials(ConnectorCredentialsChannel)} and
+ * {@link #retriesAfterRefusal()} report it to the provider for the same caller, so an
+ * engine never needs the host's credentials resolver.
  * <p>
  * <b>The security invariant this type carries, and must keep carrying.</b> A session
  * acts as <b>the caller, and nobody else</b>. It is built by {@code EmailDelegationService}
@@ -134,6 +138,8 @@ public final class MailboxAclSession implements AutoCloseable {
 
   private final MailCredentialsResolver   mailCredentialsResolver;
 
+  private final MailCredentialsRefusal    mailCredentialsRefusal;
+
   private Store                           store;
 
   /**
@@ -179,12 +185,41 @@ public final class MailboxAclSession implements AutoCloseable {
                            StoreOpener storeOpener,
                            HttpAuthorizationResolver httpAuthorizationResolver,
                            MailCredentialsResolver mailCredentialsResolver) {
+    this(connector, username, mailboxIdentifier, storeOpener, httpAuthorizationResolver, mailCredentialsResolver, null);
+  }
+
+  /**
+   * A session for one caller, with the caller's own mail credential material and what
+   * to do when a server refuses it. Built by the service from the caller's own
+   * connected setting -- see the class comment for what the resolvers must be wired to.
+   *
+   * @param connector the connector preset the caller is connected on
+   * @param username the eXo user acting
+   * @param mailboxIdentifier the caller's own mailbox identifier, as the ACL and the
+   *          namespace name it
+   * @param storeOpener opens the caller's own IMAP store; null when no IMAP transport
+   *          exists for this caller
+   * @param httpAuthorizationResolver resolves the caller's own HTTP material; null
+   *          when the platform's credentials contract is not available
+   * @param mailCredentialsResolver resolves the caller's own IMAP-channel login and
+   *          password; null when the platform's credentials contract is not available
+   * @param mailCredentialsRefusal reports a refusal of the caller's material to its
+   *          provider; null when the platform's credentials contract is not available
+   */
+  public MailboxAclSession(EmailConnector connector,
+                           String username,
+                           String mailboxIdentifier,
+                           StoreOpener storeOpener,
+                           HttpAuthorizationResolver httpAuthorizationResolver,
+                           MailCredentialsResolver mailCredentialsResolver,
+                           MailCredentialsRefusal mailCredentialsRefusal) {
     this.connector = connector;
     this.username = username;
     this.mailboxIdentifier = mailboxIdentifier;
     this.storeOpener = storeOpener;
     this.httpAuthorizationResolver = httpAuthorizationResolver;
     this.mailCredentialsResolver = mailCredentialsResolver;
+    this.mailCredentialsRefusal = mailCredentialsRefusal;
   }
 
   /**
@@ -286,6 +321,32 @@ public final class MailboxAclSession implements AutoCloseable {
       LOG.debug("Mail credentials of {} could not be resolved: {}", username, e.getMessage());
       throw new MailboxAclException(MailboxAclException.UNREACHABLE, e);
     }
+  }
+
+  /**
+   * Tells the provider that the material it produced for the caller was refused on that
+   * channel, so {@link #mailCredentials()} resolves fresh material next time. Does
+   * nothing when the platform's credentials contract is not available, and never
+   * throws: it runs inside failure handling.
+   *
+   * @param channel the channel the material was refused on
+   */
+  public void invalidateCredentials(ConnectorCredentialsChannel channel) {
+    if (mailCredentialsRefusal != null) {
+      mailCredentialsRefusal.invalidate(channel);
+    }
+  }
+
+  /**
+   * Whether a refused credential is worth one more attempt after
+   * {@link #invalidateCredentials(ConnectorCredentialsChannel)}: only for a provider that
+   * produces its material itself. False when the platform's credentials contract is not
+   * available, so an engine never retries on material nothing can renew.
+   *
+   * @return true when one more attempt on fresh material makes sense
+   */
+  public boolean retriesAfterRefusal() {
+    return mailCredentialsRefusal != null && mailCredentialsRefusal.retriesAfterRefusal();
   }
 
   /**
