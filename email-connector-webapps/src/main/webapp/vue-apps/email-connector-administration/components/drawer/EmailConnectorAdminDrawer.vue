@@ -488,6 +488,27 @@ export default {
       }
       return false;
     },
+    /**
+     * The message a refused save shows.
+     *
+     * @param {Error} e the refusal
+     * @param {Boolean} isNew whether the connector was being created
+     * @returns {String} the translated message
+     */
+    saveErrorMessage(e, isNew) {
+      // A refusal comes back as a message code some bundle translates - the
+      // provider's (a configuration field), or this add-on's (the managed
+      // connector may not move to a provider that asks the user). Whatever the
+      // bundle, a translatable code beats the generic "error" that tells the
+      // administrator nothing about a form they can correct.
+      if (e?.message === 'emailConnector.forwarding.domain.invalid') {
+        return this.$t('emailConnector.admin.connectors.drawer.forwarding.domains.invalid');
+      }
+      if (e?.messageCode && this.$te(e.messageCode)) {
+        return this.$t(e.messageCode);
+      }
+      return this.$t(isNew ? 'emailConnector.admin.connectors.drawer.add.error' : 'emailConnector.admin.connectors.drawer.edit.error');
+    },
     async saveConnector(confirmed) {
       // Only the confirmation's OK passes a provider change: the Save button hands in
       // its click event, and a dialog dismissed any other way leaves nothing behind.
@@ -526,23 +547,7 @@ export default {
         this.$root.$emit('refresh-connectors-list');
         this.close();
       } catch (e) {
-        // A refusal comes back as a message code some bundle translates - the
-        // provider's (a configuration field), or this add-on's (the managed
-        // connector may not move to a provider that asks the user). Whatever the
-        // bundle, a translatable code beats the generic "error" that tells the
-        // administrator nothing about a form they can correct.
-        if (e?.message === 'emailConnector.forwarding.domain.invalid') {
-          this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.forwarding.domains.invalid'), 'error');
-        }
-        else if (e?.messageCode && this.$te(e.messageCode)) {
-          this.$root.$emit('alert-message', this.$t(e.messageCode), 'error');
-        }
-        else if (isNew) {
-          this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.add.error'), 'error');
-        }
-        else {
-          this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.edit.error'), 'error');
-        } 
+        this.$root.$emit('alert-message', this.saveErrorMessage(e, isNew), 'error');
       } finally {
         this.loading = false;
       }
