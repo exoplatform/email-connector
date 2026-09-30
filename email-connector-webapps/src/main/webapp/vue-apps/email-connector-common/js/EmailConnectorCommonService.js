@@ -340,7 +340,7 @@ function absenceError(resp, fallback) {
  * The caller's automatic reply section, read live from their mail server: what the
  * engine can do, the reply the server holds, and its state (OWN, ELSEWHERE, MODIFIED,
  * INACTIVE or NONE). The browser's time zone is sent, so a reply the server stores as
- * instants (BlueMind) is answered in the user's own days. With the forward, the
+ * instants is answered in the user's own days. With the forward, the
  * mailbox's forward read-only (null when the deployment hides it); without it, the
  * server is not asked for it.
  *
