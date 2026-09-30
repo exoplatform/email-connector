@@ -529,23 +529,39 @@ export default {
       if (e?.message === 'emailConnector.forwarding.domain.invalid') {
         return this.$t('emailConnector.admin.connectors.drawer.forwarding.domains.invalid');
       }
-      if (e?.message === 'emailConnector.engines.unknown') {
-        return this.$t('emailConnector.admin.connectors.drawer.engines.unknown');
-      }
-      if (e?.message === 'emailConnector.engines.rulesInUse') {
-        return this.$t('emailConnector.admin.connectors.drawer.engines.rulesInUse', {
-          0: e.details?.replies || 0,
-          1: e.details?.forwards || 0,
-          2: e.details?.rules || 0,
-        });
-      }
-      if (e?.message === 'emailConnector.engines.aclInUse') {
-        return this.$t('emailConnector.admin.connectors.drawer.engines.aclInUse', {0: e.details?.shares || 0});
+      const engineMessage = this.engineRefusalMessage(e);
+      if (engineMessage) {
+        return engineMessage;
       }
       if (e?.messageCode && this.$te(e.messageCode)) {
         return this.$t(e.messageCode);
       }
       return this.$t(isNew ? 'emailConnector.admin.connectors.drawer.add.error' : 'emailConnector.admin.connectors.drawer.edit.error');
+    },
+    /**
+     * The message of a refused engine choice: an engine that is not installed, or a
+     * switch refused while what the current engine set is still in use, with the
+     * counts of what is left.
+     *
+     * @param {Error} e the refusal
+     * @returns {String} the translated message, or null when the refusal is not an
+     *          engine choice's
+     */
+    engineRefusalMessage(e) {
+      switch (e?.message) {
+      case 'emailConnector.engines.unknown':
+        return this.$t('emailConnector.admin.connectors.drawer.engines.unknown');
+      case 'emailConnector.engines.rulesInUse':
+        return this.$t('emailConnector.admin.connectors.drawer.engines.rulesInUse', {
+          0: e.details?.replies || 0,
+          1: e.details?.forwards || 0,
+          2: e.details?.rules || 0,
+        });
+      case 'emailConnector.engines.aclInUse':
+        return this.$t('emailConnector.admin.connectors.drawer.engines.aclInUse', {0: e.details?.shares || 0});
+      default:
+        return null;
+      }
     },
     async saveConnector(confirmed) {
       // Only the confirmation's OK passes a provider change: the Save button hands in
