@@ -439,6 +439,68 @@ public class EmailFilterProposalServiceTest {
   }
 
   /**
+   * Writing no reasons, or an empty map of them, writes nothing and touches the storage
+   * for nothing.
+   */
+  @Test
+  void writingNoReasonsWritesNothing() {
+    assertEquals(0, service.setRationales(OWNER, MATCH_ID, null));
+    assertEquals(0, service.setRationales(OWNER, MATCH_ID, Map.of()));
+  }
+
+  /**
+   * Reading the proposals of no match, or of none named, answers none without reaching the
+   * storage.
+   */
+  @Test
+  void readingTheProposalsOfNoMatchAnswersNoneWithoutAQuery() {
+    assertEquals(List.of(), service.getProposalsOfMatches(OWNER, null));
+    assertEquals(List.of(), service.getProposalsOfMatches(OWNER, List.of()));
+  }
+
+  /**
+   * Putting proposals on no match, or on none named, answers the list itself, untouched.
+   */
+  @Test
+  void puttingProposalsOnNoMatchAnswersTheListItself() {
+    assertNull(service.withProposals(OWNER, null));
+    List<EmailFilterMatch> empty = new ArrayList<>();
+    assertEquals(empty, service.withProposals(OWNER, empty));
+  }
+
+  /**
+   * A proposal that vanishes between the claim and the re-read that answers the decision is
+   * itself answered as not found.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aProposalVanishingBetweenTheClaimAndTheRereadIsNotFound() throws Exception {
+    EmailFilterProposal proposal = propose("t1", "{}");
+    // First answer: the claim's own ownership check: still there. Second: the re-read
+    // after the decision, gone.
+    when(storage.get(eq(proposal.getId()), eq(OWNER))).thenReturn(Optional.of(proposal), Optional.empty());
+
+    assertThrows(ObjectNotFoundException.class, () -> service.reject(OWNER, null, proposal.getId()));
+  }
+
+  /**
+   * An unreadable value of a cap property is ignored, the default applying as if it were
+   * never set.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anUnreadableCapPropertyFallsBackToItsDefault() throws Exception {
+    System.setProperty(EmailFilterProposalService.MAX_PER_RUN_PROPERTY, "not-a-number");
+    propose("t1", "{}");
+    propose("t2", "{}");
+    propose("t3", "{}");
+    assertEquals(EmailFilterProposalService.RUN_CAP, assertThrows(IllegalStateException.class, () -> propose("t4", "{}")).getMessage(),
+                 "the default of three still applies");
+  }
+
+  /**
    * The panel's read puts each match's proposals on it, the expired ones marked first.
    *
    * @throws Exception never
