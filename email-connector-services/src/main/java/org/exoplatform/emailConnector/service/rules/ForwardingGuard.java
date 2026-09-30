@@ -48,8 +48,9 @@ import io.meeds.social.util.JsonUtils;
 /**
  * Who may forward mail where: the deployment's switch per connector, its allowed
  * destination domains, and the destinations each user confirmed. The one place both the
- * forwarding service (before anything is written) and the rules engines (when the Sieve
- * is generated, or a forward sent to the server) ask, so the two checks cannot drift.
+ * forwarding service (before any engine is called for a forward, and before anything is
+ * written) and the Sieve generator (re-checking every redirect it emits) ask, so the two
+ * checks cannot drift.
  * <p>
  * <b>The switch</b>, resolved in one place ({@link #resolve}): the deployment-wide key
  * {@value #AUTHORING_PROPERTY} set to {@code false} switches authoring off everywhere at
