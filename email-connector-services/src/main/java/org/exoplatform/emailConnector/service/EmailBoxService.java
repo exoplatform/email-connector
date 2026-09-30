@@ -4020,11 +4020,11 @@ public class EmailBoxService {
    * @param inboxUid the mail's UID in the inbox, as the cache holds it
    * @param mailHeaderId the mail's Message-ID; blank, or one eXo minted for a mail that
    *          had none, when it cannot be checked
-   * @return true or false; null when the inbox holds no such mail at that UID any more
+   * @return true or false; empty when the inbox holds no such mail at that UID any more
    * @throws IllegalAccessException if the user may not read their mailbox
    * @throws IllegalStateException when the server cannot be reached or read
    */
-  public Boolean isFlaggedAsSpamOnServer(String username, long inboxUid, String mailHeaderId) throws IllegalAccessException {
+  public Optional<Boolean> isFlaggedAsSpamOnServer(String username, long inboxUid, String mailHeaderId) throws IllegalAccessException {
     checkCanReadMailbox(username);
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     Store store = null;
@@ -4035,7 +4035,7 @@ public class EmailBoxService {
       inbox.open(Folder.READ_ONLY);
       Message message = ((UIDFolder) inbox).getMessageByUID(inboxUid);
       if (message == null) {
-        return null;
+        return Optional.empty();
       }
       FetchProfile profile = new FetchProfile();
       profile.add(FetchProfile.Item.FLAGS);
@@ -4044,9 +4044,9 @@ public class EmailBoxService {
       inbox.fetch(new Message[] { message }, profile);
       String expected = EmailThreadingUtils.isSynthesizedMessageId(mailHeaderId) ? null : mailHeaderId;
       if (!isExpectedMessageAtUid(message, expected, inboxUid, MailFolder.INBOX, username)) {
-        return null;
+        return Optional.empty();
       }
-      return SpamSignals.isFlagged(userKeywords(message), name -> headerValues(message, name));
+      return Optional.of(SpamSignals.isFlagged(userKeywords(message), name -> headerValues(message, name)));
     } catch (MessagingException | ConnectorCredentialsException | RuntimeException e) {
       LOG.debug("The spam marks of inbox mail {} of user {} could not be read", inboxUid, username, e);
       throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username), e);
