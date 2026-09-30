@@ -1915,12 +1915,13 @@ public class EmailMcpTool implements McpToolPlugin {
       return "";
     }
     String owner = ownerOf(share);
+    String fromOwnersMailbox = " from the mailbox of " + owner;
     if (mode == SendMode.ON_BEHALF) {
-      return " from the mailbox of " + owner + ", sent on behalf of " + owner + ": it shows them as its author and you as its sender";
+      return fromOwnersMailbox + ", sent on behalf of " + owner + ": it shows them as its author and you as its sender";
     } else if (mode == SendMode.AS) {
-      return " from the mailbox of " + owner + ", sent as " + owner + ": it shows them as its author and does not name you";
+      return fromOwnersMailbox + ", sent as " + owner + ": it shows them as its author and does not name you";
     }
-    return " from the mailbox of " + owner + ", sent from your own address";
+    return fromOwnersMailbox + ", sent from your own address";
   }
 
   /**
