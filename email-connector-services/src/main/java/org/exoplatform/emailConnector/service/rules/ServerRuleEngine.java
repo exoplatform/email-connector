@@ -160,10 +160,12 @@ public interface ServerRuleEngine {
   /**
    * Sets, changes or removes the forward eXo manages for the caller: every mail a copy to
    * one address, the mail always kept in the mailbox. The caller has already checked
-   * that the deployment allows it, that the address is in the allowed domains and that
-   * it was confirmed; the engine checks the address again against the destinations its
-   * {@link ForwardingGuard} authorizes, and writes nothing that would not keep a copy.
-   * Whatever else the server holds for the caller is kept as it is.
+   * that the deployment allows it, that the address is in the allowed domains, that it
+   * was confirmed, and that it is among the destinations the {@link ForwardingGuard}
+   * authorizes for the session; an engine needs no guard of its own (one may re-check,
+   * as the Sieve generator does for every redirect it writes). The engine writes nothing
+   * that would not keep a copy, and whatever else the server holds for the caller is
+   * kept as it is.
    *
    * @param session the caller's own session
    * @param destination the address, normalised; null to remove eXo's forward
