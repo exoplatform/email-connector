@@ -31,6 +31,7 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -42,6 +43,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -60,6 +62,7 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
+import org.exoplatform.emailConnector.exception.ForwardingRefusedException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.ForwardingDestination;
@@ -481,6 +484,27 @@ public class EmailForwardingServiceTest {
     assertTrue(written.managedByExo());
     verify(engine).writeForwarding(session, BOB, null);
     assertTrue(settings.get(USERNAME).get(ExoSieveScript.HASH_SETTING_KEY).contains("h1"));
+  }
+
+  /**
+   * The host checks the destination against those the guard authorizes for the caller's
+   * own session before calling any engine, so no engine needs the guard: a confirmed
+   * destination the session does not authorize is refused with nothing read or written.
+   * Mutant: dropping the check lets the engine be called.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testTheHostChecksTheDestinationBeforeAnyEngine() throws Exception {
+    guard.confirm(USERNAME, BOB);
+    ForwardingGuard checked = spy(guard);
+    doReturn(Set.of()).when(checked).authorizedDestinations(session);
+    ReflectionTestUtils.setField(service, "forwardingGuard", checked);
+    assertEquals(ForwardingRefusedException.NOT_AUTHORIZED,
+                 assertThrows(ForwardingRefusedException.class,
+                              () -> service.setForwarding(USERNAME, null, BOB, null, false)).getMessage());
+    verify(engine, never()).readForwarding(any());
+    verify(engine, never()).writeForwarding(any(), any(), any());
   }
 
   // ---------------------------------------------------------------------------------
