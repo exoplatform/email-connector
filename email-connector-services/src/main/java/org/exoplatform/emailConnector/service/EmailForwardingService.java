@@ -120,6 +120,9 @@ public class EmailForwardingService {
   /** The pending confirmation's times a code was sent, for the send limit. */
   private static final String FIELD_SENDS    = "sends";
 
+  /** The forwarding rules record's map of the rules eXo last wrote that forward. */
+  private static final String FIELD_RULES    = "rules";
+
   private static final Log         LOG                     = ExoLogger.getLogger(EmailForwardingService.class);
 
   /** How long a confirmation code can be entered, in seconds. */
@@ -699,7 +702,7 @@ public class EmailForwardingService {
       }
     }
     Map<String, Object> seenNames = before.get("names") instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
-    Map<String, Object> seen = before.get("rules") instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+    Map<String, Object> seen = before.get(FIELD_RULES) instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
     if (now.equals(stringMap(seen))) {
       return;
     }
@@ -719,7 +722,7 @@ public class EmailForwardingService {
       }
     }
     Map<String, Object> value = new LinkedHashMap<>();
-    value.put("rules", now);
+    value.put(FIELD_RULES, now);
     value.put("names", names);
     setGlobal(RULES_KEY_PREFIX + username, JsonUtils.toJsonString(value));
     // The band says the rules that forward at once, not after its status' TTL.
@@ -1234,7 +1237,7 @@ public class EmailForwardingService {
     }
     try {
       Map<String, Object> read = JsonUtils.fromJsonString(stored, Map.class);
-      return read == null || !(read.get("rules") instanceof Map<?, ?> rules) || !rules.isEmpty();
+      return read == null || !(read.get(FIELD_RULES) instanceof Map<?, ?> rules) || !rules.isEmpty();
     } catch (Exception e) {
       // Exception, not RuntimeException: Jackson's parse error is checked, thrown sneakily.
       LOG.debug("The forwarding rules last seen for user {} could not be read", username, e);
