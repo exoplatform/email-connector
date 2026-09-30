@@ -36,7 +36,6 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import org.exoplatform.emailConnector.exception.ForwardingRefusedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
@@ -57,7 +56,6 @@ import org.exoplatform.emailConnector.service.bluemind.BlueMindSession;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindTransportException;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindVacation;
 import org.exoplatform.emailConnector.service.bluemind.BlueMindTransportException.Kind;
-import org.exoplatform.emailConnector.service.rules.ForwardingGuard;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngine;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.log.ExoLogger;
@@ -127,10 +125,6 @@ public class BlueMindRuleEngine implements ServerRuleEngine {
   @Autowired(required = false)
   private BlueMindMailboxTransport transport;
 
-  /** Who may forward where; a forward to any other destination is never sent. */
-  @Autowired(required = false)
-  private ForwardingGuard          forwardingGuard;
-
   /**
    * A job run inside one BlueMind session.
    *
@@ -155,7 +149,7 @@ public class BlueMindRuleEngine implements ServerRuleEngine {
    * {@link MailboxAclSession}, so the engine needs nothing private to the host.
    */
   public BlueMindRuleEngine() {
-    // Field injection only: the transport and the guard are optional beans.
+    // Field injection only: the transport is an optional bean.
   }
 
   /**
@@ -165,17 +159,6 @@ public class BlueMindRuleEngine implements ServerRuleEngine {
    */
   public BlueMindRuleEngine(BlueMindMailboxTransport transport) {
     this.transport = transport;
-  }
-
-  /**
-   * The engine over a given implementation of the port, with the forwarding checks.
-   *
-   * @param transport the port's implementation, possibly null for none
-   * @param forwardingGuard who may forward where
-   */
-  public BlueMindRuleEngine(BlueMindMailboxTransport transport, ForwardingGuard forwardingGuard) {
-    this(transport);
-    this.forwardingGuard = forwardingGuard;
   }
 
   /**
@@ -307,9 +290,10 @@ public class BlueMindRuleEngine implements ServerRuleEngine {
    * Sets or removes the forward of the caller's own mailbox through {@code _forwarding}:
    * one destination, always with a copy kept in the mailbox; removing switches it off.
    * BlueMind holds one forward per mailbox whoever set it, so eXo's replaces the one set
-   * in the webmail, as the reply does. The destination is checked again against the
-   * destinations the {@link ForwardingGuard} authorizes for the caller. Without an
-   * implementation of the port, nothing is sent and no network call is made.
+   * in the webmail, as the reply does. The host has already checked the destination
+   * against those its forwarding guard authorizes for the caller, before calling any
+   * engine. Without an implementation of the port, nothing is sent and no network call
+   * is made.
    *
    * @param session the caller's own session
    * @param destination the address, normalised; null to switch the forward off
@@ -325,10 +309,6 @@ public class BlueMindRuleEngine implements ServerRuleEngine {
                                                                      ServerRuleUnsupportedException {
     if (transport == null) {
       throw new ServerRuleUnsupportedException(ServerRuleUnsupportedException.FORWARDING_UNSUPPORTED);
-    }
-    if (destination != null
-        && (forwardingGuard == null || !forwardingGuard.authorizedDestinations(session).contains(destination))) {
-      throw new ForwardingRefusedException(ForwardingRefusedException.NOT_AUTHORIZED);
     }
     BlueMindForwarding forwarding = destination == null ? new BlueMindForwarding(false, true, Set.of())
                                                         : new BlueMindForwarding(true, true, Set.of(destination));
