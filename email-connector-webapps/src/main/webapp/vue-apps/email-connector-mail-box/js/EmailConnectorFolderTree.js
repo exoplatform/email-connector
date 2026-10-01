@@ -194,10 +194,33 @@ function appendRows(rows, level, children, depth, ancestorKeys) {
         // A folder at the top whose full name is deeper than one level hangs from a
         // folder the list does not show: its path says where it lives.
         showPath: depth === 0 && segments.length > 1,
-        pathLabel: segments.join(' / '),
+        pathLabel: folderPathLabel(folder),
       });
       appendRows(rows, inside, children, depth + 1, ancestorKeys.concat(folder.key));
     });
+}
+
+/**
+ * A folder's full name as the user reads it: its segments, without a leading INBOX
+ * (see ownSegments), joined by a spaced slash ("Customers / Acme"). The one spelling of
+ * a folder's path on every screen.
+ *
+ * @param {Object} folder the folder as the server lists it ({path, delimiter})
+ * @returns {String} the path, or nothing for a folder without one
+ */
+export function folderPathLabel(folder) {
+  return folder?.path ? ownSegments(folder).join(' / ') : '';
+}
+
+/**
+ * Whether a full name is a namespace's INBOX itself -- what a folder at the top of a
+ * mail server whose folders all live under the inbox has for parent.
+ *
+ * @param {String} path the full name
+ * @returns {Boolean} true for INBOX
+ */
+export function isInboxPath(path) {
+  return (path || '').toUpperCase() === 'INBOX';
 }
 
 /**
@@ -214,7 +237,7 @@ function ownSegments(folder) {
     return [folder.path];
   }
   const segments = folder.path.split(folder.delimiter);
-  return segments.length > 1 && segments[0].toUpperCase() === 'INBOX' ? segments.slice(1) : segments;
+  return segments.length > 1 && isInboxPath(segments[0]) ? segments.slice(1) : segments;
 }
 
 /**
@@ -228,7 +251,7 @@ function ownSegments(folder) {
 function sortName(folder, depth) {
   const segments = ownSegments(folder);
   if (depth === 0 && segments.length > 1) {
-    return segments.join(' / ');
+    return folderPathLabel(folder);
   }
   return folder.displayName || folder.path || '';
 }
