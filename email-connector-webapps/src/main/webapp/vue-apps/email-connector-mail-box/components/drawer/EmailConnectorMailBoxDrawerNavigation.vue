@@ -65,10 +65,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <template #activator="{ on, attrs }">
             <div :style="dropStyle(entry)" v-on="dropListeners(entry)">
               <!-- A folder inside another is indented under it (EXO-90839); a rail has no room. -->
+              <!-- A folder the user may only see is a label its folders nest under: never
+                   listed, never a drop target (EXO-90839). -->
               <v-list-item
                 :value="entry.value"
                 :aria-label="entry.ariaLabel"
                 :aria-selected="String(entry.value === activeKey)"
+                :disabled="entry.labelOnly"
                 :title="rail ? null : entry.tooltip"
                 :style="rail ? null : indent(entry)"
                 role="option"
@@ -160,7 +163,7 @@ export default {
     folderEntries() {
       // A mailbox's folders (the user's own, or a shared mailbox's) as a tree (EXO-90839),
       // a collapsed one's folders left out.
-      return visibleFolderRows(buildFolderTree(this.folders, this.namespaceFolders || this.folders), this.collapsed).map(row => {
+      return visibleFolderRows(buildFolderTree(this.folders, this.namespaceFolders || this.folders), this.expandableCollapsed).map(row => {
         const folder = row.folder;
         const counted = this.folderCounts[folder.key];
         const count = counted?.count > 0 ? counted.count : 0;
@@ -168,8 +171,21 @@ export default {
           : this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this));
         return { ...this.buildEntry(`folder:${folder.key}`, this.$emailConnectorMailBoxService.folderIcon(folder),
           label, count, !!(count && counted.unread),
-          () => this.switchFolder(folder.key), !!counted?.attention), folderKey: folder.key, depth: row.depth, hasChildren: row.hasChildren };
+          () => this.switchFolder(folder.key), !!counted?.attention), folderKey: folder.key, depth: row.depth,
+        // A label only cannot be clicked, so it never collapses: its folders always show.
+        hasChildren: row.hasChildren && folder.readable !== false, labelOnly: folder.readable === false };
       });
+    },
+    /**
+     * The collapsed folders, without those the user may only see: a label never
+     * collapses, so its folders are never hidden behind it.
+     *
+     * @returns {Object} the collapsed folders, by key
+     */
+    expandableCollapsed() {
+      const collapsed = Object.assign({}, this.collapsed);
+      this.folders.filter(folder => folder.readable === false).forEach(folder => delete collapsed[folder.key]);
+      return collapsed;
     },
     /** @returns {Array} the categories, each with its unread mail */
     categoryEntries() {
