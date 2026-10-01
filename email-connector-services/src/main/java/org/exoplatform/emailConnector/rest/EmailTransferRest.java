@@ -47,6 +47,7 @@ import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.enums.ParameterIn;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -87,8 +88,8 @@ public class EmailTransferRest {
    * Checks a zip export before its download starts: how many messages, and the most a
    * zip holds. Every message is checked as the download would check it.
    *
-   * @param request the caller's request, for the acting user
-   * @param mails the selection keys, {@code <folder>:<uid>}
+   * @param request the caller's request, for the acting user and the selection
+   *          ({@code mails}, one per folder: {@code <folder>:<uid>[,<uid>...]})
    * @return the check
    */
   @GetMapping("/export/zip/check")
@@ -102,12 +103,11 @@ public class EmailTransferRest {
       @ApiResponse(responseCode = "403", description = "Forbidden: the caller may not read their mailbox, or lacks the read right on a shared folder"),
       @ApiResponse(responseCode = "404", description = "A message is not in the caller's mailbox"),
       @ApiResponse(responseCode = "410", description = "The mailbox share a folder belongs to has ended"), })
-  public ExportCheck checkZipExport(HttpServletRequest request,
-                                    @Parameter(description = "The selected messages, <folder>:<uid>", required = true)
-                                    @RequestParam("mails")
-                                    List<String> mails) {
+  @Parameter(name = "mails", in = ParameterIn.QUERY, required = true,
+      description = "The selected messages, one parameter per folder: <folder>:<uid>[,<uid>...]")
+  public ExportCheck checkZipExport(HttpServletRequest request) {
     try {
-      ExportCheck check = emailExportService.checkZip(request.getRemoteUser(), mails);
+      ExportCheck check = emailExportService.checkZip(request.getRemoteUser(), selection(request));
       if (check == null) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
@@ -128,9 +128,9 @@ public class EmailTransferRest {
    * as the mail server hands them over. Nothing is written before every message was
    * checked, so a refusal keeps its own status.
    *
-   * @param request the caller's request, for the acting user
+   * @param request the caller's request, for the acting user and the selection
+   *          ({@code mails}, one per folder: {@code <folder>:<uid>[,<uid>...]})
    * @param response where the zip is streamed
-   * @param mails the selection keys, {@code <folder>:<uid>}
    */
   @GetMapping("/export/zip")
   @Secured("users")
@@ -144,13 +144,13 @@ public class EmailTransferRest {
       @ApiResponse(responseCode = "404", description = "A message is not in the caller's mailbox"),
       @ApiResponse(responseCode = "410", description = "The mailbox share a folder belongs to has ended"),
       @ApiResponse(responseCode = "500", description = "The mail server could not be read"), })
-  public void downloadZip(HttpServletRequest request,
-                          HttpServletResponse response,
-                          @Parameter(description = "The selected messages, <folder>:<uid>", required = true)
-                          @RequestParam("mails")
-                          List<String> mails) {
+  @Parameter(name = "mails", in = ParameterIn.QUERY, required = true,
+      description = "The selected messages, one parameter per folder: <folder>:<uid>[,<uid>...]")
+  public void downloadZip(HttpServletRequest request, HttpServletResponse response) {
     try {
-      boolean found = emailExportService.writeZip(request.getRemoteUser(), mails, download(response, ZIP_CONTENT_TYPE, ZIP_FILE_NAME));
+      boolean found = emailExportService.writeZip(request.getRemoteUser(),
+                                                  selection(request),
+                                                  download(response, ZIP_CONTENT_TYPE, ZIP_FILE_NAME));
       if (!found) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
@@ -304,6 +304,19 @@ public class EmailTransferRest {
     return ResponseEntity.ok()
                          .cacheControl(CacheControl.noStore().cachePrivate())
                          .body(emailImportService.getImportState(request.getRemoteUser()));
+  }
+
+  /**
+   * Every value of the {@code mails} parameter, as sent: read off the request rather than
+   * bound, because the binder splits a lone value on its commas, and a value carries its
+   * folder's UIDs comma-separated.
+   *
+   * @param request the request
+   * @return the values, in order
+   */
+  private static List<String> selection(HttpServletRequest request) {
+    String[] values = request.getParameterValues("mails");
+    return values == null ? List.of() : List.of(values);
   }
 
   /**
