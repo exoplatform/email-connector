@@ -106,16 +106,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-import { answerDelegation } from '../../email-connector-user-setting/js/EmailConnectorUserSettingService.js';
+import { answerDelegation, getReceivedDelegations } from '../../email-connector-user-setting/js/EmailConnectorUserSettingService.js';
+
+/** The server's answer code that says the share is gone. */
+const REVOKED_CODE = 'emailConnector.delegation.revoked';
 
 /**
- * The server's answer codes that say the invitation no longer waits, and how the row
- * then says it: the share is gone, or somebody already answered it on another screen.
+ * The server's answer codes that say the share is no longer in a state this answer
+ * applies to -- answered elsewhere, or found gone by a check that left no mark on the
+ * invitation -- so the row asks where it now stands before saying anything.
  */
-const NOT_WAITING_CODES = {
-  'emailConnector.delegation.revoked': 'REVOKED',
-  'emailConnector.delegation.notPending': 'ANSWERED',
-  'emailConnector.delegation.notAcceptable': 'ANSWERED',
+const NOT_WAITING_CODES = ['emailConnector.delegation.notPending', 'emailConnector.delegation.notAcceptable'];
+
+/** How the row says each state a share can be found in once it no longer waits. */
+const STANDING = {
+  ACCEPTED: 'ACCEPTED',
+  DECLINED: 'DECLINED',
+  REVOKED: 'REVOKED',
+  GONE: 'REVOKED',
 };
 
 /** The outcome each answer leaves the invitation in, as the server writes it. */
@@ -247,8 +255,10 @@ export default {
         })
         .catch(error => {
           const code = error?.message;
-          if (NOT_WAITING_CODES[code]) {
-            this.outcome = NOT_WAITING_CODES[code];
+          if (code === REVOKED_CODE) {
+            this.outcome = 'REVOKED';
+          } else if (NOT_WAITING_CODES.includes(code)) {
+            return this.readStanding();
           } else if (code === 'emailConnector.delegation.tooMany') {
             this.error = this.$t('emailDelegationInvitation.notification.error.tooMany');
           } else {
@@ -259,6 +269,20 @@ export default {
           this.accepting = false;
           this.refusing = false;
         });
+    },
+    /**
+     * Reads where the share now stands, from eXo's own rows (no connection to the mail
+     * server), after the server said it no longer waits: a share revoked or found gone
+     * says so, rather than "already answered". A share that cannot be read is said to be
+     * answered, which is what the server's refusal established.
+     *
+     * @returns {Promise} resolved once the row shows where the share stands
+     */
+    readStanding() {
+      return getReceivedDelegations(false)
+        .then(rows => (rows || []).find(row => String(row.id) === String(this.delegationId)))
+        .catch(() => null)
+        .then(row => this.outcome = STANDING[row?.status] || 'ANSWERED');
     },
   },
 };
