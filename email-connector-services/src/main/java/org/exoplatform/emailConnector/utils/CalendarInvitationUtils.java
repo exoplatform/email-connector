@@ -97,6 +97,18 @@ public final class CalendarInvitationUtils {
   /** iTIP CANCEL: the organiser cancelled the event, or an occurrence of it. */
   public static final String         METHOD_CANCEL  = "CANCEL";
 
+  /** iTIP REPLY: an attendee's answer, sent to the organiser. */
+  public static final String         METHOD_REPLY   = "REPLY";
+
+  /** iTIP COUNTER: an attendee proposes a change. */
+  public static final String         METHOD_COUNTER = "COUNTER";
+
+  /** iTIP REFRESH: an attendee asks for the latest version. */
+  public static final String         METHOD_REFRESH = "REFRESH";
+
+  /** iTIP DECLINECOUNTER: the organiser declines an attendee's proposed change. */
+  public static final String         METHOD_DECLINECOUNTER = "DECLINECOUNTER";
+
   /** What the reply says wrote it. */
   static final String                PRODUCT_ID     = "-//eXo Platform//eXo Email Connector//EN";
 
@@ -249,7 +261,27 @@ public final class CalendarInvitationUtils {
         invitation.setAnswer(InvitationAnswer.ofPartStat(person.getPartStat()));
       }
     }
+    invitation.setRespondent(respondentOf(invitation));
     return invitation;
+  }
+
+  /**
+   * Who a message that is not an invitation speaks for (RFC 5546 §1.4): the attendee of a
+   * REPLY -- its one ATTENDEE, with the answer it gives -- of a COUNTER or a REFRESH, or
+   * the organiser of a DECLINECOUNTER. Null for anything else, an invitation included.
+   *
+   * @param invitation the description, its attendees and organiser already read
+   * @return the person, or null
+   */
+  private static CalendarInvitationPerson respondentOf(CalendarInvitation invitation) {
+    String method = invitation.getMethod();
+    if (METHOD_DECLINECOUNTER.equals(method)) {
+      return invitation.getOrganizer();
+    }
+    if (METHOD_REPLY.equals(method) || METHOD_COUNTER.equals(method) || METHOD_REFRESH.equals(method)) {
+      return invitation.getAttendees().isEmpty() ? null : invitation.getAttendees().get(0);
+    }
+    return null;
   }
 
   /**

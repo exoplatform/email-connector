@@ -160,6 +160,33 @@ class CalendarInvitationUtilsTest {
   }
 
   /**
+   * A message that answers rather than invites speaks for someone: the attendee of a
+   * REPLY with the answer given, of a COUNTER, or the organiser of a DECLINECOUNTER. An
+   * invitation speaks for nobody.
+   *
+   * @throws Exception when a fixture cannot be read
+   */
+  @Test
+  void anAnswerSpeaksForItsRespondent() throws Exception {
+    CalendarInvitation reply = CalendarInvitationUtils.parseInvitation(fixture("bluemind-reply-accepted.ics"), ME, 50).invitation();
+    assertEquals("REPLY", reply.getMethod());
+    assertEquals("MEYER", reply.getRespondent().getName());
+    assertEquals("meyer@acme.com", reply.getRespondent().getAddress());
+    assertEquals("ACCEPTED", reply.getRespondent().getPartStat());
+    assertEquals("LASTKINGERIC", reply.getSummary());
+
+    CalendarInvitation declined = CalendarInvitationUtils.parseInvitation(fixture("reply-no-name.ics"), ME, 50).invitation();
+    assertNull(declined.getRespondent().getName());
+    assertEquals("DECLINED", declined.getRespondent().getPartStat());
+
+    assertEquals("meyer@acme.com",
+                 CalendarInvitationUtils.parseInvitation(fixture("counter.ics"), ME, 50).invitation().getRespondent().getAddress());
+    assertEquals("root@acme.com",
+                 CalendarInvitationUtils.parseInvitation(fixture("declinecounter.ics"), ME, 50).invitation().getRespondent().getAddress());
+    assertNull(CalendarInvitationUtils.parseInvitation(fixture("google-weekly-request.ics"), ME, 50).invitation().getRespondent());
+  }
+
+  /**
    * Exchange's invitation to one occurrence, in a Windows zone the invitation defines:
    * the instant resolved through its VTIMEZONE, the occurrence and its RECURRENCE-ID,
    * and a rule naming "the second Tuesday" said only as recurring.
