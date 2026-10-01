@@ -23,6 +23,7 @@ import java.util.Date;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.activation.DataHandler;
@@ -90,6 +91,11 @@ import io.meeds.social.util.JsonUtils;
  * RECURRENCE-ID) with the SEQUENCE it answered, in the setting service, so the reader
  * says it again when the mail is opened later; an update that raises the sequence asks
  * again. An answer may be changed: each click sends a new REPLY, as other clients do.
+ * Two limits are stated, not decided here: an answer is remembered for the user who gave
+ * it, so in a shared mailbox its owner and her other delegates do not see it (the
+ * owner's Sent copy is their record); and remembered answers are never deleted -- one
+ * small setting per answered event.
+ * <p>
  * Nothing lands in a calendar here: the agenda add-on is not a dependency of this one.
  */
 @Service
@@ -492,7 +498,18 @@ public class CalendarInvitationService {
       throw new MessagingException("The reply to the invitation could not be written", e);
     }
     String summary = StringUtils.defaultString(invitation.getSummary());
-    MimeMessage reply = new MimeMessage(session);
+    // The Message-ID names the domain of the address the answer is from, as a composed
+    // mail in a shared mailbox owner's name does: JavaMail's own would name this
+    // server's host, on the organiser's copy and on the owner's.
+    String replyMessageId = "<" + UUID.randomUUID() + "@"
+        + StringUtils.defaultIfBlank(StringUtils.substringAfterLast(StringUtils.defaultString(from.getAddress()), "@"), "email-connector")
+        + ">";
+    MimeMessage reply = new MimeMessage(session) {
+      @Override
+      protected void updateMessageID() throws MessagingException {
+        setHeader("Message-ID", replyMessageId);
+      }
+    };
     reply.setFrom(from);
     reply.setRecipient(Message.RecipientType.TO, organizer);
     reply.setSubject(answer.getSubjectPrefix() + ": " + summary, StandardCharsets.UTF_8.name());
