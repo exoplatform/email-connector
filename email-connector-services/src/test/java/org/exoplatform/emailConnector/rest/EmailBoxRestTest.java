@@ -92,6 +92,7 @@ import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FavoriteRemoval;
 import org.exoplatform.emailConnector.model.ScheduledEmail;
+import org.exoplatform.emailConnector.model.UndoableSend;
 import org.exoplatform.emailConnector.model.ScheduledSendStatus;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailCategory;
@@ -1343,6 +1344,82 @@ public class EmailBoxRestTest {
     ArgumentCaptor<Email> scheduledDraft = ArgumentCaptor.forClass(Email.class);
     verify(emailScheduledSendService).schedule(scheduledDraft.capture(), eq(1_900_000_000_000L), eq("Europe/Paris"), eq(SIMPLE_USER));
     assertEquals("draft-1", scheduledDraft.getValue().getDraftLocalId(), "the path names the draft");
+  }
+
+  /**
+   * A send with an Undo (EXO-90837) is the caller's, for the draft the path names, and
+   * answers when it goes; each refusal has its status, the Undo turned off included.
+   *
+   * @throws Exception if a request fails
+   */
+  @Test
+  void aSendWithAnUndoIsTheCallersAndAnswersEachRefusalItsStatus() throws Exception {
+    when(emailScheduledSendService.sendUndoable(any(Email.class), eq(SIMPLE_USER))).thenReturn(new UndoableSend("draft-1",
+                                                                                                                1_900_000_000_000L,
+                                                                                                                10));
+    Email draft = new Email();
+    draft.setDraftLocalId("another-draft");
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send-undoable").with(testSimpleUser())
+                                                                          .contentType(MediaType.APPLICATION_JSON)
+                                                                          .content(asJsonString(draft)))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.draftLocalId").value("draft-1"))
+           .andExpect(jsonPath("$.sendDate").value(1_900_000_000_000L))
+           .andExpect(jsonPath("$.delaySeconds").value(10));
+    ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
+    verify(emailScheduledSendService).sendUndoable(sent.capture(), eq(SIMPLE_USER));
+    assertEquals("draft-1", sent.getValue().getDraftLocalId(), "the path names the draft");
+
+    Object[][] cases = { { new IllegalArgumentException(EmailScheduledSendService.UNDO_SEND_OFF), 400 },
+        { new IllegalAccessException("no"), 403 }, { new SendModeMissingException(SendMode.AS), 403 },
+        { new ObjectNotFoundException("gone"), 404 },
+        { new ScheduledSendConflictException(ScheduledSendConflictException.LOCKED), 409 },
+        { new DelegationRevokedException(DelegationRevokedException.REVOKED), 410 },
+        { new IllegalStateException("emailConnector.scheduled.serverCopyRemains"), 500 } };
+    for (Object[] testCase : cases) {
+      doThrow((Exception) testCase[0]).when(emailScheduledSendService).sendUndoable(any(Email.class), anyString());
+      mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send-undoable").with(testSimpleUser())
+                                                                            .contentType(MediaType.APPLICATION_JSON)
+                                                                            .content(asJsonString(new Email())))
+             .andExpect(status().is((int) testCase[1]));
+    }
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send-undoable").with(testSimpleUser())
+                                                                          .contentType(MediaType.APPLICATION_JSON)
+                                                                          .content(asJsonString(new Email())))
+           .andExpect(status().is(500))
+           .andExpect(status().reason("emailConnector.scheduled.serverCopyRemains"));
+  }
+
+  /**
+   * The Undo (EXO-90837) is the caller's: it answers the draft taken back, 404 for a
+   * mail the caller holds no such draft under, 409 with the code once the mail is on its
+   * way or may have gone, 403 for a mailbox the caller may not use.
+   *
+   * @throws Exception if a request fails
+   */
+  @Test
+  void anUndoAnswersTheDraftOrWhyNot() throws Exception {
+    Email draft = new Email();
+    draft.setDraftLocalId("draft-1");
+    draft.setSubject("See you tomorrow");
+    when(emailScheduledSendService.undoSend("draft-1", SIMPLE_USER)).thenReturn(draft);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/undo-send").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.draftLocalId").value("draft-1"))
+           .andExpect(jsonPath("$.subject").value("See you tomorrow"));
+
+    Object[][] cases = { { new IllegalAccessException("no"), 403, null }, { new ObjectNotFoundException("draft-1"), 404, null },
+        { new ScheduledSendConflictException(ScheduledSendConflictException.SENDING), 409, ScheduledSendConflictException.SENDING },
+        { new ScheduledSendConflictException(EmailScheduledSendService.UNCERTAIN_CONFLICT), 409,
+            EmailScheduledSendService.UNCERTAIN_CONFLICT } };
+    for (Object[] testCase : cases) {
+      doThrow((Exception) testCase[0]).when(emailScheduledSendService).undoSend(anyString(), anyString());
+      ResultActions result = mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/undo-send").with(testSimpleUser()))
+                                    .andExpect(status().is((int) testCase[1]));
+      if (testCase[2] != null) {
+        result.andExpect(status().reason((String) testCase[2]));
+      }
+    }
   }
 
   /**
