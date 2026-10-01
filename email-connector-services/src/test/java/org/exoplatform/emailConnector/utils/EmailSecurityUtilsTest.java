@@ -145,8 +145,8 @@ class EmailSecurityUtilsTest {
   /**
    * A crafted link text cannot make the check slow or overflow the stack: a host of half
    * a million labels, a near-address that fails at its very end, a long hyphen run, a
-   * long path. Each is judged well inside a second; an expression repeating a group per
-   * label overflowed the stack on the first.
+   * long path. Each is judged well inside a second; an expression that repeats a group
+   * per label would overflow the stack on the first.
    */
   @Test
   void aCraftedLinkTextIsJudgedInLinearTime() {
