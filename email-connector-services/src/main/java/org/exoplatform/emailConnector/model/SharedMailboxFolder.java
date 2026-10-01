@@ -32,11 +32,36 @@ import java.util.Map;
  * @param affordances the controls those letters unlock
  * @param readable whether the delegate may read it at all ({@code l} without {@code r}:
  *          listed, greyed, never synced)
+ * @param path its full name in the owner's mailbox, below the share's root -- what the
+ *          delegate's folder tree is drawn from (EXO-90839); its name when it is not
+ *          under that root
+ * @param delimiter the owner's hierarchy delimiter, null on a flat namespace
  */
 public record SharedMailboxFolder(String key,
                                   FolderRole role,
                                   String displayName,
                                   String rights,
                                   Map<String, Boolean> affordances,
-                                  boolean readable) {
+                                  boolean readable,
+                                  String path,
+                                  String delimiter) {
+
+  /**
+   * A folder listed without its place in the owner's tree: shown at the top, by name.
+   *
+   * @param key the {@code CUSTOM:<id>} key it is listed under
+   * @param role its role in the owner's mailbox, null for a folder of the owner's own
+   * @param displayName its last path segment
+   * @param rights the delegate's letters on it
+   * @param affordances the controls those letters unlock
+   * @param readable whether the delegate may read it at all
+   */
+  public SharedMailboxFolder(String key,
+                             FolderRole role,
+                             String displayName,
+                             String rights,
+                             Map<String, Boolean> affordances,
+                             boolean readable) {
+    this(key, role, displayName, rights, affordances, readable, displayName, null);
+  }
 }
