@@ -2129,6 +2129,33 @@ class EmailDelegationServiceTest {
   }
 
   /**
+   * "Extend access" of a share whose grantee holds the whole mailbox on a server that
+   * keeps both is refused before anything is written -- every folder is theirs already --
+   * and the owner's list never offers it.
+   */
+  @Test
+  void aWholeMailboxGranteeIsNeverOfferedAnExtend() throws Exception {
+    EmailDelegation accepted = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    accepted.setGrantedRoles("INBOX");
+    accepted.setOwnerRoleFolders(ownerRoleFolders());
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted);
+    when(engine.probe(any())).thenReturn(BOTH_SCOPES);
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(wholeMailbox(GRANTEE_MAILBOX, "lrswipkxte")));
+
+    IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class, () -> service.extend(OWNER, 100L));
+
+    assertEquals(EmailDelegationService.WHOLE_MAILBOX_MESSAGE, thrown.getMessage());
+    verify(engine, never()).grant(any(), anyString(), anyString(), any(), any());
+    verify(engine, never()).grant(any(), anyString(), anyString(), any(), any(), any());
+
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER, GRANTEE));
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(accepted));
+    GrantedDelegations granted = service.getGrantedDelegations(OWNER);
+    assertEquals(List.of(), granted.grantees().get(0).extendableRoles());
+    verify(engine, never()).findRoleFolders(any());
+  }
+
+  /**
    * One entry standing on the owner's whole mailbox.
    *
    * @param identifier who

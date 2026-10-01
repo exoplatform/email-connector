@@ -307,13 +307,13 @@ public class EmailDelegationService {
       List<MailboxAce> acl = engine.listAcl(session, OWNER_INBOX);
       List<DelegationGrantee> grantees = merge(ownerUsername, ownerMailbox, connector, acl, rows);
       if (capabilities.grantGranularity() == GrantGranularity.FOLDER
-          && grantees.stream().anyMatch(grantee -> isExtendableHere(grantee.delegation(), connector, ownerMailbox))) {
+          && grantees.stream().anyMatch(grantee -> isExtendableEntry(grantee, connector, ownerMailbox))) {
         // What an Extend would add to each share eXo wrote (EXO-90548): the owner's role
         // folders as her session names them now, one LIST for the whole list, and only
         // when some share could be extended at all.
         Set<FolderRole> ownerRoles = roleFoldersOf(engine, session).keySet();
         grantees = grantees.stream()
-                           .map(grantee -> isExtendableHere(grantee.delegation(), connector, ownerMailbox)
+                           .map(grantee -> isExtendableEntry(grantee, connector, ownerMailbox)
                                                                               ? grantee.withExtendableRoles(missingRoles(grantee.delegation(), ownerRoles))
                                                                               : grantee)
                            .toList();
@@ -867,7 +867,9 @@ public class EmailDelegationService {
    *           its row, or by the INBOX ACL), was not written by eXo, has no preset, is on
    *           another mailbox than the one connected, or is on a server that grants a whole
    *           mailbox at once; when the owner's mailbox has no default role folder left to
-   *           add; and when the share was revoked or went while the server was being asked
+   *           add; and when the share was revoked or went while the server was being asked;
+   *           {@code wholeMailbox} for a grantee who holds the owner's whole mailbox on the
+   *           server (EXO-90816)
    * @throws MailboxAclException when the server cannot be asked, no longer holds the
    *           share on INBOX ({@code NOT_RECORDED}), or refused every folder there was
    *           to add ({@code SERVER_REFUSED})
@@ -902,6 +904,9 @@ public class EmailDelegationService {
       if (capabilities.grantGranularity() != GrantGranularity.FOLDER) {
         throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
       }
+      // A grantee holding the whole mailbox on the server already sees every folder
+      // (EXO-90816): nothing to add, and a folder entry would only add to it.
+      requireFolderScoped(engine, session, capabilities, delegation, identifier);
       // What there is to add, read before anything is written: the default roles her
       // mailbox has and the share does not cover yet (EXO-90548). Nothing to add is a
       // refusal, not an INBOX rewritten for nothing.
@@ -996,6 +1001,19 @@ public class EmailDelegationService {
   private static boolean isExtendableHere(EmailDelegation delegation, EmailConnector connector, String ownerMailbox) {
     return isExtendable(delegation) && connector.getId().equals(delegation.getConnectorId())
         && ownerMailbox.equalsIgnoreCase(delegation.getOwnerMailbox());
+  }
+
+  /**
+   * {@link #isExtendableHere} for one entry of the owner's list: never for an entry that
+   * stands on the owner's whole mailbox (EXO-90816), which already covers every folder.
+   *
+   * @param grantee the entry
+   * @param connector the owner's connector
+   * @param ownerMailbox the owner's mailbox address
+   * @return true when an Extend of it can succeed on this mailbox
+   */
+  private static boolean isExtendableEntry(DelegationGrantee grantee, EmailConnector connector, String ownerMailbox) {
+    return grantee.scope() != AclScope.MAILBOX && isExtendableHere(grantee.delegation(), connector, ownerMailbox);
   }
 
   /**
@@ -1321,9 +1339,12 @@ public class EmailDelegationService {
       requireFolderScoped(engine, session, capabilities, delegation, identifier);
       List<OwnFolder> listed = engine.listOwnFolders(session);
       List<OwnFolder> shareable = shareableFolders(listed);
+      // Every folder's list in one read: the engine answers them in as few calls as its
+      // server allows (EXO-90816).
+      Map<String, List<MailboxAce>> acls = engine.listAcls(session, shareable.stream().map(OwnFolder::fullName).toList());
       List<DelegationFolder> folders = new ArrayList<>();
       for (OwnFolder folder : shareable) {
-        folders.add(accessOn(engine, session, folder, identifier));
+        folders.add(accessOn(engine, folder, acls.get(folder.fullName()), identifier));
       }
       return new DelegationFolders(folders, isTruncated(listed, shareable));
     }
@@ -1814,6 +1835,11 @@ public class EmailDelegationService {
           }
           String identifier = share.getGranteeMailbox();
           MailboxAce ace = aceOf(acl, identifier);
+          if (ace != null && ace.scope() == AclScope.MAILBOX) {
+            // The access rides the whole mailbox, not the folder (EXO-90816): nothing to
+            // write again, and a folder entry written here would be one eXo never shared.
+            continue;
+          }
           MailboxRights held = ace == null || ace.rights() == null ? MailboxRights.NONE : ace.rights();
           DelegationPreset preset = ace == null ? null : engine.presetOf(held);
           if (preset == null || !preset.isGrantable()) {
@@ -1957,23 +1983,17 @@ public class EmailDelegationService {
 
   /**
    * One folder as the owner's list shows it, with the delegate's access read from the
-   * folder's ACL. An ACL that cannot be read is said so, not guessed; a lost connection
-   * stops the list.
+   * folder's ACL. An ACL that could not be read is said so, not guessed.
    *
    * @param engine the engine
-   * @param session the owner's session
    * @param folder the owner's folder
+   * @param acl the folder's entries, null when they could not be read
    * @param identifier the grantee as the server names them
    * @return the entry
-   * @throws MailboxAclException {@code UNREACHABLE} when the server can no longer be asked
    */
-  private DelegationFolder accessOn(MailboxAclEngine engine, MailboxAclSession session, OwnFolder folder, String identifier) {
-    List<MailboxAce> acl;
-    try {
-      acl = engine.listAcl(session, folder.fullName());
-    } catch (MailboxAclException e) {
-      rethrowUnreachable(e);
-      LOG.debug("The ACL of one of the owner's folders could not be read ({})", e.getCode());
+  private DelegationFolder accessOn(MailboxAclEngine engine, OwnFolder folder, List<MailboxAce> acl, String identifier) {
+    if (acl == null) {
+      LOG.debug("The ACL of one of the owner's folders could not be read");
       return describe(folder, null, null, false);
     }
     MailboxAce ace = aceOf(acl, identifier);
