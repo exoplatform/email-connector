@@ -68,6 +68,7 @@ import EmailConnectorMailBoxMoveToFolderDrawer from './components/drawer/EmailCo
 import EmailConnectorMailBoxSourceDrawer from './components/drawer/EmailConnectorMailBoxSourceDrawer.vue';
 import EmailConnectorMailBoxAdvancedSearchDrawer from './components/drawer/EmailConnectorMailBoxAdvancedSearchDrawer.vue';
 import EmailConnectorMailBoxSearchCriteriaChips from './components/drawer/EmailConnectorMailBoxSearchCriteriaChips.vue';
+import EmailConnectorMailBoxSearchBar from './components/drawer/EmailConnectorMailBoxSearchBar.vue';
 import EmailConnectorScheduleSendPicker from './components/drawer/EmailConnectorScheduleSendPicker.vue';
 import EmailConnectorMailBoxPopup from './components/drawer/EmailConnectorMailBoxPopup.vue';
 import EmailConnectorReadReceiptBanner from './components/drawer/EmailConnectorReadReceiptBanner.vue';
@@ -141,6 +142,7 @@ const components = {
   'email-connector-mail-box-source-drawer': EmailConnectorMailBoxSourceDrawer,
   'email-connector-mail-box-advanced-search-drawer': EmailConnectorMailBoxAdvancedSearchDrawer,
   'email-connector-mail-box-search-criteria-chips': EmailConnectorMailBoxSearchCriteriaChips,
+  'email-connector-mail-box-search-bar': EmailConnectorMailBoxSearchBar,
   'email-connector-schedule-picker': EmailConnectorScheduleSendPicker,
   'email-connector-mail-box-popup': EmailConnectorMailBoxPopup,
   'email-connector-read-receipt-banner': EmailConnectorReadReceiptBanner,
