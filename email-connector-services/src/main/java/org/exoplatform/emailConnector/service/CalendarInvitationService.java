@@ -382,16 +382,24 @@ public class CalendarInvitationService {
     if (invitation.getRespondent() == null && CalendarInvitationUtils.METHOD_COUNTER.equals(invitation.getMethod())) {
       invitation.setRespondent(proposer(email, invitation));
     }
-    CalendarInvitationAnswer given = rememberedAnswer(username, invitation, parsed.recurrenceId());
-    if (given != null && given.getAnswer() != null && given.getSequence() >= invitation.getSequence()) {
-      invitation.setAnswer(given.getAnswer());
-    }
     String agendaUrl = AgendaEventLinks.localAgendaLink(invitation.getUid(), parsed.url(), ownDomain());
     if (agendaUrl != null) {
       // One of this deployment's own Agenda events: answered in Agenda, whatever the
       // method says, so the attendee's answer is recorded where the event lives.
       invitation.setExoMeeting(true);
       invitation.setAgendaUrl(agendaUrl);
+    }
+    if (CalendarInvitationUtils.ANSWER_METHODS.contains(invitation.getMethod())) {
+      // Somebody's answer, not a question to the reader: whatever it lists for the
+      // reader's address is not the reader's answer.
+      invitation.setAnswer(null);
+      return parsed;
+    }
+    CalendarInvitationAnswer given = rememberedAnswer(username, invitation, parsed.recurrenceId());
+    if (given != null && given.getAnswer() != null && given.getSequence() >= invitation.getSequence()) {
+      invitation.setAnswer(given.getAnswer());
+    }
+    if (invitation.isExoMeeting()) {
       return parsed;
     }
     if (asksForAnswer(email, invitation, delegation, username)) {
