@@ -111,7 +111,7 @@ final class CssScan {
    * @param c the character
    * @return true for space, tab, line feed, vertical tab, form feed or carriage return
    */
-  private static boolean isSpace(char c) {
+  static boolean isSpace(char c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\u000B' || c == '\f' || c == '\r';
   }
 }
