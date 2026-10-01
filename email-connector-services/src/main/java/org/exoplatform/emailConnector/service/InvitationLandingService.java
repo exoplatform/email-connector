@@ -106,7 +106,8 @@ public class InvitationLandingService {
                     landing.username(),
                     landed.removed() ? "was removed from" : "landed in",
                     plugin.getClass().getName());
-          invitation.setLanding(landed.removed() ? CalendarLanding.REMOVED : CalendarLanding.LANDED);
+          invitation.setLanding(landed.removed() ? CalendarLanding.REMOVED
+                                                 : landed.alreadyHeld() ? CalendarLanding.ALREADY_HELD : CalendarLanding.LANDED);
           invitation.setLandingLink(landed.removed() ? null : landed.link());
           // The click was honoured: the card does not offer it again.
           invitation.setLandable(invitation.isLandable() && landed.removed());

@@ -303,9 +303,11 @@ public class CalendarInvitationService {
   }
 
   /**
-   * Adds the event a message describes to the user's calendar without answering it: an
-   * invitation they do not want to answer yet, or a published event with nobody to
-   * answer. From the user's own mailbox only, and never a cancelled event.
+   * Adds the event a message describes to the user's calendar without sending an
+   * answer: an invitation they do not want to answer yet, or a published event with
+   * nobody to answer -- with the answer they already gave for this revision, when they
+   * did, so the calendar says what the organiser was told. From the user's own mailbox
+   * only, never a cancelled event, and not after a decline.
    *
    * @param emailId the cached message's technical id
    * @param username the user, who must own the cached row
@@ -331,7 +333,9 @@ public class CalendarInvitationService {
     if (!invitation.isLandable()) {
       throw new IllegalArgumentException(NOT_LANDABLE);
     }
-    land(username, parsed, null);
+    // With the answer the user already gave for this revision, when they did:
+    // the calendar says what the organiser was told.
+    land(username, parsed, invitation.getAnswer());
     return invitation;
   }
 
@@ -520,7 +524,8 @@ public class CalendarInvitationService {
       // or a COUNTER speaks to an organiser, not to a calendar.
       boolean addable = invitation.getMethod() == null || CalendarInvitationUtils.METHOD_REQUEST.equals(invitation.getMethod())
           || CalendarInvitationUtils.METHOD_PUBLISH.equals(invitation.getMethod());
-      invitation.setLandable(addable && !invitation.isCancelled());
+      // Not after a decline: the add-on creates nothing for a declined event.
+      invitation.setLandable(addable && !invitation.isCancelled() && invitation.getAnswer() != InvitationAnswer.DECLINED);
       invitation.setRemovable(cancellation);
     }
     return parsed;

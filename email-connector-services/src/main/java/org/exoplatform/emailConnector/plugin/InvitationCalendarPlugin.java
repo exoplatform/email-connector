@@ -36,8 +36,9 @@ import org.exoplatform.emailConnector.model.LandedInvitation;
  * <b>What an implementer is handed is the sender's content.</b> The iCalendar object
  * came in a mail from outside: its UID, its links, its organiser and attendees are
  * claims, capped in size but not vetted. An implementer treats it as such -- it must
- * not take a UID or a link for one of this deployment's own events, must let only an
- * event's organiser change or cancel it, and the only person it acts for is
+ * not act on one of this deployment's own events because a UID or a link names it (at
+ * most say the event is held already, when the message describes it), must let only
+ * an event's organiser change or cancel it, and the only person it acts for is
  * {@link InvitationLanding#username()}, in that user's own calendar: the attendee
  * address names that same user's mailbox, never somebody else to resolve. The link it
  * returns is built from the platform's own domain, never from the object.
@@ -65,9 +66,9 @@ public interface InvitationCalendarPlugin {
    * removes the event the user holds. Asked only of the implementer that answered true
    * to {@link #holdsCalendarFor}, and of that one alone: it returns what it did, or
    * null when there was nothing to do for this message (a decline or a cancellation of
-   * an event the user never added, an event of the platform's own that is in the
-   * calendar already) -- and null when, asked anyway, it holds no calendar for the
-   * user. Two things it says by throwing, told apart by the exception: an
+   * an event the user never added) -- and null when, asked anyway, it holds no calendar
+   * for the user; an event of the platform's own, in the calendar already, is answered
+   * as held, nothing written. Two things it says by throwing, told apart by the exception: an
    * invitation it refuses to land as it is -- unreadable, about another event, about
    * one occurrence only, or one it must not trust -- is an
    * {@link IllegalArgumentException}, and the user is told the event was not added; a
