@@ -42,6 +42,9 @@ import java.util.Map;
  * @param ownerSentCopy whether a mail the grantee writes in the owner's name will be filed
  *          in the owner's own Sent (EXO-90551, EXO-90582): what the consent says about
  *          the owner keeping a copy
+ * @param scope where the grantee's entry stands (EXO-90816): on the folders shared, or
+ *          on the owner's whole mailbox, whose folders cannot then be chosen one by one;
+ *          never null
  */
 public record DelegationGrantee(String identifier,
                                 String granteeId,
@@ -52,7 +55,27 @@ public record DelegationGrantee(String identifier,
                                 Map<String, Boolean> affordances,
                                 List<FolderRole> extendableRoles,
                                 String granteeFullName,
-                                boolean ownerSentCopy) {
+                                boolean ownerSentCopy,
+                                AclScope scope) {
+
+  /**
+   * Normalises the scope: an entry that names none stands on its folders.
+   *
+   * @param identifier the server-side identifier
+   * @param granteeId the eXo username, or null
+   * @param delegation the row, or null
+   * @param preset the preset
+   * @param rights the letters
+   * @param nativeRights the server's own vocabulary
+   * @param affordances the controls the letters unlock
+   * @param extendableRoles the role folders an Extend would add
+   * @param granteeFullName the grantee's display name, or null
+   * @param ownerSentCopy whether the owner keeps a copy of mail in her name
+   * @param scope where the entry stands, null for its folders
+   */
+  public DelegationGrantee {
+    scope = scope == null ? AclScope.FOLDER : scope;
+  }
 
   /**
    * Builds an entry from an ACL entry and what eXo knows about it.
@@ -72,7 +95,8 @@ public record DelegationGrantee(String identifier,
                                  ace.rights().affordances(),
                                  List.of(),
                                  null,
-                                 false);
+                                 false,
+                                 ace.scope());
   }
 
   /**
@@ -91,7 +115,8 @@ public record DelegationGrantee(String identifier,
                                  affordances,
                                  List.copyOf(roles),
                                  granteeFullName,
-                                 ownerSentCopy);
+                                 ownerSentCopy,
+                                 scope);
   }
 
   /**
@@ -112,6 +137,7 @@ public record DelegationGrantee(String identifier,
                                  affordances,
                                  extendableRoles,
                                  fullName,
-                                 sentCopy);
+                                 sentCopy,
+                                 scope);
   }
 }

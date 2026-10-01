@@ -63,6 +63,16 @@ import java.util.Set;
  *          too ({@link org.exoplatform.emailConnector.service.acl.MailboxAclEngine#grantSendMode});
  *          false on an IMAP engine, where eXo alone holds and enforces it -- an ACL
  *          letter cannot say "send"
+ * @param mailboxScope whether a server that grants per folder also keeps entries on the
+ *          owner's whole mailbox beside them (BlueMind), so that an entry listed on a folder
+ *          may stand on the whole mailbox ({@link MailboxAce#scope()}) and is then changed or
+ *          removed only at that scope; false on an RFC 4314 server, whose every entry stands
+ *          on one folder
+ * @param editorExpungesTrash whether an Editor's access lets them delete mail for good in
+ *          the owner's Trash: false on an IMAP engine, which never grants {@code e} there
+ *          (EXO-90548, PO decision Q-1); true on a server whose Editor level has no
+ *          narrower form there (BlueMind's {@code Write}), so the interface never promises
+ *          what the server does not hold
  */
 public record MailboxAclCapabilities(boolean supported,
                                      boolean aclAdvertised,
@@ -72,7 +82,9 @@ public record MailboxAclCapabilities(boolean supported,
                                      boolean subscriptionRequired,
                                      String reasonCode,
                                      Set<SendMode> sendModes,
-                                     boolean sendModeOnServer) {
+                                     boolean sendModeOnServer,
+                                     boolean mailboxScope,
+                                     boolean editorExpungesTrash) {
 
   /**
    * Normalises the declared shapes: never null, never {@link SendMode#NONE}, and a copy
@@ -87,6 +99,10 @@ public record MailboxAclCapabilities(boolean supported,
    * @param reasonCode why sharing is unsupported, null when it is
    * @param sendModes the shapes of writing in the owner's name the server accepts
    * @param sendModeOnServer whether the engine writes the consent on the server
+   * @param mailboxScope whether the server also keeps whole-mailbox entries beside
+   *          per-folder ones
+   * @param editorExpungesTrash whether an Editor can delete mail for good in the owner's
+   *          Trash
    */
   public MailboxAclCapabilities {
     Set<SendMode> modes = EnumSet.noneOf(SendMode.class);
@@ -94,6 +110,42 @@ public record MailboxAclCapabilities(boolean supported,
       sendModes.stream().filter(mode -> mode != null && mode != SendMode.NONE).forEach(modes::add);
     }
     sendModes = Collections.unmodifiableSet(modes);
+  }
+
+  /**
+   * The capabilities of a server whose every entry stands on one folder and whose Editor
+   * never deletes for good in the owner's Trash -- every caller written before EXO-90816.
+   *
+   * @param supported whether shares can be read and written at all
+   * @param aclAdvertised whether CAPABILITY listed ACL
+   * @param namespaceAdvertised whether CAPABILITY listed NAMESPACE
+   * @param grantGranularity the unit a grant is written on
+   * @param serverNotifiesOwner whether the server notifies the owner itself
+   * @param subscriptionRequired whether the grantee must accept on the server
+   * @param reasonCode why sharing is unsupported, null when it is
+   * @param sendModes the shapes of writing in the owner's name the server accepts
+   * @param sendModeOnServer whether the engine writes the consent on the server
+   */
+  public MailboxAclCapabilities(boolean supported,
+                                boolean aclAdvertised,
+                                boolean namespaceAdvertised,
+                                GrantGranularity grantGranularity,
+                                boolean serverNotifiesOwner,
+                                boolean subscriptionRequired,
+                                String reasonCode,
+                                Set<SendMode> sendModes,
+                                boolean sendModeOnServer) {
+    this(supported,
+         aclAdvertised,
+         namespaceAdvertised,
+         grantGranularity,
+         serverNotifiesOwner,
+         subscriptionRequired,
+         reasonCode,
+         sendModes,
+         sendModeOnServer,
+         false,
+         false);
   }
 
   /**
