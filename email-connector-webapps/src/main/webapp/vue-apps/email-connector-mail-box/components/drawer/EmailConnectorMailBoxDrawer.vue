@@ -3900,8 +3900,10 @@ export default {
       } catch (e) {
         listed = false;
       }
+      // A folder now kept only as a label (no right to read it) is gone as well: it can
+      // no longer be listed.
       if (this.currentFolder !== 'INBOX'
-          && (listed ? !this.availableFolders.some(folder => folder.key === this.currentFolder) : inboxOnFailure)) {
+          && (listed ? !this.availableFolders.some(folder => folder.key === this.currentFolder && folder.readable !== false) : inboxOnFailure)) {
         this.onSwitchFolder('INBOX');
       }
     },
