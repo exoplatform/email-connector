@@ -289,6 +289,38 @@ public class EmailScheduledSendStorageTest {
   }
 
   /**
+   * The wait of a held mail starts only while it is still held (EXO-90837): never on a
+   * mail claimed meanwhile, nor on one taken back; and the compensation of a scheduling
+   * that could not complete removes a row only while it waits, never one a dispatcher
+   * claimed meanwhile.
+   */
+  @Test
+  void aWaitStartsAndACompensationRemovesOnlyARowStillWaiting() {
+    Date far = new Date(NOW.getTime() + 120_000);
+    Date due = new Date(NOW.getTime() + 10_000);
+    EmailScheduledSend held = storage.create(heldRow(draft("held"), far));
+    assertTrue(storage.findDueHeld(new Date(NOW.getTime() + 60_000), 10).isEmpty(), "not due while frozen");
+    assertTrue(storage.startHeldWait(held.getId(), due, NOW));
+    assertEquals(due, storage.get(held.getId()).getNextAttemptDate());
+    assertEquals(due, storage.get(held.getId()).getScheduledDate());
+    assertEquals(List.of(held.getId()), storage.findDueHeld(due, 10));
+
+    EmailScheduledSend claimed = storage.create(heldRow(draft("claimed"), NOW));
+    assertTrue(storage.claim(claimed.getId(), NODE, NOW, ScheduledSendStatus.HELD));
+    assertFalse(storage.startHeldWait(claimed.getId(), due, NOW), "claimed meanwhile");
+    assertEquals(ScheduledSendStatus.SENDING, storage.get(claimed.getId()).getStatus());
+    assertFalse(storage.deleteWaiting(claimed.getId()), "a claimed row is never taken from its run");
+    assertNotNull(storage.get(claimed.getId()));
+    assertFalse(storage.startHeldWait(-1L, due, NOW), "gone");
+
+    EmailScheduledSend scheduled = storage.create(row(draft("scheduled")));
+    assertFalse(storage.startHeldWait(scheduled.getId(), due, NOW), "only a held mail");
+    assertTrue(storage.deleteWaiting(scheduled.getId()));
+    assertTrue(storage.deleteWaiting(held.getId()));
+    assertNull(storage.get(held.getId()));
+  }
+
+  /**
    * The recovery statements work with nothing in flight: the empty list is replaced by
    * a sentinel, since some vendors refuse an empty NOT IN.
    */
