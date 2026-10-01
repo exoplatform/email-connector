@@ -109,6 +109,9 @@ public final class CalendarInvitationUtils {
   /** iTIP DECLINECOUNTER: the organiser declines an attendee's proposed change. */
   public static final String         METHOD_DECLINECOUNTER = "DECLINECOUNTER";
 
+  /** The methods of a message that answers rather than invites, whatever it names. */
+  public static final List<String>   ANSWER_METHODS = List.of(METHOD_REPLY, METHOD_COUNTER, METHOD_REFRESH, METHOD_DECLINECOUNTER);
+
   /** What the reply says wrote it. */
   static final String                PRODUCT_ID     = "-//eXo Platform//eXo Email Connector//EN";
 
