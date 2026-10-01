@@ -67,6 +67,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <email-connector-user-setting-filter-log-drawer />
     <email-connector-mail-box-move-to-folder-drawer />
     <email-connector-mail-box-source-drawer />
+    <!-- The mailbox's advanced search (EXO-90838), opened from the list's chips row and
+         from the search's own chips. -->
+    <email-connector-mail-box-advanced-search-drawer />
     <email-connector-mail-box-drawer-attachments-drawer />
     <email-connector-mail-box-drawer-list-item-action-menu-drawer />
   </v-app>
