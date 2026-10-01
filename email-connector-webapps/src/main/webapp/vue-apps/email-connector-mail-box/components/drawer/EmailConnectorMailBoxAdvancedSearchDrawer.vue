@@ -17,7 +17,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- The mailbox's advanced search (EXO-90838), a drawer over the mailbox like its other
        pickers: the sender, a recipient, words of the subject or the message, a range of
-       days, the folder, and the messages with an attachment, unread or in Favorites.
+       days, the folder, and the messages with an attachment. Unread and Favorites are
+       the search row's own chips, never set here.
        Laid out like the platform's drawer forms: a plain label above each field, the two
        days as two date pickers side by side, empty meaning no bound. "Search" hands the
        criteria to the mailbox drawer, which shows them as chips above the results;
@@ -137,18 +138,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           class="mt-4"
           hide-details
           dense />
-        <v-checkbox
-          v-model="unread"
-          :label="$t('emailConnector.mailBox.search.advanced.unread')"
-          class="mt-1"
-          hide-details
-          dense />
-        <v-checkbox
-          v-model="favorites"
-          :label="$t('emailConnector.mailBox.search.advanced.favorites')"
-          class="mt-1"
-          hide-details
-          dense />
         <!-- Submitted by the Enter key from a text field. -->
         <button type="submit" class="d-none"></button>
       </v-form>
@@ -183,8 +172,6 @@ export default {
     drawer: false,
     // The criteria being edited: {from, to, words, after, before, attachment, folder}.
     criteria: emptySearchCriteria(),
-    unread: false,
-    favorites: false,
     // The folders the search offers, [{key, label}], and the one shown when it opened.
     folders: [],
     shownFolder: null,
@@ -221,14 +208,12 @@ export default {
     /**
      * Opens the drawer on the search as the mailbox drawer has it.
      *
-     * @param {Object} search {criteria, unread, favorites, folders, shownFolder}
+     * @param {Object} search {criteria, folders, shownFolder}
      * @returns {void}
      */
     open(search) {
       this.criteria = { ...emptySearchCriteria(), ...(search?.criteria || {}) };
       this.shownFolder = search?.shownFolder || this.criteria.folder;
-      this.unread = !!search?.unread;
-      this.favorites = !!search?.favorites;
       this.folders = search?.folders || [];
       this.$refs.drawer.open();
     },
@@ -240,8 +225,6 @@ export default {
     apply() {
       this.$root.$emit(APPLY_ADVANCED_SEARCH_EVENT, {
         criteria: { ...this.criteria },
-        unread: this.unread,
-        favorites: this.favorites,
       });
       this.$refs.drawer.close();
     },
@@ -252,8 +235,6 @@ export default {
      */
     reset() {
       this.criteria = { ...emptySearchCriteria(), folder: this.shownFolder };
-      this.unread = false;
-      this.favorites = false;
     },
     /**
      * Empties one day and closes its calendar.
