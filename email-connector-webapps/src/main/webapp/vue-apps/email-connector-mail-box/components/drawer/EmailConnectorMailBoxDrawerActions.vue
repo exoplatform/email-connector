@@ -98,6 +98,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-icon size="20" class="icon-default-color">fa-folder-open</v-icon>
         </v-btn>
       </span>
+      <!-- The selection as a .zip of .eml files (EXO-90845). -->
+      <v-btn
+        v-if="canDownloadSelection"
+        :title="$t('emailConnector.mailBox.export.zip')"
+        :loading="downloadingZip"
+        @click="downloadSelection()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-file-archive</v-icon>
+      </v-btn>
       <v-btn
         v-if="canDeleteSelection"
         :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
@@ -213,6 +222,20 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-btn>
       </span>
       <v-btn
+        v-if="canDownloadSelection"
+        :loading="downloadingZip"
+        @click="downloadSelection()"
+        outlined
+        class="btn btn-primary font-weight-bold">
+        <v-icon
+          size="16"
+          class="pe-3"
+          color="primary">
+          fa-file-archive
+        </v-icon>
+        {{ $t('emailConnector.mailBox.export.zip') }}
+      </v-btn>
+      <v-btn
         v-if="canDeleteSelection"
         @click="deleteEmails()"
         outlined
@@ -276,6 +299,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { parseSelectionKey, selectionByFolder, selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+import { canDownloadSelection, downloadSelectionZip, exportErrorKey } from '../../js/EmailConnectorMailTransfer.js';
 
 export default {
   props: {
@@ -343,6 +367,11 @@ export default {
       type: Boolean,
       default: false,
     },
+  },
+  data() {
+    return {
+      downloadingZip: false,
+    };
   },
   computed: {
     /**
@@ -551,6 +580,14 @@ export default {
       return this.canOfferMove && this.selectionByFolder.length === 1;
     },
     /**
+     * Whether the selection can be downloaded as a .zip (EXO-90845): no draft in it.
+     *
+     * @returns {Boolean} true when the download is offered
+     */
+    canDownloadSelection() {
+      return canDownloadSelection(this.selectedEmails);
+    },
+    /**
      * The move button's label: what it does, or why it is disabled.
      *
      * @returns {String} the label
@@ -676,6 +713,18 @@ export default {
     moveEmails() {
       const [[folder, ids] = []] = this.selectionByFolder;
       this.$root.$emit('open-move-to-folder-drawer', ids || [], folder || this.selectionFolder);
+    },
+    /**
+     * Downloads the selection as a .zip, once the server checked it; a refusal, or a
+     * selection past the cap the server holds, is told rather than downloaded.
+     *
+     * @returns {void}
+     */
+    downloadSelection() {
+      this.downloadingZip = true;
+      downloadSelectionZip(this.selectedEmails)
+        .catch(error => this.$root.$emit('alert-message', this.$t(exportErrorKey(error), { 0: error?.max }), 'error'))
+        .finally(() => this.downloadingZip = false);
     },
     /**
      * Puts the whole selection back into the inbox out of the Spam folder.
