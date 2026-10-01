@@ -104,4 +104,12 @@ public class NotificationConstants {
 
   /** The delegation row's id, so the interface can open the share it is about. */
   public static final String DELEGATION_ID                  = "DELEGATION_ID";
+
+  /**
+   * Where the share an invitation is about now stands, written onto the stored web
+   * notification once it is no longer waiting (EXO-90830): {@code ACCEPTED},
+   * {@code DECLINED}, {@code LEFT} or {@code REVOKED}. Absent while it waits, which is
+   * what makes the notification offer Accept and Refuse.
+   */
+  public static final String DELEGATION_STATUS              = "DELEGATION_STATUS";
 }
