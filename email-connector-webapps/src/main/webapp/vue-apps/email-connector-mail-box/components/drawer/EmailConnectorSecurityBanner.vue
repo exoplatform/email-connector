@@ -21,36 +21,41 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        reasons quote what the message presents (a name, a domain) as text, never as
        markup. "Always show" is not offered on a message that looks suspicious: trusting
        a sender is a decision to take on a message that gives no reason for doubt. -->
-  <div v-if="hasWarnings || remoteContentBlocked" class="mail-security-banners">
+  <div v-if="hasWarnings || remoteContentBlocked" class="mail-security-banners text-start">
+    <!-- Both banners are the platform's alert with a coloured left border: the icon on
+         the left, the text left-aligned in the normal text colour, readable on the
+         page's background, and the actions under the text. -->
     <v-alert
       v-if="hasWarnings"
-      class="mail-security-warning mb-3"
+      class="mail-security-warning text-start mb-3"
       type="warning"
       role="alert"
-      dense
-      text>
-      <div class="font-weight-bold">{{ $t('emailConnector.mailBox.security.warning.title') }}</div>
-      <ul class="ps-4 mb-0">
-        <li
-          v-for="(warning, index) in warnings"
-          :key="index"
-          :class="`text-wrap mail-security-warning-${warning.type}`">
-          {{ warningLabel(warning) }}
-        </li>
-      </ul>
+      border="left"
+      colored-border
+      elevation="0"
+      dense>
+      <div class="font-weight-bold text-color">{{ $t('emailConnector.mailBox.security.warning.title') }}</div>
+      <div
+        v-for="(warning, index) in warnings"
+        :key="index"
+        :class="`text-color text-wrap mt-1 mail-security-warning-${warning.type}`">
+        {{ warningLabel(warning) }}
+      </div>
     </v-alert>
     <v-alert
       v-if="remoteContentBlocked"
-      class="mail-remote-content-banner mb-3"
+      class="mail-remote-content-banner text-start mb-3"
       type="info"
       role="status"
-      dense
-      text>
-      <div class="d-flex align-center flex-wrap">
-        <span class="me-auto text-wrap">{{ $t('emailConnector.mailBox.remoteContent.blocked') }}</span>
+      border="left"
+      colored-border
+      elevation="0"
+      dense>
+      <div class="text-color text-wrap">{{ $t('emailConnector.mailBox.remoteContent.blocked') }}</div>
+      <div class="d-flex flex-wrap justify-start mt-1">
         <v-btn
           :disabled="loading || busy"
-          class="mail-remote-content-show ms-2"
+          class="mail-remote-content-show px-0 me-4"
           color="primary"
           text
           small
@@ -60,7 +65,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-btn
           v-if="senderAddress && !hasWarnings"
           :disabled="loading || busy"
-          class="mail-remote-content-trust ms-2"
+          class="mail-remote-content-trust px-0"
           color="primary"
           text
           small
