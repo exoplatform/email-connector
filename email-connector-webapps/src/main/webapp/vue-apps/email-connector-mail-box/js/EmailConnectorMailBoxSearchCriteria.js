@@ -115,6 +115,38 @@ export function nextSearchDay(value) {
 }
 
 /**
+ * Whether a listed row matches a search, for the instant matches drawn before any
+ * answer: the search box's text over the subject and the sender, the sender, the To and
+ * Cc recipients when the row carries them (a folder's listing does not: the copy's search
+ * answers those), the words over the subject, and the attachments eXo listed for it.
+ * Never more than the copy's own search finds (EmailBoxService#filterCached), so the
+ * instant matches never show a row the answers then contradict: the words are matched
+ * against the subject only, the copy's search adding the body's matches. A range of
+ * days is not evaluated here -- the browser's day and eXo's server's can differ -- so
+ * a search with one draws no instant match (null).
+ *
+ * @param {Object} email the listed row
+ * @param {String} term the search box's text, lower-cased, may be empty
+ * @param {Object} criteria the advanced criteria
+ * @returns {Boolean} whether the row matches, or null when it cannot be told here
+ */
+export function listedRowMatches(email, term, criteria) {
+  if (criteria?.after || criteria?.before) {
+    return null;
+  }
+  const has = (value, text) => (value || '').toLowerCase().includes(text);
+  const person = (who, text) => has(who?.name, text) || has(who?.address, text);
+  const from = (criteria?.from || '').trim().toLowerCase();
+  const to = (criteria?.to || '').trim().toLowerCase();
+  const words = (criteria?.words || '').trim().toLowerCase();
+  return (!term || has(email.subject, term) || person(email.sender, term))
+    && (!from || person(email.sender, from))
+    && (!to || [...(email.to || []), ...(email.cc || [])].some(recipient => person(recipient, to)))
+    && (!words || has(email.subject, words))
+    && (!criteria?.attachment || !!email.content?.attachments?.length);
+}
+
+/**
  * Reads the search an address asks for. The parameters are data from the address bar,
  * so each is checked: a text is trimmed and capped, a day is a real yyyy-MM-dd one, a
  * folder one of the keys a search can read, a mailbox a delegation id; anything else is
