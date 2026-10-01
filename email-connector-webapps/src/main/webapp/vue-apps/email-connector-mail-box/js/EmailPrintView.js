@@ -185,41 +185,7 @@ export function cleanHtmlBody(html, options = {}) {
     .filter(element => SVG_ANIMATIONS.includes(element.localName.toLowerCase()))
     .forEach(element => element.remove());
   doc.querySelectorAll('*').forEach(element => {
-    Array.from(element.attributes).forEach(attribute => {
-      const name = attribute.name.toLowerCase();
-      if (name.startsWith('on')) {
-        element.removeAttribute(attribute.name);
-        return;
-      }
-      if (!URL_ATTRIBUTES.includes(name)) {
-        // Not only style: an SVG presentation attribute (fill, stroke, mask, clip-path,
-        // marker-*, filter...) is CSS too, and its url() loads an external document. Any
-        // attribute but the two text ones a reader reads gets the same treatment.
-        if (!options.showRemoteImages && !TEXT_ATTRIBUTES.includes(name)) {
-          if (OPAQUE_CSS.test(attribute.value)) {
-            element.removeAttribute(attribute.name);
-          } else if (/url\(/i.test(attribute.value)) {
-            element.setAttribute(attribute.name, replaceRemoteCssUrls(attribute.value, origin));
-          }
-        }
-        return;
-      }
-      const value = attribute.value || '';
-      const inlineImage = name === 'src' && element.tagName === 'IMG' && INLINE_IMAGE_URL.test(value);
-      if (SCRIPT_URL.test(value) && !inlineImage) {
-        element.removeAttribute(attribute.name);
-        return;
-      }
-      // A link's href is followed only on a click; any other element's (SVG image,
-      // feImage, use) is loaded with the page.
-      const loadedWithThePage = name !== 'href' || element.localName.toLowerCase() !== 'a';
-      if (!options.showRemoteImages && loadedWithThePage && (name === 'srcset' || isRemoteUrl(value, origin))) {
-        element.removeAttribute(attribute.name);
-        if (element.tagName === 'IMG' && name === 'src') {
-          markBlocked(element, doc, options.blockedLabel);
-        }
-      }
-    });
+    Array.from(element.attributes).forEach(attribute => cleanAttribute(element, attribute, doc, options, origin));
   });
   const styles = Array.from(doc.querySelectorAll('style'))
     .map(style => (options.showRemoteImages ? style.textContent : blockRemoteCss(style.textContent, origin)))
@@ -228,6 +194,54 @@ export function cleanHtmlBody(html, options = {}) {
     .join('');
   doc.querySelectorAll('style').forEach(style => style.remove());
   return { styles, body: doc.body ? doc.body.innerHTML : '' };
+}
+
+/**
+ * One attribute of a mail's element cleaned for printing (see {@link cleanHtmlBody}): an
+ * event handler goes, a script URL goes, and, while remote images are not shown, anything
+ * that would load from the network with the page goes or has its url() replaced.
+ *
+ * @param {Element} element the element holding the attribute
+ * @param {Attr} attribute the attribute
+ * @param {Document} doc the parsed mail
+ * @param {Object} options {showRemoteImages, blockedLabel}
+ * @param {string} origin this portal's origin
+ * @returns {void}
+ */
+function cleanAttribute(element, attribute, doc, options, origin) {
+  const name = attribute.name.toLowerCase();
+  if (name.startsWith('on')) {
+    element.removeAttribute(attribute.name);
+    return;
+  }
+  if (!URL_ATTRIBUTES.includes(name)) {
+    // Not only style: an SVG presentation attribute (fill, stroke, mask, clip-path,
+    // marker-*, filter...) is CSS too, and its url() loads an external document. Any
+    // attribute but the two text ones a reader reads gets the same treatment.
+    if (!options.showRemoteImages && !TEXT_ATTRIBUTES.includes(name)) {
+      if (OPAQUE_CSS.test(attribute.value)) {
+        element.removeAttribute(attribute.name);
+      } else if (/url\(/i.test(attribute.value)) {
+        element.setAttribute(attribute.name, replaceRemoteCssUrls(attribute.value, origin));
+      }
+    }
+    return;
+  }
+  const value = attribute.value || '';
+  const inlineImage = name === 'src' && element.tagName === 'IMG' && INLINE_IMAGE_URL.test(value);
+  if (SCRIPT_URL.test(value) && !inlineImage) {
+    element.removeAttribute(attribute.name);
+    return;
+  }
+  // A link's href is followed only on a click; any other element's (SVG image,
+  // feImage, use) is loaded with the page.
+  const loadedWithThePage = name !== 'href' || element.localName.toLowerCase() !== 'a';
+  if (!options.showRemoteImages && loadedWithThePage && (name === 'srcset' || isRemoteUrl(value, origin))) {
+    element.removeAttribute(attribute.name);
+    if (element.tagName === 'IMG' && name === 'src') {
+      markBlocked(element, doc, options.blockedLabel);
+    }
+  }
 }
 
 /**
