@@ -23,6 +23,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     id="emailSourceDrawer"
     ref="emailSourceDrawer"
     v-model="drawer"
+    :loading="loading || downloading"
     right
     @closed="close">
     <template #title>
@@ -30,16 +31,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template v-if="drawer" #content>
       <div class="pa-4">
-        <v-progress-linear
-          v-if="loading"
-          indeterminate
-          color="primary" />
+        <!-- While the source is read, the drawer's own bar under its title says so. -->
         <div
-          v-else-if="errorMessage"
+          v-if="errorMessage && !loading"
           class="text-sub-title">
           {{ errorMessage }}
         </div>
-        <template v-else-if="source">
+        <template v-else-if="source && !loading">
           <div class="d-flex align-center mb-2">
             <span class="font-weight-bold">{{ $t('emailConnector.mailBox.source.drawer.headers') }}</span>
             <v-spacer />
