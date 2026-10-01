@@ -191,8 +191,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <email-connector-mail-box-search-bar
             v-if="!scheduledView"
             v-bind="searchBarProps"
-            :style="{ minHeight: LIST_TOP_ROW_HEIGHT }"
-            class="full-width border-box-sizing application-border application-border-radius px-3"
+            :row-style="{ minHeight: LIST_TOP_ROW_HEIGHT }"
+            row-class="full-width border-box-sizing application-border application-border-radius px-3"
+            class="full-width"
             v-on="searchBarListeners" />
           <email-connector-mail-box-drawer-search-results
             v-if="searchActive"
@@ -203,14 +204,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :server-searching="searchServerRunning"
             :server-error="searchServerError"
             :shared-mailbox="!!currentSharedMailbox"
-            :criteria-chips="searchCriteriaChips"
             :offer-server-search="offerServerSearch"
             :local-searching="searchLocalRunning"
             :scanned="searchScanned"
             draggable-hits
             @open-result="openSearchResult"
-            @remove-criterion="removeSearchCriterion"
-            @clear-criteria="clearSearchCriteria"
             @search-server="searchWholeMailbox" />
           <!-- The Scheduled view (EXO-90434): its own list, no chips. -->
           <email-connector-mail-box-scheduled-list
@@ -280,7 +278,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <email-connector-mail-box-search-bar
           v-if="!syncBlocked && !expanded && !scheduledView"
           v-bind="searchBarProps"
-          class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
+          row-class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
+          class="full-width"
           v-on="searchBarListeners" />
         <v-list-item v-if="syncBlocked" class="full-height align-center">
           <v-list-item-content>
@@ -309,13 +308,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :server-searching="searchServerRunning"
             :server-error="searchServerError"
             :shared-mailbox="!!currentSharedMailbox"
-            :criteria-chips="searchCriteriaChips"
             :offer-server-search="offerServerSearch"
             :local-searching="searchLocalRunning"
             :scanned="searchScanned"
             @open-result="openSearchResult"
-            @remove-criterion="removeSearchCriterion"
-            @clear-criteria="clearSearchCriteria"
             @search-server="searchWholeMailbox" />
         </template>
         <!-- Full screen: the reader. With nothing open it shows the "select an email"
