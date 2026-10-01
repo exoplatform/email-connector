@@ -17574,6 +17574,123 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90840. A message transmitted in a shared mailbox owner's name is built from her
+   * address, names the delegate as its Sender on her behalf only, and takes the envelope
+   * a composed mail in that identity takes: the delegate's on her behalf, hers as her.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void transmittingInTheOwnersNameTakesHerAddressAndTheIdentitysEnvelope() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(SENDER_THE_PROVIDER_NAMES);
+    ArgumentCaptor<MimeMessage> sent = ArgumentCaptor.forClass(MimeMessage.class);
+    List<InternetAddress> froms = new ArrayList<>();
+    EmailBoxService.OutgoingMessageFactory factory = (session, from) -> {
+      froms.add(from);
+      MimeMessage reply = new MimeMessage(session);
+      reply.setFrom(from);
+      reply.setRecipients(Message.RecipientType.TO, "organizer@partner.example");
+      reply.setText("accepted");
+      return reply;
+    };
+
+    emailBoxService.transmitAsUser(TEST_USER, ownersIdentity(SendMode.ON_BEHALF, "Alice"), factory);
+    emailBoxService.transmitAsUser(TEST_USER, ownersIdentity(SendMode.AS, "Alice"), factory);
+    emailBoxService.transmitAsUser(TEST_USER, null, factory);
+
+    verify(smtpTransmitter, times(3)).transmit(sent.capture());
+    assertEquals(OWNER_ADDRESS, froms.get(0).getAddress());
+    assertEquals("Alice", froms.get(0).getPersonal());
+    assertEquals(SENDER_THE_PROVIDER_NAMES, ((InternetAddress) sent.getAllValues().get(0).getSender()).getAddress());
+    assertEquals(SENDER_THE_PROVIDER_NAMES, sent.getAllValues().get(0).getSession().getProperty("mail.smtp.from"));
+    assertEquals(OWNER_ADDRESS, froms.get(1).getAddress());
+    assertNull(sent.getAllValues().get(1).getSender(), "as her: nothing names the delegate");
+    assertEquals(OWNER_ADDRESS, sent.getAllValues().get(1).getSession().getProperty("mail.smtp.from"));
+    assertEquals(SENDER_THE_PROVIDER_NAMES, froms.get(2).getAddress(), "no identity: the delegate's own name");
+    assertNull(sent.getAllValues().get(2).getSender());
+    assertNull(sent.getAllValues().get(2).getSession().getProperty("mail.smtp.from"));
+  }
+
+  /**
+   * EXO-90840. The owner's mail server refusing a message in her name is recorded on the
+   * share and answered with the composed mail's code; any other failure is the
+   * transmission's own.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aRefusalInTheOwnersNameIsRecordedOnTheShare() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    MimeMessage built = mock(MimeMessage.class);
+    doThrow(new SmtpTransmitter.TransmissionException(SmtpTransmitter.Phase.SEND, stalwartSenderRefusal())).when(smtpTransmitter)
+                                                                                                         .transmit(built);
+    SendIdentity identity = ownersIdentity(SendMode.AS, null);
+
+    assertEquals(SendModeUnavailableException.REFUSED_BY_SERVER,
+                 assertThrows(SendModeUnavailableException.class,
+                              () -> emailBoxService.transmitAsUser(TEST_USER, identity, (session, from) -> built)).getMessage());
+    verify(emailDelegationService).markSendRefused(TEST_USER, identity);
+
+    assertThrows(SmtpTransmitter.TransmissionException.class,
+                 () -> emailBoxService.transmitAsUser(TEST_USER, null, (session, from) -> built));
+    verify(emailDelegationService, times(1)).markSendRefused(any(), any());
+  }
+
+  /**
+   * EXO-90840. A part read for its content is read from the row's folder and UID, only
+   * from the message the row names, and no further than the cap: a part the server
+   * announces as far larger is refused before its body is fetched, and one larger once
+   * decoded is refused too.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aMessagePartIsReadNoFurtherThanTheCap() throws Exception {
+    givenAUsableMailbox();
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    Message message = mock(Message.class);
+    when(((UIDFolder) inbox).getMessageByUID(34L)).thenReturn(message);
+    when(message.getHeader("Message-ID")).thenReturn(new String[] { "<invite@partner.example>" });
+    when(message.isMimeType("multipart/*")).thenReturn(true);
+    Multipart multipart = mock(Multipart.class);
+    when(message.getContent()).thenReturn(multipart);
+    when(multipart.getCount()).thenReturn(2);
+    BodyPart calendar = mock(BodyPart.class);
+    when(multipart.getBodyPart(1)).thenReturn(calendar);
+    when(calendar.getSize()).thenReturn(10);
+    when(calendar.getInputStream()).thenAnswer(invocation -> new ByteArrayInputStream("BEGIN:VCALENDAR".getBytes()));
+    Email email = new Email();
+    email.setFolder(MailFolder.INBOX);
+    email.setMailRemoteId(34L);
+    email.setMailHeaderId("<invite@partner.example>");
+
+    assertEquals("BEGIN:VCALENDAR", new String(emailBoxService.readMessagePart(TEST_USER, email, "2", 100)));
+    verify(inbox).open(Folder.READ_ONLY);
+
+    assertEquals(EmailBoxService.PART_TOO_LARGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.readMessagePart(TEST_USER, email, "2", 14))
+                                                                                                                          .getMessage());
+    when(calendar.getSize()).thenReturn(29);
+    assertEquals(EmailBoxService.PART_TOO_LARGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.readMessagePart(TEST_USER, email, "2", 14))
+                                                                                                                          .getMessage());
+    verify(calendar, times(2)).getInputStream();
+
+    assertNull(emailBoxService.readMessagePart(TEST_USER, email, "7", 100), "a part the message does not have");
+    email.setMailHeaderId("<another@partner.example>");
+    assertNull(emailBoxService.readMessagePart(TEST_USER, email, "2", 100), "the UID names another message now");
+
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.readMessagePart(TEST_USER, email, "2", 100));
+  }
+
+  /**
    * The real scheduled send - sendStoredDraft - refused at CONNECT on the
    * provider's material: one invalidation, the message rebuilt on fresh material, sent
    * once, recorded once.

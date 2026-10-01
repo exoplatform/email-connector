@@ -18,6 +18,14 @@
       <groupId>com.googlecode.ez-vcard</groupId>
       <artifactId>ez-vcard</artifactId>
     </dependency>
+    <!-- Provided, not shipped: the agenda add-on puts the jar in the server's lib folder.
+         Without it, a mail's invitation is not shown as an event, and nothing else
+         changes (CalendarInvitationService). -->
+    <dependency>
+      <groupId>org.mnode.ical4j</groupId>
+      <artifactId>ical4j</artifactId>
+      <scope>provided</scope>
+    </dependency>
     <dependency>
       <groupId>io.meeds.social</groupId>
       <artifactId>social-component-service</artifactId>
