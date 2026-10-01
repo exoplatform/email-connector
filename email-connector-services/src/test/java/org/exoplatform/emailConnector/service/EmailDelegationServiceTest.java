@@ -72,6 +72,7 @@ import org.exoplatform.emailConnector.event.EmailDelegationEvent;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
+import org.exoplatform.emailConnector.model.AclScope;
 import org.exoplatform.emailConnector.model.DelegationGrantee;
 import org.exoplatform.emailConnector.model.DelegationOrigin;
 import org.exoplatform.emailConnector.model.DelegationPreset;
@@ -81,6 +82,7 @@ import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailFolder;
+import org.exoplatform.emailConnector.model.FolderAccess;
 import org.exoplatform.emailConnector.model.FolderMessageCounts;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.GrantGranularity;
@@ -133,6 +135,19 @@ class EmailDelegationServiceTest {
 
   /** A plain RFC 4314 server that advertises what it does. */
   private static final MailboxAclCapabilities SUPPORTED       = MailboxAclCapabilities.imap(true, true);
+
+  /** A per-folder server that also keeps whole-mailbox entries (BlueMind, EXO-90816). */
+  private static final MailboxAclCapabilities BOTH_SCOPES     = new MailboxAclCapabilities(true,
+                                                                                           false,
+                                                                                           false,
+                                                                                           GrantGranularity.FOLDER,
+                                                                                           true,
+                                                                                           true,
+                                                                                           null,
+                                                                                           Set.of(),
+                                                                                           true,
+                                                                                           true,
+                                                                                           true);
 
   /** A server with a real acceptance step and its own owner e-mails -- BlueMind's shape. */
   private static final MailboxAclCapabilities SUBSCRIBING     =
@@ -1873,6 +1888,256 @@ class EmailDelegationServiceTest {
     lenient().when(engine.myRights(any(), eq(INBOX))).thenReturn(MailboxRights.of("lrswipkxtea"));
     when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(preset), any())).thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
                                                                                                                 preset.rights()));
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Whole-mailbox entries beside per-folder ones (EXO-90816)
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * A per-folder server that also keeps whole-mailbox entries (BlueMind): an invitation
+   * of a grantee who already holds the whole mailbox replaces that entry where it stands,
+   * in one call, and is recorded as the whole mailbox -- no folder entry is added beside
+   * it, which would only add to it.
+   */
+  @Test
+  void anInviteReplacesAWholeMailboxEntryWhereItStands() throws Exception {
+    when(engine.probe(any())).thenReturn(BOTH_SCOPES);
+    when(engine.myRights(any(), eq(INBOX))).thenReturn(MailboxRights.of("lrswipkxtea"));
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(wholeMailbox(GRANTEE_MAILBOX, "lrp")),
+                                                      List.of(wholeMailbox(GRANTEE_MAILBOX, "lrswipkxte")));
+    when(engine.grantWholeMailbox(any(), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), any()))
+                                                                                                .thenReturn(wholeMailbox(GRANTEE_MAILBOX,
+                                                                                                                         "lrswipkxte"));
+
+    EmailDelegation delegation = service.invite(OWNER, GRANTEE, DelegationPreset.EDITOR);
+
+    assertEquals("lrswipkxte", delegation.getRights(), "the whole-mailbox entry read back");
+
+    verify(engine).grantWholeMailbox(any(), eq(GRANTEE_MAILBOX), eq(DelegationPreset.EDITOR), eq(MailboxRights.of("lrswipkxtea")));
+    verify(engine, never()).grant(any(), anyString(), anyString(), any(), any());
+    verify(engine, never()).grant(any(), anyString(), anyString(), any(), any(), any());
+    verify(engine, never()).findRoleFolders(any());
+    assertTrue(delegation.grantsWholeMailbox(), "recorded as the whole mailbox");
+  }
+
+  /**
+   * The same invitation with a folder left out is refused before anything is written:
+   * the whole-mailbox entry would still share it.
+   */
+  @Test
+  void anInviteLeavingAFolderOutIsRefusedForAWholeMailboxGrantee() throws Exception {
+    when(engine.probe(any())).thenReturn(BOTH_SCOPES);
+    when(engine.myRights(any(), eq(INBOX))).thenReturn(MailboxRights.of("lrswipkxtea"));
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(wholeMailbox(GRANTEE_MAILBOX, "lrp")));
+
+    IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                                                   () -> service.invite(OWNER,
+                                                                        GRANTEE,
+                                                                        DelegationPreset.READER,
+                                                                        Map.of(FolderRole.TRASH, FolderAccess.NONE)));
+
+    assertEquals(EmailDelegationService.PER_FOLDER_UNSUPPORTED_MESSAGE, thrown.getMessage());
+    verify(engine, never()).grantWholeMailbox(any(), any(), any(), any());
+    verify(engine, never()).grant(any(), anyString(), anyString(), any(), any());
+    verify(emailDelegationStorage, never()).create(any());
+  }
+
+  /**
+   * On the same server, a grantee who holds nothing on the whole mailbox is shared folder
+   * by folder, as on an RFC 4314 server: INBOX, then the role folders.
+   */
+  @Test
+  void anInviteWithNoWholeMailboxEntrySharesFolderByFolder() throws Exception {
+    when(engine.probe(any())).thenReturn(BOTH_SCOPES);
+    when(engine.myRights(any(), anyString())).thenReturn(MailboxRights.of("lrswipkxtea"));
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(new MailboxAce(OWNER_MAILBOX, MailboxRights.of("lrswipkxtea"), "All", null)),
+                                                      List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrp"))));
+    when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any()))
+                                                                                                .thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
+                                                                                                                                 MailboxRights.of("lrp")));
+    when(engine.findRoleFolders(any())).thenReturn(Map.of(FolderRole.SENT, "Sent"));
+
+    EmailDelegation delegation = service.invite(OWNER, GRANTEE, DelegationPreset.READER);
+
+    verify(engine, never()).grantWholeMailbox(any(), any(), any(), any());
+    verify(engine).grant(any(), eq("Sent"), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any(), eq(FolderRole.SENT));
+    assertFalse(delegation.grantsWholeMailbox());
+    assertEquals("INBOX,SENT", delegation.getGrantedRoles());
+  }
+
+  /**
+   * An RFC 4314 server keeps no whole-mailbox entry: the invitation reads nothing before
+   * its grant, and never writes at that scope -- only the read-back after it.
+   */
+  @Test
+  void anInviteOnAnImapServerReadsNoScopeBeforeItsGrant() throws Exception {
+    givenAGrantableInbox(DelegationPreset.READER);
+
+    service.invite(OWNER, GRANTEE, DelegationPreset.READER);
+
+    verify(engine, times(1)).listAcl(any(), eq(INBOX));
+    verify(engine, never()).grantWholeMailbox(any(), any(), any(), any());
+  }
+
+  /**
+   * "Remove access" on a server that keeps both: the whole-mailbox entry goes first --
+   * no folder write reaches it -- then INBOX's own entry, then the other folders.
+   */
+  @Test
+  void removeAccessTakesTheWholeMailboxEntryFirst() throws Exception {
+    EmailDelegation accepted = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted);
+    when(engine.probe(any())).thenReturn(BOTH_SCOPES);
+
+    service.revoke(OWNER, 100L);
+
+    InOrder order = inOrder(engine);
+    order.verify(engine).revokeWholeMailbox(any(), eq(GRANTEE_MAILBOX));
+    order.verify(engine).revoke(any(), eq(INBOX), eq(GRANTEE_MAILBOX));
+    assertEquals(DelegationStatus.REVOKED, accepted.getStatus());
+  }
+
+  /**
+   * On an RFC 4314 server "Remove access" never asks for a whole-mailbox removal.
+   */
+  @Test
+  void removeAccessOnAnImapServerKeepsToTheFolders() throws Exception {
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO));
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+
+    service.revoke(OWNER, 100L);
+
+    verify(engine, never()).revokeWholeMailbox(any(), any());
+    verify(engine).revoke(any(), eq(INBOX), eq(GRANTEE_MAILBOX));
+  }
+
+  /**
+   * "Change access" of a share recorded as the whole mailbox, on a server that keeps
+   * both, is written at that scope: a write on INBOX alone would leave a wider
+   * whole-mailbox entry in place.
+   */
+  @Test
+  void changeAccessOfAWholeMailboxShareIsWrittenThere() throws Exception {
+    EmailDelegation whole = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    whole.setGrantedRoles(EmailDelegation.GRANTED_WHOLE_MAILBOX);
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(whole);
+    when(engine.probe(any())).thenReturn(BOTH_SCOPES);
+    when(engine.myRights(any(), eq(INBOX))).thenReturn(MailboxRights.of("lrswipkxtea"));
+    when(emailDelegationStorage.updateGrantedRights(eq(OWNER), eq(100L), any(), any(), any(), any(), any())).thenReturn(whole);
+    // Answered, so that a write on INBOX would fail on what it writes rather than on a missing answer.
+    lenient().when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), any(), any())).thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
+                                                                                                                     MailboxRights.of("lrp")));
+    when(engine.grantWholeMailbox(any(), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any()))
+                                                                                                .thenReturn(wholeMailbox(GRANTEE_MAILBOX,
+                                                                                                                         "lrp"));
+
+    service.changePreset(OWNER, 100L, DelegationPreset.READER);
+
+    verify(engine).grantWholeMailbox(any(), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any());
+    verify(engine, never()).grant(any(), anyString(), anyString(), any(), any());
+    verify(engine, never()).listAcl(any(), anyString());
+  }
+
+  /**
+   * A share eXo wrote folder by folder whose grantee was also given the whole mailbox
+   * elsewhere: both entries follow the change, since the two add up.
+   */
+  @Test
+  void changeAccessOfAFolderShareBesideAWholeMailboxEntryWritesBoth() throws Exception {
+    EmailDelegation accepted = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    accepted.setGrantedRoles("INBOX");
+    givenTheOwnersRowToChange(accepted);
+    when(engine.probe(any())).thenReturn(BOTH_SCOPES);
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(wholeMailbox(GRANTEE_MAILBOX, "lrswipkxte")));
+    when(engine.grantWholeMailbox(any(), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any()))
+                                                                                                .thenReturn(wholeMailbox(GRANTEE_MAILBOX,
+                                                                                                                         "lrp"));
+
+    service.changePreset(OWNER, 100L, DelegationPreset.READER);
+
+    verify(engine).grantWholeMailbox(any(), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any());
+    verify(engine).grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any());
+  }
+
+  /**
+   * On the same server, a share whose INBOX entry stands on INBOX alone is changed
+   * there, as on an RFC 4314 server; an RFC 4314 server is never asked the scope.
+   */
+  @Test
+  void changeAccessOfAFolderShareStaysOnTheFolder() throws Exception {
+    EmailDelegation accepted = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    accepted.setGrantedRoles("INBOX");
+    givenTheOwnersRowToChange(accepted);
+    when(engine.probe(any())).thenReturn(BOTH_SCOPES);
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswipkxte"))));
+
+    service.changePreset(OWNER, 100L, DelegationPreset.READER);
+
+    verify(engine, never()).grantWholeMailbox(any(), any(), any(), any());
+    verify(engine).grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any());
+
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    clearInvocations(engine);
+    service.changePreset(OWNER, 100L, DelegationPreset.READER);
+    verify(engine, never()).listAcl(any(), eq(INBOX));
+    verify(engine, never()).grantWholeMailbox(any(), any(), any(), any());
+  }
+
+  /**
+   * The owner's list: an entry made on the server for the whole mailbox is offered as a
+   * share of the whole mailbox -- its row recorded so, its entry saying so -- while one
+   * made on INBOX alone is a share of folders.
+   */
+  @Test
+  void aWholeMailboxEntryMadeOnTheServerIsRecordedAsTheWholeMailbox() throws Exception {
+    when(engine.probe(any())).thenReturn(BOTH_SCOPES);
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER, GRANTEE));
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of());
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(wholeMailbox(GRANTEE_MAILBOX, "lrp")));
+    ArgumentCaptor<EmailDelegation> created = ArgumentCaptor.forClass(EmailDelegation.class);
+
+    GrantedDelegations granted = service.getGrantedDelegations(OWNER);
+
+    verify(emailDelegationStorage).create(created.capture());
+    assertEquals(EmailDelegation.GRANTED_WHOLE_MAILBOX, created.getValue().getGrantedRoles());
+    assertEquals(AclScope.MAILBOX, granted.grantees().get(0).scope());
+
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrp"))));
+    clearInvocations(emailDelegationStorage);
+    granted = service.getGrantedDelegations(OWNER);
+    verify(emailDelegationStorage).create(created.capture());
+    assertNull(created.getValue().getGrantedRoles(), "a share of INBOX alone records no folder");
+    assertEquals(AclScope.FOLDER, granted.grantees().get(0).scope());
+  }
+
+  /**
+   * A server whose ACL cannot be read lists eXo's rows, each saying where it stands.
+   */
+  @Test
+  void eXosRowsAloneSayWhereEachShareStands() throws Exception {
+    when(engine.probe(any())).thenReturn(MailboxAclCapabilities.unsupported(MailboxAclException.UNSUPPORTED));
+    EmailDelegation whole = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    whole.setGrantedRoles(EmailDelegation.GRANTED_WHOLE_MAILBOX);
+    EmailDelegation folders = row(DelegationStatus.PENDING, DelegationOrigin.EXO);
+    folders.setGrantedRoles("SENT");
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(whole, folders));
+
+    GrantedDelegations granted = service.getGrantedDelegations(OWNER);
+
+    assertEquals(List.of(AclScope.MAILBOX, AclScope.FOLDER), granted.grantees().stream().map(DelegationGrantee::scope).toList());
+  }
+
+  /**
+   * One entry standing on the owner's whole mailbox.
+   *
+   * @param identifier who
+   * @param letters their letters
+   * @return the entry, scope MAILBOX
+   */
+  private static MailboxAce wholeMailbox(String identifier, String letters) {
+    MailboxRights rights = MailboxRights.of(letters);
+    return new MailboxAce(identifier, rights, letters, DelegationPreset.fromRights(rights), AclScope.MAILBOX);
   }
 
   // ---------------------------------------------------------------------------------
