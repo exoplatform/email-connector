@@ -285,7 +285,13 @@ export default {
       this.busy = true;
       this.pending = answer;
       return this.$emailConnectorMailBoxService.replyToInvitation(this.email.id, answer)
-        .then(invitation => this.invitation = invitation)
+        .then(invitation => {
+          this.invitation = invitation;
+          const landing = this.$emailConnectorMailBoxService.invitationLandingOutcome(invitation?.landing);
+          if (landing) {
+            this.$root.$emit('alert-message', this.$t(landing.messageKey), landing.alertType);
+          }
+        })
         .catch(error => {
           const outcome = this.$emailConnectorMailBoxService.invitationReplyOutcome(error, answer);
           if (outcome.answer) {

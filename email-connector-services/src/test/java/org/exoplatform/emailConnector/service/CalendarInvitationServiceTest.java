@@ -67,6 +67,8 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.model.CalendarInvitation;
+import org.exoplatform.emailConnector.model.CalendarLanding;
+import org.exoplatform.emailConnector.model.InvitationLanding;
 import org.exoplatform.emailConnector.model.CalendarInvitationPerson;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
@@ -109,6 +111,9 @@ class CalendarInvitationServiceTest {
 
   @Mock
   private SettingService          settingService;
+
+  @Mock
+  private InvitationLandingService invitationLandingService;
 
   @InjectMocks
   private CalendarInvitationService service;
@@ -461,6 +466,51 @@ class CalendarInvitationServiceTest {
                                stored.capture());
     assertTrue(stored.getValue().getValue().toString().contains("\"answer\":\"ACCEPTED\""));
     assertTrue(stored.getValue().getValue().toString().contains("\"sequence\":2"));
+    assertNull(invitation.getLanding(), "no add-on holds a calendar for the user");
+  }
+
+  /**
+   * Once the answer left from the user's own mailbox, the event is handed to the add-on
+   * holding their calendar: the user, their mailbox address, what the reader read of
+   * the event, the answer and the part as received; what became of it is told back.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anAnswerFromTheUsersOwnMailboxLandsInTheirCalendar() throws Exception {
+    captureTransmissions();
+    ArgumentCaptor<InvitationLanding> landing = ArgumentCaptor.forClass(InvitationLanding.class);
+    when(invitationLandingService.land(landing.capture())).thenReturn(CalendarLanding.LANDED);
+
+    CalendarInvitation invitation = service.respond(EMAIL_ID, USER, InvitationAnswer.TENTATIVE);
+
+    assertEquals(CalendarLanding.LANDED, invitation.getLanding());
+    assertEquals(USER, landing.getValue().username());
+    assertEquals(ME, landing.getValue().attendeeAddress());
+    assertEquals("weekly-sync@google.com", landing.getValue().uid());
+    assertNull(landing.getValue().recurrenceId());
+    assertEquals(2, landing.getValue().sequence());
+    assertEquals(InvitationAnswer.TENTATIVE, landing.getValue().answer());
+    assertTrue(landing.getValue().icalendar().startsWith("BEGIN:VCALENDAR"), "the part as received");
+    assertTrue(landing.getValue().icalendar().contains("UID:weekly-sync@google.com"));
+
+    when(invitationLandingService.land(any())).thenReturn(CalendarLanding.FAILED);
+    assertEquals(CalendarLanding.FAILED, service.respond(EMAIL_ID, USER, InvitationAnswer.TENTATIVE).getLanding());
+  }
+
+  /**
+   * An answer that did not leave lands nowhere: the calendar follows the REPLY, never
+   * the other way round.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anAnswerThatDidNotLeaveLandsNowhere() throws Exception {
+    doThrow(new SmtpTransmitter.TransmissionException(SmtpTransmitter.Phase.SEND, new Exception("lost")))
+                                                                                                        .when(emailBoxService)
+                                                                                                        .transmitAsUser(eq(USER), any());
+    assertThrows(IllegalStateException.class, () -> service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED));
+    verify(invitationLandingService, never()).land(any());
   }
 
   /**
@@ -539,6 +589,8 @@ class CalendarInvitationServiceTest {
     assertTrue(ics.contains("mailto:" + OWNER));
     assertTrue(ics.contains("SENT-BY=\"mailto:resolved@acme.com\""), "the Sender header's own address: " + ics);
     verify(settingService).set(any(), any(), eq(CalendarInvitationService.answerKey(OWNER, "weekly-sync@google.com", null)), any());
+    verify(invitationLandingService, never()).land(any());
+    assertNull(invitation.getLanding(), "the owner's event lands in nobody's calendar from here");
 
     SendIdentity as = new SendIdentity(SendMode.AS, 100L, OWNER, "Alice", new Date());
     when(emailDelegationService.checkSendMode(USER, 100L, SendMode.ON_BEHALF)).thenThrow(new SendModeMissingException(SendMode.ON_BEHALF));
