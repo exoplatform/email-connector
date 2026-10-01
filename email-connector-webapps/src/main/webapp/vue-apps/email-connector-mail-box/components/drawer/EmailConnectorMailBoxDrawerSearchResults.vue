@@ -31,18 +31,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       aria-live="polite"
       class="px-4 pt-2 pb-1 caption text-light-color">
       {{ statusLine }}
-      <!-- The server arm of an advanced search, asked by the user (EXO-90838). -->
-      <template v-if="localStatus && localStatus.offerServer">
-        ·
-        <v-btn
-          class="px-1 text-none"
-          color="primary"
-          x-small
-          text
-          @click="$emit('search-server')">
-          {{ $t('emailConnector.mailBox.search.local.server') }}
-        </v-btn>
-      </template>
     </div>
     <template v-if="hasResults">
       <email-connector-mail-box-drawer-search-result-item
@@ -55,9 +43,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         @open="$emit('open-result', result)" />
     </template>
     <div
-      v-else-if="!serverSearching"
+      v-else-if="!serverSearching && !localSearching"
       class="px-4 py-8 text-center text-light-color">
       {{ $t('emailConnector.mailBox.search.noResults') }}
+    </div>
+    <!-- The server arm of an advanced search, asked by the user (EXO-90838): after the
+         last hit, or alone when eXo's copy held none and the server has not been asked
+         yet. -->
+    <div
+      v-if="offerServerSearch"
+      class="px-4 py-2 text-center">
+      <v-btn
+        class="text-none"
+        color="primary"
+        small
+        text
+        @click="$emit('search-server')">
+        {{ $t('emailConnector.mailBox.search.local.server') }}
+      </v-btn>
     </div>
   </div>
 </template>
@@ -106,11 +109,16 @@ export default {
       type: Array,
       default: () => [],
     },
-    // What an advanced search read in eXo's copy while the mail server was not asked:
-    // {folder, since, shown, total, offerServer}, or null (EXO-90838).
-    localStatus: {
-      type: Object,
-      default: null,
+    // Whether the mail server can be asked for an advanced search that read eXo's copy
+    // only (EXO-90838): its button then follows the hits.
+    offerServerSearch: {
+      type: Boolean,
+      default: false,
+    },
+    // Whether eXo's copy is being read for an advanced search.
+    localSearching: {
+      type: Boolean,
+      default: false,
     },
     // How many server matches were examined for an attachment, when not all; 0 else.
     scanned: {
@@ -131,9 +139,6 @@ export default {
      * @returns {String} the caption, or null for none
      */
     statusLine() {
-      if (this.localStatus) {
-        return this.localStatusLineOf(this.localStatus);
-      }
       if (this.serverSearching) {
         return this.$t(this.sharedMailbox ? 'emailConnector.mailBox.search.shared.searching' : 'emailConnector.mailBox.search.searching');
       }
@@ -153,26 +158,6 @@ export default {
     },
   },
   methods: {
-    /**
-     * The line an advanced search shows while only eXo's copy was read (EXO-90838): the
-     * folder, since when eXo holds its mail -- the date of its oldest message there, the
-     * copy keeping the newest of each folder, never a number of days -- and how many of
-     * the matches are shown when not all; while the copy is read, that it is.
-     *
-     * @param {Object} status {folder, since, shown, total, running}
-     * @returns {String} the line
-     */
-    localStatusLineOf(status) {
-      if (status.running) {
-        return this.$t('emailConnector.mailBox.search.local.searching');
-      }
-      const where = status.since
-        ? this.$t('emailConnector.mailBox.search.local.status', { 0: status.folder, 1: status.since })
-        : this.$t('emailConnector.mailBox.search.local.statusNoDate', { 0: status.folder });
-      return status.total > status.shown
-        ? `${this.$t('emailConnector.mailBox.search.showingOf', { 0: status.shown, 1: status.total })} · ${where}`
-        : where;
-    },
     /**
      * A hit's key: its folder and UID, a UID being unique only within its folder --
      * the key the arrow keys walk the results by (searchRows).
