@@ -80,164 +80,169 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          first. The groups without one fold under a single line; so does the opened
          message's when some other group waits. A single mail is one group, without a
          header and never folded: the panel as it always was. -->
-    <template v-for="row in rows">
-      <div
-        v-if="row.type === 'fold'"
-        v-show="!collapsed"
-        :key="row.key"
-        :class="row.first ? '' : 'mt-2'"
-        class="d-flex align-center">
-        <span class="text-caption text-sub-title">
-          {{ $t('emailConnector.mailBox.automations.earlierMessages', { 0: foldedGroups.length }) }}
-        </span>
-        <v-btn
-          :aria-label="$t(groupsOpen ? 'emailConnector.mailBox.automations.hideEarlierMessages' : 'emailConnector.mailBox.automations.showEarlierMessages')"
-          :aria-expanded="String(groupsOpen)"
-          :title="$t(groupsOpen ? 'emailConnector.mailBox.automations.hideEarlierMessages' : 'emailConnector.mailBox.automations.showEarlierMessages')"
-          class="ms-1"
-          icon
-          x-small
-          @click="groupsOpen = !groupsOpen">
-          <v-icon size="12" class="icon-default-color">{{ groupsOpen ? 'fas fa-chevron-up' : 'fas fa-chevron-down' }}</v-icon>
-        </v-btn>
-      </div>
-      <div
-        v-else
-        v-show="!collapsed"
-        :key="row.key"
-        :class="row.first ? '' : 'mt-2'">
-        <!-- Who wrote the message and when, one line; a click brings the message
-             itself into view in the conversation below. -->
-        <a
-          v-if="threaded"
-          :aria-label="$t('emailConnector.mailBox.automations.goToMessage', { 0: senderOf(row.group.email), 1: dateOf(row.group.email) })"
-          :title="$t('emailConnector.mailBox.automations.goToMessage', { 0: senderOf(row.group.email), 1: dateOf(row.group.email) })"
-          class="d-block text-caption text-sub-title text-truncate"
-          role="button"
-          href="javascript:void(0);"
-          @click.prevent="$emit('go-to-message', row.group.email)"
-          @keydown.enter.prevent="$emit('go-to-message', row.group.email)">
-          {{ senderOf(row.group.email) }} · {{ dateOf(row.group.email) }}
-        </a>
+    <!-- One wrapper, with no display utility class: the fold line's own d-flex would
+         override the inline display:none of a v-show on it. Kept mounted, not removed, so
+         the cards keep their state and a decision in flight still lands while folded. -->
+    <div v-show="!collapsed">
+      <template v-for="row in rows">
         <div
-          v-for="(match, index) in row.group.matches"
-          :key="match.id"
-          :class="index && 'mt-2'">
-          <div class="text-body-2 font-weight-bold text-truncate">
-            {{ match.filterName || $t('emailConnector.mailBox.automations.deletedRule') }}
-          </div>
-          <div
-            v-for="action in match.actions"
-            :key="`${match.id}-${action.type}`"
-            class="d-flex align-baseline text-body-2">
-            <span :class="action.ok ? '' : 'error--text'">
-              {{ actionLabel(action) }}
-            </span>
-            <a
-              v-if="canUndo(action)"
-              :class="linkClass"
-              :aria-disabled="busy"
-              class="ms-2 pa-0 font-weight-regular"
-              role="button"
-              href="javascript:void(0);"
-              @click.prevent="busy || undo(row.group, match, action.type)"
-              @keydown.enter.prevent="busy || undo(row.group, match, action.type)">
-              {{ $t('emailConnector.mailBox.automations.undo') }}
-            </a>
-          </div>
-          <div v-if="match.agentStatus && match.agentStatus !== 'NONE'" class="d-flex align-center text-body-2">
-            <v-progress-circular
-              v-if="!terminal(match)"
-              :size="12"
-              :width="2"
-              indeterminate
-              class="me-2 icon-default-color" />
-            <span>{{ $t(`emailConnector.mailBox.automations.agent.${agentStatusKey(match)}`) }}</span>
-            <a
-              v-if="terminal(match)"
-              :class="linkClass"
-              :aria-disabled="busy"
-              class="ms-2 pa-0 font-weight-regular"
-              role="button"
-              href="javascript:void(0);"
-              @click.prevent="busy || retry(row.group, match)"
-              @keydown.enter.prevent="busy || retry(row.group, match)">
-              {{ $t('emailConnector.mailBox.automations.runAgain') }}
-            </a>
-          </div>
-          <template v-if="match.agentNameId">
-            <component
-              :is="extension.vueComponent"
-              v-for="extension in outcomeExtensions"
-              :key="`${match.id}-${extension.id}`"
-              :match="match"
-              :email="row.group.email" />
-          </template>
-          <!-- A run that was offered tools and suggested nothing says so under its note, so an
-               empty panel is never read as a failure to show the suggestions -- first what its
-               lookups looked for and did not find, as the server read them from the run's own
-               conversation (EXO-90659). Text only: the values are the model's arguments. -->
-          <template v-if="suggestedNothing(match)">
-            <div
-              v-for="(line, lineIndex) in notFoundLines(match)"
-              :key="`${match.id}-not-found-${lineIndex}`"
-              class="text-caption text-sub-title mt-1">
-              {{ line }}
-            </div>
-          </template>
-          <div
-            v-if="suggestedNothing(match)"
-            class="text-caption text-sub-title mt-1">
-            {{ $t('emailConnector.mailBox.automations.proposal.none') }}
-          </div>
-          <!-- The tool calls the assistant proposed, one card each, oldest first (EXO-90659).
-               Only the latest run's show; the earlier runs' fold under one line, closed until
-               opened. A call still waiting for the user always shows, whatever its run. -->
-          <template v-if="match.proposals && match.proposals.length">
-            <div class="text-caption font-weight-bold mt-1">
-              {{ $t('emailConnector.mailBox.automations.proposal.heading') }}
-            </div>
-            <email-connector-mail-box-proposal-card
-              v-for="proposal in proposalRuns[match.id].latest"
-              :key="`${match.id}-proposal-${proposal.id}`"
-              :proposal="proposal"
-              :match="match"
-              :email="row.group.email"
-              @updated="replaceProposal(row.group, match, $event)"
-              @refresh="read" />
-            <template v-if="proposalRuns[match.id].earlier.length">
-              <div class="d-flex align-center mt-1">
-                <span class="text-caption text-sub-title">
-                  {{ $t('emailConnector.mailBox.automations.proposal.earlier', { 0: proposalRuns[match.id].earlier.length }) }}
-                </span>
-                <v-btn
-                  :aria-label="$t(earlierOpen[match.id] ? 'emailConnector.mailBox.automations.proposal.hideEarlier' : 'emailConnector.mailBox.automations.proposal.showEarlier')"
-                  :aria-expanded="String(!!earlierOpen[match.id])"
-                  :title="$t(earlierOpen[match.id] ? 'emailConnector.mailBox.automations.proposal.hideEarlier' : 'emailConnector.mailBox.automations.proposal.showEarlier')"
-                  class="ms-1"
-                  icon
-                  x-small
-                  @click="toggleEarlier(match)">
-                  <v-icon size="12" class="icon-default-color">{{ earlierOpen[match.id] ? 'fas fa-chevron-up' : 'fas fa-chevron-down' }}</v-icon>
-                </v-btn>
-              </div>
-              <v-expand-transition>
-                <div v-if="earlierOpen[match.id]">
-                  <email-connector-mail-box-proposal-card
-                    v-for="proposal in proposalRuns[match.id].earlier"
-                    :key="`${match.id}-proposal-${proposal.id}`"
-                    :proposal="proposal"
-                    :match="match"
-                    :email="row.group.email"
-                    @updated="replaceProposal(row.group, match, $event)"
-                    @refresh="read" />
-                </div>
-              </v-expand-transition>
-            </template>
-          </template>
+          v-if="row.type === 'fold'"
+          v-show="!collapsed"
+          :key="row.key"
+          :class="row.first ? '' : 'mt-2'"
+          class="d-flex align-center">
+          <span class="text-caption text-sub-title">
+            {{ $t('emailConnector.mailBox.automations.earlierMessages', { 0: foldedGroups.length }) }}
+          </span>
+          <v-btn
+            :aria-label="$t(groupsOpen ? 'emailConnector.mailBox.automations.hideEarlierMessages' : 'emailConnector.mailBox.automations.showEarlierMessages')"
+            :aria-expanded="String(groupsOpen)"
+            :title="$t(groupsOpen ? 'emailConnector.mailBox.automations.hideEarlierMessages' : 'emailConnector.mailBox.automations.showEarlierMessages')"
+            class="ms-1"
+            icon
+            x-small
+            @click="groupsOpen = !groupsOpen">
+            <v-icon size="12" class="icon-default-color">{{ groupsOpen ? 'fas fa-chevron-up' : 'fas fa-chevron-down' }}</v-icon>
+          </v-btn>
         </div>
-      </div>
-    </template>
+        <div
+          v-else
+          v-show="!collapsed"
+          :key="row.key"
+          :class="row.first ? '' : 'mt-2'">
+          <!-- Who wrote the message and when, one line; a click brings the message
+               itself into view in the conversation below. -->
+          <a
+            v-if="threaded"
+            :aria-label="$t('emailConnector.mailBox.automations.goToMessage', { 0: senderOf(row.group.email), 1: dateOf(row.group.email) })"
+            :title="$t('emailConnector.mailBox.automations.goToMessage', { 0: senderOf(row.group.email), 1: dateOf(row.group.email) })"
+            class="d-block text-caption text-sub-title text-truncate"
+            role="button"
+            href="javascript:void(0);"
+            @click.prevent="$emit('go-to-message', row.group.email)"
+            @keydown.enter.prevent="$emit('go-to-message', row.group.email)">
+            {{ senderOf(row.group.email) }} · {{ dateOf(row.group.email) }}
+          </a>
+          <div
+            v-for="(match, index) in row.group.matches"
+            :key="match.id"
+            :class="index && 'mt-2'">
+            <div class="text-body-2 font-weight-bold text-truncate">
+              {{ match.filterName || $t('emailConnector.mailBox.automations.deletedRule') }}
+            </div>
+            <div
+              v-for="action in match.actions"
+              :key="`${match.id}-${action.type}`"
+              class="d-flex align-baseline text-body-2">
+              <span :class="action.ok ? '' : 'error--text'">
+                {{ actionLabel(action) }}
+              </span>
+              <a
+                v-if="canUndo(action)"
+                :class="linkClass"
+                :aria-disabled="busy"
+                class="ms-2 pa-0 font-weight-regular"
+                role="button"
+                href="javascript:void(0);"
+                @click.prevent="busy || undo(row.group, match, action.type)"
+                @keydown.enter.prevent="busy || undo(row.group, match, action.type)">
+                {{ $t('emailConnector.mailBox.automations.undo') }}
+              </a>
+            </div>
+            <div v-if="match.agentStatus && match.agentStatus !== 'NONE'" class="d-flex align-center text-body-2">
+              <v-progress-circular
+                v-if="!terminal(match)"
+                :size="12"
+                :width="2"
+                indeterminate
+                class="me-2 icon-default-color" />
+              <span>{{ $t(`emailConnector.mailBox.automations.agent.${agentStatusKey(match)}`) }}</span>
+              <a
+                v-if="terminal(match)"
+                :class="linkClass"
+                :aria-disabled="busy"
+                class="ms-2 pa-0 font-weight-regular"
+                role="button"
+                href="javascript:void(0);"
+                @click.prevent="busy || retry(row.group, match)"
+                @keydown.enter.prevent="busy || retry(row.group, match)">
+                {{ $t('emailConnector.mailBox.automations.runAgain') }}
+              </a>
+            </div>
+            <template v-if="match.agentNameId">
+              <component
+                :is="extension.vueComponent"
+                v-for="extension in outcomeExtensions"
+                :key="`${match.id}-${extension.id}`"
+                :match="match"
+                :email="row.group.email" />
+            </template>
+            <!-- A run that was offered tools and suggested nothing says so under its note, so an
+                 empty panel is never read as a failure to show the suggestions -- first what its
+                 lookups looked for and did not find, as the server read them from the run's own
+                 conversation (EXO-90659). Text only: the values are the model's arguments. -->
+            <template v-if="suggestedNothing(match)">
+              <div
+                v-for="(line, lineIndex) in notFoundLines(match)"
+                :key="`${match.id}-not-found-${lineIndex}`"
+                class="text-caption text-sub-title mt-1">
+                {{ line }}
+              </div>
+            </template>
+            <div
+              v-if="suggestedNothing(match)"
+              class="text-caption text-sub-title mt-1">
+              {{ $t('emailConnector.mailBox.automations.proposal.none') }}
+            </div>
+            <!-- The tool calls the assistant proposed, one card each, oldest first (EXO-90659).
+                 Only the latest run's show; the earlier runs' fold under one line, closed until
+                 opened. A call still waiting for the user always shows, whatever its run. -->
+            <template v-if="match.proposals && match.proposals.length">
+              <div class="text-caption font-weight-bold mt-1">
+                {{ $t('emailConnector.mailBox.automations.proposal.heading') }}
+              </div>
+              <email-connector-mail-box-proposal-card
+                v-for="proposal in proposalRuns[match.id].latest"
+                :key="`${match.id}-proposal-${proposal.id}`"
+                :proposal="proposal"
+                :match="match"
+                :email="row.group.email"
+                @updated="replaceProposal(row.group, match, $event)"
+                @refresh="read" />
+              <template v-if="proposalRuns[match.id].earlier.length">
+                <div class="d-flex align-center mt-1">
+                  <span class="text-caption text-sub-title">
+                    {{ $t('emailConnector.mailBox.automations.proposal.earlier', { 0: proposalRuns[match.id].earlier.length }) }}
+                  </span>
+                  <v-btn
+                    :aria-label="$t(earlierOpen[match.id] ? 'emailConnector.mailBox.automations.proposal.hideEarlier' : 'emailConnector.mailBox.automations.proposal.showEarlier')"
+                    :aria-expanded="String(!!earlierOpen[match.id])"
+                    :title="$t(earlierOpen[match.id] ? 'emailConnector.mailBox.automations.proposal.hideEarlier' : 'emailConnector.mailBox.automations.proposal.showEarlier')"
+                    class="ms-1"
+                    icon
+                    x-small
+                    @click="toggleEarlier(match)">
+                    <v-icon size="12" class="icon-default-color">{{ earlierOpen[match.id] ? 'fas fa-chevron-up' : 'fas fa-chevron-down' }}</v-icon>
+                  </v-btn>
+                </div>
+                <v-expand-transition>
+                  <div v-if="earlierOpen[match.id]">
+                    <email-connector-mail-box-proposal-card
+                      v-for="proposal in proposalRuns[match.id].earlier"
+                      :key="`${match.id}-proposal-${proposal.id}`"
+                      :proposal="proposal"
+                      :match="match"
+                      :email="row.group.email"
+                      @updated="replaceProposal(row.group, match, $event)"
+                      @refresh="read" />
+                  </div>
+                </v-expand-transition>
+              </template>
+            </template>
+          </div>
+        </div>
+      </template>
+    </div>
   </v-card>
 </template>
 
