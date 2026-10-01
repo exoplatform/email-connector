@@ -124,6 +124,9 @@ class EmailHtmlSanitizerTest {
     assertFalse(shown.remoteContentBlocked());
     assertTrue(shown.html().toLowerCase(Locale.ROOT).contains("http://tracker.example/p.gif"), shown.html());
     assertTrue(shown.html().contains("https://tracker.example/q.png"), shown.html());
+    assertTrue(shown.html().contains("src=\"https://tracker.example/r.png\""), shown.html());
+    SanitizedEmailBody relative = EmailHtmlSanitizer.sanitize("<img src=\" //tracker.example/r.png\">", false);
+    assertTrue(relative.remoteContentBlocked(), "a protocol-relative image is a remote one");
     assertFalse(shown.html().toLowerCase(Locale.ROOT).contains("srcset"), shown.html());
   }
 
@@ -140,7 +143,8 @@ class EmailHtmlSanitizerTest {
   }
 
   /**
-   * The {@code background} attribute of tables and cells is remote content too.
+   * The {@code background} attribute of tables, rows, cells and the body is remote
+   * content too.
    */
   @Test
   void backgroundAttributesWaitForConsent() {
@@ -151,6 +155,11 @@ class EmailHtmlSanitizerTest {
     assertFalse(blocked.html().contains("tracker.example"), blocked.html());
     SanitizedEmailBody shown = EmailHtmlSanitizer.sanitize(html, true);
     assertTrue(shown.html().contains("background=\"https://tracker.example/c.png\""), shown.html());
+    String body = "<html><body background=\"https://tracker.example/b.png\"><p>x</p></body></html>";
+    SanitizedEmailBody bodyBlocked = EmailHtmlSanitizer.sanitize(body, false);
+    assertTrue(bodyBlocked.remoteContentBlocked());
+    assertFalse(bodyBlocked.html().contains("tracker.example"), bodyBlocked.html());
+    assertTrue(EmailHtmlSanitizer.sanitize(body, true).html().contains("url(&quot;https://tracker.example/b.png&quot;)"));
   }
 
   /**
