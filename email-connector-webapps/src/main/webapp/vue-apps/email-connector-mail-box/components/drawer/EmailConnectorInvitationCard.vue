@@ -83,21 +83,55 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </div>
         <div v-if="answerLabel" class="mt-2 font-weight-bold invitation-answer">{{ answerLabel }}</div>
         <div
-          v-if="invitation.answerable"
+          v-if="invitation.answerable || invitation.landable || invitation.removable"
           class="d-flex flex-wrap align-center mt-2 invitation-actions">
+          <template v-if="invitation.answerable">
+            <v-btn
+              v-for="choice in choices"
+              :key="choice.answer"
+              :class="['me-2 mb-1', `invitation-${choice.answer.toLowerCase()}`]"
+              :color="invitation.answer === choice.answer ? 'primary' : ''"
+              :outlined="invitation.answer !== choice.answer"
+              :disabled="busy"
+              :loading="busy && pending === choice.answer"
+              small
+              depressed
+              @click="answer(choice.answer)">
+              {{ choice.label }}
+            </v-btn>
+          </template>
           <v-btn
-            v-for="choice in choices"
-            :key="choice.answer"
-            :class="['me-2 mb-1', `invitation-${choice.answer.toLowerCase()}`]"
-            :color="invitation.answer === choice.answer ? 'primary' : ''"
-            :outlined="invitation.answer !== choice.answer"
+            v-if="invitation.landable"
+            class="me-2 mb-1 invitation-add-to-calendar"
             :disabled="busy"
-            :loading="busy && pending === choice.answer"
+            :loading="busy && pending === 'ADD'"
             small
-            depressed
-            @click="answer(choice.answer)">
-            {{ choice.label }}
+            text
+            @click="addToCalendar()">
+            <v-icon size="14" class="me-1">fa-calendar-plus</v-icon>
+            {{ $t('emailConnector.mailBox.invitation.addToCalendar') }}
           </v-btn>
+          <v-btn
+            v-if="invitation.removable"
+            class="me-2 mb-1 invitation-remove-from-calendar"
+            :disabled="busy"
+            :loading="busy && pending === 'REMOVE'"
+            small
+            text
+            @click="removeFromCalendar()">
+            <v-icon size="14" class="me-1">fa-calendar-minus</v-icon>
+            {{ $t('emailConnector.mailBox.invitation.removeFromCalendar') }}
+          </v-btn>
+        </div>
+        <div
+          v-if="invitation.landing === 'LANDED' && invitation.landingLink"
+          class="caption invitation-landed">
+          <a
+            :href="invitation.landingLink"
+            target="_blank"
+            rel="noopener">
+            {{ $t('emailConnector.mailBox.invitation.openInAgenda') }}
+          </a>
         </div>
         <!-- The server rebuilt this link from the portal's own domain: an event of this
              deployment's Agenda is answered there. -->
@@ -285,13 +319,7 @@ export default {
       this.busy = true;
       this.pending = answer;
       return this.$emailConnectorMailBoxService.replyToInvitation(this.email.id, answer)
-        .then(invitation => {
-          this.invitation = invitation;
-          const landing = this.$emailConnectorMailBoxService.invitationLandingOutcome(invitation?.landing);
-          if (landing) {
-            this.$root.$emit('alert-message', this.$t(landing.messageKey), landing.alertType);
-          }
-        })
+        .then(invitation => this.landed(invitation))
         .catch(error => {
           const outcome = this.$emailConnectorMailBoxService.invitationReplyOutcome(error, answer);
           if (outcome.answer) {
@@ -303,6 +331,60 @@ export default {
           this.busy = false;
           this.pending = null;
         });
+    },
+    /**
+     * Adds the event to the user's calendar without answering.
+     *
+     * @returns {Promise<void>} resolved once added or refused
+     */
+    addToCalendar() {
+      return this.land('ADD', () => this.$emailConnectorMailBoxService.addInvitationToCalendar(this.email.id));
+    },
+    /**
+     * Removes the cancelled event from the user's calendar.
+     *
+     * @returns {Promise<void>} resolved once removed or refused
+     */
+    removeFromCalendar() {
+      return this.land('REMOVE', () => this.$emailConnectorMailBoxService.removeInvitationFromCalendar(this.email.id));
+    },
+    /**
+     * One landing call: the card shows the invitation as the server returns it, and
+     * says what became of the event.
+     *
+     * @param {String} pending ADD or REMOVE, for the button's spinner
+     * @param {Function} call the service call
+     * @returns {Promise<void>} resolved once done or refused
+     */
+    land(pending, call) {
+      if (this.busy || !this.email?.id) {
+        return Promise.resolve();
+      }
+      this.busy = true;
+      this.pending = pending;
+      return call()
+        .then(invitation => this.landed(invitation))
+        .catch(error => {
+          this.$root.$emit('alert-message', this.$t(this.$emailConnectorMailBoxService.invitationLandingError(error)), 'error');
+        })
+        .finally(() => {
+          this.busy = false;
+          this.pending = null;
+        });
+    },
+    /**
+     * Shows the invitation as the server returns it after a click, and says what
+     * became of the event in the user's calendar, when anything did.
+     *
+     * @param {Object} invitation the invitation returned
+     * @returns {void} nothing
+     */
+    landed(invitation) {
+      this.invitation = invitation;
+      const landing = this.$emailConnectorMailBoxService.invitationLandingOutcome(invitation?.landing);
+      if (landing) {
+        this.$root.$emit('alert-message', this.$t(landing.messageKey), landing.alertType);
+      }
     },
     /**
      * @param {Object} person an attendee
