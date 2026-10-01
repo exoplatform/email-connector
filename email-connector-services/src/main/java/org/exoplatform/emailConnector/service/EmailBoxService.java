@@ -6132,24 +6132,27 @@ public class EmailBoxService {
    *           mailbox shared with them, lacks the read right on that folder
    */
   public RawEmailSource getRawEmailSource(long mailRemoteId, String username, String folder) throws IllegalAccessException {
-    CappedOutputStream captured = new CappedOutputStream(RAW_SOURCE_SHOWN_MAX_BYTES);
-    AtomicInteger reportedSize = new AtomicInteger(-1);
-    boolean found = writeRawEmail(mailRemoteId, username, folder, (subject, size) -> {
-      reportedSize.set(size);
-      return captured;
-    });
-    if (!found) {
-      return null;
+    try (CappedOutputStream captured = new CappedOutputStream(RAW_SOURCE_SHOWN_MAX_BYTES)) {
+      AtomicInteger reportedSize = new AtomicInteger(-1);
+      boolean found = writeRawEmail(mailRemoteId, username, folder, (subject, size) -> {
+        reportedSize.set(size);
+        return captured;
+      });
+      if (!found) {
+        return null;
+      }
+      byte[] bytes = captured.toByteArray();
+      String source = new String(bytes, StandardCharsets.UTF_8);
+      RawEmailSource rawEmailSource = new RawEmailSource();
+      rawEmailSource.setSource(source);
+      rawEmailSource.setHeaders(headerBlock(source));
+      rawEmailSource.setTruncated(captured.isCapped());
+      rawEmailSource.setShownBytes(bytes.length);
+      rawEmailSource.setSize(reportedSize.get() >= 0 ? reportedSize.get() : bytes.length);
+      return rawEmailSource;
+    } catch (IOException e) {
+      throw new IllegalStateException("The captured source could not be closed", e);
     }
-    byte[] bytes = captured.toByteArray();
-    String source = new String(bytes, StandardCharsets.UTF_8);
-    RawEmailSource rawEmailSource = new RawEmailSource();
-    rawEmailSource.setSource(source);
-    rawEmailSource.setHeaders(headerBlock(source));
-    rawEmailSource.setTruncated(captured.isCapped());
-    rawEmailSource.setShownBytes(bytes.length);
-    rawEmailSource.setSize(reportedSize.get() >= 0 ? reportedSize.get() : bytes.length);
-    return rawEmailSource;
   }
 
   /**
