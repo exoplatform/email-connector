@@ -17574,9 +17574,10 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * EXO-90840. A message transmitted in a shared mailbox owner's name is built from her
-   * address, names the delegate as its Sender on her behalf only, and takes the envelope
-   * a composed mail in that identity takes: the delegate's on her behalf, hers as her.
+   * EXO-90840. A message transmitted from a shared mailbox is sent only under the owner's
+   * consent, checked here; it is built from her address, names the delegate as its
+   * Sender (handed to the factory too) on her behalf only, and takes the envelope a
+   * composed mail in that shape takes: the delegate's on her behalf, hers as her.
    *
    * @throws Exception when the mocked mail plumbing misbehaves
    */
@@ -17585,32 +17586,82 @@ public class EmailBoxServiceTest {
     givenAUsableMailbox();
     when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
     when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(SENDER_THE_PROVIDER_NAMES);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.ON_BEHALF)).thenReturn(ownersIdentity(SendMode.ON_BEHALF, "Alice"));
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(ownersIdentity(SendMode.AS, "Alice"));
     ArgumentCaptor<MimeMessage> sent = ArgumentCaptor.forClass(MimeMessage.class);
     List<InternetAddress> froms = new ArrayList<>();
-    EmailBoxService.OutgoingMessageFactory factory = (session, from) -> {
-      froms.add(from);
+    List<InternetAddress> senders = new ArrayList<>();
+    EmailBoxService.OutgoingMessageFactory factory = new EmailBoxService.OutgoingMessageFactory() {
+      @Override
+      public MimeMessage build(Session session, InternetAddress from) throws MessagingException {
+        return build(session, from, null);
+      }
+
+      @Override
+      public MimeMessage build(Session session, InternetAddress from, InternetAddress sender) throws MessagingException {
+        froms.add(from);
+        senders.add(sender);
+        MimeMessage reply = new MimeMessage(session);
+        reply.setFrom(from);
+        reply.setRecipients(Message.RecipientType.TO, "organizer@partner.example");
+        reply.setText("accepted");
+        return reply;
+      }
+    };
+
+    assertEquals(EmailBoxService.OwnerCopy.SKIPPED,
+                 emailBoxService.transmitFromSharedMailbox(TEST_USER, 100L, SendMode.ON_BEHALF, factory));
+    emailBoxService.transmitFromSharedMailbox(TEST_USER, 100L, SendMode.AS, factory);
+    emailBoxService.transmitAsUser(TEST_USER, factory);
+
+    verify(smtpTransmitter, times(3)).transmit(sent.capture());
+    assertEquals(OWNER_ADDRESS, froms.get(0).getAddress());
+    assertEquals("Alice", froms.get(0).getPersonal());
+    assertEquals(SENDER_THE_PROVIDER_NAMES, senders.get(0).getAddress(), "the factory knows the delegate");
+    assertEquals(SENDER_THE_PROVIDER_NAMES, ((InternetAddress) sent.getAllValues().get(0).getSender()).getAddress());
+    assertEquals(SENDER_THE_PROVIDER_NAMES, sent.getAllValues().get(0).getSession().getProperty("mail.smtp.from"));
+    assertEquals(OWNER_ADDRESS, froms.get(1).getAddress());
+    assertNull(senders.get(1));
+    assertNull(sent.getAllValues().get(1).getSender(), "as her: nothing names the delegate");
+    assertEquals(OWNER_ADDRESS, sent.getAllValues().get(1).getSession().getProperty("mail.smtp.from"));
+    assertEquals(SENDER_THE_PROVIDER_NAMES, froms.get(2).getAddress(), "no share: the delegate's own name");
+    assertNull(sent.getAllValues().get(2).getSender());
+    assertNull(sent.getAllValues().get(2).getSession().getProperty("mail.smtp.from"));
+
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenThrow(new SendModeMissingException(SendMode.AS));
+    assertThrows(SendModeMissingException.class, () -> emailBoxService.transmitFromSharedMailbox(TEST_USER, 100L, SendMode.AS, factory));
+    verify(smtpTransmitter, times(3)).transmit(any(MimeMessage.class));
+  }
+
+  /**
+   * EXO-90840. A message sent from a shared mailbox is filed in its owner's Sent, as a
+   * composed mail is: her record of what was sent in her name.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aMessageFromASharedMailboxIsFiledInItsOwnersSent() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(ownersIdentity(SendMode.AS, "Alice"));
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:9");
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+
+    EmailBoxService.OwnerCopy copy = emailBoxService.transmitFromSharedMailbox(TEST_USER, 100L, SendMode.AS, (session, from) -> {
       MimeMessage reply = new MimeMessage(session);
       reply.setFrom(from);
       reply.setRecipients(Message.RecipientType.TO, "organizer@partner.example");
       reply.setText("accepted");
       return reply;
-    };
+    });
 
-    emailBoxService.transmitAsUser(TEST_USER, ownersIdentity(SendMode.ON_BEHALF, "Alice"), factory);
-    emailBoxService.transmitAsUser(TEST_USER, ownersIdentity(SendMode.AS, "Alice"), factory);
-    emailBoxService.transmitAsUser(TEST_USER, null, factory);
-
-    verify(smtpTransmitter, times(3)).transmit(sent.capture());
-    assertEquals(OWNER_ADDRESS, froms.get(0).getAddress());
-    assertEquals("Alice", froms.get(0).getPersonal());
-    assertEquals(SENDER_THE_PROVIDER_NAMES, ((InternetAddress) sent.getAllValues().get(0).getSender()).getAddress());
-    assertEquals(SENDER_THE_PROVIDER_NAMES, sent.getAllValues().get(0).getSession().getProperty("mail.smtp.from"));
-    assertEquals(OWNER_ADDRESS, froms.get(1).getAddress());
-    assertNull(sent.getAllValues().get(1).getSender(), "as her: nothing names the delegate");
-    assertEquals(OWNER_ADDRESS, sent.getAllValues().get(1).getSession().getProperty("mail.smtp.from"));
-    assertEquals(SENDER_THE_PROVIDER_NAMES, froms.get(2).getAddress(), "no identity: the delegate's own name");
-    assertNull(sent.getAllValues().get(2).getSender());
-    assertNull(sent.getAllValues().get(2).getSession().getProperty("mail.smtp.from"));
+    verify(smtpTransmitter).transmit(any(MimeMessage.class));
+    verify(userEmailSettingService).connect(anyString(), eq(TEST_USER));
+    // The share's Sent is not in this test's folder registry: the filing is attempted
+    // and fails without failing the send, as for a composed mail.
+    assertEquals(EmailBoxService.OwnerCopy.FAILED, copy);
   }
 
   /**
@@ -17628,14 +17679,15 @@ public class EmailBoxServiceTest {
     doThrow(new SmtpTransmitter.TransmissionException(SmtpTransmitter.Phase.SEND, stalwartSenderRefusal())).when(smtpTransmitter)
                                                                                                          .transmit(built);
     SendIdentity identity = ownersIdentity(SendMode.AS, null);
+    when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(identity);
 
     assertEquals(SendModeUnavailableException.REFUSED_BY_SERVER,
                  assertThrows(SendModeUnavailableException.class,
-                              () -> emailBoxService.transmitAsUser(TEST_USER, identity, (session, from) -> built)).getMessage());
+                              () -> emailBoxService.transmitFromSharedMailbox(TEST_USER, 100L, SendMode.AS, (session, from) -> built))
+                                                                                                                                    .getMessage());
     verify(emailDelegationService).markSendRefused(TEST_USER, identity);
 
-    assertThrows(SmtpTransmitter.TransmissionException.class,
-                 () -> emailBoxService.transmitAsUser(TEST_USER, null, (session, from) -> built));
+    assertThrows(SmtpTransmitter.TransmissionException.class, () -> emailBoxService.transmitAsUser(TEST_USER, (session, from) -> built));
     verify(emailDelegationService, times(1)).markSendRefused(any(), any());
   }
 
