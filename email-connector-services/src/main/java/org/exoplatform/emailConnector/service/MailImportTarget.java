@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import java.util.HashSet;
 import java.util.Set;
 import java.util.function.IntConsumer;
 
@@ -28,10 +29,10 @@ import org.apache.commons.lang3.StringUtils;
 
 /**
  * A folder of the caller's mailbox, open for an import (EXO-90846), made by
- * {@code EmailBoxService#openImportTarget} once every check passed. It knows the
- * Message-IDs the folder held when it was opened, and learns each one it appends, so a
- * mail already there -- or met twice in the same import -- is told apart before it is
- * sent. Holds the caller's connection until {@link #close()}.
+ * {@code EmailBoxService#openImportTarget} once every check passed. It asks the folder
+ * whether it holds a Message-ID, one IMAP search per mail, and remembers each one it
+ * appends, so a mail already there -- or met twice in the same import -- is told apart
+ * before it is sent. Holds the caller's connection until {@link #close()}.
  * <p>
  * Not thread-safe: one import run owns it.
  */
@@ -39,7 +40,7 @@ public class MailImportTarget implements AutoCloseable {
 
   private final Folder      folder;
 
-  private final Set<String> knownMessageIds;
+  private final Set<String> appendedMessageIds = new HashSet<>();
 
   private final IntConsumer closer;
 
@@ -48,26 +49,30 @@ public class MailImportTarget implements AutoCloseable {
   private boolean           closed;
 
   /**
-   * @param folder the folder, resolved on the caller's own connection
-   * @param knownMessageIds the normalised Message-IDs the folder holds, mutable
+   * @param folder the folder, resolved on the caller's own connection and open
    * @param closer what closing does, given how many messages were appended
    */
-  MailImportTarget(Folder folder, Set<String> knownMessageIds, IntConsumer closer) {
+  MailImportTarget(Folder folder, IntConsumer closer) {
     this.folder = folder;
-    this.knownMessageIds = knownMessageIds;
     this.closer = closer;
   }
 
   /**
-   * Whether the folder already holds a message with this Message-ID, compared the way
-   * the add-on compares them everywhere ({@code EmailBoxService#sameMessageId}).
+   * Whether the folder already holds a message with this Message-ID: one appended by
+   * this import, or one the server finds -- by the add-on's one Message-ID search
+   * ({@code EmailBoxService#searchByMessageId}), which narrows by the server's search and
+   * decides by {@code sameMessageId}.
    *
    * @param messageId the Message-ID, as the message spells it; blank answers false
    * @return true when a message with that id is there
+   * @throws MessagingException when the folder cannot be searched
    */
-  public boolean contains(String messageId) {
+  public boolean contains(String messageId) throws MessagingException {
     String normalized = EmailBoxService.normalizeMessageId(messageId);
-    return normalized != null && knownMessageIds.contains(normalized);
+    if (normalized == null) {
+      return false;
+    }
+    return appendedMessageIds.contains(normalized) || !EmailBoxService.searchByMessageId(folder, messageId).isEmpty();
   }
 
   /**
@@ -85,7 +90,7 @@ public class MailImportTarget implements AutoCloseable {
     appended++;
     String normalized = EmailBoxService.normalizeMessageId(message.getMessageID());
     if (StringUtils.isNotBlank(normalized)) {
-      knownMessageIds.add(normalized);
+      appendedMessageIds.add(normalized);
     }
   }
 
