@@ -67,7 +67,7 @@ public interface RawEmailVisitor {
    * cannot change its status. Called for a folder-wide export; a selection reports each
    * message through {@link #missing} instead.
    *
-   * @param handed how many messages were handed over whole
+   * @param handed how many messages are in the file, the last possibly cut short
    * @param count how many the export was to hold
    * @throws IOException when the output fails
    */

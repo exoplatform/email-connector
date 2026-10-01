@@ -6749,7 +6749,8 @@ public class EmailBoxService {
    * @param folder the folder, closed
    * @param uids the window's UIDs
    * @param visitor where the messages go
-   * @param handed how many messages the visitor was handed so far, counted on
+   * @param handed how many messages are in the file so far, the last possibly in part,
+   *          counted on
    * @throws IOException when the visitor's output fails
    * @throws MessagingException when the folder cannot be read
    */
@@ -6768,7 +6769,13 @@ public class EmailBoxService {
           if (mimeMessage instanceof IMAPMessage imapMessage) {
             imapMessage.setPeek(true);
           }
-          visitor.message(null, mimeMessage);
+          try {
+            visitor.message(null, mimeMessage);
+          } catch (ExportInterruptedException e) {
+            // Cut mid-copy: it is in the file in part, and the notice counts it as such.
+            handed[0]++;
+            throw e;
+          }
           handed[0]++;
         }
       }
