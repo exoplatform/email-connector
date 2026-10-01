@@ -89,7 +89,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <template v-for="row in rows">
         <div
           v-if="row.type === 'fold'"
-          v-show="!collapsed"
           :key="row.key"
           :class="row.first ? '' : 'mt-2'"
           class="d-flex align-center">
@@ -109,7 +108,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </div>
         <div
           v-else
-          v-show="!collapsed"
           :key="row.key"
           :class="row.first ? '' : 'mt-2'">
           <!-- Who wrote the message and when, one line; a click brings the message
