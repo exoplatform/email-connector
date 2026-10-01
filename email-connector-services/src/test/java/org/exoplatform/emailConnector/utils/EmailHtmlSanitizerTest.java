@@ -18,8 +18,10 @@ package org.exoplatform.emailConnector.utils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.time.Duration;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
@@ -40,7 +42,7 @@ import org.exoplatform.emailConnector.model.SanitizedEmailBody;
 class EmailHtmlSanitizerTest {
 
   /** Any CSS {@code url(}, {@code src(} or image function left pointing at a network address. */
-  private static final Pattern REMOTE_CSS = Pattern.compile("(?:url|src|image-set|image)\\s*\\(\\s*['\"]?\\s*(?:https?:)?//",
+  private static final Pattern REMOTE_CSS = Pattern.compile("(?:url|src|image-set|image)\\s*+\\(\\s*+['\"]?+\\s*+(?:https?:)?//",
                                                             Pattern.CASE_INSENSITIVE);
 
   /**
@@ -320,6 +322,51 @@ class EmailHtmlSanitizerTest {
   void whiteSpaceIsKept() {
     String html = "<div>First line\n  indented line\nlast line</div>";
     assertEquals(html, EmailHtmlSanitizer.sanitize(html, false).html());
+  }
+
+  /**
+   * A crafted stylesheet cannot make the cleaning slow: many unclosed or unterminated
+   * {@code url(} calls, long white space inside one, long unquoted arguments, nested
+   * comment openings -- each finishes well inside a second and stays safe. The
+   * {@code url()} calls are read by hand ({@code urlCallAt}); a backtracking expression
+   * took quadratic time or worse on these.
+   */
+  @Test
+  void aCraftedStylesheetIsCleanedInLinearTime() {
+    String[] hostile = { "a{background:" + "url(".repeat(60_000) + "}",
+        "a{background:" + "url(\"".repeat(60_000) + "x\"}",
+        "a{background:" + "url('".repeat(60_000) + "}",
+        "a{background:url(" + " ".repeat(300_000) + "}",
+        "a{background:" + "url(a ".repeat(60_000) + "}",
+        "a{background:" + "url(\"x\" ".repeat(60_000) + "}",
+        "a{background:" + "src(".repeat(30_000) + "url(" + " ".repeat(100_000) + "x\" )}",
+        "/*".repeat(100_000) + "a{background:url(http://tracker.example/a.png)}" };
+    for (String css : hostile) {
+      String result = assertTimeoutPreemptively(Duration.ofSeconds(3),
+                                                () -> EmailHtmlSanitizer.sanitizeCss(css, false, new boolean[1]),
+                                                () -> "slow on a " + css.length() + "-character stylesheet");
+      assertFalse(REMOTE_CSS.matcher(EmailHtmlSanitizer.decodeCssEscapes(result)).find());
+    }
+    String body = "<div style=\"background:" + "url(".repeat(40_000) + "\">x</div><style>" + "url(\"".repeat(40_000) + "</style>";
+    assertTimeoutPreemptively(Duration.ofSeconds(5), () -> EmailHtmlSanitizer.sanitize(body, false));
+  }
+
+  /**
+   * A well-formed call is still read whatever white space surrounds its argument, and a
+   * malformed one, in the same sheet, is never kept.
+   */
+  @Test
+  void urlCallsAreReadWhateverTheirSpacing() {
+    boolean[] blocked = new boolean[1];
+    String css = EmailHtmlSanitizer.sanitizeCss("a{background:url(\t \"https://cdn.example/a.png\" \n)} b{background:url( https://cdn.example/b.png\t)}"
+        + " c{background:url(https://cdn.example/c.png d)}", true, blocked);
+    assertTrue(css.contains("url(\"https://cdn.example/a.png\")"), css);
+    assertTrue(css.contains("url(\"https://cdn.example/b.png\")"), css);
+    assertFalse(css.contains("cdn.example/c.png\")"), css);
+    assertTrue(css.contains("x-blocked(https://cdn.example/c.png d)"), css);
+    // A quote inside an unquoted argument ends it: the call is malformed, never read as one.
+    String quoted = EmailHtmlSanitizer.sanitizeCss("p{background:url(a'b)} q{background:url(c\"d)}", true, blocked);
+    assertEquals("p{background:x-blocked(a'b)} q{background:x-blocked(c\"d)}", quoted);
   }
 
   /**
