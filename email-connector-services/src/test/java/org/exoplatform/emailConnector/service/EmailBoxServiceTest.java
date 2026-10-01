@@ -3086,7 +3086,7 @@ public class EmailBoxServiceTest {
                                                 () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted));
 
     assertEquals(ScheduledSendFailure.Kind.TRANSIENT, failure.getKind());
-    assertEquals(ScheduledSendError.AUTHENTICATION, failure.getError());
+    assertEquals(ScheduledSendError.PROVIDER_UNAVAILABLE, failure.getError());
     verify(emailBoxStorage, never()).getDraftByLocalId(anyString(), anyString());
     verify(emailCredentialsResolver, never()).authenticator(any(), any(), any(), any());
     verify(smtpTransmitter, never()).transmit(any(MimeMessage.class));
