@@ -126,12 +126,12 @@ class MailImportRun implements MailArchiveSink {
       count(MailImportRefusal.NOT_A_MAIL);
       return advance();
     }
-    boolean known = StringUtils.isNotBlank(messageId) ? target.contains(messageId) : !seenDigests.add(digest(message));
-    if (known) {
-      state.setSkipped(state.getSkipped() + 1);
-      return advance();
-    }
     try {
+      boolean known = StringUtils.isNotBlank(messageId) ? target.contains(messageId) : !seenDigests.add(digest(message));
+      if (known) {
+        state.setSkipped(state.getSkipped() + 1);
+        return advance();
+      }
       target.append(mimeMessage);
       state.setAdded(state.getAdded() + 1);
       serverRefusalsInARow = 0;

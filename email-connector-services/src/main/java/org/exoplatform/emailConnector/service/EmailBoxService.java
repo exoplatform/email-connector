@@ -153,6 +153,8 @@ import org.exoplatform.container.PortalContainer;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
+import org.exoplatform.emailConnector.exception.ExportInterruptedException;
+import org.exoplatform.emailConnector.exception.ExportOutputClosedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.exception.RawEmailCapReachedException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
@@ -481,11 +483,9 @@ public class EmailBoxService {
                                                                              MailFolder.SCHEDULED,
                                                                              MailFolder.ALL_MAIL);
 
-  // How many messages a whole-folder export fetches the envelopes of at once (EXO-90845).
-  private static final int               EXPORT_FETCH_WINDOW     = 100;
-
-  // How many Message-IDs an import reads at once from the folder it fills (EXO-90846).
-  private static final int               IMPORT_ID_FETCH_WINDOW  = 1000;
+  // How many messages a whole-folder export reads per opening of the folder (EXO-90845):
+  // the mail library keeps every message a folder gave until it closes.
+  private static final int               EXPORT_FETCH_WINDOW     = 500;
 
   // Every header createEmails reads per message. They must be fetched in the one batched
   // FETCH: JavaMail otherwise goes back to the server for each header of each message.
@@ -6477,9 +6477,13 @@ public class EmailBoxService {
    * each message fetched with PEEK, so an export never marks mail read; one connection
    * serves the whole export.
    * <p>
-   * A message the server no longer holds under its UID, or holds another message under
-   * (by {@link #isCachedMessage}), is handed to {@link RawEmailVisitor#missing}: the
-   * answer is under way by then, and the visitor reports it in the file.
+   * Once the export began, nothing the mail server does is left unsaid: a message it no
+   * longer holds under its UID, holds another message under (by
+   * {@link #isCachedMessage}), or fails to give -- a folder renamed since the check, a
+   * connection dropped mid-way -- is handed to {@link RawEmailVisitor#missing}, every
+   * one of them, for the visitor to report in the file. Only a failure of the output
+   * itself ({@link ExportOutputClosedException}: the reader left) ends the export
+   * quietly.
    *
    * @param username the caller
    * @param refs the messages, as the list names them
@@ -6500,73 +6504,87 @@ public class EmailBoxService {
     Map<String, List<Email>> byFolder = new LinkedHashMap<>();
     rows.forEach(row -> byFolder.computeIfAbsent(row.getFolder(), key -> new ArrayList<>()).add(row));
     Store store = null;
-    Folder remote = null;
-    boolean begun = false;
+    Map<String, Folder> remotes = new LinkedHashMap<>();
     try {
       store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
-      Map<String, Folder> remotes = new LinkedHashMap<>();
       for (String folderKey : byFolder.keySet()) {
         Folder resolved = resolveCachedFolder(store, folderKey, username);
         if (!(resolved instanceof UIDFolder)) {
+          closeQuietly(null, store, username);
           return false;
         }
         remotes.put(folderKey, resolved);
       }
-      visitor.begin(rows.size());
-      begun = true;
-      for (Map.Entry<String, List<Email>> group : byFolder.entrySet()) {
-        remote = remotes.get(group.getKey());
-        remote.open(Folder.READ_ONLY);
-        visitFolderGroup((UIDFolder) remote, group.getValue(), visitor);
-        remote.close(false);
-        remote = null;
-      }
-      return true;
-    } catch (IOException | MessagingException | ConnectorCredentialsException | RuntimeException e) {
-      if (begun) {
-        // The answer is under way: a download the browser cancelled, a connection that
-        // dropped mid-copy. Nothing is left to answer with, and it is not an incident.
-        LOG.debug("Export of {} message(s) of user {} stopped mid-copy", rows.size(), username, e);
-        return true;
-      }
+    } catch (MessagingException | ConnectorCredentialsException | RuntimeException e) {
+      closeQuietly(null, store, username);
       LOG.warn("Could not read {} message(s) of user {} for an export", rows.size(), username, e);
       throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
-    } finally {
-      closeQuietly(remote, store, username);
     }
+    try {
+      visitor.begin(rows.size());
+      for (Map.Entry<String, List<Email>> group : byFolder.entrySet()) {
+        visitFolderGroup(remotes.get(group.getKey()), group.getValue(), visitor, username);
+      }
+    } catch (ExportOutputClosedException e) {
+      // The reader left: a download the browser cancelled, a connection that dropped.
+      // Nothing is left to answer with, and it is not an incident.
+      LOG.debug("Export of {} message(s) of user {} stopped: the output is closed", rows.size(), username, e);
+    } catch (IOException e) {
+      LOG.debug("Export of {} message(s) of user {} stopped on its output", rows.size(), username, e);
+    } finally {
+      closeQuietly(null, store, username);
+    }
+    return true;
   }
 
   /**
-   * Hands the messages of one open folder to the visitor, in the order named: fetched by
-   * UID in one command, their envelopes in one more, each checked against its cached row.
+   * Hands the messages of one folder to the visitor, in the order named: the folder
+   * opened read-only, the messages fetched by UID in one command and their envelopes in
+   * one more, each checked against its cached row. A message the server does not give,
+   * and every message not yet handed over when the folder fails -- to open, to fetch,
+   * mid-way -- goes to {@link RawEmailVisitor#missing}, never silently away.
    *
-   * @param folder the open folder
+   * @param folder the folder, closed
    * @param rows the cached rows of that folder
    * @param visitor where the messages go
+   * @param username the caller, for the log
    * @throws IOException when the visitor's output fails
-   * @throws MessagingException when the folder cannot be read
    */
-  private void visitFolderGroup(UIDFolder folder, List<Email> rows, RawEmailVisitor visitor) throws IOException,
-                                                                                                    MessagingException {
-    long[] uids = rows.stream().mapToLong(Email::getMailRemoteId).toArray();
-    Message[] messages = folder.getMessagesByUID(uids);
-    Message[] found = Arrays.stream(messages).filter(Objects::nonNull).toArray(Message[]::new);
-    if (found.length > 0) {
-      FetchProfile profile = new FetchProfile();
-      profile.add(FetchProfile.Item.ENVELOPE);
-      ((Folder) folder).fetch(found, profile);
-    }
-    for (int i = 0; i < rows.size(); i++) {
-      Email row = rows.get(i);
-      Message message = i < messages.length ? messages[i] : null;
-      if (!(message instanceof MimeMessage mimeMessage) || message.isExpunged() || !isCachedMessage(row, mimeMessage)) {
-        visitor.missing(row);
-        continue;
+  private void visitFolderGroup(Folder folder, List<Email> rows, RawEmailVisitor visitor, String username) throws IOException {
+    int visited = 0;
+    try {
+      folder.open(Folder.READ_ONLY);
+      long[] uids = rows.stream().mapToLong(Email::getMailRemoteId).toArray();
+      Message[] messages = ((UIDFolder) folder).getMessagesByUID(uids);
+      Message[] found = Arrays.stream(messages).filter(Objects::nonNull).toArray(Message[]::new);
+      if (found.length > 0) {
+        FetchProfile profile = new FetchProfile();
+        profile.add(FetchProfile.Item.ENVELOPE);
+        folder.fetch(found, profile);
       }
-      if (mimeMessage instanceof IMAPMessage imapMessage) {
-        imapMessage.setPeek(true);
+      for (; visited < rows.size(); visited++) {
+        Email row = rows.get(visited);
+        Message message = visited < messages.length ? messages[visited] : null;
+        if (!(message instanceof MimeMessage mimeMessage) || message.isExpunged() || !isCachedMessage(row, mimeMessage)) {
+          visitor.missing(row);
+          continue;
+        }
+        if (mimeMessage instanceof IMAPMessage imapMessage) {
+          imapMessage.setPeek(true);
+        }
+        visitor.message(row, mimeMessage);
       }
-      visitor.message(row, mimeMessage);
+    } catch (MessagingException | RuntimeException e) {
+      LOG.warn("Folder {} of user {} failed during an export; {} message(s) are reported as not exported",
+               rows.get(0).getFolder(),
+               username,
+               rows.size() - visited,
+               e);
+      for (; visited < rows.size(); visited++) {
+        visitor.missing(rows.get(visited));
+      }
+    } finally {
+      closeQuietly(folder, null, username);
     }
   }
 
@@ -6613,9 +6631,16 @@ public class EmailBoxService {
    * caller was not given names nothing here -- which is what the per-message cache check
    * guards against for a UID, and why the folder's messages are read from the server
    * rather than from the cache: the cache keeps a window of each folder, and a backup
-   * that stopped at that window would be a silent loss. The folder is opened read-only
-   * and every message fetched with PEEK; envelopes are fetched a window at a time, so a
-   * large folder never sits in memory at once.
+   * that stopped at that window would be a silent loss.
+   * <p>
+   * The folder is opened read-only and every message fetched with PEEK. Its UIDs are read
+   * first; the messages are then read {@code EXPORT_FETCH_WINDOW} at a time, the folder
+   * reopened for each window, because the mail library keeps every message a folder gave
+   * until that folder closes: what stays in memory is one window's envelopes and the
+   * UIDs. A message expunged meanwhile is not in its window, and is not part of the
+   * folder any more. A failure of the mail server once the export began is thrown as
+   * {@link ExportInterruptedException}: the file cannot say it is incomplete, so the
+   * download must fail rather than end as a complete-looking file.
    *
    * @param username the caller
    * @param folder the folder key
@@ -6628,6 +6653,7 @@ public class EmailBoxService {
    *           than {@code max} messages
    * @throws IllegalStateException when the mail server could not be read before the
    *           export began
+   * @throws ExportInterruptedException when it failed after
    */
   public boolean readFolderRawEmails(String username, String folder, int max, RawEmailVisitor visitor) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = requireConnectable(username, USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL);
@@ -6638,46 +6664,96 @@ public class EmailBoxService {
     }
     Store store = null;
     Folder remote = null;
-    boolean begun = false;
+    long[] uids;
     try {
       store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       remote = resolveCachedFolder(store, folderKey, username);
-      if (remote == null) {
+      if (!(remote instanceof UIDFolder)) {
+        closeQuietly(null, store, username);
         return false;
       }
       remote.open(Folder.READ_ONLY);
-      int count = remote.getMessageCount();
-      if (count > max) {
+      if (remote.getMessageCount() > max) {
         throw new IllegalArgumentException(EXPORT_TOO_MANY);
       }
-      visitor.begin(count);
-      begun = true;
-      for (int start = 1; start <= count; start += EXPORT_FETCH_WINDOW) {
-        Message[] window = remote.getMessages(start, Math.min(count, start + EXPORT_FETCH_WINDOW - 1));
-        FetchProfile profile = new FetchProfile();
-        profile.add(FetchProfile.Item.ENVELOPE);
-        remote.fetch(window, profile);
-        for (Message message : window) {
-          if (message instanceof MimeMessage mimeMessage && !message.isExpunged()) {
-            if (mimeMessage instanceof IMAPMessage imapMessage) {
-              imapMessage.setPeek(true);
-            }
-            visitor.message(null, mimeMessage);
-          }
-        }
-      }
-      return true;
+      uids = folderUids(remote);
+      remote.close(false);
     } catch (IllegalArgumentException e) {
+      closeQuietly(remote, store, username);
       throw e;
-    } catch (IOException | MessagingException | ConnectorCredentialsException | RuntimeException e) {
-      if (begun) {
-        LOG.debug("Export of folder {} of user {} stopped mid-copy", folderKey, username, e);
-        return true;
-      }
+    } catch (MessagingException | ConnectorCredentialsException | RuntimeException e) {
+      closeQuietly(remote, store, username);
       LOG.warn("Could not read folder {} of user {} for an export", folderKey, username, e);
       throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
+    }
+    try {
+      visitor.begin(uids.length);
+      for (int start = 0; start < uids.length; start += EXPORT_FETCH_WINDOW) {
+        visitFolderWindow(remote, Arrays.copyOfRange(uids, start, Math.min(uids.length, start + EXPORT_FETCH_WINDOW)), visitor);
+      }
+      return true;
+    } catch (ExportOutputClosedException e) {
+      LOG.debug("Export of folder {} of user {} stopped: the output is closed", folderKey, username, e);
+      return true;
+    } catch (ExportInterruptedException e) {
+      LOG.warn("Export of folder {} of user {} was interrupted", folderKey, username, e);
+      throw e;
+    } catch (IOException | MessagingException | RuntimeException e) {
+      LOG.warn("Export of folder {} of user {} was interrupted", folderKey, username, e);
+      throw new ExportInterruptedException("The mail server failed during the export of a folder", e);
     } finally {
       closeQuietly(remote, store, username);
+    }
+  }
+
+  /**
+   * The UIDs of an open folder, oldest first: one FETCH of the UIDs alone.
+   *
+   * @param folder the open folder
+   * @return the UIDs
+   * @throws MessagingException when the folder cannot be read
+   */
+  private static long[] folderUids(Folder folder) throws MessagingException {
+    Message[] messages = folder.getMessages();
+    FetchProfile profile = new FetchProfile();
+    profile.add(UIDFolder.FetchProfileItem.UID);
+    folder.fetch(messages, profile);
+    long[] uids = new long[messages.length];
+    for (int i = 0; i < messages.length; i++) {
+      uids[i] = ((UIDFolder) folder).getUID(messages[i]);
+    }
+    return uids;
+  }
+
+  /**
+   * Hands one window of a folder's messages to the visitor: the folder reopened, the
+   * window fetched by UID with its envelopes, closed again so the library forgets it.
+   *
+   * @param folder the folder, closed
+   * @param uids the window's UIDs
+   * @param visitor where the messages go
+   * @throws IOException when the visitor's output fails
+   * @throws MessagingException when the folder cannot be read
+   */
+  private static void visitFolderWindow(Folder folder, long[] uids, RawEmailVisitor visitor) throws IOException, MessagingException {
+    folder.open(Folder.READ_ONLY);
+    try {
+      Message[] window = Arrays.stream(((UIDFolder) folder).getMessagesByUID(uids)).filter(Objects::nonNull).toArray(Message[]::new);
+      FetchProfile profile = new FetchProfile();
+      profile.add(FetchProfile.Item.ENVELOPE);
+      folder.fetch(window, profile);
+      for (Message message : window) {
+        if (message instanceof MimeMessage mimeMessage && !message.isExpunged()) {
+          if (mimeMessage instanceof IMAPMessage imapMessage) {
+            imapMessage.setPeek(true);
+          }
+          visitor.message(null, mimeMessage);
+        }
+      }
+    } finally {
+      if (folder.isOpen()) {
+        folder.close(false);
+      }
     }
   }
 
@@ -6723,10 +6799,11 @@ public class EmailBoxService {
   /**
    * Opens a folder for an import (EXO-90846): every check of {@link #checkImportTarget},
    * then the folder resolved through the caller's own registry on their own connection,
-   * and the Message-IDs it already holds read once, so that a mail already there is
-   * skipped and importing the same file twice adds nothing. The target holds the
-   * connection until it is closed; closing it queues a re-read of the folder when mail
-   * was added, so the new rows appear in the list without waiting for the next check.
+   * opened read-only for the run to ask whether a Message-ID is already there
+   * ({@link MailImportTarget#contains}: one IMAP search per mail, so the cost follows what
+   * is imported, never the folder's size). The target holds the connection until it is
+   * closed; closing it queues a re-read of the folder when mail was added, so the new
+   * rows appear in the list without waiting for the next check.
    *
    * @param username the caller
    * @param folder the folder key
@@ -6750,10 +6827,10 @@ public class EmailBoxService {
         closeQuietly(null, store, username);
         return null;
       }
-      Set<String> knownMessageIds = readMessageIds(remote);
+      remote.open(Folder.READ_ONLY);
       Store openStore = store;
       Folder target = remote;
-      return new MailImportTarget(target, knownMessageIds, appended -> {
+      return new MailImportTarget(target, appended -> {
         closeQuietly(target, openStore, username);
         if (appended > 0) {
           scheduleFolderRefresh(username, folderKey, FolderRefreshCause.IMPORT);
@@ -6766,36 +6843,6 @@ public class EmailBoxService {
     }
   }
 
-  /**
-   * The Message-IDs a folder holds, normalised by {@link #normalizeMessageId}: the folder
-   * opened read-only, the one header fetched a window at a time, the folder closed again.
-   *
-   * @param folder the folder, closed
-   * @return the normalised ids
-   * @throws MessagingException when the folder cannot be read
-   */
-  private static Set<String> readMessageIds(Folder folder) throws MessagingException {
-    Set<String> ids = new HashSet<>();
-    folder.open(Folder.READ_ONLY);
-    try {
-      int count = folder.getMessageCount();
-      for (int start = 1; start <= count; start += IMPORT_ID_FETCH_WINDOW) {
-        Message[] window = folder.getMessages(start, Math.min(count, start + IMPORT_ID_FETCH_WINDOW - 1));
-        FetchProfile profile = new FetchProfile();
-        profile.add(HEADER_MESSAGE_ID);
-        folder.fetch(window, profile);
-        for (Message message : window) {
-          String[] values = message.getHeader(HEADER_MESSAGE_ID);
-          if (values != null && values.length > 0 && StringUtils.isNotBlank(values[0])) {
-            ids.add(normalizeMessageId(StringUtils.trim(values[0])));
-          }
-        }
-      }
-    } finally {
-      folder.close(false);
-    }
-    return ids;
-  }
 
   public String broadcastOpenEmail(String username) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
