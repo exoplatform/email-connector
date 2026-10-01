@@ -90,11 +90,16 @@ class EmailExportServiceTest {
   @TempDir
   Path                        dir;
 
-  /** The list's selection keys are read, a folder key holding a colon included. */
+  /**
+   * The list's selection is read, one value per folder carrying its UIDs, a folder key
+   * holding a colon included.
+   */
   @Test
   void selectionKeysAreRead() {
     assertEquals(List.of(new RawEmailRef("INBOX", 12L), new RawEmailRef("CUSTOM:3", 4242L)),
                  EmailExportService.parseSelection(List.of("INBOX:12", "CUSTOM:3:4242")));
+    assertEquals(List.of(new RawEmailRef("CUSTOM:3", 1L), new RawEmailRef("CUSTOM:3", 2L), new RawEmailRef("INBOX", 3L)),
+                 EmailExportService.parseSelection(List.of("CUSTOM:3:1,2", "INBOX:3")));
   }
 
   /** A draft key, a key without UID, a non-numeric or non-positive UID, or no key at all is refused. */
@@ -106,7 +111,9 @@ class EmailExportServiceTest {
                                     List.of(":12"),
                                     List.of("12"),
                                     List.of("INBOX:0"),
-                                    List.of("INBOX:-3"))) {
+                                    List.of("INBOX:-3"),
+                                    List.of("INBOX:1,"),
+                                    List.of("INBOX:1,,2"))) {
       IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> EmailExportService.parseSelection(bad));
       assertEquals(EmailExportService.EXPORT_INVALID_SELECTION, refused.getMessage());
     }
@@ -297,6 +304,65 @@ class EmailExportServiceTest {
     assertEquals("a.eml", EmailExportService.uniqueName("a.eml", used));
     assertEquals("A (2).eml", EmailExportService.uniqueName("A.eml", used));
     assertEquals("a (3).eml", EmailExportService.uniqueName("a.eml", used));
+  }
+
+  /**
+   * A zip message the server fails to copy mid-way is closed short and named in the
+   * report; a failure of the output -- the reader left -- is never taken for the
+   * server's, and ends the export.
+   *
+   * @throws Exception when a mock cannot be stubbed
+   */
+  @Test
+  void aZipTellsAServerFailureFromTheReaderLeaving() throws Exception {
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    ZipExportVisitor visitor = new ZipExportVisitor((name, size) -> out);
+    visitor.begin(2);
+    MimeMessage failing = org.mockito.Mockito.mock(MimeMessage.class);
+    org.mockito.Mockito.doThrow(new com.sun.mail.util.FolderClosedIOException(null, "dropped")).when(failing).writeTo(any());
+    visitor.message(row("Cut", null), failing);
+    visitor.message(row("Whole", null), mime(RAW));
+    visitor.finish();
+    Map<String, String> entries = unzip(out.toByteArray());
+    assertEquals(RAW, entries.get("Whole.eml"));
+    assertTrue(entries.get(EmailExportService.NOT_EXPORTED_ENTRY).contains("Cut"));
+
+    // The output fails once: what follows must not be read as the server's failure and
+    // carry on into the next entry.
+    java.util.concurrent.atomic.AtomicBoolean failed = new java.util.concurrent.atomic.AtomicBoolean();
+    ZipExportVisitor gone = new ZipExportVisitor((name, size) -> new java.io.OutputStream() {
+      /**
+       * A reader that left, once.
+       *
+       * @param b unused
+       * @throws java.io.IOException the first time
+       */
+      @Override
+      public void write(int b) throws java.io.IOException {
+        if (failed.compareAndSet(false, true)) {
+          throw new java.io.IOException("reset");
+        }
+      }
+    });
+    gone.begin(1);
+    byte[] big = (RAW + "x".repeat(200 * 1024)).getBytes(StandardCharsets.US_ASCII);
+    assertThrows(org.exoplatform.emailConnector.exception.ExportOutputClosedException.class,
+                 () -> gone.message(row("Big", null), mime(new String(big, StandardCharsets.US_ASCII))));
+  }
+
+  /**
+   * An mbox message the server fails to copy mid-way interrupts the export: an mbox has
+   * no place to say a message is cut short.
+   *
+   * @throws Exception when a mock cannot be stubbed
+   */
+  @Test
+  void anMboxServerFailureInterruptsTheExport() throws Exception {
+    MboxExportVisitor visitor = new MboxExportVisitor((name, size) -> new ByteArrayOutputStream(), "Inbox");
+    visitor.begin(1);
+    MimeMessage failing = org.mockito.Mockito.mock(MimeMessage.class);
+    org.mockito.Mockito.doThrow(new com.sun.mail.util.MessageRemovedIOException("gone")).when(failing).writeTo(any());
+    assertThrows(org.exoplatform.emailConnector.exception.ExportInterruptedException.class, () -> visitor.message(null, failing));
   }
 
   /**
