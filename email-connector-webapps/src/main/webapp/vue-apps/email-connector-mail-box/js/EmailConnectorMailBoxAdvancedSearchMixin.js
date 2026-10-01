@@ -16,8 +16,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
 // EXO-90838 -- the mailbox drawer's advanced search: the criteria beside the search box's
-// own text, the drawer that edits them, the chips that show them above the results, and
-// the page address that keeps them. Mixed into the mailbox drawer, whose search it
+// own text, the drawer that edits them, the chips that show them above the results, the
+// page address that keeps them, and the search row above the list. An advanced search
+// reads the copy of the folder kept in eXo first (the local arm); the mail server (the
+// server arm) is asked only when the user does, from the results' status line, or when
+// the copy holds no match. The search box's own text, without criteria, keeps its
+// instant local matches merged with the mail server's answer. Mixed into the mailbox drawer, whose search it
 // extends: the drawer's searchTerm, runSearch, clearSearch and filter chips (Unread,
 // Favorites) are the ones used here, the two chips being the search's unread and
 // starred criteria as they are the list's.
@@ -37,16 +41,35 @@ export const APPLY_ADVANCED_SEARCH_EVENT = 'email-advanced-search-apply';
 // The user's own folders the mail server searches.
 const OWN_SEARCH_FOLDERS = ['INBOX', 'SENT', 'ARCHIVE'];
 
-// How long typing in the search box must pause before a new search while the advanced
-// search's words are set: each such search reads the messages' bodies, which a server
-// without a full-text index does by scanning the folder.
+// How long the server arm waits before it asks the mail server on its own -- the copy
+// held no match -- while the advanced search's words are set: such a search reads the
+// messages' bodies, which a server without a full-text index does by scanning the folder,
+// and a new keystroke within that pause makes it unnecessary.
 const BODY_SEARCH_DEBOUNCE_MS = 1200;
+
+// How many hits the local arm asks for, as the server arm does.
+const LOCAL_PAGE_SIZE = 20;
 
 export default {
   data: () => ({
     // The advanced criteria, beside the search box's text: {from, to, words, after,
     // before, attachment, folder}; folder null searches the folder shown.
     searchCriteria: emptySearchCriteria(),
+    // The search row: whether its field replaces the chips, and its text.
+    searchFieldOpen: false,
+    searchFieldText: '',
+    // The local arm: the copy's hits, how many matched, the copy's oldest message date in
+    // the folder searched, and whether it is on its way.
+    searchLocalResults: [],
+    searchLocalTotal: 0,
+    searchCachedSince: null,
+    searchLocalRunning: false,
+    // Whether the mail server was asked for this search (always, without criteria).
+    searchServerAsked: false,
+    // How many server matches were examined for an attachment, when not all (0).
+    searchScanned: 0,
+    // The text the search box held when the advanced search was opened, carried into it.
+    advancedCarriedText: '',
   }),
   computed: {
     /**
@@ -57,7 +80,7 @@ export default {
     advancedSearchActive() {
       const criteria = this.searchCriteria;
       // Another folder with Unread or Favorites lit is a search too: the list cannot
-      // show that folder's unread or starred mail, the server can.
+      // show that folder's unread or starred mail, a search can.
       return hasSearchCriteria(criteria)
         || !!criteria.folder && criteria.folder !== this.currentFolder && (this.unreadOnly || this.favoriteOnly);
     },
@@ -81,6 +104,69 @@ export default {
         ? (this.availableFolders || []).map(folder => folder.key).filter(key => key?.startsWith('CUSTOM:') && this.isFolderSearchable(key))
         : OWN_SEARCH_FOLDERS.filter(key => !this.folders?.length || this.folders.some(folder => folder.key === key));
       return folders.map(key => ({ key, label: this.folderLabelOf(key) }));
+    },
+    /**
+     * Whether the server arm can be offered: in the user's own mailbox only -- a shared
+     * mailbox is only ever searched in eXo's copy of it.
+     *
+     * @returns {Boolean} true when the mail server can be asked
+     */
+    serverArmAvailable() {
+      return !this.currentSharedMailbox;
+    },
+    /**
+     * What the results' status line says of the local arm while the mail server was not
+     * asked: the folder searched, since when eXo holds its mail, how many matched, and
+     * whether the whole mailbox can be searched on the server.
+     *
+     * @returns {Object} {running, folder, since, shown, total, offerServer}, or null when
+     *          the server arm runs, the copy could not be read, or the search is the
+     *          search box's alone
+     */
+    localSearchStatus() {
+      if (!this.advancedSearchActive || this.searchServerAsked || this.searchServerError) {
+        return null;
+      }
+      return {
+        running: this.searchLocalRunning,
+        folder: this.folderLabelOf(this.searchFolder),
+        since: this.searchCachedSince ? this.searchDayLabel(new Date(this.searchCachedSince)) : null,
+        shown: this.searchLocalResults.length,
+        total: this.searchLocalTotal,
+        offerServer: this.serverArmAvailable && !this.searchLocalRunning,
+      };
+    },
+    /**
+     * The search row's state, the same wherever the row is drawn.
+     *
+     * @returns {Object} the row's props
+     */
+    searchBarProps() {
+      return {
+        importantCategory: this.importantCategory,
+        categoryViewId: this.categoryViewId,
+        favoriteOnly: this.favoriteOnly,
+        unreadOnly: this.unreadOnly,
+        searchable: this.canSearch,
+        searchOpen: this.searchFieldOpen,
+        searchText: this.searchFieldText,
+      };
+    },
+    /**
+     * The search row's events, the same wherever the row is drawn.
+     *
+     * @returns {Object} the handlers, by event
+     */
+    searchBarListeners() {
+      return {
+        'toggle-important': this.toggleImportantView,
+        'toggle-favorite': this.onToggleFavoriteFilter,
+        'toggle-unread': this.toggleUnreadFilter,
+        'open-search': this.openSearchField,
+        'close-search': this.closeSearchField,
+        'search-input': this.onSearchFieldInput,
+        'advanced-search': this.openAdvancedSearch,
+      };
     },
     /**
      * The chips above the search results: one per criterion that narrows the search,
@@ -138,9 +224,12 @@ export default {
     },
   },
   created() {
+    // The server arm's own start when the copy held no match; not reactive state.
+    this.serverArmTimer = null;
     this.$root.$on(APPLY_ADVANCED_SEARCH_EVENT, this.applyAdvancedSearch);
   },
   beforeDestroy() {
+    window.clearTimeout(this.serverArmTimer);
     this.$root.$off(APPLY_ADVANCED_SEARCH_EVENT, this.applyAdvancedSearch);
   },
   methods: {
@@ -150,8 +239,13 @@ export default {
      * @returns {void}
      */
     openAdvancedSearch() {
+      // The text typed in the search box goes into the field it fits: an address into
+      // From, anything else into "Has the words" -- unless that field is already set.
+      const text = (this.searchFieldText || '').trim();
+      const field = text.includes('@') ? 'from' : 'words';
+      this.advancedCarriedText = text && !(this.searchCriteria[field] || '').trim() ? text : '';
       this.$root.$emit(OPEN_ADVANCED_SEARCH_EVENT, {
-        criteria: { ...this.searchCriteria, folder: this.searchFolder },
+        criteria: { ...this.searchCriteria, folder: this.searchFolder, ...(this.advancedCarriedText ? { [field]: text } : {}) },
         unread: this.unreadOnly,
         favorites: this.favoriteOnly,
         folders: this.searchFolderOptions,
@@ -173,6 +267,14 @@ export default {
         criteria.folder = null;
       }
       this.searchCriteria = criteria;
+      if (this.advancedCarriedText) {
+        // The box's text now lives in the criterion it was carried into.
+        this.advancedCarriedText = '';
+        this.searchFieldText = '';
+        this.searchFieldOpen = false;
+        window.clearTimeout(this.searchDebounceTimer);
+        this.searchTerm = '';
+      }
       this.setSearchChips(!!search?.unread, !!search?.favorites);
       this.rerunSearch();
     },
@@ -302,14 +404,140 @@ export default {
      * @returns {void}
      */
     resetAdvancedSearch() {
+      window.clearTimeout(this.serverArmTimer);
       this.searchCriteria = emptySearchCriteria();
+      this.searchLocalResults = [];
+      this.searchLocalTotal = 0;
+      this.searchCachedSince = null;
+      this.searchLocalRunning = false;
+      this.searchServerAsked = false;
+      this.searchScanned = 0;
       clearSearchFromUrl();
     },
     /**
-     * How long typing in the search box must pause before a search: longer while the
-     * advanced search's words are set, since each search then reads the bodies.
+     * Runs a search's arms: with advanced criteria, the copy kept in eXo first, the mail
+     * server only when the copy holds no match; without, the search box's own search, on
+     * the mail server beside its instant local matches, as always.
      *
-     * @param {Number} defaultPause the search box's usual pause, in milliseconds
+     * @returns {void}
+     */
+    runSearchArms() {
+      window.clearTimeout(this.serverArmTimer);
+      if (!this.advancedSearchActive) {
+        // The criteria may just have been taken off: their copy's hits go with them.
+        this.searchLocalResults = [];
+        this.searchLocalTotal = 0;
+        this.searchCachedSince = null;
+        this.searchLocalRunning = false;
+        this.searchServerAsked = true;
+        this.runServerSearch();
+        return;
+      }
+      this.runLocalSearch();
+    },
+    /**
+     * The local arm: one folder of the copy kept in eXo, with every criterion. A copy
+     * with no match asks the mail server on its own -- after a pause while the words are
+     * set -- in the user's own mailbox; a match leaves the server to the user's link.
+     *
+     * @returns {void}
+     */
+    runLocalSearch() {
+      const requestId = ++this.searchRequestId;
+      const sharedMailbox = this.currentSharedMailbox;
+      this.searchServerAsked = false;
+      this.searchServerResults = [];
+      this.searchTotalMatches = 0;
+      this.searchScanned = 0;
+      this.searchServerRunning = false;
+      this.searchServerError = false;
+      this.searchLocalRunning = true;
+      this.$emailConnectorMailBoxService.searchCachedFolder(this.searchTerm, this.searchFolder, LOCAL_PAGE_SIZE, this.favoriteOnly, this.unreadOnly, this.searchCriteria)
+        .then(page => {
+          if (requestId !== this.searchRequestId) {
+            return;
+          }
+          this.searchLocalResults = this.withLocalFavorites(page?.results || [], requestId);
+          this.searchLocalTotal = page?.totalMatches || 0;
+          this.searchCachedSince = page?.cachedSince || null;
+          if (!this.searchLocalResults.length && this.serverArmAvailable) {
+            const pause = this.searchPause(0);
+            this.serverArmTimer = window.setTimeout(() => {
+              if (requestId === this.searchRequestId) {
+                this.searchWholeMailbox();
+              }
+            }, pause);
+          }
+        })
+        .catch(async () => {
+          if (requestId !== this.searchRequestId) {
+            return;
+          }
+          if (sharedMailbox && (await this.leftSharedMailboxAfterFailure(sharedMailbox)
+              || requestId !== this.searchRequestId)) {
+            return;
+          }
+          this.searchLocalResults = [];
+          this.searchLocalTotal = 0;
+          this.searchServerError = true;
+        })
+        .finally(() => {
+          if (requestId === this.searchRequestId) {
+            this.searchLocalRunning = false;
+          }
+        });
+    },
+    /**
+     * The server arm, asked by the user from the results' status line or on its own when
+     * the copy held no match: the same criteria on the mail server, its hits merged with
+     * the copy's (the server's answer wins for a message both hold).
+     *
+     * @returns {void}
+     */
+    searchWholeMailbox() {
+      window.clearTimeout(this.serverArmTimer);
+      if (!this.serverArmAvailable) {
+        return;
+      }
+      this.searchServerAsked = true;
+      this.runServerSearch(this.searchRequestId);
+    },
+    /**
+     * Opens the search row's field.
+     *
+     * @returns {void}
+     */
+    openSearchField() {
+      this.searchFieldOpen = true;
+    },
+    /**
+     * Closes the search row's field and empties it: back to the chips, and to the folder's
+     * list unless advanced criteria still make a search.
+     *
+     * @returns {void}
+     */
+    closeSearchField() {
+      this.searchFieldOpen = false;
+      if (this.searchFieldText) {
+        this.searchFieldText = '';
+        this.onFilterUpdated('');
+      }
+    },
+    /**
+     * The search row's field changed.
+     *
+     * @param {String} text the field's text
+     * @returns {void}
+     */
+    onSearchFieldInput(text) {
+      this.searchFieldText = text || '';
+      this.onFilterUpdated(this.searchFieldText);
+    },
+    /**
+     * How long the server arm waits before asking the mail server on its own: longer
+     * while the advanced search's words are set, since its search then reads the bodies.
+     *
+     * @param {Number} defaultPause the usual pause, in milliseconds
      * @returns {Number} the pause, in milliseconds
      */
     searchPause(defaultPause) {
@@ -318,11 +546,11 @@ export default {
     /**
      * A day of the search, as the platform writes a day in the user's language.
      *
-     * @param {String} day yyyy-MM-dd
+     * @param {String|Date} day yyyy-MM-dd, or a date
      * @returns {String} the day, written out
      */
     searchDayLabel(day) {
-      const [year, month, date] = day.split('-').map(Number);
+      const [year, month, date] = typeof day === 'string' ? day.split('-').map(Number) : [day.getFullYear(), day.getMonth() + 1, day.getDate()];
       return this.$dateUtil.formatDateObjectToDisplay(new Date(year, month - 1, date), {
         year: 'numeric',
         month: 'short',
