@@ -111,9 +111,11 @@ import io.meeds.social.util.JsonUtils;
  * <p>
  * Nothing lands in a calendar here: the agenda add-on is not a dependency of this one.
  * The add-on that holds the user's calendar, when one is installed, is handed the
- * answered invitation after the REPLY left ({@link InvitationLandingService},
- * EXO-90848) -- for the user's own mailbox only: a shared mailbox's invitation is its
- * owner's event, and the answer acts for nobody but the user who gave it.
+ * invitation ({@link InvitationLandingService}, EXO-90848): answered, after the REPLY
+ * left; added as it is on the user's click, answer or not; removed on their click when
+ * its organiser cancelled it. For the user's own mailbox only: a shared mailbox's
+ * invitation is its owner's event, and nothing here acts for anybody but the user who
+ * clicked.
  */
 @Service
 public class CalendarInvitationService {
@@ -153,6 +155,13 @@ public class CalendarInvitationService {
 
   /** The mail server failed after the answer may have been accepted. */
   public static final String  UNCONFIRMED             = "emailConnector.invitation.unconfirmed";
+
+  /**
+   * The event cannot be added to, or removed from, the user's calendar from here: no
+   * add-on holds a calendar for them, the mail is a shared mailbox's, or the message is
+   * not the kind asked -- a cancellation to add, an invitation to remove.
+   */
+  public static final String  NOT_LANDABLE            = "emailConnector.invitation.notLandable";
 
   /** The highest cap an administrator may set: 64 MiB, far above any calendar. */
   static final long           MAX_CAP                 = 64L * 1024 * 1024;
@@ -288,15 +297,92 @@ public class CalendarInvitationService {
     remember(username, parsed, answer);
     invitation.setAnswer(answer);
     if (delegation == null) {
-      invitation.setLanding(invitationLandingService.land(new InvitationLanding(username,
-                                                                                invitation.getAttendeeAddress(),
-                                                                                invitation.getUid(),
-                                                                                parsed.recurrenceId(),
-                                                                                invitation.getSequence(),
-                                                                                answer,
-                                                                                parsed.icalendar())));
+      land(username, parsed, answer);
     }
     return invitation;
+  }
+
+  /**
+   * Adds the event a message describes to the user's calendar without answering it: an
+   * invitation they do not want to answer yet, or a published event with nobody to
+   * answer. From the user's own mailbox only, and never a cancelled event.
+   *
+   * @param emailId the cached message's technical id
+   * @param username the user, who must own the cached row
+   * @return the invitation, with what became of it in the calendar
+   * @throws ObjectNotFoundException {@link #NOT_FOUND}
+   * @throws IllegalAccessException when the user's connector is not usable, or
+   *           {@link #NOT_LANDABLE} for a shared mailbox's message
+   * @throws IllegalArgumentException {@link #NOT_LANDABLE} when no add-on holds a
+   *           calendar for the user, {@link #CANCELLED}, {@link #TOO_LARGE},
+   *           {@link #UNREADABLE} or {@link #UNSUPPORTED}
+   * @throws IllegalStateException when the mailbox cannot be read
+   */
+  public CalendarInvitation addToCalendar(long emailId, String username) throws ObjectNotFoundException, IllegalAccessException {
+    Email email = ownedEmail(emailId, username);
+    ParsedInvitation parsed = read(email, username);
+    CalendarInvitation invitation = parsed.invitation();
+    if (emailDelegationService.delegationOf(username, email.getFolder()) != null) {
+      throw new IllegalAccessException(NOT_LANDABLE);
+    }
+    if (invitation.isCancelled()) {
+      throw new IllegalArgumentException(CANCELLED);
+    }
+    if (!invitation.isLandable()) {
+      throw new IllegalArgumentException(NOT_LANDABLE);
+    }
+    land(username, parsed, null);
+    return invitation;
+  }
+
+  /**
+   * Removes from the user's calendar the event a cancellation says is called off. From
+   * the user's own mailbox only, and only for the organiser's CANCEL.
+   *
+   * @param emailId the cached message's technical id
+   * @param username the user, who must own the cached row
+   * @return the invitation, with what became of it in the calendar
+   * @throws ObjectNotFoundException {@link #NOT_FOUND}
+   * @throws IllegalAccessException when the user's connector is not usable, or
+   *           {@link #NOT_LANDABLE} for a shared mailbox's message
+   * @throws IllegalArgumentException {@link #NOT_LANDABLE} when the message is not a
+   *           cancellation or no add-on holds a calendar for the user,
+   *           {@link #TOO_LARGE}, {@link #UNREADABLE} or {@link #UNSUPPORTED}
+   * @throws IllegalStateException when the mailbox cannot be read
+   */
+  public CalendarInvitation removeFromCalendar(long emailId, String username) throws ObjectNotFoundException, IllegalAccessException {
+    Email email = ownedEmail(emailId, username);
+    ParsedInvitation parsed = read(email, username);
+    CalendarInvitation invitation = parsed.invitation();
+    if (emailDelegationService.delegationOf(username, email.getFolder()) != null) {
+      throw new IllegalAccessException(NOT_LANDABLE);
+    }
+    if (!invitation.isRemovable()) {
+      throw new IllegalArgumentException(NOT_LANDABLE);
+    }
+    land(username, parsed, null);
+    return invitation;
+  }
+
+  /**
+   * Hands the invitation to the add-on holding the user's calendar, which tells the
+   * invitation what became of it.
+   *
+   * @param username the user, from their own mailbox
+   * @param parsed the invitation
+   * @param answer the answer just given, null to add or remove without one
+   */
+  private void land(String username, ParsedInvitation parsed, InvitationAnswer answer) {
+    CalendarInvitation invitation = parsed.invitation();
+    invitationLandingService.land(new InvitationLanding(username,
+                                                        invitation.getAttendeeAddress(),
+                                                        invitation.getMethod(),
+                                                        invitation.getUid(),
+                                                        parsed.recurrenceId(),
+                                                        invitation.getSequence(),
+                                                        answer,
+                                                        parsed.icalendar()),
+                                  invitation);
   }
 
   /**
@@ -425,6 +511,13 @@ public class CalendarInvitationService {
       boolean mayAnswer = delegation == null || sendMode(username, delegation) != null;
       invitation.setAnswerable(mayAnswer);
       invitation.setAnswerRefusal(mayAnswer ? null : SEND_NOT_ALLOWED);
+    }
+    // The user's own calendar, from their own mailbox: a shared mailbox's invitation
+    // is its owner's event. Asked only when there is a UID to land under.
+    if (delegation == null && StringUtils.isNotBlank(invitation.getUid()) && invitationLandingService.holdsCalendarFor(username)) {
+      boolean cancellation = CalendarInvitationUtils.METHOD_CANCEL.equals(invitation.getMethod());
+      invitation.setLandable(!invitation.isCancelled());
+      invitation.setRemovable(cancellation);
     }
     return parsed;
   }
