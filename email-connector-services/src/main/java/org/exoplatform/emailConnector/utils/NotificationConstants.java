@@ -29,6 +29,9 @@ public class NotificationConstants {
   /** A scheduled mail was not sent, or could not be confirmed sent (EXO-90434). */
   public static final String SCHEDULED_EMAIL_FAILED_NOTIFICATION_PLUGIN = "ScheduledEmailFailedNotificationPlugin";
 
+  /** A mail import into a folder ended, with its counts (EXO-90846). */
+  public static final String MAIL_IMPORT_FINISHED_NOTIFICATION_PLUGIN = "MailImportFinishedNotificationPlugin";
+
   /** One of the user's own mail filters matched new mail (EXO-90654). */
   public static final String EMAIL_FILTER_NOTIFICATION_PLUGIN = "EmailFilterNotificationPlugin";
 
