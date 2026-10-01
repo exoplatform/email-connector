@@ -90,8 +90,8 @@ public class EmailBoxRest {
 
   /**
    * The prefix every folder refusal code carries, {@code emailConnector.folder.tooMany}
-   * and {@code emailConnector.folder.name.duplicate} alike: each one is a constant of
-   * {@code EmailFolderService} or {@code EmailBoxService}, never an engine's text.
+   * and {@code emailConnector.folder.name.duplicate} alike: each one is a message code
+   * the add-on's own code raises, never an engine's text.
    */
   static final String               FOLDER_CODE_PREFIX = "emailConnector.folder.";
 
