@@ -198,8 +198,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :server-searching="searchServerRunning"
             :server-error="searchServerError"
             :shared-mailbox="!!currentSharedMailbox"
+            :criteria-chips="searchCriteriaChips"
             draggable-hits
-            @open-result="openSearchResult" />
+            @open-result="openSearchResult"
+            @remove-criterion="removeSearchCriterion"
+            @clear-criteria="clearSearchCriteria"
+            @advanced-search="openAdvancedSearch" />
           <!-- The Scheduled view (EXO-90434): its own list, no chips. -->
           <email-connector-mail-box-scheduled-list
             v-else-if="scheduledView"
@@ -216,7 +220,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               class="full-width border-box-sizing application-border application-border-radius px-3"
               @toggle-important="toggleImportantView"
               @toggle-favorite="onToggleFavoriteFilter"
-              @toggle-unread="toggleUnreadFilter" />
+              @toggle-unread="toggleUnreadFilter"
+              @advanced-search="openAdvancedSearch" />
             <email-connector-mail-box-drawer-content
               v-if="hasEmails"
               ref="expandedListContent"
@@ -299,7 +304,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :server-searching="searchServerRunning"
           :server-error="searchServerError"
           :shared-mailbox="!!currentSharedMailbox"
-          @open-result="openSearchResult" />
+          :criteria-chips="searchCriteriaChips"
+          @open-result="openSearchResult"
+          @remove-criterion="removeSearchCriterion"
+          @clear-criteria="clearSearchCriteria"
+          @advanced-search="openAdvancedSearch" />
         <!-- Full screen: the reader. With nothing open it shows the "select an email"
              placeholder while the list beside it holds something to select, and nothing
              over an empty list, which says so itself (EXO-90415). -->
@@ -338,7 +347,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
             @toggle-important="toggleImportantView"
             @toggle-favorite="onToggleFavoriteFilter"
-            @toggle-unread="toggleUnreadFilter" />
+            @toggle-unread="toggleUnreadFilter"
+            @advanced-search="openAdvancedSearch" />
           <template v-if="hasEmails">
             <email-connector-mail-box-drawer-content
               ref="listContent"
@@ -371,6 +381,7 @@ import { LIST_TOP_ROW_HEIGHT, SCHEDULED_VIEW, isScheduledView, SHARED_INBOX_TYPE
 import listNavigationMixin, { firstOpenableThread, searchRows, threadIndexOf, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
 import emailDragMixin from '../../js/EmailConnectorMailBoxEmailDragMixin.js';
 import columnWidthsMixin, { DEFAULT_LIST_WIDTH_PX } from '../../js/EmailConnectorMailBoxColumnWidths.js';
+import advancedSearchMixin from '../../js/EmailConnectorMailBoxAdvancedSearchMixin.js';
 
 // The drawer's width in its narrow layout: exo-drawer's own default, which is also the
 // full-screen list's default width.
@@ -541,7 +552,7 @@ const SEARCH_PAGE_SIZE = 20;
 const SEARCH_FETCH_RETRY_MS = 3000;
 
 export default {
-  mixins: [listNavigationMixin, emailDragMixin, columnWidthsMixin],
+  mixins: [listNavigationMixin, emailDragMixin, columnWidthsMixin, advancedSearchMixin],
   data() {
     return {
       emailBoxDrawer: false,
@@ -954,9 +965,8 @@ export default {
         return;
       }
       await this.open(options.loading, options.folder, options.mailbox);
-      if (options.searchTerm) {
-        this.openSearchFromOutside(options.searchTerm);
-      }
+      // A search from the platform's search, or from the page address (EXO-90838).
+      this.applyOpeningSearch(options);
     });
     this.$root.$on('attachment-download-started', (payload) => {
       this.activeDownload = payload;
@@ -1283,14 +1293,16 @@ export default {
       return view ? `${view.count || 0}|${!!view.attention}` : '0|false';
     },
     searchActive() {
-      return !!this.searchTerm;
+      return !!this.searchTerm || this.advancedSearchActive;
     },
     // Instant matches from the emails the app already holds (the whole cached
     // window of the current folder), on the same fields the server searches —
     // subject and sender — so the instant list and the final one agree.
     localSearchMatches() {
       const term = this.searchTerm.toLowerCase();
-      if (!term) {
+      // Not under advanced criteria (EXO-90838): the listed window cannot tell a body's
+      // words, a recipient or an attachment, nor read another folder; the server answers.
+      if (!term || this.advancedSearchActive || this.searchFolder !== this.currentFolder) {
         return [];
       }
       return (this.emailBox?.emails || [])
@@ -1948,7 +1960,7 @@ export default {
     onFilterUpdated(text) {
       window.clearTimeout(this.searchDebounceTimer);
       const term = (text || '').trim();
-      if (!term) {
+      if (!term && !this.advancedSearchActive) {
         this.clearSearch();
         return;
       }
@@ -1958,6 +1970,7 @@ export default {
       this.searchTerm = term;
       this.cancelSelectMode();
       this.runServerSearch();
+      this.syncSearchUrl();
     },
     /**
      * Whether a folder has a search: not the Scheduled view (EXO-90434), and not the
@@ -1998,7 +2011,7 @@ export default {
       const sharedMailbox = this.currentSharedMailbox;
       this.searchServerRunning = true;
       this.searchServerError = false;
-      this.$emailConnectorMailBoxService.searchEmails(this.searchTerm, this.currentFolder, SEARCH_PAGE_SIZE, this.favoriteOnly, this.unreadOnly)
+      this.$emailConnectorMailBoxService.searchEmails(this.searchTerm, this.searchFolder, SEARCH_PAGE_SIZE, this.favoriteOnly, this.unreadOnly, this.searchCriteria)
         .then(page => {
           if (requestId !== this.searchRequestId) {
             return;
@@ -2087,6 +2100,7 @@ export default {
       this.searchTotalMatches = 0;
       this.searchServerRunning = false;
       this.searchServerError = false;
+      this.resetAdvancedSearch();
     },
     /**
      * Opens one search hit: a cached one goes straight to the existing reader; an

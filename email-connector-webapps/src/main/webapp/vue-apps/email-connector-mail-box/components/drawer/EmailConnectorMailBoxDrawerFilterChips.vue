@@ -67,6 +67,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.filter.unread') }}
       </span>
     </v-chip>
+    <!-- The advanced search (EXO-90838): sender, recipient, words, days, attachment,
+         folder -- opened beside the chips that already narrow the list. -->
+    <v-btn
+      :title="$t('emailConnector.mailBox.search.advanced.open')"
+      :aria-label="$t('emailConnector.mailBox.search.advanced.open')"
+      class="ms-auto flex-shrink-0"
+      icon
+      small
+      @click="$emit('advanced-search')">
+      <v-icon size="16" class="icon-default-color">fa-sliders-h</v-icon>
+    </v-btn>
   </div>
 </template>
 
