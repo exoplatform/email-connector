@@ -362,7 +362,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { personName } from '../../js/EmailRecipientDisplay.js';
-import { escapeHtml, replyQuoteBody } from '../../js/EmailReplyQuote.js';
+import { escapeHtml, forwardedOriginalBody, replyQuoteBody } from '../../js/EmailReplyQuote.js';
+import { keepEmptyLines } from '../../js/EmailComposedBody.js';
 
 const DEFAULT_EDITOR_MAX_HEIGHT = 300;
 
@@ -1732,7 +1733,9 @@ export default {
       if (email.cc?.length) {
         bodyParts.push('<br>', `${this.$t('emailConnector.mailBox.newEmail.drawer.cc.label')} ${this.quotedRecipients(email.cc)}`);
       }
-      bodyParts.push('<br><br><br>', email.content.body || '');
+      // The message itself, made ready for the HTML editor: a plain-text original
+      // keeps its line breaks (forwardedOriginalBody), as a reply's quote already does.
+      bodyParts.push('<br><br><br>', forwardedOriginalBody(email.content?.body, email.content?.html));
       return bodyParts.join('\n');
     },
     /**
@@ -1926,7 +1929,9 @@ export default {
     snapshotDraft() {
       return {
         subject: this.email.subject,
-        body: this.email.content.body,
+        // With its empty lines made visible (keepEmptyLines): the row is what a resumed
+        // draft, a scheduled send and the Sent copy are built from.
+        body: keepEmptyLines(this.email.content.body),
         // Names as well as addresses, unlike the send payload. A draft is read back
         // into these very fields when it is resumed, so what is not stored is what the
         // user sees disappear from a chip they typed. The send API has no use for them
@@ -2478,7 +2483,6 @@ export default {
           mimeType: attachment.mimeType,
           size: attachment.size,
         }));
-      this.email.content.body = this.formatEmailBody(this.email.content.body);
       this.loading = true;
       // Nothing may push a draft of a message that is about to be sent: the close
       // handler below would otherwise upload one, and showing someone a draft of a
@@ -2504,9 +2508,14 @@ export default {
       // the send (EXO-90584): the name travels in the draft, and no query parameter can
       // then disagree with it.
       this.email.sendMode = this.draftSendMode();
+      // The body goes out formatted in the payload alone, never written back into the
+      // composer's field: that field's watcher runs after the cancel above and would
+      // start a save of a mail being sent, which on a never-saved mail leaves a draft
+      // of it behind. A failed send also keeps on screen what the user typed.
+      const outgoing = { ...this.email, content: { ...this.email.content, body: this.formatEmailBody(this.email.content.body) } };
       const send = this.draftSession.localId
-        ? this.$emailConnectorMailBoxService.sendDraft(this.draftSession.localId, this.email, delegationId, null)
-        : this.$emailConnectorMailBoxService.sendEmail(this.email, delegationId, sendMode);
+        ? this.$emailConnectorMailBoxService.sendDraft(this.draftSession.localId, outgoing, delegationId, null)
+        : this.$emailConnectorMailBoxService.sendEmail(outgoing, delegationId, sendMode);
       // What the notice promised when the composer opened (Q-3): a copy in the owner's
       // Sent. Anything short of it having been filed is said -- louder for a mail in the
       // owner's name, of which they then have no copy at all.
@@ -2992,8 +3001,9 @@ export default {
       }).filter(recipient => recipient.address);
     },
     /**
-     * Widens the quoted blocks the editor produced into something a mail client
-     * renders as a quote.
+     * Makes the composed body travel as the sender saw it: its empty lines kept
+     * (keepEmptyLines), and the quoted blocks the editor produced widened into
+     * something a mail client renders as a quote.
      *
      * @param {string} html - the composed body
      * @returns {string} the body to send
@@ -3002,7 +3012,7 @@ export default {
       if (!html) {
         return html;
       }
-      return html.replace(/<blockquote>/g, `
+      return keepEmptyLines(html).replace(/<blockquote>/g, `
       <blockquote style="
         margin: 0 0 0 6px;
         padding-left: 8px;
