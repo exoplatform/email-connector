@@ -122,11 +122,12 @@ public final class EmailHtmlSanitizer {
     for (int i = headStyles.size() - 1; i >= 0; i--) {
       dirty.body().prependChild(headStyles.get(i));
     }
-    // A protocol-relative image is an http(s) one: given its scheme, it is held back or
-    // shown like the others, where the allow-list would drop it for good.
-    for (Element image : dirty.body().select("img[src]")) {
-      if (compact(image.attr("src")).startsWith("//")) {
-        image.attr("src", "https:" + compact(image.attr("src")));
+    // A protocol-relative image or background is an http(s) one: given its scheme, it is
+    // held back or shown like the others, where the allow-list would drop it for good.
+    for (Element element : dirty.body().select("img[src], [background]")) {
+      String attribute = element.hasAttr("src") && "img".equals(element.normalName()) ? "src" : "background";
+      if (compact(element.attr(attribute)).startsWith("//")) {
+        element.attr(attribute, "https:" + compact(element.attr(attribute)));
       }
     }
     String bodyStyle = bodyStyle(dirty.body());
