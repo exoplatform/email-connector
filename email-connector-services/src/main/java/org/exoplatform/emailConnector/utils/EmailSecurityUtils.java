@@ -66,7 +66,8 @@ public final class EmailSecurityUtils {
   /**
    * How much of an {@code Authentication-Results} header is read. A real one is a few
    * hundred characters; reading a bounded prefix keeps the comment stripping and the
-   * result matching linear whatever a sender writes when the receiving server adds none.
+   * result matching bounded (a few tens of milliseconds at worst) whatever a sender
+   * writes when the receiving server adds none.
    */
   private static final int    MAX_HEADER_LENGTH               = 8192;
 
@@ -288,7 +289,7 @@ public final class EmailSecurityUtils {
       }
       for (int i = next + 1; i < length; i++) {
         char c = value.charAt(i);
-        if (c == '@' || isRegexSpace(c)) {
+        if (c == '@' || CssScan.isSpace(c)) {
           return null;
         }
       }
@@ -343,17 +344,6 @@ public final class EmailSecurityUtils {
     return Character.isLetter(codePoint) || type == Character.DECIMAL_DIGIT_NUMBER || type == Character.LETTER_NUMBER
         || type == Character.OTHER_NUMBER;
   }
-
-  /**
-   * Whether a character is white space as {@code \s} reads it.
-   *
-   * @param c the character
-   * @return true for space, tab, line feed, vertical tab, form feed or carriage return
-   */
-  private static boolean isRegexSpace(char c) {
-    return c == ' ' || c == '\t' || c == '\n' || c == '\u000B' || c == '\f' || c == '\r';
-  }
-
 
   /**
    * The host a link leads to, for a web link.
