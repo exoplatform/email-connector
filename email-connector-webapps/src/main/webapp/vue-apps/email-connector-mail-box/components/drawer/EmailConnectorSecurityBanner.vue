@@ -15,65 +15,77 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- The two things the reader says about a received message before its body
-       (EXO-90841): why it looks suspicious, each reason in words, and that the images it
-       would fetch from the internet are held back, with the two ways to load them. The
-       reasons quote what the message presents (a name, a domain) as text, never as
-       markup. "Always show" is not offered on a message that looks suspicious: trusting
-       a sender is a decision to take on a message that gives no reason for doubt. -->
+  <!-- The two notices the reader gives about a received message (EXO-90841), placed
+       between its header and its body: why it looks suspicious, each reason in words,
+       and that the images it would fetch from the internet are held back, with the two
+       ways to load them. Dressed like the assistant card above the mail: a thin frame in
+       the platform's border colour with a thicker accent on the reading-start side (the
+       warning colour for the reasons, the primary colour for the images), in secondary
+       text size so it reads as a notice. Wide (the full-screen reader), each notice is
+       one line with its links at the end; narrow (the drawer), the links wrap under the
+       text. The reasons quote what the message presents as text, never as markup.
+       "Always show" is not offered on a message that looks suspicious. Inline style for
+       the accent because this webapp's webpack has no CSS loader. -->
   <div v-if="hasWarnings || remoteContentBlocked" class="mail-security-banners text-start">
-    <!-- Both banners are the platform's alert with a coloured left border: the icon on
-         the left, the text left-aligned in the normal text colour, readable on the
-         page's background, and the actions under the text. -->
-    <v-alert
+    <div
       v-if="hasWarnings"
-      class="mail-security-warning text-start mb-3"
-      type="warning"
-      role="alert"
-      border="left"
-      colored-border
-      elevation="0"
-      dense>
-      <div class="font-weight-bold text-color">{{ $t('emailConnector.mailBox.security.warning.title') }}</div>
-      <div
-        v-for="(warning, index) in warnings"
-        :key="index"
-        :class="`text-color text-wrap mt-1 mail-security-warning-${warning.type}`">
-        {{ warningLabel(warning) }}
+      :style="frameStyle(warningColor)"
+      class="mail-security-warning border-color rounded d-flex align-start px-3 py-2 mb-3"
+      role="alert">
+      <v-icon
+        :color="warningColor"
+        size="14"
+        class="me-2 mt-1 flex-shrink-0">
+        fas fa-exclamation-triangle
+      </v-icon>
+      <div class="text-caption text-color">
+        <div class="font-weight-bold">{{ $t('emailConnector.mailBox.security.warning.title') }}</div>
+        <div
+          v-for="(warning, index) in warnings"
+          :key="index"
+          :class="`text-wrap mail-security-warning-${warning.type}`">
+          {{ warningLabel(warning) }}
+        </div>
       </div>
-    </v-alert>
-    <v-alert
+    </div>
+    <div
       v-if="remoteContentBlocked"
-      class="mail-remote-content-banner text-start mb-3"
-      type="info"
-      role="status"
-      border="left"
-      colored-border
-      elevation="0"
-      dense>
-      <div class="text-color text-wrap">{{ $t('emailConnector.mailBox.remoteContent.blocked') }}</div>
-      <div class="d-flex flex-wrap justify-start mt-1">
-        <v-btn
-          :disabled="loading || busy"
-          class="mail-remote-content-show px-0 me-4"
-          color="primary"
-          text
-          small
-          @click="$emit('show-remote-content')">
-          {{ $t('emailConnector.mailBox.remoteContent.show') }}
-        </v-btn>
-        <v-btn
-          v-if="senderAddress && !hasWarnings"
-          :disabled="loading || busy"
-          class="mail-remote-content-trust px-0"
-          color="primary"
-          text
-          small
-          @click="trustSender">
-          {{ $t('emailConnector.mailBox.remoteContent.alwaysShow') }}
-        </v-btn>
+      :style="frameStyle(primaryColor)"
+      class="mail-remote-content-banner border-color rounded d-flex align-start px-3 py-2 mb-3"
+      role="status">
+      <v-icon
+        :color="primaryColor"
+        size="14"
+        class="me-2 mt-1 flex-shrink-0">
+        fas fa-image
+      </v-icon>
+      <div :class="wide ? 'd-flex align-center flex-grow-1' : 'flex-grow-1'">
+        <div :class="wide ? 'text-caption text-color text-wrap flex-grow-1 me-2' : 'text-caption text-color text-wrap'">
+          {{ $t('emailConnector.mailBox.remoteContent.blocked') }}
+        </div>
+        <div :class="wide ? 'd-flex flex-shrink-0' : 'd-flex flex-wrap'">
+          <v-btn
+            :disabled="loading || busy"
+            class="mail-remote-content-show text-caption px-0 me-4"
+            color="primary"
+            text
+            x-small
+            @click="$emit('show-remote-content')">
+            {{ $t('emailConnector.mailBox.remoteContent.show') }}
+          </v-btn>
+          <v-btn
+            v-if="senderAddress && !hasWarnings"
+            :disabled="loading || busy"
+            class="mail-remote-content-trust text-caption px-0"
+            color="primary"
+            text
+            x-small
+            @click="trustSender">
+            {{ $t('emailConnector.mailBox.remoteContent.alwaysShow') }}
+          </v-btn>
+        </div>
       </div>
-    </v-alert>
+    </div>
   </div>
 </template>
 
@@ -93,6 +105,11 @@ export default {
     },
     // Whether the content is being read again with its remote content.
     loading: {
+      type: Boolean,
+      default: false,
+    },
+    // Whether the reader is wide (the full-screen reader): each notice is then one line.
+    wide: {
       type: Boolean,
       default: false,
     },
@@ -125,8 +142,39 @@ export default {
     remoteContentBlocked() {
       return !!this.content?.remoteContentBlocked;
     },
+    /**
+     * The platform's primary colour, the accent of the images notice.
+     *
+     * @returns {String} a CSS colour
+     */
+    primaryColor() {
+      return this.$vuetify?.theme?.currentTheme?.primary || 'var(--allPagesPrimaryColor, #3f8487)';
+    },
+    /**
+     * The platform's warning colour, the accent of the reasons.
+     *
+     * @returns {String} a CSS colour
+     */
+    warningColor() {
+      return this.$vuetify?.theme?.currentTheme?.warning || '#fb8c00';
+    },
   },
   methods: {
+    /**
+     * The frame of a notice: one pixel in the border colour the class gives, and a
+     * three-pixel accent in the notice's colour on the reading-start side.
+     *
+     * @param {String} accent the accent colour
+     * @returns {Object} the inline style
+     */
+    frameStyle(accent) {
+      const side = this.$vuetify?.rtl ? 'Right' : 'Left';
+      return {
+        borderWidth: '1px',
+        borderStyle: 'solid',
+        [`border${side}`]: `3px solid ${accent}`,
+      };
+    },
     /**
      * One warning in words, naming what the message presents and what it really is.
      *
