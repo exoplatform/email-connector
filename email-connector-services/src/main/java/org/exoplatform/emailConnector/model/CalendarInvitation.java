@@ -109,6 +109,15 @@ public class CalendarInvitation {
    */
   private InvitationAnswer               answer;
 
+  /**
+   * Whether the event is one this deployment's Agenda mailed: it is answered in Agenda,
+   * never from the mail.
+   */
+  private boolean                        exoMeeting;
+
+  /** The event in this portal's Agenda, for an {@link #exoMeeting}; null otherwise. */
+  private String                         agendaUrl;
+
   /** Whether Accept / Maybe / Decline may be offered. */
   private boolean                        answerable;
 
