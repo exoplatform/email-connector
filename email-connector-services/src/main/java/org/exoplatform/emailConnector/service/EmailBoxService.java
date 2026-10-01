@@ -6717,8 +6717,42 @@ public class EmailBoxService {
                                                                                  email.getId()))
                                              .toList();
     EmailSearchResultPage page = new EmailSearchResultPage(results, matches.size(), criteria.isFavoritesOnly());
-    page.setCachedSince(rows.stream().map(Email::getReceivedDate).filter(Objects::nonNull).min(Date::compareTo).orElse(null));
+    page.setCachedSince(cachedSince(username, folderKey, rows));
     return page;
+  }
+
+  /**
+   * Since when eXo's copy of a folder holds its mail, as the advanced search states it
+   * (EXO-90838): the date of the oldest message the synchronization keeps there -- the
+   * newest of the folder, up to the window the folder was last synchronized with. A
+   * message older than that window is in the copy only because the user opened it from
+   * a search of the mail server, and says nothing of what the copy covers; a built-in
+   * folder no synchronization visits (Gmail's archive, whose copy holds only such
+   * messages) has no date at all. A folder of a mailbox shared with the user is filled
+   * by its synchronization alone, so its oldest message is the date.
+   *
+   * @param username the reader
+   * @param folderKey the folder's key
+   * @param rows the copy's messages in that folder
+   * @return the date, or null when none can be stated
+   */
+  private Date cachedSince(String username, String folderKey, List<Email> rows) {
+    List<Date> dates = rows.stream()
+                           .map(Email::getReceivedDate)
+                           .filter(Objects::nonNull)
+                           .sorted(Comparator.reverseOrder())
+                           .toList();
+    if (dates.isEmpty()) {
+      return null;
+    }
+    if (MailFolder.isCustom(folderKey)) {
+      return dates.get(dates.size() - 1);
+    }
+    FolderSyncSnapshot snapshot = loadMailboxSyncState(username).getSnapshot(folderKey);
+    if (snapshot == null || snapshot.getWindowSize() <= 0) {
+      return null;
+    }
+    return dates.get(Math.min(dates.size(), snapshot.getWindowSize()) - 1);
   }
 
   /**
