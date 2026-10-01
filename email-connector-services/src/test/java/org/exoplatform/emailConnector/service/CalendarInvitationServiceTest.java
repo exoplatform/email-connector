@@ -24,13 +24,14 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -56,6 +57,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.commons.api.settings.SettingService;
@@ -75,6 +77,7 @@ import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.SendIdentity;
 import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.utils.CalendarInvitationUtils;
 
 /**
  * Calendar invitations in mail (EXO-90840): what the reader is shown, who may answer
@@ -181,7 +184,7 @@ class CalendarInvitationServiceTest {
     assertEquals(CalendarInvitationService.NOT_ANSWERABLE,
                  assertThrows(IllegalArgumentException.class,
                               () -> service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED)).getMessage());
-    verify(emailBoxService, never()).transmitAsUser(anyString(), any(), any());
+    verifyNothingSent();
   }
 
   /**
@@ -200,7 +203,7 @@ class CalendarInvitationServiceTest {
     assertEquals(CalendarInvitationService.CANCELLED,
                  assertThrows(IllegalArgumentException.class,
                               () -> service.respond(EMAIL_ID, USER, InvitationAnswer.DECLINED)).getMessage());
-    verify(emailBoxService, never()).transmitAsUser(anyString(), any(), any());
+    verifyNothingSent();
   }
 
   /**
@@ -234,8 +237,26 @@ class CalendarInvitationServiceTest {
   }
 
   /**
-   * The cap is the administrator's, and a value that is not a positive number is the
-   * default.
+   * Without the iCalendar library on the server (no agenda add-on, or an incompatible
+   * one), an invitation is not shown, and the mail reads as before.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void withoutTheLibraryNoInvitationIsShown() throws Exception {
+    try (MockedStatic<CalendarInvitationUtils> library = mockStatic(CalendarInvitationUtils.class)) {
+      library.when(() -> CalendarInvitationUtils.parseInvitation(any(), any(), anyInt()))
+             .thenThrow(new NoClassDefFoundError("net/fortuna/ical4j/data/CalendarBuilder"));
+      for (int read = 0; read < 2; read++) {
+        assertEquals(CalendarInvitationService.UNSUPPORTED,
+                     assertThrows(IllegalArgumentException.class, () -> service.getInvitation(EMAIL_ID, USER)).getMessage());
+      }
+    }
+  }
+
+  /**
+   * The cap is the administrator's, a value that is not a positive number is the
+   * default, and an absurd one is bounded.
    */
   @Test
   void theCapIsConfigurable() {
@@ -246,6 +267,8 @@ class CalendarInvitationServiceTest {
     assertEquals(CalendarInvitationService.DEFAULT_MAX_BYTES, CalendarInvitationService.maxBytes());
     System.setProperty(CalendarInvitationService.MAX_BYTES_PROPERTY, "lots");
     assertEquals(CalendarInvitationService.DEFAULT_MAX_BYTES, CalendarInvitationService.maxBytes());
+    System.setProperty(CalendarInvitationService.MAX_BYTES_PROPERTY, String.valueOf(Long.MAX_VALUE));
+    assertEquals(CalendarInvitationService.MAX_CAP, CalendarInvitationService.maxBytes(), "bounded, so twice it cannot overflow");
   }
 
   /**
@@ -263,7 +286,8 @@ class CalendarInvitationServiceTest {
     CalendarInvitation invitation = service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED);
 
     assertEquals(InvitationAnswer.ACCEPTED, invitation.getAnswer());
-    verify(emailBoxService).transmitAsUser(eq(USER), isNull(), any());
+    verify(emailBoxService).transmitAsUser(eq(USER), any(EmailBoxService.OutgoingMessageFactory.class));
+    verify(emailBoxService, never()).transmitFromSharedMailbox(anyString(), anyLong(), any(), any());
     MimeMessage reply = factories.get(0).build(session(), new InternetAddress(ME, "Test User"));
     assertEquals(1, reply.getRecipients(Message.RecipientType.TO).length);
     assertEquals("olivia@partner.example", ((InternetAddress) reply.getRecipients(Message.RecipientType.TO)[0]).getAddress());
@@ -322,14 +346,14 @@ class CalendarInvitationServiceTest {
   void onlyAnAnswerThatMayHaveLeftIsRemembered() throws Exception {
     doThrow(new SmtpTransmitter.TransmissionException(SmtpTransmitter.Phase.CONNECT, new Exception("down")))
                                                                                                            .when(emailBoxService)
-                                                                                                           .transmitAsUser(eq(USER), any(), any());
+                                                                                                           .transmitAsUser(eq(USER), any());
     assertEquals(CalendarInvitationService.SEND_FAILED,
                  assertThrows(IllegalStateException.class, () -> service.respond(EMAIL_ID, USER, InvitationAnswer.DECLINED)).getMessage());
     verify(settingService, never()).set(any(), any(), anyString(), any());
 
     doThrow(new SmtpTransmitter.TransmissionException(SmtpTransmitter.Phase.SEND, new Exception("lost")))
                                                                                                         .when(emailBoxService)
-                                                                                                        .transmitAsUser(eq(USER), any(), any());
+                                                                                                        .transmitAsUser(eq(USER), any());
     assertEquals(CalendarInvitationService.UNCONFIRMED,
                  assertThrows(IllegalStateException.class, () -> service.respond(EMAIL_ID, USER, InvitationAnswer.DECLINED)).getMessage());
     verify(settingService).set(any(), any(), anyString(), any());
@@ -355,26 +379,29 @@ class CalendarInvitationServiceTest {
     EmailDelegation delegation = givenASharedMailbox();
     SendIdentity onBehalf = new SendIdentity(SendMode.ON_BEHALF, 100L, OWNER, "Alice", new Date());
     when(emailDelegationService.checkSendMode(USER, 100L, SendMode.ON_BEHALF)).thenReturn(onBehalf);
-    List<EmailBoxService.OutgoingMessageFactory> factories = captureTransmissions();
+    List<EmailBoxService.OutgoingMessageFactory> factories = captureSharedTransmissions();
 
     CalendarInvitation invitation = service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED);
 
     assertEquals(OWNER, invitation.getAttendeeAddress());
-    verify(emailBoxService).transmitAsUser(eq(USER), eq(onBehalf), any());
+    verify(emailBoxService).transmitFromSharedMailbox(eq(USER), eq(100L), eq(SendMode.ON_BEHALF), any());
+    verify(emailBoxService, never()).transmitAsUser(anyString(), any());
     String ics = text((BodyPart) ((Multipart) factories.get(0)
-                                                       .build(session(), new InternetAddress(OWNER, "Alice"))
+                                                       .build(session(),
+                                                              new InternetAddress(OWNER, "Alice"),
+                                                              new InternetAddress("resolved@acme.com"))
                                                        .getContent()).getBodyPart(1));
     assertTrue(ics.contains("mailto:" + OWNER));
-    assertTrue(ics.contains("SENT-BY=\"mailto:" + ME + "\""), ics);
+    assertTrue(ics.contains("SENT-BY=\"mailto:resolved@acme.com\""), "the Sender header's own address: " + ics);
     verify(settingService).set(any(), any(), eq(CalendarInvitationService.answerKey(OWNER, "weekly-sync@google.com", null)), any());
 
     SendIdentity as = new SendIdentity(SendMode.AS, 100L, OWNER, "Alice", new Date());
     when(emailDelegationService.checkSendMode(USER, 100L, SendMode.ON_BEHALF)).thenThrow(new SendModeMissingException(SendMode.ON_BEHALF));
     when(emailDelegationService.checkSendMode(USER, 100L, SendMode.AS)).thenReturn(as);
     service.respond(EMAIL_ID, USER, InvitationAnswer.DECLINED);
-    verify(emailBoxService).transmitAsUser(eq(USER), eq(as), any());
+    verify(emailBoxService).transmitFromSharedMailbox(eq(USER), eq(100L), eq(SendMode.AS), any());
     String asIcs = text((BodyPart) ((Multipart) factories.get(1)
-                                                         .build(session(), new InternetAddress(OWNER, "Alice"))
+                                                         .build(session(), new InternetAddress(OWNER, "Alice"), null)
                                                          .getContent()).getBodyPart(1));
     assertFalse(asIcs.contains("SENT-BY"), "as her: nothing names the delegate");
     assertSame(delegation, emailDelegationService.delegationOf(USER, SHARED_KEY));
@@ -398,7 +425,7 @@ class CalendarInvitationServiceTest {
     assertEquals(CalendarInvitationService.SEND_NOT_ALLOWED,
                  assertThrows(IllegalAccessException.class,
                               () -> service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED)).getMessage());
-    verify(emailBoxService, never()).transmitAsUser(anyString(), any(), any());
+    verifyNothingSent();
   }
 
   /**
@@ -419,7 +446,26 @@ class CalendarInvitationServiceTest {
     assertEquals(CalendarInvitationService.SEND_NOT_ALLOWED,
                  assertThrows(IllegalAccessException.class,
                               () -> service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED)).getMessage());
-    verify(emailBoxService, never()).transmitAsUser(anyString(), any(), any());
+    verifyNothingSent();
+  }
+
+  /**
+   * A consent the send itself finds withdrawn, or a share revoked, is the same refusal:
+   * nothing is remembered.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aConsentRefusedAtTheSendIsTheSameRefusal() throws Exception {
+    givenASharedMailbox();
+    when(emailDelegationService.checkSendMode(USER, 100L, SendMode.ON_BEHALF))
+                                                                            .thenReturn(new SendIdentity(SendMode.ON_BEHALF, 100L, OWNER, null, new Date()));
+    doThrow(new SendModeMissingException(SendMode.ON_BEHALF)).when(emailBoxService)
+                                                             .transmitFromSharedMailbox(eq(USER), eq(100L), eq(SendMode.ON_BEHALF), any());
+    assertEquals(CalendarInvitationService.SEND_NOT_ALLOWED,
+                 assertThrows(IllegalAccessException.class,
+                              () -> service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED)).getMessage());
+    verify(settingService, never()).set(any(), any(), anyString(), any());
   }
 
   /**
@@ -501,15 +547,40 @@ class CalendarInvitationServiceTest {
   }
 
   /**
-   * Records the factories the service transmits with.
+   * Records the factories the service transmits with from the user's own mailbox.
    *
    * @return the factories, in order
    * @throws Exception never
    */
   private List<EmailBoxService.OutgoingMessageFactory> captureTransmissions() throws Exception {
     List<EmailBoxService.OutgoingMessageFactory> factories = new ArrayList<>();
-    doAnswer(invocation -> factories.add(invocation.getArgument(2))).when(emailBoxService).transmitAsUser(eq(USER), any(), any());
+    doAnswer(invocation -> factories.add(invocation.getArgument(1))).when(emailBoxService).transmitAsUser(eq(USER), any());
     return factories;
+  }
+
+  /**
+   * Records the factories the service transmits with from a shared mailbox.
+   *
+   * @return the factories, in order
+   * @throws Exception never
+   */
+  private List<EmailBoxService.OutgoingMessageFactory> captureSharedTransmissions() throws Exception {
+    List<EmailBoxService.OutgoingMessageFactory> factories = new ArrayList<>();
+    doAnswer(invocation -> {
+      factories.add(invocation.getArgument(3));
+      return EmailBoxService.OwnerCopy.FILED;
+    }).when(emailBoxService).transmitFromSharedMailbox(eq(USER), anyLong(), any(), any());
+    return factories;
+  }
+
+  /**
+   * Fails when anything was transmitted, from any mailbox.
+   *
+   * @throws Exception never
+   */
+  private void verifyNothingSent() throws Exception {
+    verify(emailBoxService, never()).transmitAsUser(anyString(), any());
+    verify(emailBoxService, never()).transmitFromSharedMailbox(anyString(), anyLong(), any(), any());
   }
 
   /**
