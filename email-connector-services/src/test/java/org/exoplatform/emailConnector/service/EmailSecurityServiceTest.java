@@ -51,6 +51,7 @@ import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailSecurityWarning;
 import org.exoplatform.emailConnector.model.EmailSecurityWarningType;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.RemoteContentSettings;
 import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -142,6 +143,50 @@ class EmailSecurityServiceTest {
   }
 
   /**
+   * A From naming the reader's own address is no proof the reader wrote it: in the
+   * inbox, or failing its sender authentication even in Sent, the message is held back
+   * and warned about like any other.
+   */
+  @Test
+  void aForgedOwnAddressBorrowsNoTrust() {
+    Email spoofed = received("Jane Doe", MAILBOX, TRACKED_BODY);
+    spoofed.setFolder(MailFolder.INBOX);
+    spoofed.getContent().setAuthFailure(EmailSecurityUtils.AUTH_DMARC);
+    Email inbox = received("Jane Doe", MAILBOX, TRACKED_BODY + "<a href=\"https://evil.example/\">bank.example</a>");
+    inbox.setFolder(MailFolder.INBOX);
+    Email failingSent = received("Jane Doe", MAILBOX, TRACKED_BODY);
+    failingSent.setFolder(MailFolder.SENT);
+    failingSent.getContent().setAuthFailure(EmailSecurityUtils.AUTH_SPF);
+    service.decorate(List.of(spoofed, inbox, failingSent), USER, false);
+    assertTrue(spoofed.getContent().isRemoteContentBlocked());
+    assertEquals(EmailSecurityWarningType.AUTHENTICATION_FAILED, spoofed.getContent().getSecurityWarnings().get(0).getType());
+    assertTrue(inbox.getContent().isRemoteContentBlocked());
+    assertEquals(EmailSecurityWarningType.DECEPTIVE_LINK, inbox.getContent().getSecurityWarnings().get(0).getType());
+    assertTrue(failingSent.getContent().isRemoteContentBlocked());
+    assertEquals(EmailSecurityWarningType.AUTHENTICATION_FAILED, failingSent.getContent().getSecurityWarnings().get(0).getType());
+  }
+
+  /**
+   * Trusting a sender does not cover a message that gives a reason for doubt: a forged
+   * trusted From failing DMARC stays held back. The user's own explicit choices -- the
+   * click, blocking switched off -- still hold.
+   */
+  @Test
+  void aTrustedSenderWithAWarningStaysHeldBack() {
+    service.trustSender(USER, "news@shop.example");
+    Email forged = received("News", "news@shop.example", TRACKED_BODY);
+    forged.getContent().setAuthFailure(EmailSecurityUtils.AUTH_DMARC);
+    service.decorate(forged, USER, false);
+    assertTrue(forged.getContent().isRemoteContentBlocked());
+    Email clicked = received("News", "news@shop.example", TRACKED_BODY);
+    clicked.getContent().setAuthFailure(EmailSecurityUtils.AUTH_DMARC);
+    service.decorate(clicked, USER, true);
+    assertFalse(clicked.getContent().isRemoteContentBlocked());
+    assertTrue(clicked.getContent().getBody().contains("https://tracker.example/p.gif"));
+    assertEquals(1, clicked.getContent().getSecurityWarnings().size());
+  }
+
+  /**
    * A body is cleaned whatever the consent: a script never reaches the reader.
    */
   @Test
@@ -154,13 +199,14 @@ class EmailSecurityServiceTest {
   }
 
   /**
-   * A message the mailbox itself sent loads its content and carries no warning; a
+   * A message of the mailbox's Sent folder loads its content and carries no warning; a
    * draft, the user's own text read back by the composer, is left exactly as stored;
    * a plain-text body is not touched.
    */
   @Test
   void ownMailDraftsAndPlainTextAreLeftAlone() {
     Email sent = received("Jane Doe", MAILBOX.toUpperCase(), TRACKED_BODY + "<a href=\"https://evil.example\">bank.example</a>");
+    sent.setFolder(MailFolder.SENT);
     Email draft = received("Jane Doe", MAILBOX, TRACKED_BODY);
     draft.setDraftLocalId("d-1");
     Email text = received("Someone", "someone@shop.example", "<b>not markup</b>");
@@ -232,6 +278,11 @@ class EmailSecurityServiceTest {
     for (Email email : emails) {
       assertTrue(email.getContent().getSecurityWarnings().isEmpty(), email.getSender().getAddress());
     }
+    // The organisation's own domains are excused before the directory is asked.
+    Email insider = received("Ann Insider", "ann@acme-group.example", "x");
+    org.mockito.Mockito.clearInvocations(identityManager);
+    service.decorate(insider, USER, false);
+    verify(identityManager, never()).getIdentitiesByProfileFilter(anyString(), any(ProfileFilter.class), anyLong(), anyLong());
   }
 
   /**
@@ -266,6 +317,24 @@ class EmailSecurityServiceTest {
     assertTrue(newsletter.getContent().getSecurityWarnings().isEmpty());
     assertTrue(automated.getContent().getSecurityWarnings().isEmpty());
     assertTrue(forward.getContent().getSecurityWarnings().isEmpty());
+  }
+
+  /**
+   * The bulk and forward exemptions rest on headers and a subject the sender writes:
+   * on a message failing its sender authentication, the link is judged anyway.
+   */
+  @Test
+  void theExemptionsDoNotHoldForAFailingMessage() {
+    String body = "<a href=\"https://login.evil.example/\">www.mybank.com</a>";
+    Email newsletter = received("Bank", "alerts@mybank.example", body);
+    newsletter.setHasListUnsubscribe(true);
+    newsletter.getContent().setAuthFailure(EmailSecurityUtils.AUTH_SPF);
+    Email forward = received("Bank", "alerts@mybank.example", body);
+    forward.setSubject("Fwd: your account");
+    forward.getContent().setAuthFailure(EmailSecurityUtils.AUTH_DKIM);
+    service.decorate(List.of(newsletter, forward), USER, false);
+    assertEquals(EmailSecurityWarningType.DECEPTIVE_LINK, newsletter.getContent().getSecurityWarnings().get(1).getType());
+    assertEquals(EmailSecurityWarningType.DECEPTIVE_LINK, forward.getContent().getSecurityWarnings().get(1).getType());
   }
 
   /**
