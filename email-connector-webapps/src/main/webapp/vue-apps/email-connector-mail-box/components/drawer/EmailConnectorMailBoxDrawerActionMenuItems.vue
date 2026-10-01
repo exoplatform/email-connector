@@ -33,9 +33,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.menu.folders') }}
       </div>
       <div :class="{ 'overflow-y-auto': foldersScrollable }" :style="foldersScrollable ? { maxHeight: FOLDERS_MAX_HEIGHT } : null">
+        <!-- A folder inside another is indented under it, and a folder with folders
+             inside collapses them (EXO-90839). -->
         <v-list-item
           v-for="folder in visibleFolders"
           :key="folder.key"
+          :style="folder.depth ? { paddingInlineStart: `${16 + Math.min(folder.depth, 6) * 16}px` } : null"
+          :title="folder.path || null"
           class="height-auto"
           @click="switchFolder(folder.key)">
           <v-sheet
@@ -60,6 +64,20 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             class="ms-auto ps-2 caption folder-menu-count">
             {{ $emailConnectorMailBoxService.formatCount(folder.count) }}
           </span>
+          <v-btn
+            v-if="folder.hasChildren"
+            :title="toggleLabel(folder)"
+            :aria-label="toggleLabel(folder)"
+            :aria-expanded="String(!collapsed[folder.key])"
+            :class="{ 'ms-auto': !folder.count }"
+            class="ms-1"
+            icon
+            x-small
+            @click.stop="toggle(folder.key)">
+            <v-icon size="12" class="icon-default-color">
+              {{ collapsed[folder.key] ? 'fa-chevron-right' : 'fa-chevron-down' }}
+            </v-icon>
+          </v-btn>
         </v-list-item>
       </div>
       <!-- Categories: the complete list, Important included — its quick chip
@@ -176,6 +194,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { buildFolderTree, readCollapsedFolders, toggleCollapsedFolder, visibleFolderRows } from '../../js/EmailConnectorFolderTree.js';
+
 // The folder list scrolls inside its own pane once it is longer than seven rows,
 // built-ins counted with the rest: what makes the menu a wall is its total length, not
 // how many of the folders happen to be the user's own, and a rule that counted only
@@ -242,6 +262,7 @@ export default {
   data() {
     return {
       FOLDERS_MAX_HEIGHT,
+      collapsed: readCollapsedFolders(),
     };
   },
   computed: {
@@ -257,12 +278,18 @@ export default {
      * @returns {Array} the folder descriptors to display
      */
     visibleFolders() {
-      return this.availableFolders.map(folder => {
+      // The user's own folders as a tree (EXO-90839), a collapsed one's folders left out.
+      return visibleFolderRows(buildFolderTree(this.availableFolders), this.collapsed).map(row => {
+        const folder = row.folder;
         const scheduled = this.$emailConnectorMailBoxService.isScheduledView(folder.key);
         return {
           key: folder.key,
+          depth: row.depth,
+          hasChildren: row.hasChildren,
+          path: this.$emailConnectorMailBoxService.folderPath(folder),
           icon: this.$emailConnectorMailBoxService.folderIcon(folder),
-          label: this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)),
+          label: row.showPath ? this.$emailConnectorMailBoxService.folderPath(folder)
+            : this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)),
           // Counted in the menu only for the Scheduled view, which is listed only when it
           // holds something and says when one of its mails needs the user (EXO-90434).
           count: scheduled ? folder.count || 0 : 0,
@@ -291,6 +318,26 @@ export default {
     },
   },
   methods: {
+    /**
+     * What the collapse button of a folder says: the action it takes, with the folder's name.
+     *
+     * @param {Object} folder the folder descriptor
+     * @returns {String} the label
+     */
+    toggleLabel(folder) {
+      const key = this.collapsed[folder.key] ? 'emailConnector.mailBox.list.drawer.navigation.expandFolder'
+        : 'emailConnector.mailBox.list.drawer.navigation.collapseFolder';
+      return this.$t(key, { 0: folder.label });
+    },
+    /**
+     * Collapses or expands the folders inside a folder, the menu staying open.
+     *
+     * @param {String} key the folder's key
+     * @returns {void}
+     */
+    toggle(key) {
+      this.collapsed = toggleCollapsedFolder(this.collapsed, key);
+    },
     /**
      * Switches the listed folder. Always emitted, even for the folder already
      * listed: inside a category view, re-picking the current folder is the way
