@@ -15461,8 +15461,9 @@ public class EmailBoxServiceTest {
     MimeMessage textOnly = EmailSearchCriteriaTermTest.message(EmailSearchCriteriaTermTest.multipart("alternative",
                                                                                                     EmailSearchCriteriaTermTest.text("plain"),
                                                                                                     EmailSearchCriteriaTermTest.text("html")));
-    when(((UIDFolder) inbox).getUID(withFile)).thenReturn(31L);
-    when(emailBoxStorage.getCachedEmailIds(TEST_USER, "INBOX", List.of(31L))).thenReturn(Map.of());
+    lenient().when(((UIDFolder) inbox).getUID(withFile)).thenReturn(31L);
+    lenient().when(((UIDFolder) inbox).getUID(textOnly)).thenReturn(30L);
+    lenient().when(emailBoxStorage.getCachedEmailIds(eq(TEST_USER), eq("INBOX"), anyList())).thenReturn(Map.of());
     when(inbox.getMessageCount()).thenReturn(500);
     when(inbox.getMessages(301, 500)).thenReturn(new Message[] { textOnly, withFile });
     EmailSearchCriteria attachments = new EmailSearchCriteria();
@@ -15491,6 +15492,16 @@ public class EmailBoxServiceTest {
     assertTrue(searched.getValue() instanceof OrTerm, "the words alone: no term for the attachment");
     assertEquals(List.of(31L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList());
     assertEquals(0, page.getScanned(), "every match examined");
+
+    Message[] many = new Message[EmailBoxService.ATTACHMENT_SCAN_LIMIT + 1];
+    many[0] = withFile;
+    java.util.Arrays.fill(many, 1, many.length, textOnly);
+    when(inbox.search(any(SearchTerm.class))).thenReturn(many);
+
+    page = emailBoxService.searchEmails(TEST_USER, wordsAndAttachments, "INBOX", 10);
+
+    assertEquals(List.of(), page.getResults(), "a match older than the newest examined is not read");
+    assertEquals(EmailBoxService.ATTACHMENT_SCAN_LIMIT, page.getScanned());
   }
 
   /**
