@@ -155,6 +155,11 @@ class EmailHtmlSanitizerTest {
     assertFalse(blocked.html().contains("tracker.example"), blocked.html());
     SanitizedEmailBody shown = EmailHtmlSanitizer.sanitize(html, true);
     assertTrue(shown.html().contains("background=\"https://tracker.example/c.png\""), shown.html());
+    String relative = "<table background=\"//tracker.example/t.png\"><tr><td>x</td></tr></table>";
+    SanitizedEmailBody relativeBlocked = EmailHtmlSanitizer.sanitize(relative, false);
+    assertTrue(relativeBlocked.remoteContentBlocked(), "a protocol-relative background is a remote one");
+    assertFalse(relativeBlocked.html().contains("tracker.example"), relativeBlocked.html());
+    assertTrue(EmailHtmlSanitizer.sanitize(relative, true).html().contains("background=\"https://tracker.example/t.png\""));
     String body = "<html><body background=\"https://tracker.example/b.png\"><p>x</p></body></html>";
     SanitizedEmailBody bodyBlocked = EmailHtmlSanitizer.sanitize(body, false);
     assertTrue(bodyBlocked.remoteContentBlocked());
