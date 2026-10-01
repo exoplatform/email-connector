@@ -3001,8 +3001,9 @@ public class EmailBoxServiceTest {
    * appears clears it -- but says it at debug, without a stack: the resolver has said it
    * once for the provider's name. A registered provider that cannot authenticate the
    * mailbox is still logged as an error, with its stack, and so are a failure of another
-   * kind on a connector whose provider is missing and a credentials failure on a binding
-   * whose connector cannot be found.
+   * kind on a connector whose provider is missing, a credentials failure on a binding
+   * whose connector cannot be found, and one while the credentials contract itself is
+   * not available.
    */
   @Test
   @SneakyThrows
@@ -3052,6 +3053,17 @@ public class EmailBoxServiceTest {
 
       assertEquals(1, log.warningsAndAbove().size(), log.events().toString());
       assertTrue(log.anyStack(), "a binding with no connector is not a missing provider");
+    }
+
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(connector);
+    ReflectionTestUtils.setField(emailBoxService, "emailCredentialsResolver", null);
+    try (LogCapture log = new LogCapture(EmailBoxService.class)) {
+      emailBoxService.synchronize(TEST_USER);
+
+      assertEquals(1, log.warningsAndAbove().size(), log.events().toString());
+      assertTrue(log.anyStack(), "without the contract nobody can tell the provider is missing");
+    } finally {
+      ReflectionTestUtils.setField(emailBoxService, "emailCredentialsResolver", emailCredentialsResolver);
     }
   }
 
