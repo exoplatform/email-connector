@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -46,6 +47,9 @@ import org.exoplatform.services.connector.credentials.ConnectorCredentialsServic
 import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
 import org.exoplatform.services.connector.credentials.MailConnectorCredentials;
 
+import org.exoplatform.emailConnector.LogCapture;
+
+import ch.qos.logback.classic.spi.ILoggingEvent;
 import lombok.SneakyThrows;
 
 /**
@@ -222,6 +226,53 @@ public class EmailCredentialsResolverTest {
 
     when(connectorCredentialsService.getProviders()).thenThrow(new IllegalStateException("registry unavailable"));
     assertTrue(resolver.isProviderRegistered("bluemind-sudo"), "cannot tell: not reported missing");
+  }
+
+  /**
+   * A connector naming a provider that is not registered is told apart, and said once
+   * per provider name at WARN, without a stack, however many times it is asked; a
+   * second missing name is said once too.
+   */
+  @Test
+  void aMissingProviderIsSaidOncePerName() {
+    ConnectorCredentialsProvider personal = mock(ConnectorCredentialsProvider.class);
+    when(personal.getName()).thenReturn("personal");
+    when(connectorCredentialsService.getProviders()).thenReturn(List.of(personal));
+
+    try (LogCapture log = new LogCapture(EmailCredentialsResolver.class)) {
+      assertTrue(resolver.isProviderMissing("bluemind-sudo"));
+      assertTrue(resolver.isProviderMissing("bluemind-sudo"));
+      assertTrue(resolver.isProviderMissing("acme-sudo"));
+
+      List<String> warnings = log.warningsAndAbove().stream().map(ILoggingEvent::getFormattedMessage).toList();
+      assertEquals(2, warnings.size(), warnings.toString());
+      assertTrue(warnings.get(0).contains("'bluemind-sudo'"), warnings.get(0));
+      assertTrue(warnings.get(1).contains("'acme-sudo'"), warnings.get(1));
+      assertFalse(log.anyStack(), "a state of the platform, said without a stack");
+    }
+  }
+
+  /**
+   * A registered provider is not missing and nothing is said; nor is a blank name, the
+   * legacy typed connector, which does not even read the registry; nor is any name while
+   * the registry cannot be read.
+   */
+  @Test
+  void aRegisteredProviderABlankNameAndAnUnreadableRegistryAreNotMissing() {
+    ConnectorCredentialsProvider personal = mock(ConnectorCredentialsProvider.class);
+    when(personal.getName()).thenReturn("personal");
+    when(connectorCredentialsService.getProviders()).thenReturn(List.of(personal));
+
+    try (LogCapture log = new LogCapture(EmailCredentialsResolver.class)) {
+      assertFalse(resolver.isProviderMissing("personal"));
+      assertFalse(resolver.isProviderMissing(null));
+      assertFalse(resolver.isProviderMissing(" "));
+      assertTrue(log.warningsAndAbove().isEmpty(), log.events().toString());
+    }
+    verify(connectorCredentialsService, times(1)).getProviders();
+
+    when(connectorCredentialsService.getProviders()).thenThrow(new IllegalStateException("registry unavailable"));
+    assertFalse(resolver.isProviderMissing("bluemind-sudo"));
   }
 
   /** An unknown provider is refused, exactly as every other resolution is. */
