@@ -40,13 +40,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       text>
       {{ error }}
     </v-alert>
-    <v-progress-linear
-      v-if="loading && !filters"
-      indeterminate
-      color="primary"
-      class="mb-4" />
+    <!-- While eXo's filters are read, the drawer's own bar under its title says so. -->
     <v-list
-      v-else-if="items.length"
+      v-if="(filters || !loading) && items.length"
       class="pa-0"
       dense>
       <template v-for="item in items">
@@ -100,8 +96,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               @change="toggle(item, $event)" />
           </v-list-item-action>
           <!-- The server's order is the server's: only eXo's filters move, among
-               themselves. -->
-          <v-list-item-action :class="!canMove(item, -1) && 'invisible'" class="mx-0 my-auto">
+               themselves. With fewer than two of them nothing moves, and the arrows give
+               their room back to the text. -->
+          <v-list-item-action
+            v-if="reorderable"
+            :class="!canMove(item, -1) && 'invisible'"
+            class="mx-0 my-auto">
             <v-btn
               :disabled="saving || !canMove(item, -1)"
               :title="$t('UserSettings.emailConnector.filters.exo.up')"
@@ -111,7 +111,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               <v-icon size="18">fas fa-arrow-up</v-icon>
             </v-btn>
           </v-list-item-action>
-          <v-list-item-action :class="!canMove(item, 1) && 'invisible'" class="mx-0 my-auto">
+          <v-list-item-action
+            v-if="reorderable"
+            :class="!canMove(item, 1) && 'invisible'"
+            class="mx-0 my-auto">
             <v-btn
               :disabled="saving || !canMove(item, 1)"
               :title="$t('UserSettings.emailConnector.filters.exo.down')"
@@ -213,6 +216,14 @@ export default {
         .map(rule => ({ ...serverItem(rule), key: `server-${rule.ref}`, raw: rule }));
     },
     /**
+     * Whether eXo's filters can be put in another order: only when there are two or more.
+     *
+     * @returns {Boolean} true when the arrows are shown
+     */
+    reorderable() {
+      return this.exoItems.length > 1;
+    },
+    /**
      * eXo's filters, in the order eXo applies them.
      *
      * @returns {Object[]} the items, kind EXO or HOP
@@ -239,6 +250,17 @@ export default {
       return this.deleting?.kind === 'SERVER'
         ? this.$t('UserSettings.emailConnector.filters.delete.message', { 0: name })
         : this.$t('UserSettings.emailConnector.filters.exo.delete.message', { 0: name });
+    },
+  },
+  watch: {
+    /**
+     * Tells the drawer whether eXo's filters are being read, for its bar.
+     *
+     * @param {Boolean} value whether they are
+     * @returns {void}
+     */
+    loading(value) {
+      this.$emit('loading', value);
     },
   },
   created() {
