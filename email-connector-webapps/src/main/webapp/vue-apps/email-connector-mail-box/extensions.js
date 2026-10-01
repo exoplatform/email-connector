@@ -20,6 +20,7 @@
 // than by the menu component: they exist as soon as the app is loaded, and other
 // add-ons can look the point up before any mail is opened.
 import './js/EmailConnectorAttachmentActions.js';
+import { searchFromUrl } from './js/EmailConnectorMailBoxSearchCriteria.js';
 
 extensionRegistry.registerExtension('QuickAction', 'Extension', {
   id: 'email',
@@ -259,6 +260,9 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
     // on it, and its band shows, before its list has loaded.
     let opening = openingFromUrl(urlParams);
     const mailbox = urlParams.get('mailbox');
+    // search=, searchFrom=, searchAfter=... open the mailbox on a search, the address the
+    // mailbox writes while one runs, so it can be reloaded or shared (EXO-90838).
+    const search = !opening.mailRemoteId && searchFromUrl(urlParams);
     if (urlParams.get('forwarding') === 'true') {
       // forwarding=true opens the forwarding drawer: the link a forwarding
       // notification carries by mail and push (EXO-90656).
@@ -268,6 +272,8 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
       // shared-mailbox invitation carries by mail and push (EXO-90830). Opening it
       // answers nothing -- the user does, on the drawer.
       opening = {sharedWithMe: true};
+    } else if (search) {
+      opening = search;
     } else if (mailbox) {
       opening.mailbox = mailbox;
     } else if (!opening.mailRemoteId && /^(INBOX|SENT|ARCHIVE|ALL_MAIL|TRASH|JUNK|CUSTOM:\d{1,18})$/.test(urlParams.get('folder') || '')) {
