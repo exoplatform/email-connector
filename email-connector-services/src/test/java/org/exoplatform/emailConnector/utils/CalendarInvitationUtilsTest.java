@@ -73,6 +73,9 @@ class CalendarInvitationUtilsTest {
     assertFalse(invitation.isCancelled());
     assertFalse(invitation.isOccurrence());
     assertNull(parsed.recurrenceId());
+    assertEquals(new String(fixture("google-weekly-request.ics"), StandardCharsets.UTF_8),
+                 parsed.icalendar(),
+                 "the part as received, for the add-on that lands it");
     assertEquals("Weekly <b>sync</b>", invitation.getSummary(), "text, kept as written: the reader escapes it");
     assertEquals("Room <i>4</i>", invitation.getLocation());
     assertFalse(invitation.isAllDay());
