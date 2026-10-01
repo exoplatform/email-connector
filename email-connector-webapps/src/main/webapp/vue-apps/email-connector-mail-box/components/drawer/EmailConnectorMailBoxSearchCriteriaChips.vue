@@ -18,12 +18,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <!-- The search's criteria above its results (EXO-90838): one chip each, closed to take
        that criterion off and search again, in the chip language of the list's own filter
        chips (small, primary), on one line that scrolls sideways; "Clear all" once there
-       are two; and the advanced search's button, to add or change criteria. The search box's own text is in the box, not a
-       chip. -->
-  <div class="d-flex align-center px-3 pt-2">
+       are two. The search box's own text is in the box, not a chip, and the advanced
+       search's button is on the row above. -->
+  <div v-if="chips.length" class="d-flex align-center px-3 pt-2">
     <!-- One line: the chips scroll sideways instead of wrapping, so the results never move
-         down when a criterion is added; "Clear all" and the advanced search's button stay
-         in view at the end. -->
+         down when a criterion is added; "Clear all" stays in view at the end. -->
     <div class="d-flex align-center flex-nowrap overflow-x-auto flex-grow-1">
       <v-chip
         v-for="chip in chips"
@@ -46,15 +45,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       text
       @click="$emit('clear')">
       {{ $t('emailConnector.mailBox.search.chips.clear') }}
-    </v-btn>
-    <v-btn
-      :title="$t('emailConnector.mailBox.search.advanced.open')"
-      :aria-label="$t('emailConnector.mailBox.search.advanced.open')"
-      class="ms-1 mb-1 flex-shrink-0"
-      icon
-      small
-      @click="$emit('advanced-search')">
-      <v-icon size="16" class="icon-default-color">fa-sliders-h</v-icon>
     </v-btn>
   </div>
 </template>
