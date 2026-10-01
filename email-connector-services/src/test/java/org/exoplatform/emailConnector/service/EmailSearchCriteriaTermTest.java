@@ -130,8 +130,9 @@ public class EmailSearchCriteriaTermTest {
   }
 
   /**
-   * The criteria a search cannot answer are refused with the code the drawer shows: a
-   * range that ends where or before it starts, a negative age window, nothing at all.
+   * The criteria a search cannot answer are refused with their code: a day that is not
+   * one, a range that ends where or before it starts, a negative age window, nothing at
+   * all.
    * A one-day range is the day before the next one.
    */
   @Test
@@ -150,6 +151,12 @@ public class EmailSearchCriteriaTermTest {
     oneDay.setAfter(LocalDate.of(2026, 10, 2));
     oneDay.setBefore(LocalDate.of(2026, 10, 3));
     assertDoesNotThrow(() -> EmailBoxService.validateSearchCriteria(oneDay));
+
+    EmailSearchCriteria notADay = new EmailSearchCriteria();
+    notADay.setQuery("report");
+    notADay.setInvalidDay(true);
+    assertEquals("emailConnector.search.invalidDate",
+                 assertThrows(IllegalArgumentException.class, () -> EmailBoxService.validateSearchCriteria(notADay)).getMessage());
 
     EmailSearchCriteria negative = new EmailSearchCriteria();
     negative.setSinceDays(-1);
