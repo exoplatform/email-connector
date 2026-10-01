@@ -224,6 +224,12 @@ public class EmailConnectorUtils {
    */
   private static final Pattern EML_NAME_UNSAFE         = Pattern.compile("[\\p{Cc}\\p{Cf}\\\\/:*?\"<>|]");
 
+  /**
+   * The names Windows reserves for devices, whatever the extension: a file named so cannot
+   * be created there.
+   */
+  private static final Pattern WINDOWS_DEVICE_NAME     = Pattern.compile("(?i)(con|prn|aux|nul|com[0-9]|lpt[0-9])(\\..*)?");
+
   private static final Log     LOG                     = ExoLogger.getLogger(EmailConnectorUtils.class);
 
   /**
@@ -345,13 +351,35 @@ public class EmailConnectorUtils {
    * @return a non-blank file name ending in {@code .eml}
    */
   public static String emlFileName(String subject) {
-    String name = subject == null ? "" : EML_NAME_UNSAFE.matcher(subject).replaceAll("_");
+    return safeFileName(subject, EML_DEFAULT_NAME, ".eml");
+  }
+
+  /**
+   * A file name made of text nobody vetted -- a subject, a folder name -- by the rules of
+   * {@link #emlFileName}: control, format, path and wildcard characters become
+   * {@code _}, white space is collapsed, leading and trailing dots and spaces go, the
+   * text is cut at {@link #EML_NAME_MAX_LENGTH} code points, and a name Windows reserves
+   * for a device ({@code CON}, {@code NUL}, {@code COM1}...) gets a leading {@code _}
+   * (EXO-90845: a zip entry or an {@code .mbox} named so cannot be extracted there).
+   *
+   * @param text the text the name is made of, possibly null
+   * @param defaultName the name used when the text gives none
+   * @param extension the extension, with its dot
+   * @return a non-blank file name ending in the extension
+   */
+  public static String safeFileName(String text, String defaultName, String extension) {
+    String name = text == null ? "" : EML_NAME_UNSAFE.matcher(text).replaceAll("_");
     name = name.replaceAll("\\s+", " ");
     name = StringUtils.strip(name, ". ");
     if (name.codePointCount(0, name.length()) > EML_NAME_MAX_LENGTH) {
       name = StringUtils.stripEnd(name.substring(0, name.offsetByCodePoints(0, EML_NAME_MAX_LENGTH)), ". ");
     }
-    return (StringUtils.isBlank(name) ? EML_DEFAULT_NAME : name) + ".eml";
+    if (StringUtils.isBlank(name)) {
+      name = defaultName;
+    } else if (WINDOWS_DEVICE_NAME.matcher(name).matches()) {
+      name = "_" + name;
+    }
+    return name + extension;
   }
 
   private static final Pattern FORWARD_SUBJECT = Pattern.compile("^\\s*(fw|fwd|tr|wg|rv)\\s*:", Pattern.CASE_INSENSITIVE);
