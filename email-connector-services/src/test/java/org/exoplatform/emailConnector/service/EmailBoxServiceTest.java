@@ -239,6 +239,7 @@ import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
 import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
 import org.exoplatform.services.listener.ListenerService;
@@ -10811,6 +10812,28 @@ public class EmailBoxServiceTest {
     assertTrue(cached.isHasListPost());
     assertTrue(cached.isHasListUnsubscribe());
     assertEquals("author@example.com", cached.getOriginalSender());
+  }
+
+  /**
+   * EXO-90841: the receiving server's authentication verdict is read at sync, from the
+   * top Authentication-Results header only, and kept with the row; a message whose
+   * verdict passed carries none.
+   */
+  @Test
+  @SneakyThrows
+  void synchronizePersistsTheAuthenticationVerdict() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    Folder inbox = mockInboxForSync(userEmailSetting, 1);
+    MimeMessage message = (MimeMessage) inbox.getMessages(1, 1)[0];
+    lenient().when(message.getHeader("Authentication-Results"))
+             .thenReturn(new String[] { "mx.example.com; spf=pass; dkim=pass; dmarc=fail header.from=bank.example",
+                 "forged.example; dmarc=pass" });
+
+    emailBoxService.synchronize(TEST_USER);
+
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    assertEquals(EmailSecurityUtils.AUTH_DMARC, created.getValue().getContent().getAuthFailure());
   }
 
   @Test
