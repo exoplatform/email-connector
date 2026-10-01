@@ -79,5 +79,12 @@ public enum ScheduledSendError {
    * (EXO-90584): nothing was sent, the refusal is recorded on the share, and it is never
    * sent again in the writer's own name instead.
    */
-  SEND_MODE_REFUSED
+  SEND_MODE_REFUSED,
+
+  /**
+   * The credentials provider the owner's connector signs in with is not installed -- an
+   * add-on's, not installed or not started yet -- through every automatic retry: nothing
+   * reached the mail server, and nothing was refused by it.
+   */
+  PROVIDER_UNAVAILABLE
 }
