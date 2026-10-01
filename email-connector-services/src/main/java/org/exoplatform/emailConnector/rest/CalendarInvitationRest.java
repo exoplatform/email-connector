@@ -141,7 +141,7 @@ public class CalendarInvitationRest {
   @Secured("users")
   @Operation(summary = "Adds the event a message describes to the caller's calendar", method = "POST",
              description = "Hands the message's iCalendar object to the add-on holding the caller's calendar, with no answer sent: the event is created there, or updated when the caller already holds it and the message is its organiser's newer revision. The caller's own mailbox only, never a cancelled event, and only when an add-on holds a calendar for the caller (the invitation's landable flag).")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The invitation, with landing LANDED, REFUSED or FAILED and the link to the event"),
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The invitation, with landing LANDED, ALREADY_HELD (one of the platform's own meetings), REFUSED or FAILED, and the link to the event"),
       @ApiResponse(responseCode = "400", description = "Nothing to add from here (emailConnector.invitation.notLandable), the event was cancelled (emailConnector.invitation.cancelled), or the invitation cannot be read (tooLarge, unreadable, unsupported)"),
       @ApiResponse(responseCode = "403", description = "The caller's mailbox connector is not usable, or the message is a shared mailbox's (emailConnector.invitation.notLandable)"),
       @ApiResponse(responseCode = "404", description = "No such message of the caller's, or it carries no invitation"),

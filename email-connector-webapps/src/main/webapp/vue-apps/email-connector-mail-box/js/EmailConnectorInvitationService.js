@@ -130,7 +130,7 @@ export function invitationReplyOutcome(error, answer) {
 const LANDING_MESSAGES = {
   ANSWER: {
     LANDED: { messageKey: 'emailConnector.mailBox.invitation.landed', alertType: 'success' },
-    ALREADY_HELD: { messageKey: 'emailConnector.mailBox.invitation.alreadyHeld', alertType: 'info' },
+    DECLINED: { messageKey: 'emailConnector.mailBox.invitation.declinedHeld', alertType: 'info' },
     REFUSED: { messageKey: 'emailConnector.mailBox.invitation.landingRefusedAfterAnswer', alertType: 'warning' },
     FAILED: { messageKey: 'emailConnector.mailBox.invitation.landingFailedAfterAnswer', alertType: 'warning' },
   },
@@ -161,7 +161,7 @@ const LANDING_ERRORS = {
  * given left either way. Nothing when no add-on holds a calendar for the user or there
  * was nothing to do, except after a removal, where "not in your calendar" is the news.
  *
- * @param {String} landing LANDED, ALREADY_HELD, REMOVED, REFUSED, FAILED or nothing, as the server told it
+ * @param {String} landing LANDED, DECLINED, ALREADY_HELD, REMOVED, REFUSED, FAILED or nothing, as the server told it
  * @param {String} click ANSWER, ADD or REMOVE
  * @returns {Object} {messageKey, alertType}, null when there is nothing to say
  */

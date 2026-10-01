@@ -26,6 +26,9 @@ public enum CalendarLanding {
   /** The user's calendar holds the event, with the answer given when one was. */
   LANDED,
 
+  /** The user's calendar holds the event, declined: the copy they held took the decline. */
+  DECLINED,
+
   /** The event was removed from the user's calendar: its organiser cancelled it. */
   REMOVED,
 
