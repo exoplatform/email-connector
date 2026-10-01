@@ -51,6 +51,9 @@ const UNSAFE_ELEMENTS = [
 /** Attributes holding a URL the frame would follow or load. */
 const URL_ATTRIBUTES = ['href', 'src', 'action', 'formaction', 'xlink:href', 'background', 'poster', 'srcset', 'lowsrc', 'dynsrc'];
 
+/** Attributes that only ever hold text for a reader, never CSS. */
+const TEXT_ATTRIBUTES = ['alt', 'title'];
+
 /** URL schemes that run code or embed a document of their own. */
 const SCRIPT_URL = /^\s*(javascript|vbscript|data|file):/i;
 
@@ -189,11 +192,14 @@ export function cleanHtmlBody(html, options = {}) {
         return;
       }
       if (!URL_ATTRIBUTES.includes(name)) {
-        if (name === 'style' && !options.showRemoteImages) {
+        // Not only style: an SVG presentation attribute (fill, stroke, mask, clip-path,
+        // marker-*, filter...) is CSS too, and its url() loads an external document. Any
+        // attribute but the two text ones a reader reads gets the same treatment.
+        if (!options.showRemoteImages && !TEXT_ATTRIBUTES.includes(name)) {
           if (OPAQUE_CSS.test(attribute.value)) {
             element.removeAttribute(attribute.name);
-          } else {
-            element.setAttribute('style', replaceRemoteCssUrls(attribute.value, origin));
+          } else if (/url\(/i.test(attribute.value)) {
+            element.setAttribute(attribute.name, replaceRemoteCssUrls(attribute.value, origin));
           }
         }
         return;
