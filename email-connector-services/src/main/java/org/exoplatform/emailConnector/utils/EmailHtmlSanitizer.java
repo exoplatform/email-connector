@@ -68,6 +68,20 @@ public final class EmailHtmlSanitizer {
   /** The link relation forced on every link, so the target page gets no handle on the reader. */
   static final String          LINK_REL               = "noopener noreferrer nofollow";
 
+  private static final String  STYLE                  = "style";
+
+  private static final String  BACKGROUND             = "background";
+
+  private static final String  BGCOLOR                = "bgcolor";
+
+  private static final String  TABLE                  = "table";
+
+  private static final String  HTTP                   = "http";
+
+  private static final String  HTTPS                  = "https";
+
+  private static final String  HTTPS_SCHEME           = HTTPS + ":";
+
   /** What a removed {@code url()} becomes: a valid keyword where an image is expected, and an invalid value elsewhere. */
   private static final String  BLOCKED_URL            = "none";
 
@@ -81,10 +95,13 @@ public final class EmailHtmlSanitizer {
 
   private static final Pattern CSS_IMPORT             = Pattern.compile("@import[^;]*;?", Pattern.CASE_INSENSITIVE);
 
-  private static final Pattern CSS_URL                = Pattern.compile("(?:url|src)\\s*\\(\\s*(?:\"([^\"]*)\"|'([^']*)'|([^)\"'\\s]*))\\s*\\)",
-                                                                        Pattern.CASE_INSENSITIVE);
-
-  /** A {@code url(} or {@code src(} left over once the well-formed ones were handled: malformed, so never kept. */
+  /**
+   * The opening of a {@code url(} or {@code src(} call. Its argument and closing
+   * parenthesis are read by hand ({@link #urlCallAt}), in time linear in the CSS: a
+   * regular expression with optional white space around an optional argument backtracks
+   * on a sender's crafted stylesheet. An opening that is not a well-formed call is never
+   * kept.
+   */
   private static final Pattern CSS_URL_LEFTOVER       = Pattern.compile("(?:url|src)\\s*\\(", Pattern.CASE_INSENSITIVE);
 
   /** The functions that take an image address as a bare string, or that run code (IE's expression). */
@@ -116,26 +133,69 @@ public final class EmailHtmlSanitizer {
       return new SanitizedEmailBody("", false, List.of());
     }
     Document dirty = Jsoup.parse(html);
-    // The <head> is not cleaned (the Cleaner reads the body only), so its stylesheets
-    // are moved into the body first, where they are cleaned like any other.
-    List<Element> headStyles = new ArrayList<>(dirty.head().select("style"));
-    for (int i = headStyles.size() - 1; i >= 0; i--) {
-      dirty.body().prependChild(headStyles.get(i));
-    }
-    // A protocol-relative image or background is an http(s) one: given its scheme, it is
-    // held back or shown like the others, where the allow-list would drop it for good.
-    for (Element element : dirty.body().select("img[src], [background]")) {
-      String attribute = element.hasAttr("src") && "img".equals(element.normalName()) ? "src" : "background";
-      if (compact(element.attr(attribute)).startsWith("//")) {
-        element.attr(attribute, "https:" + compact(element.attr(attribute)));
-      }
-    }
+    moveHeadStylesIntoBody(dirty);
+    giveSchemeToProtocolRelativeResources(dirty);
     String bodyStyle = bodyStyle(dirty.body());
     Document clean = new Cleaner(SAFELIST).clean(dirty);
     clean.outputSettings().prettyPrint(false).escapeMode(Entities.EscapeMode.base).charset("UTF-8");
     Element body = clean.body();
     boolean[] blocked = { false };
-    for (Element style : body.select("style")) {
+    cleanStyles(body, allowRemote, blocked);
+    blockRemoteResources(body, allowRemote, blocked);
+    List<EmailLink> links = body.select("a[href]")
+                                .stream()
+                                .map(link -> new EmailLink(link.text().trim(), link.attr("href")))
+                                .toList();
+    String sanitizedBodyStyle = bodyStyle == null ? null : sanitizeCss(bodyStyle, allowRemote, blocked);
+    String result = body.html();
+    if (StringUtils.isNotBlank(sanitizedBodyStyle)) {
+      // Built around the serialised body rather than by re-parsing it into the wrapper:
+      // what was cleaned is exactly what is served.
+      String wrapper = clean.createElement("div").attr(STYLE, sanitizedBodyStyle).outerHtml();
+      result = wrapper.substring(0, wrapper.length() - "</div>".length()) + result + "</div>";
+    }
+    return new SanitizedEmailBody(result, blocked[0], links);
+  }
+
+  /**
+   * Moves the stylesheets of the message's {@code <head>} into its body, in their order:
+   * the Cleaner reads the body only, and mail clients rely on those sheets.
+   *
+   * @param dirty the parsed message
+   */
+  private static void moveHeadStylesIntoBody(Document dirty) {
+    List<Element> headStyles = new ArrayList<>(dirty.head().select(STYLE));
+    for (int i = headStyles.size() - 1; i >= 0; i--) {
+      dirty.body().prependChild(headStyles.get(i));
+    }
+  }
+
+  /**
+   * Gives a protocol-relative image or background its {@code https} scheme: it is an
+   * http(s) resource, held back or shown like the others, where the allow-list would
+   * drop it for good.
+   *
+   * @param dirty the parsed message
+   */
+  private static void giveSchemeToProtocolRelativeResources(Document dirty) {
+    for (Element element : dirty.body().select("img[src], [background]")) {
+      String attribute = element.hasAttr("src") && "img".equals(element.normalName()) ? "src" : BACKGROUND;
+      if (compact(element.attr(attribute)).startsWith("//")) {
+        element.attr(attribute, HTTPS_SCHEME + compact(element.attr(attribute)));
+      }
+    }
+  }
+
+  /**
+   * Rewrites every stylesheet and {@code style} attribute of the cleaned body through
+   * {@link #sanitizeCss}, dropping those left empty.
+   *
+   * @param body the cleaned body
+   * @param allowRemote whether http(s) addresses may be kept
+   * @param blocked set to true when one is removed
+   */
+  private static void cleanStyles(Element body, boolean allowRemote, boolean[] blocked) {
+    for (Element style : body.select(STYLE)) {
       String css = sanitizeCss(style.data(), allowRemote, blocked);
       if (StringUtils.isBlank(css)) {
         style.remove();
@@ -145,13 +205,24 @@ public final class EmailHtmlSanitizer {
       }
     }
     for (Element element : body.select("[style]")) {
-      String css = sanitizeCss(element.attr("style"), allowRemote, blocked);
+      String css = sanitizeCss(element.attr(STYLE), allowRemote, blocked);
       if (StringUtils.isBlank(css)) {
-        element.removeAttr("style");
+        element.removeAttr(STYLE);
       } else {
-        element.attr("style", css);
+        element.attr(STYLE, css);
       }
     }
+  }
+
+  /**
+   * Takes out the images and backgrounds fetched from the internet unless allowed, and
+   * any {@code data:} image source that is not an image.
+   *
+   * @param body the cleaned body
+   * @param allowRemote whether http(s) addresses may be kept
+   * @param blocked set to true when one is removed
+   */
+  private static void blockRemoteResources(Element body, boolean allowRemote, boolean[] blocked) {
     for (Element image : body.select("img[src]")) {
       String source = compact(image.attr("src")).toLowerCase(Locale.ROOT);
       if (source.startsWith("data:") && !source.startsWith("data:image/")) {
@@ -163,23 +234,10 @@ public final class EmailHtmlSanitizer {
     }
     for (Element element : body.select("[background]")) {
       if (!allowRemote) {
-        element.removeAttr("background");
+        element.removeAttr(BACKGROUND);
         blocked[0] = true;
       }
     }
-    List<EmailLink> links = new ArrayList<>();
-    for (Element link : body.select("a[href]")) {
-      links.add(new EmailLink(link.text().trim(), link.attr("href")));
-    }
-    String sanitizedBodyStyle = bodyStyle == null ? null : sanitizeCss(bodyStyle, allowRemote, blocked);
-    String result = body.html();
-    if (StringUtils.isNotBlank(sanitizedBodyStyle)) {
-      // Built around the serialised body rather than by re-parsing it into the wrapper:
-      // what was cleaned is exactly what is served.
-      String wrapper = clean.createElement("div").attr("style", sanitizedBodyStyle).outerHtml();
-      result = wrapper.substring(0, wrapper.length() - "</div>".length()) + result + "</div>";
-    }
-    return new SanitizedEmailBody(result, blocked[0], links);
   }
 
   /**
@@ -222,16 +280,62 @@ public final class EmailHtmlSanitizer {
     decoded = CSS_STRING_IMAGE_FN.matcher(decoded).replaceAll(NEUTRALISED + "(");
     decoded = CSS_BINDING_PROPERTY.matcher(decoded).replaceAll(NEUTRALISED + ":");
     StringBuilder out = new StringBuilder(decoded.length());
-    Matcher url = CSS_URL.matcher(decoded);
+    Matcher opening = CSS_URL_LEFTOVER.matcher(decoded);
+    CssScan scan = null;
     int last = 0;
-    while (url.find()) {
-      out.append(escapeCssText(neutraliseLeftoverUrls(decoded.substring(last, url.start()))));
-      String target = url.group(1) != null ? url.group(1) : url.group(2) != null ? url.group(2) : url.group(3);
-      out.append(rewriteUrl(target, allowRemote, blocked));
-      last = url.end();
+    while (opening.find()) {
+      if (opening.start() < last) {
+        continue;
+      }
+      if (scan == null) {
+        scan = new CssScan(decoded);
+      }
+      int[] call = urlCallAt(scan, opening.end());
+      if (call != null) {
+        out.append(escapeCssText(neutraliseLeftoverUrls(decoded.substring(last, opening.start()))));
+        out.append(rewriteUrl(decoded.substring(call[1], call[2]), allowRemote, blocked));
+        last = call[0];
+      }
     }
     out.append(escapeCssText(neutraliseLeftoverUrls(decoded.substring(last))));
     return out.toString().trim();
+  }
+
+  /**
+   * Reads a {@code url(} or {@code src(} call's argument by hand, from just after its
+   * opening parenthesis: optional white space, then a double- or single-quoted string
+   * (no quote of its kind inside) or an unquoted run of characters that are not
+   * white space, quotes or {@code )}, then optional white space and {@code )}. Every
+   * look-ahead is answered from the tables of {@link CssScan}, so reading all the calls of
+   * a stylesheet stays linear in its length, whatever the sender wrote.
+   *
+   * @param scan the decoded CSS and its look-ahead tables
+   * @param from the index just after the opening parenthesis
+   * @return the call's end (after {@code )}) and its argument's bounds, as
+   *         {@code {end, argumentStart, argumentEnd}}, or null when it is not a well-formed call
+   */
+  static int[] urlCallAt(CssScan scan, int from) {
+    String css = scan.css();
+    int length = css.length();
+    int start = scan.nonSpaceFrom(from);
+    int argumentStart;
+    int argumentEnd;
+    int after;
+    if (start < length && (css.charAt(start) == '"' || css.charAt(start) == '\'')) {
+      int close = scan.quoteFrom(css.charAt(start), start + 1);
+      if (close >= length) {
+        return null;
+      }
+      argumentStart = start + 1;
+      argumentEnd = close;
+      after = close + 1;
+    } else {
+      argumentStart = start;
+      argumentEnd = scan.stopFrom(start);
+      after = argumentEnd;
+    }
+    int close = scan.nonSpaceFrom(after);
+    return close < length && css.charAt(close) == ')' ? new int[] { close + 1, argumentStart, argumentEnd } : null;
   }
 
   /**
@@ -253,7 +357,7 @@ public final class EmailHtmlSanitizer {
       }
       inert = true;
       if (address.startsWith("//")) {
-        address = "https:" + address;
+        address = HTTPS_SCHEME + address;
       }
     }
     return inert && !address.isEmpty() ? "url(\"" + escapeCssString(address) + "\")" : BLOCKED_URL;
@@ -345,7 +449,7 @@ public final class EmailHtmlSanitizer {
    * @return true for {@code http:}, {@code https:} and protocol-relative addresses
    */
   private static boolean isRemote(String address) {
-    return address.startsWith("http:") || address.startsWith("https:") || address.startsWith("//");
+    return address.startsWith(HTTP + ":") || address.startsWith(HTTPS_SCHEME) || address.startsWith("//");
   }
 
   /**
@@ -359,18 +463,18 @@ public final class EmailHtmlSanitizer {
    */
   private static String bodyStyle(Element body) {
     StringBuilder style = new StringBuilder();
-    if (body.hasAttr("bgcolor") && CSS_COLOR_VALUE.matcher(body.attr("bgcolor").trim()).matches()) {
-      style.append("background-color:").append(body.attr("bgcolor").trim()).append(';');
+    if (body.hasAttr(BGCOLOR) && CSS_COLOR_VALUE.matcher(body.attr(BGCOLOR).trim()).matches()) {
+      style.append("background-color:").append(body.attr(BGCOLOR).trim()).append(';');
     }
     if (body.hasAttr("text") && CSS_COLOR_VALUE.matcher(body.attr("text").trim()).matches()) {
       style.append("color:").append(body.attr("text").trim()).append(';');
     }
-    String background = body.attr("background").trim();
+    String background = body.attr(BACKGROUND).trim();
     if (!background.isEmpty() && background.indexOf('"') < 0 && background.indexOf('\\') < 0) {
       style.append("background-image:url(\"").append(background).append("\");");
     }
-    if (StringUtils.isNotBlank(body.attr("style"))) {
-      style.append(body.attr("style"));
+    if (StringUtils.isNotBlank(body.attr(STYLE))) {
+      style.append(body.attr(STYLE));
     }
     return style.isEmpty() ? null : style.toString();
   }
@@ -389,16 +493,16 @@ public final class EmailHtmlSanitizer {
                                   "div", "dl", "dt", "em", "figcaption", "figure", "font", "footer", "h1", "h2", "h3", "h4",
                                   "h5", "h6", "header", "hr", "i", "img", "ins", "kbd", "label", "li", "main", "mark", "nav",
                                   "ol", "p", "pre", "q", "rp", "rt", "ruby", "s", "samp", "section", "small", "span",
-                                  "strike", "strong", "style", "sub", "summary", "sup", "table", "tbody", "td", "tfoot",
+                                  "strike", "strong", STYLE, "sub", "summary", "sup", TABLE, "tbody", "td", "tfoot",
                                   "th", "thead", "time", "tr", "tt", "u", "ul", "var", "wbr")
-                         .addAttributes(":all", "align", "bgcolor", "border", "class", "color", "dir", "height", "id",
-                                        "lang", "style", "title", "valign", "width")
+                         .addAttributes(":all", "align", BGCOLOR, "border", "class", "color", "dir", "height", "id",
+                                        "lang", STYLE, "title", "valign", "width")
                          .addAttributes("a", "href")
                          .addAttributes("img", "src", "alt", "hspace", "vspace")
-                         .addAttributes("table", "cellpadding", "cellspacing", "summary", "frame", "rules", "background")
-                         .addAttributes("td", "colspan", "rowspan", "nowrap", "abbr", "scope", "headers", "background")
-                         .addAttributes("th", "colspan", "rowspan", "nowrap", "abbr", "scope", "headers", "background")
-                         .addAttributes("tr", "background")
+                         .addAttributes(TABLE, "cellpadding", "cellspacing", "summary", "frame", "rules", BACKGROUND)
+                         .addAttributes("td", "colspan", "rowspan", "nowrap", "abbr", "scope", "headers", BACKGROUND)
+                         .addAttributes("th", "colspan", "rowspan", "nowrap", "abbr", "scope", "headers", BACKGROUND)
+                         .addAttributes("tr", BACKGROUND)
                          .addAttributes("col", "span")
                          .addAttributes("colgroup", "span")
                          .addAttributes("ol", "start", "type")
@@ -409,12 +513,12 @@ public final class EmailHtmlSanitizer {
                          .addAttributes("blockquote", "type")
                          .addAttributes("details", "open")
                          .addAttributes("time", "datetime")
-                         .addProtocols("a", "href", "http", "https", "mailto", "tel")
-                         .addProtocols("img", "src", "http", "https", "data", "cid")
-                         .addProtocols("table", "background", "http", "https")
-                         .addProtocols("td", "background", "http", "https")
-                         .addProtocols("th", "background", "http", "https")
-                         .addProtocols("tr", "background", "http", "https")
+                         .addProtocols("a", "href", HTTP, HTTPS, "mailto", "tel")
+                         .addProtocols("img", "src", HTTP, HTTPS, "data", "cid")
+                         .addProtocols(TABLE, BACKGROUND, HTTP, HTTPS)
+                         .addProtocols("td", BACKGROUND, HTTP, HTTPS)
+                         .addProtocols("th", BACKGROUND, HTTP, HTTPS)
+                         .addProtocols("tr", BACKGROUND, HTTP, HTTPS)
                          .addEnforcedAttribute("a", "target", "_blank")
                          .addEnforcedAttribute("a", "rel", LINK_REL);
   }
