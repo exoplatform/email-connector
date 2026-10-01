@@ -286,7 +286,7 @@ export default {
           key: folder.key,
           depth: row.depth,
           hasChildren: row.hasChildren,
-          path: this.$emailConnectorMailBoxService.folderPath(folder),
+          path: this.$emailConnectorMailBoxService.folderPath(folder, this.availableFolders),
           icon: this.$emailConnectorMailBoxService.folderIcon(folder),
           label: row.showPath ? row.pathLabel : this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)),
           // Counted in the menu only for the Scheduled view, which is listed only when it
