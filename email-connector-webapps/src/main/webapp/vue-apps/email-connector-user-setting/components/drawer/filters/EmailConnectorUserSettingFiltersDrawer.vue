@@ -405,7 +405,7 @@ export default {
             .map(row => row.folder)
             .map(folder => ({
               key: folder.key,
-              label: folder.key === 'ARCHIVE' ? this.$t('UserSettings.emailConnector.filters.form.moveTo.archive') : folderPath(folder) || folder.displayName,
+              label: folder.key === 'ARCHIVE' ? this.$t('UserSettings.emailConnector.filters.form.moveTo.archive') : folderPath(folder, list?.folders) || folder.displayName,
             }));
         })
         .catch(() => this.folders = []);
