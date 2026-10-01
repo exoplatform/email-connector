@@ -10174,6 +10174,22 @@ public class EmailBoxService {
      * @throws MessagingException if the message cannot be built
      */
     MimeMessage build(Session session, InternetAddress from) throws MessagingException;
+
+    /**
+     * Builds the message, knowing who sends it when that is not who it is from: the
+     * delegate writing on a shared mailbox owner's behalf, whom an iTIP REPLY names as
+     * SENT-BY (EXO-90840). The message's {@code Sender} header is set by the caller.
+     *
+     * @param session the user's SMTP session
+     * @param from the address the message is from
+     * @param sender the delegate on the owner's behalf, with the address resolved as the
+     *          {@code Sender} header's; null when the message is from its sender
+     * @return the message, with its recipients set
+     * @throws MessagingException if the message cannot be built
+     */
+    default MimeMessage build(Session session, InternetAddress from, InternetAddress sender) throws MessagingException {
+      return build(session, from);
+    }
   }
 
   /**
@@ -10203,32 +10219,70 @@ public class EmailBoxService {
    */
   public void transmitAsUser(String username, OutgoingMessageFactory factory) throws IllegalAccessException,
                                                                        SmtpTransmitter.TransmissionException {
-    transmitAsUser(username, null, factory);
+    transmit(username, null, factory);
   }
 
   /**
    * {@link #transmitAsUser(String, OutgoingMessageFactory)}, in a shared mailbox owner's
-   * name when an identity is given (EXO-90840): the factory is handed the owner's address
-   * as {@code from}, the message then names the sender beside it when the identity is on
-   * the owner's behalf, and the envelope is the one {@link #buildOutgoingMessage} uses
-   * for the same identity. The identity must come from
-   * {@link EmailDelegationService#checkSendMode}, which is where the owner's consent is
-   * checked. A mail server refusing a mail in the owner's name is recorded on the share,
-   * as for a composed mail, and answered with {@link SendModeUnavailableException}.
+   * name (EXO-90840): the owner's consent to the shape is checked here, through
+   * {@link EmailDelegationService#checkSendMode} as a composed mail's is, before anything
+   * is built; the factory is then handed the owner's address as {@code from}, and the
+   * delegate's own as {@code sender} on her behalf; the envelope, {@code From} and
+   * {@code Sender} are those {@link #buildOutgoingMessage} gives a composed mail in that
+   * shape; and once the server accepted the message, a copy is filed in the owner's Sent
+   * with {@code X-Exo-Sent-By}, as a composed mail's is -- her record of what was sent in
+   * her name. A copy that cannot be filed never fails the send. A mail server refusing a
+   * mail in the owner's name is recorded on the share and answered with
+   * {@link SendModeUnavailableException}.
+   *
+   * @param username the delegate sending
+   * @param delegationId the share the message is sent from
+   * @param mode {@link SendMode#ON_BEHALF} or {@link SendMode#AS}
+   * @param factory builds the message on the delegate's session and the owner's address
+   * @return what became of the owner's copy: FILED, FAILED or SKIPPED
+   * @throws IllegalAccessException if the delegate has no usable connector, or
+   *           {@link SendModeMissingException} when the owner's consent does not cover the
+   *           shape
+   * @throws ObjectNotFoundException when the share is not the delegate's
+   * @throws DelegationRevokedException when the share is no longer accepted
+   * @throws SendModeUnavailableException when the shape cannot be used, or the owner's
+   *           mail server refused it; nothing was sent
+   * @throws SmtpTransmitter.TransmissionException naming the step that failed
+   */
+  public OwnerCopy transmitFromSharedMailbox(String username,
+                                             long delegationId,
+                                             SendMode mode,
+                                             OutgoingMessageFactory factory) throws IllegalAccessException,
+                                                                             ObjectNotFoundException,
+                                                                             SmtpTransmitter.TransmissionException {
+    SendIdentity identity = emailDelegationService.checkSendMode(username, delegationId, mode);
+    String ownerSentKey = ownerSentKeyFor(username, delegationId);
+    MimeMessage message = transmit(username, identity, factory);
+    if (ownerSentKey == null) {
+      return OwnerCopy.SKIPPED;
+    }
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    EmailConnector emailConnector =
+                                  emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+    return copyToOwnerSent(message, username, userEmailSetting, ownerSentKey, sentByOf(identity, emailConnector, userEmailSetting, username));
+  }
+
+  /**
+   * Transmits a message built by a factory over the user's own SMTP connector, in their
+   * own name or in an identity {@link EmailDelegationService#checkSendMode} made, with
+   * the one retry the credentials contract allows.
    *
    * @param username the user sending
    * @param identity the owner's name the message goes out in, null for the user's own
-   * @param factory builds the message on the user's session and the address it is from
+   * @param factory builds the message
+   * @return the message as it was transmitted
    * @throws IllegalAccessException if the user has no usable connector
-   * @throws SmtpTransmitter.TransmissionException naming the step that failed; a
-   *           message that could not be built fails in {@code PREPARE}
-   * @throws SendModeUnavailableException when the mail server refused a mail in the
-   *           owner's name; nothing was sent
+   * @throws SmtpTransmitter.TransmissionException naming the step that failed
    */
-  public void transmitAsUser(String username,
-                             SendIdentity identity,
-                             OutgoingMessageFactory factory) throws IllegalAccessException,
-                                                             SmtpTransmitter.TransmissionException {
+  private MimeMessage transmit(String username,
+                               SendIdentity identity,
+                               OutgoingMessageFactory factory) throws IllegalAccessException,
+                                                               SmtpTransmitter.TransmissionException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -10263,6 +10317,7 @@ public class EmailBoxService {
     if (identity != null) {
       recordSentInOwnersName(message, username, identity);
     }
+    return message;
   }
 
   /**
@@ -10319,10 +10374,16 @@ public class EmailBoxService {
         return factory.build(smtpSession(emailConnector, username, true), sender);
       }
       String envelopeFrom = identity.namesTheSender() ? emailAddress : identity.ownerMailbox();
+      InternetAddress delegate = identity.namesTheSender()
+                                                           ? new InternetAddress(emailAddress,
+                                                                                 displayName(userProfile != null ? userProfile.getFullName()
+                                                                                                                 : null))
+                                                           : null;
       MimeMessage message = factory.build(smtpSession(emailConnector, username, true, envelopeFrom),
-                                          new InternetAddress(identity.ownerMailbox(), displayName(identity.ownerFullName())));
-      if (identity.namesTheSender()) {
-        message.setSender(new InternetAddress(emailAddress, displayName(userProfile != null ? userProfile.getFullName() : null)));
+                                          new InternetAddress(identity.ownerMailbox(), displayName(identity.ownerFullName())),
+                                          delegate);
+      if (delegate != null) {
+        message.setSender(delegate);
       }
       return message;
     } catch (MessagingException | UnsupportedEncodingException | ConnectorCredentialsException | RuntimeException e) {
