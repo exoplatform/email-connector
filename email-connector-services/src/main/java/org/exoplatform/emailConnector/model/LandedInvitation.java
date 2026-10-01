@@ -25,6 +25,8 @@ package org.exoplatform.emailConnector.model;
  *          domain; null when removed, or when the add-on has no page for it
  * @param removed true when the event was removed from the calendar -- its organiser
  *          cancelled it -- rather than put there
+ * @param alreadyHeld true when nothing was written because the event is one of the
+ *          platform's own, in the calendar already
  */
-public record LandedInvitation(long eventId, String link, boolean removed) {
+public record LandedInvitation(long eventId, String link, boolean removed, boolean alreadyHeld) {
 }
