@@ -85,7 +85,7 @@ class RestRefusalStatusTest {
    * The handlers per controller that must answer 403 to a refusal, at least: the number
    * of its handlers that reach a refusing service.
    */
-  private static final Map<Class<?>, Integer>               FLOORS = Map.of(EmailBoxRest.class, 48,
+  private static final Map<Class<?>, Integer>               FLOORS = Map.of(EmailBoxRest.class, 50,
                                                                             UserEmailSettingRest.class, 22,
                                                                             EmailConnectorRest.class, 22,
                                                                             EmailContactRest.class, 1,

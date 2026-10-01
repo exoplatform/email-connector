@@ -317,6 +317,50 @@ export function saveReadReceiptSettings(settings) {
 }
 
 /**
+ * The caller's Undo send preference (EXO-90837): how many seconds a sent mail waits,
+ * with an Undo, before it goes (0 is off), and the waits the server offers.
+ *
+ * @returns {Promise<object>} {delaySeconds, allowedDelays}
+ */
+export function getUndoSendSettings() {
+  return fetch('/email-connector/rest/user-email-setting/undo-send', {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the undo send settings');
+    }
+  });
+}
+
+/**
+ * Stores the caller's Undo send wait, one the server offers; it answers the preference
+ * as it now stands.
+ *
+ * @param {number} delaySeconds - the wait, 0 for off
+ * @returns {Promise<object>} {delaySeconds, allowedDelays}
+ */
+export function saveUndoSendSettings(delaySeconds) {
+  return fetch('/email-connector/rest/user-email-setting/undo-send', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({ delaySeconds }),
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when saving the undo send settings');
+    }
+  });
+}
+
+/**
  * Turns a refused absence request into an Error carrying the server's message code
  * ("emailConnector.absence.*") as its message, and, for a 409, the name of the script
  * the conflict is about as `scriptName`, so the screen can say why in the user's words.
