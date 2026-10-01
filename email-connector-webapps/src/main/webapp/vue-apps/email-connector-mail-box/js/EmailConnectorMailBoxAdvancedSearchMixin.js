@@ -170,9 +170,9 @@ export default {
       };
     },
     /**
-     * The chips above the search results: one per criterion that narrows the search,
-     * the Unread and Favorites chips included while they are lit, and the folder when it
-     * is not the one shown.
+     * The chips above the search results: one per criterion of the advanced search, and
+     * the folder when it is not the one shown. Unread and Favorites are the search row's
+     * own chips, never repeated here.
      *
      * @returns {Array} [{key, label}]
      */
@@ -192,12 +192,6 @@ export default {
       }
       if (criteria.folder && criteria.folder !== this.currentFolder) {
         chips.push({ key: 'folder', label: this.$t('emailConnector.mailBox.search.chip.folder', { 0: this.folderLabelOf(criteria.folder) }) });
-      }
-      if (this.unreadOnly) {
-        chips.push({ key: 'unread', label: this.$t('emailConnector.mailBox.search.chip.unread') });
-      }
-      if (this.favoriteOnly) {
-        chips.push({ key: 'favorites', label: this.$t('emailConnector.mailBox.search.chip.favorites') });
       }
       return chips;
     },
@@ -247,19 +241,16 @@ export default {
       this.advancedCarriedText = text && !(this.searchCriteria[field] || '').trim() ? text : '';
       this.$root.$emit(OPEN_ADVANCED_SEARCH_EVENT, {
         criteria: { ...this.searchCriteria, folder: this.searchFolder, ...(this.advancedCarriedText ? { [field]: text } : {}) },
-        unread: this.unreadOnly,
-        favorites: this.favoriteOnly,
         folders: this.searchFolderOptions,
         shownFolder: this.currentFolder,
       });
     },
     /**
-     * Runs the search the advanced search drawer asks for: its criteria, its folder
-     * (kept only when it is not the one shown) and its Unread and Favorites, which are
-     * the list's chips -- toggled through the drawer's own toggles, so the list behind
-     * the search agrees. Without a text or a criterion left, there is no search.
+     * Runs the search the advanced search drawer asks for: its criteria and its folder
+     * (kept only when it is not the one shown), with the search row's Unread and
+     * Favorites as they are. Without a text or a criterion left, there is no search.
      *
-     * @param {Object} search {criteria, unread, favorites}
+     * @param {Object} search {criteria}
      * @returns {void}
      */
     applyAdvancedSearch(search) {
@@ -276,34 +267,29 @@ export default {
         window.clearTimeout(this.searchDebounceTimer);
         this.searchTerm = '';
       }
-      this.setSearchChips(!!search?.unread, !!search?.favorites);
       this.rerunSearch();
     },
     /**
      * Takes one criterion off the search -- a chip's close button -- and searches again.
      *
-     * @param {String} key the criterion: from, to, words, after, before, attachment,
-     *          folder, unread or favorites
+     * @param {String} key the criterion: from, to, words, after, before, attachment or
+     *          folder
      * @returns {void}
      */
     removeSearchCriterion(key) {
-      if (key === 'unread') {
-        this.setSearchChips(false, this.favoriteOnly);
-      } else if (key === 'favorites') {
-        this.setSearchChips(this.unreadOnly, false);
-      } else if (Object.prototype.hasOwnProperty.call(this.searchCriteria, key)) {
+      if (Object.prototype.hasOwnProperty.call(this.searchCriteria, key)) {
         this.searchCriteria = { ...this.searchCriteria, [key]: emptySearchCriteria()[key] };
       }
       this.rerunSearch();
     },
     /**
-     * Takes every advanced criterion off the search, the text kept.
+     * Takes every advanced criterion off the search, the text and the search row's
+     * chips kept.
      *
      * @returns {void}
      */
     clearSearchCriteria() {
       this.searchCriteria = emptySearchCriteria();
-      this.setSearchChips(false, false);
       this.rerunSearch();
     },
     /**
