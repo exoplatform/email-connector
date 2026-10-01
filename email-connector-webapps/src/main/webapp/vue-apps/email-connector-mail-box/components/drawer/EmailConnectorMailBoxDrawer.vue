@@ -100,6 +100,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :select-mode="selectMode"
           :current-folder="currentFolder"
           :available-folders="availableFolders"
+          :namespace-folders="folders"
           :categories="emailCategories"
           :category-view-id="categoryViewId"
           :sync-in-progress="syncInProgress"
@@ -125,6 +126,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :select-mode="selectMode"
         :current-folder="currentFolder"
         :available-folders="availableFolders"
+        :namespace-folders="folders"
         :categories="emailCategories"
         :category-view-id="categoryViewId"
         :sync-in-progress="syncInProgress" />
@@ -142,6 +144,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div class="d-flex flex-row fill-height">
         <email-connector-mail-box-drawer-navigation
           :folders="availableFolders"
+          :namespace-folders="folders"
           :current-folder="currentFolder"
           :categories="emailCategories"
           :category-view-id="categoryViewId"
