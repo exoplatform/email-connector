@@ -15,7 +15,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-// EXO-90839 -- the user's own folders as a tree. The server lists every folder flat,
+// EXO-90839 -- the user's own folders, and a shared mailbox's folders, as a tree. The server lists every folder flat,
 // each with its full name (path) and the mail server's hierarchy delimiter; the tree is
 // read off those two, the way the mail server itself nests them, so a folder made as a
 // sub-folder in another mail client is nested here too. One spelling for every screen
@@ -138,13 +138,15 @@ export function toggleCollapsedFolder(collapsed, key) {
 }
 
 /**
- * Whether a folder takes part in the tree: one of the user's own, with a full name.
+ * Whether a folder takes part in the tree: one of the user's own, or one of the folders
+ * of a mailbox shared with the user (its path then being the owner's), with a full name.
+ * A shared mailbox's INBOX is the mailbox itself and stays at the top.
  *
  * @param {Object} folder the folder
- * @returns {Boolean} true for a folder of the user's own
+ * @returns {Boolean} true for a folder the tree nests
  */
 function isTreeFolder(folder) {
-  return folder?.type === 'CUSTOM' && !!folder.path;
+  return (folder?.type === 'CUSTOM' || folder?.type === 'DELEGATED') && !!folder.path;
 }
 
 /**
@@ -185,7 +187,7 @@ function nearestAncestor(folder, byPath) {
  */
 function appendRows(rows, level, children, depth, ancestorKeys, dropInbox) {
   level.slice()
-    .sort((first, second) => sortName(first, depth, dropInbox).localeCompare(sortName(second, depth, dropInbox), [], { sensitivity: 'base', numeric: true }))
+    .sort((first, second) => compareSiblings(first, second, depth, dropInbox))
     .forEach(folder => {
       const inside = children.get(folder.key) || [];
       const segments = ownSegments(folder, dropInbox);
@@ -219,10 +221,11 @@ export function folderPathLabel(folder, folders) {
 }
 
 /**
- * Whether INBOX is the namespace the user's own folders live under ("INBOX.Customers" on
+ * Whether INBOX is the namespace a mailbox's folders live under ("INBOX.Customers" on
  * Courier, Cyrus without the alternate namespace) rather than a folder some of them sit
  * in (a sub-folder made inside the inbox on Dovecot's default layout): true when every
- * one of the user's own folders is inside INBOX.
+ * one of its folders -- the user's own, or the owner's of a shared mailbox -- is inside
+ * INBOX.
  *
  * @param {Array} folders the folders as the server lists them
  * @returns {Boolean} true when INBOX is where every folder of the user's lives
@@ -258,6 +261,26 @@ function ownSegments(folder, dropInbox) {
   }
   const segments = folder.path.split(folder.delimiter);
   return dropInbox && segments.length > 1 && isInboxPath(segments[0]) ? segments.slice(1) : segments;
+}
+
+/**
+ * The order of two siblings: a shared mailbox's role folders (its Sent, Archive, Trash,
+ * Spam) first, in the order the server lists them; then by the name shown.
+ *
+ * @param {Object} first a folder
+ * @param {Object} second another folder of the same level
+ * @param {Number} depth the level's depth
+ * @param {Boolean} dropInbox whether INBOX is the namespace every folder lives under
+ * @returns {Number} the comparison
+ */
+function compareSiblings(first, second, depth, dropInbox) {
+  if (!!first.role !== !!second.role) {
+    return first.role ? -1 : 1;
+  }
+  if (first.role) {
+    return 0;
+  }
+  return sortName(first, depth, dropInbox).localeCompare(sortName(second, depth, dropInbox), [], { sensitivity: 'base', numeric: true });
 }
 
 /**
