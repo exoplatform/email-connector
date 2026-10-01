@@ -212,12 +212,12 @@ function appendRows(rows, level, children, depth, ancestorKeys, dropInbox) {
 
 /**
  * A folder's full name as the user reads it: its segments joined by a spaced slash
- * ("Customers / Acme"), without a leading INBOX when the user's folders show INBOX is the
+ * ("Customers / Acme"), without a leading INBOX when the mailbox's folders show INBOX is the
  * namespace they all live under (see inboxIsNamespace). The one spelling of a folder's
  * path on every screen.
  *
  * @param {Object} folder the folder as the server lists it ({path, delimiter})
- * @param {Array} folders the user's folders it is listed with; without them INBOX is kept
+ * @param {Array} folders the mailbox's folders it is listed with; without them INBOX is kept
  * @returns {String} the path, or nothing for a folder without one
  */
 export function folderPathLabel(folder, folders) {
