@@ -129,8 +129,9 @@ export default {
      */
     searchBarProps() {
       return {
-        // No Important chip while a search shows: a category view does not narrow it.
-        importantCategory: this.searchActive ? null : this.importantCategory,
+        // No Important chip while a search shows, nor while its field is open: a category
+        // view does not narrow a search, and the row keeps its width as the text comes.
+        importantCategory: this.searchActive || this.searchFieldOpen ? null : this.importantCategory,
         categoryViewId: this.categoryViewId,
         favoriteOnly: this.favoriteOnly,
         unreadOnly: this.unreadOnly,
