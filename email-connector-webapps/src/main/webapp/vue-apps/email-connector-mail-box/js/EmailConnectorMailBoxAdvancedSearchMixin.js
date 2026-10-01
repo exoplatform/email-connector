@@ -138,6 +138,7 @@ export default {
         searchable: this.canSearch,
         searchOpen: this.searchFieldOpen,
         searchText: this.searchFieldText,
+        criteriaChips: this.searchCriteriaChips,
       };
     },
     /**
@@ -154,12 +155,15 @@ export default {
         'close-search': this.closeSearchField,
         'search-input': this.onSearchFieldInput,
         'advanced-search': this.openAdvancedSearch,
+        'remove-criterion': this.removeSearchCriterion,
+        'clear-criteria': this.clearSearchCriteria,
       };
     },
     /**
-     * The chips above the search results: one per criterion of the advanced search, and
-     * the folder when it is not the one shown. Unread and Favorites are the search row's
-     * own chips, never repeated here.
+     * The criteria line under the search row: one chip per criterion of the advanced
+     * search, the folder when it is not the one shown, and -- while the search field
+     * hides the row's own chips -- a lit Unread or Favorites, so a filter on the list or
+     * the search is never unseen.
      *
      * @returns {Array} [{key, label}]
      */
@@ -179,6 +183,12 @@ export default {
       }
       if (criteria.folder && criteria.folder !== this.currentFolder) {
         chips.push({ key: 'folder', label: this.$t('emailConnector.mailBox.search.chip.folder', { 0: this.folderLabelOf(criteria.folder) }) });
+      }
+      if (this.searchFieldOpen && this.unreadOnly) {
+        chips.push({ key: 'unread', label: this.$t('emailConnector.mailBox.search.chip.unread') });
+      }
+      if (this.searchFieldOpen && this.favoriteOnly) {
+        chips.push({ key: 'favorites', label: this.$t('emailConnector.mailBox.search.chip.favorites') });
       }
       return chips;
     },
@@ -259,24 +269,36 @@ export default {
     /**
      * Takes one criterion off the search -- a chip's close button -- and searches again.
      *
-     * @param {String} key the criterion: from, to, words, after, before, attachment or
-     *          folder
+     * @param {String} key the criterion: from, to, words, after, before, attachment,
+     *          folder, or the row's unread or favorites shown on the line
      * @returns {void}
      */
     removeSearchCriterion(key) {
+      if (key === 'unread' || key === 'favorites') {
+        // The row's chip, put out as its own toggle does it: the search follows.
+        if (key === 'unread') {
+          this.toggleSearchUnread();
+        } else {
+          this.toggleSearchFavorites();
+        }
+        return;
+      }
       if (Object.prototype.hasOwnProperty.call(this.searchCriteria, key)) {
         this.searchCriteria = { ...this.searchCriteria, [key]: emptySearchCriteria()[key] };
       }
       this.rerunSearch();
     },
     /**
-     * Takes every advanced criterion off the search, the text and the search row's
-     * chips kept.
+     * Takes every chip of the criteria line off, the text kept: the advanced criteria,
+     * and the row's Unread and Favorites when the line shows them.
      *
      * @returns {void}
      */
     clearSearchCriteria() {
       this.searchCriteria = emptySearchCriteria();
+      if (this.searchFieldOpen) {
+        this.setSearchChips(false, false);
+      }
       this.rerunSearch();
     },
     /**
