@@ -2135,4 +2135,20 @@
       <dropForeignKeyConstraint baseTableName="EMAIL_FILTER_PROPOSAL" constraintName="FK_EMAIL_FILTER_PROPOSAL_MATCH"/>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-98">
+    <comment>
+      EMAIL_BOX.AUTH_FAILURE (EXO-90841): the sender-authentication method the receiving
+      server reported as failed in the message's own Authentication-Results header --
+      DMARC, SPF or DKIM -- decided at sync, when the header still exists, and shown by the
+      reader's phishing banner. Null when none failed, the server said nothing, and on
+      every row written before this. Nullable, no default, no index (read with its row
+      only). Rolled back explicitly.
+    </comment>
+    <addColumn tableName="EMAIL_BOX">
+      <column name="AUTH_FAILURE" type="VARCHAR(16)"/>
+    </addColumn>
+    <rollback>
+      <dropColumn tableName="EMAIL_BOX" columnName="AUTH_FAILURE"/>
+    </rollback>
+  </changeSet>
 </databaseChangeLog>

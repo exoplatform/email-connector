@@ -98,6 +98,7 @@ import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.ReadReceiptPolicy;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
+import org.exoplatform.emailConnector.model.RemoteContentSettings;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -113,6 +114,7 @@ import org.exoplatform.emailConnector.service.EmailScheduledSendService;
 import org.exoplatform.emailConnector.model.UndoSendSettings;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
+import org.exoplatform.emailConnector.service.EmailSecurityService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
 
@@ -158,6 +160,9 @@ public class UserEmailSettingRestTest {
 
   @MockitoBean
   private ReadReceiptService      readReceiptService;
+
+  @MockitoBean
+  private EmailSecurityService    emailSecurityService;
 
   @MockitoBean
   private EmailDelegationService  emailDelegationService;
@@ -917,6 +922,47 @@ public class UserEmailSettingRestTest {
                                                                 .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isBadRequest())
            .andExpect(status().reason(EmailScheduledSendService.UNDO_SEND_INVALID_DELAY));
+  }
+
+  /**
+   * EXO-90841: the remote-content choices are read and written for the authenticated
+   * caller only, an address that is not one answers 400 with its code, and a switch
+   * request without a body answers 400.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void remoteContentChoices() throws Exception {
+    when(emailSecurityService.getSettings(SIMPLE_USER)).thenReturn(new RemoteContentSettings(true, List.of("news@shop.example")));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/remote-content").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.blockRemoteContent").value(true))
+           .andExpect(jsonPath("$.trustedSenders[0]").value("news@shop.example"));
+
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/remote-content").with(testSimpleUser())
+                                                                    .content("{\"blockRemoteContent\":false,\"trustedSenders\":[\"x@evil.example\"]}")
+                                                                    .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailSecurityService).setBlockRemoteContent(SIMPLE_USER, false);
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/remote-content").with(testSimpleUser()).contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest());
+
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/remote-content/trusted-senders").param("address", "News@Shop.example")
+                                                                                    .with(testSimpleUser()))
+           .andExpect(status().isOk());
+    verify(emailSecurityService).trustSender(SIMPLE_USER, "News@Shop.example");
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/remote-content/trusted-senders").param("address", "news@shop.example")
+                                                                                      .with(testSimpleUser()))
+           .andExpect(status().isOk());
+    verify(emailSecurityService).forgetSender(SIMPLE_USER, "news@shop.example");
+
+    when(emailSecurityService.trustSender(SIMPLE_USER, "nobody")).thenThrow(new IllegalArgumentException(EmailSecurityService.INVALID_SENDER));
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/remote-content/trusted-senders").param("address", "nobody").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(EmailSecurityService.INVALID_SENDER));
+    when(emailSecurityService.forgetSender(SIMPLE_USER, "nobody")).thenThrow(new IllegalArgumentException(EmailSecurityService.INVALID_SENDER));
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/remote-content/trusted-senders").param("address", "nobody").with(testSimpleUser()))
+           .andExpect(status().isBadRequest());
   }
 
   // ---------------------------------------------------------------------------------

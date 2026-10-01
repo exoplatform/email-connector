@@ -2298,6 +2298,8 @@ public class EmailBoxStorage {
                                                          false,
                                                          // The draft's mailbox and name, set by name below.
                                                          null,
+                                                         null,
+                                                         // The authentication verdict, set by name below.
                                                          null);
       emailBoxEntity.setReadReceiptRequested(email.isReadReceiptRequested());
       emailBoxEntity.setReadReceiptTo(email.getReadReceiptTo());
@@ -2308,6 +2310,7 @@ public class EmailBoxStorage {
       emailBoxEntity.setDraftDelegationId(email.getSendDelegationId());
       // And the name it is to go out in (EXO-90584), which every later save rewrites.
       emailBoxEntity.setDraftSendMode(email.getSendMode());
+      emailBoxEntity.setAuthFailure(email.getContent() != null ? email.getContent().getAuthFailure() : null);
       List<EmailAttachmentEntity> attachments = email.getContent() != null
           && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
             return toEmailAttachmentEntity(attachment, emailBoxEntity);
@@ -2416,6 +2419,7 @@ public class EmailBoxStorage {
       boolean listedWithoutBody = isExcerpt && StringUtils.isBlank(emailBoxEntity.getDraftLocalId());
       EmailContent content = new EmailContent(listedWithoutBody ? null : body, excerpt, attachments);
       content.setHtml(isHtmlBody(emailBoxEntity));
+      content.setAuthFailure(emailBoxEntity.getAuthFailure());
       String[] emailSenderParts = splitStoredPerson(emailBoxEntity.getSender());
       InternetAddress emailSenderAddress = new InternetAddress(emailSenderParts[1], emailSenderParts[0]);
       String linkedObjectId = String.valueOf(emailBoxEntity.getId());

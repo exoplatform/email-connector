@@ -69,6 +69,7 @@ import EmailConnectorMailBoxSourceDrawer from './components/drawer/EmailConnecto
 import EmailConnectorScheduleSendPicker from './components/drawer/EmailConnectorScheduleSendPicker.vue';
 import EmailConnectorMailBoxPopup from './components/drawer/EmailConnectorMailBoxPopup.vue';
 import EmailConnectorReadReceiptBanner from './components/drawer/EmailConnectorReadReceiptBanner.vue';
+import EmailConnectorSecurityBanner from './components/drawer/EmailConnectorSecurityBanner.vue';
 import EmailConnectorMailBoxScheduledList from './components/drawer/EmailConnectorMailBoxScheduledList.vue';
 import EmailConnectorMailBoxScheduledListItem from './components/drawer/EmailConnectorMailBoxScheduledListItem.vue';
 import EmailConnectorMailBoxSwitcher from './components/drawer/EmailConnectorMailBoxSwitcher.vue';
@@ -140,6 +141,7 @@ const components = {
   'email-connector-schedule-picker': EmailConnectorScheduleSendPicker,
   'email-connector-mail-box-popup': EmailConnectorMailBoxPopup,
   'email-connector-read-receipt-banner': EmailConnectorReadReceiptBanner,
+  'email-connector-security-banner': EmailConnectorSecurityBanner,
   'email-connector-mail-box-scheduled-list': EmailConnectorMailBoxScheduledList,
   'email-connector-mail-box-scheduled-list-item': EmailConnectorMailBoxScheduledListItem,
 };

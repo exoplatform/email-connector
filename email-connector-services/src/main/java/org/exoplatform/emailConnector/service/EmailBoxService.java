@@ -219,6 +219,7 @@ import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.CappedOutputStream;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
+import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
 import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
@@ -461,7 +462,8 @@ public class EmailBoxService {
                                                                                                       HEADER_DISPOSITION_NOTIFICATION_TO,
                                                                                                       HEADER_RETURN_PATH,
                                                                                                       HEADER_EXO_DRAFT_MAILBOX,
-                                                                                                      HEADER_EXO_DRAFT_SEND_MODE);
+                                                                                                      HEADER_EXO_DRAFT_SEND_MODE,
+                                                                                                      EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS);
 
   // How long a new-mail notification waits for someone to classify the messages first. Short,
   // because with no such consumer this is pure added latency.
@@ -14215,6 +14217,9 @@ public class EmailBoxService {
           List<EmailRecipient> emailReplyToRecipients = EmailConnectorUtils.getEmailRecipients(message.getReplyTo(),
                                                                                                username,
                                                                                                false);
+          // The receiving server's sender-authentication verdict, which only the live
+          // message carries (EXO-90841): read now, kept with the row for the reader's banner.
+          emailContent.setAuthFailure(EmailSecurityUtils.authenticationFailure(message.getHeader(EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS)));
           String mailHeaderId = ((MimeMessage) message).getMessageID();
           String inReplyTo = firstHeader(message, HEADER_IN_REPLY_TO);
           String references = firstHeader(message, HEADER_REFERENCES);
