@@ -2909,7 +2909,8 @@ public class EmailDelegationService {
   /**
    * A shared mailbox's folders besides INBOX, for the switcher and the folder tree: the
    * ones the last discovery still listed, roles first in their usual order, then by
-   * name; each with the controls the delegate's letters on it unlock.
+   * name; each with the controls the delegate's letters on it unlock, and its place in
+   * the owner's tree (EXO-90839).
    *
    * @param folders the share's registered folders
    * @param delegation the share
@@ -2928,10 +2929,34 @@ public class EmailDelegationService {
                                                    folder.getDisplayName(),
                                                    rights.letters(),
                                                    rights.affordances(),
-                                                   rights.canRead());
+                                                   rights.canRead(),
+                                                   ownerPathOf(folder, delegation),
+                                                   StringUtils.defaultIfEmpty(folder.getDelimiter(), null));
                   })
                   .toList();
   }
+  /**
+   * A shared folder's full name in the owner's mailbox: its full name as the delegate
+   * sees it, without the share's root ({@code Shared Folders/alice/}) the delegate's
+   * server lists it under -- the path the delegate's folder tree nests by, with the
+   * owner's delimiter. A folder not under that root, or on a flat namespace, is given by
+   * its name alone.
+   *
+   * @param folder the delegate's row of the shared folder
+   * @param delegation the share
+   * @return the path, never null
+   */
+  static String ownerPathOf(EmailFolder folder, EmailDelegation delegation) {
+    String name = folder.getRemoteName();
+    String delimiter = folder.getDelimiter();
+    String fallback = StringUtils.defaultString(folder.getDisplayName(), StringUtils.defaultString(name));
+    if (StringUtils.isBlank(name) || StringUtils.isEmpty(delimiter) || StringUtils.isBlank(delegation.getRemoteRoot())) {
+      return fallback;
+    }
+    String rootPrefix = StringUtils.removeEnd(delegation.getRemoteRoot(), delimiter) + delimiter;
+    return name.startsWith(rootPrefix) && name.length() > rootPrefix.length() ? name.substring(rootPrefix.length()) : fallback;
+  }
+
 
   /**
    * The delegate's letters on one folder of a share: the folder's own, as discovery read
