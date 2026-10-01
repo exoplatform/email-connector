@@ -1,0 +1,15 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//eXo Platform//Agenda//EN
+METHOD:REQUEST
+BEGIN:VEVENT
+UID:agenda-event-42@exo.example.test
+DTSTAMP:20261001T120000Z
+DTSTART:20261005T080000Z
+DTEND:20261005T090000Z
+SUMMARY:Sprint review
+URL:https://exo.example.test/portal/dw/agenda?eventId=42
+ORGANIZER;CN=Olivia:mailto:olivia@partner.example
+ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:testEmail@acme.com
+END:VEVENT
+END:VCALENDAR

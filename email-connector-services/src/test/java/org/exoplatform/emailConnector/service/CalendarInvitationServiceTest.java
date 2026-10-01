@@ -64,6 +64,7 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.model.CalendarInvitation;
 import org.exoplatform.emailConnector.model.CalendarInvitationPerson;
@@ -250,6 +251,53 @@ class CalendarInvitationServiceTest {
       for (int read = 0; read < 2; read++) {
         assertEquals(CalendarInvitationService.UNSUPPORTED,
                      assertThrows(IllegalArgumentException.class, () -> service.getInvitation(EMAIL_ID, USER)).getMessage());
+      }
+    }
+  }
+
+  /**
+   * An event this deployment's Agenda mailed is an eXo meeting: labelled, linked to in
+   * Agenda by the link rebuilt from the portal's own domain, and never answered from the
+   * mail -- not even when its method asks for an answer.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void thisDeploymentsAgendaEventIsAnsweredInAgenda() throws Exception {
+    try (MockedStatic<CommonsUtils> portal = mockStatic(CommonsUtils.class)) {
+      portal.when(CommonsUtils::getCurrentDomain).thenReturn("https://exo.example.test");
+      for (String fixture : List.of("agenda-own-publish.ics", "agenda-own-request.ics")) {
+        givenTheCalendarPart(fixture);
+        CalendarInvitation invitation = service.getInvitation(EMAIL_ID, USER);
+        assertTrue(invitation.isExoMeeting(), fixture);
+        assertEquals("https://exo.example.test/portal/dw/agenda?eventId=42", invitation.getAgendaUrl());
+        assertFalse(invitation.isAnswerable(), fixture);
+        assertNull(invitation.getAnswerRefusal());
+      }
+      assertEquals(CalendarInvitationService.NOT_ANSWERABLE,
+                   assertThrows(IllegalArgumentException.class,
+                                () -> service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED)).getMessage());
+      verifyNothingSent();
+    }
+  }
+
+  /**
+   * Another eXo's event, this deployment's UID with a link elsewhere, and an event with
+   * no link are ordinary invitations: never linked to this portal's Agenda, answered by
+   * mail as any other.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anotherDeploymentsOrAForgedAgendaEventIsAnOrdinaryInvitation() throws Exception {
+    try (MockedStatic<CommonsUtils> portal = mockStatic(CommonsUtils.class)) {
+      portal.when(CommonsUtils::getCurrentDomain).thenReturn("https://exo.example.test");
+      for (String fixture : List.of("agenda-foreign-request.ics", "agenda-forged-request.ics", "agenda-no-url-request.ics")) {
+        givenTheCalendarPart(fixture);
+        CalendarInvitation invitation = service.getInvitation(EMAIL_ID, USER);
+        assertFalse(invitation.isExoMeeting(), fixture);
+        assertNull(invitation.getAgendaUrl(), fixture);
+        assertTrue(invitation.isAnswerable(), fixture);
       }
     }
   }
