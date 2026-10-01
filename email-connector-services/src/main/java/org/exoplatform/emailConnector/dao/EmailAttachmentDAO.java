@@ -128,9 +128,12 @@ public interface EmailAttachmentDAO extends JpaRepository<EmailAttachmentEntity,
    * The ids of a user's cached messages, in some folders, that carry at least one
    * attachment row: what the search of eXo's copy of a shared mailbox narrows to when it
    * is asked for the messages with an attachment (EXO-90838). Ids only, so neither the
-   * messages nor their attachments are loaded. An inline image is no attachment row (it
-   * is part of the body), so a message whose only files are inline ones is not listed.
-   * Never called with an empty list -- an empty {@code IN} is not valid SQL everywhere.
+   * messages nor their attachments are loaded. A row is what the sync's extractor
+   * ({@code EmailConnectorUtils#getHtmlFromMimeMultipart}) writes: one per part that is
+   * neither a body part nor an image with an {@code inline} disposition, so an image
+   * referenced from the body but sent with no disposition is listed, and a non-image part
+   * marked {@code inline} is not. Never called with an empty list -- an empty {@code IN}
+   * is not valid SQL everywhere.
    *
    * @param userId the user whose copy it is
    * @param folders the folder keys
