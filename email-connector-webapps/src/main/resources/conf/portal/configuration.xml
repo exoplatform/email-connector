@@ -231,6 +231,47 @@
         </object-param>
       </init-params>
     </component-plugin>
+    <!-- A mail import into a folder ended (EXO-90846): the folder, the added, skipped
+         and refused counts, and a message code -- nothing read from the imported files. -->
+    <component-plugin>
+      <name>notification.plugins</name>
+      <set-method>addPlugin</set-method>
+      <type>org.exoplatform.emailConnector.notification.plugin.MailImportFinishedNotificationPlugin</type>
+      <description>Initial information for plugin MailImportFinishedNotificationPlugin</description>
+      <init-params>
+        <object-param>
+          <name>template.MailImportFinishedNotificationPlugin</name>
+          <description>The template for the plugin of a mail import that ended</description>
+          <object type="org.exoplatform.commons.api.notification.plugin.config.PluginConfig">
+            <field name="pluginId">
+              <string>MailImportFinishedNotificationPlugin</string>
+            </field>
+            <field name="resourceBundleKey">
+              <string>UINotification.label.mailImportFinished</string>
+            </field>
+            <field name="order">
+              <string>9</string>
+            </field>
+            <field name="defaultConfig">
+              <collection type="java.util.ArrayList">
+                <value>
+                  <string>Instantly</string>
+                </value>
+              </collection>
+            </field>
+            <field name="groupId">
+              <string>email-connector</string>
+            </field>
+            <field name="bundlePath">
+              <string>locale.notification.emailConnectorNotification</string>
+            </field>
+            <field name="mutable">
+              <boolean>true</boolean>
+            </field>
+          </object>
+        </object-param>
+      </init-params>
+    </component-plugin>
     <!-- Somebody shared their mailbox with you, and it waits for your answer
          (EXO-90503). The payload is the owner's username and the preset, never a
          sentence: the notification is written in the RECEIVER's language. -->
@@ -754,6 +795,36 @@
           <name>notificationPluginId</name>
           <description>Notification Plugin Id</description>
           <value>EmailForwardingNotificationPlugin</value>
+        </value-param>
+        <value-param>
+          <name>notificationChannelId</name>
+          <description>Notification Channel Id, applied to all when empty</description>
+          <value></value>
+        </value-param>
+      </init-params>
+    </component-plugin>
+    <!-- The mail import's end notification (EXO-90846), on for the users who existed
+         before it. -->
+    <component-plugin>
+      <name>MailImportFinishedNotificationPlugin</name>
+      <set-method>addUpgradePlugin</set-method>
+      <type>io.meeds.social.notification.upgrade.NotificationUpgradePlugin</type>
+      <description>Enables the mail import's end notification for existing users</description>
+      <init-params>
+        <value-param>
+          <name>product.group.id</name>
+          <description>The groupId of the product</description>
+          <value>org.exoplatform.social</value>
+        </value-param>
+        <value-param>
+          <name>plugin.execution.order</name>
+          <description>The plugin execution order</description>
+          <value>10</value>
+        </value-param>
+        <value-param>
+          <name>notificationPluginId</name>
+          <description>Notification Plugin Id</description>
+          <value>MailImportFinishedNotificationPlugin</value>
         </value-param>
         <value-param>
           <name>notificationChannelId</name>

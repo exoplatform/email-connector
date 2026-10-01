@@ -22,6 +22,29 @@
 // the drop, and a folder must say during the drag whether it takes the mail.
 
 import { folderDropAction, hasDragPayload } from './EmailConnectorMailBoxDragAndDrop.js';
+import { OPEN_IMPORT_DRAWER_EVENT, canImportInto } from './EmailConnectorMailTransfer.js';
+
+/**
+ * Whether a drag carries files from the desktop rather than mail of this mailbox
+ * (EXO-90846): files dropped on a folder are imported into it.
+ *
+ * @param {DragEvent} event the drag event
+ * @returns {Boolean} true for a drag of files
+ */
+function hasFilesPayload(event) {
+  const types = Array.from(event?.dataTransfer?.types || []);
+  return types.includes('Files') && !hasDragPayload(event);
+}
+
+/**
+ * Whether files may be dropped on an entry: a folder mail can be imported into.
+ *
+ * @param {Object} entry the column's entry
+ * @returns {Boolean} true when the entry takes files
+ */
+function takesFiles(entry) {
+  return !!entry?.folderKey && entry.categoryId == null && canImportInto(entry.folderKey);
+}
 
 // How a folder the pointer may drop on is lit: a primary ring, inside the entry, so the
 // column does not move. Inline, as the add-on has no CSS loader.
@@ -88,12 +111,19 @@ export default {
      * Says the entry takes the mail -- by cancelling the event, which is what lets the
      * browser drop -- and lights it; says nothing for mail it may not take, or for
      * anything that is not mail of this mailbox, so the browser shows "no drop" there.
+     * Files from the desktop are taken by a folder mail can be imported into (EXO-90846).
      *
      * @param {Object} entry the column's entry
      * @param {DragEvent} event the dragenter or dragover event
      * @returns {void}
      */
     onEntryDragOver(entry, event) {
+      if (hasFilesPayload(event) && takesFiles(entry)) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+        this.dropTarget = entry.value;
+        return;
+      }
       if (!hasDragPayload(event) || !this.dropAction(entry)) {
         return;
       }
@@ -120,12 +150,23 @@ export default {
     /**
      * Hands the dropped mail to the entry's action, checked again at the drop, and ends
      * the drag: the rows it took may leave the list before their own dragend arrives.
+     * Dropped files open the import drawer on that folder (EXO-90846).
      *
      * @param {Object} entry the column's entry
      * @param {DragEvent} event the drop event
      * @returns {void}
      */
     onEntryDrop(entry, event) {
+      if (hasFilesPayload(event) && takesFiles(entry)) {
+        event.preventDefault();
+        this.dropTarget = null;
+        this.$root.$emit(OPEN_IMPORT_DRAWER_EVENT, {
+          folder: entry.folderKey,
+          label: entry.label,
+          files: Array.from(event.dataTransfer.files || []),
+        });
+        return;
+      }
       const action = hasDragPayload(event) && this.dropAction(entry);
       this.dropTarget = null;
       if (!action) {
