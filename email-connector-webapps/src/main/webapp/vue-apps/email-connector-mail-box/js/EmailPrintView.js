@@ -43,6 +43,9 @@ const UNSAFE_ELEMENTS = [
   'script', 'noscript', 'template', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet',
   'form', 'input', 'button', 'textarea', 'select', 'option', 'link', 'meta', 'base',
   'audio', 'video', 'source', 'track', 'portal',
+  // Serialized as raw text, so a second parse of the cleaned body would read everything
+  // after them -- the next mail of a conversation included -- as their text.
+  'plaintext', 'xmp', 'noembed', 'noframes',
 ];
 
 /** Attributes holding a URL the frame would follow or load. */
@@ -54,8 +57,11 @@ const SCRIPT_URL = /^\s*(javascript|vbscript|data|file):/i;
 /** An inline image the server embedded in the body: the one data: URL kept. */
 const INLINE_IMAGE_URL = /^\s*data:image\/(png|gif|jpe?g|webp|bmp);/i;
 
-/** A url(...) in CSS that loads from the network. */
-const REMOTE_CSS_URL = /url\(\s*(['"]?)\s*(https?:)?\/\/[^)]*\)/gi;
+/** A url(...) in CSS, its argument quoted or not; what it loads is decided by isRemoteUrl. */
+const CSS_URL = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"]*))\s*\)/gi;
+
+/** What the URL parser removes anywhere in a URL before reading it. */
+const URL_IGNORED_CHARACTERS = /[\t\n\r]/g;
 
 /**
  * CSS that may load something a url() match cannot see: an @import (its string form needs
@@ -123,21 +129,39 @@ export function addressLabel(person) {
 
 /**
  * Whether a URL loads from the network rather than from this portal or the body itself.
+ * Decided the way the browser will read it -- resolved against the page the print frame
+ * inherits its base from -- never by its shape: "http:host/x", "https:\\host",
+ * "/\\host" or a scheme split by a line break all reach another host.
  *
  * @param {string} url the URL as written in the body
- * @param {string} origin this portal's origin
- * @returns {boolean} true for an absolute or protocol-relative URL on another origin
+ * @param {string} origin this portal's origin, which the frame's URLs resolve against
+ * @returns {boolean} true for an http(s) URL of another origin, or one the parser refuses
  */
 export function isRemoteUrl(url, origin) {
-  const value = (url || '').trim();
-  if (!/^(https?:)?\/\//i.test(value)) {
+  const value = (url || '').replace(URL_IGNORED_CHARACTERS, '').trim();
+  if (!value) {
     return false;
   }
   try {
-    return new URL(value, origin).origin !== origin;
+    const resolved = new URL(value, origin);
+    return (resolved.protocol === 'http:' || resolved.protocol === 'https:') && resolved.origin !== origin;
   } catch (e) {
     return true;
   }
+}
+
+/**
+ * CSS with every url() that loads from another origin replaced by none.
+ *
+ * @param {string} css the CSS text
+ * @param {string} origin this portal's origin
+ * @returns {string} the CSS without remote loads
+ */
+function replaceRemoteCssUrls(css, origin) {
+  return (css || '').replace(CSS_URL, (match, doubleQuoted, singleQuoted, bare) => {
+    const target = doubleQuoted ?? singleQuoted ?? bare;
+    return isRemoteUrl(target, origin) ? 'none' : match;
+  });
 }
 
 /**
@@ -169,7 +193,7 @@ export function cleanHtmlBody(html, options = {}) {
           if (OPAQUE_CSS.test(attribute.value)) {
             element.removeAttribute(attribute.name);
           } else {
-            element.setAttribute('style', attribute.value.replace(REMOTE_CSS_URL, 'none'));
+            element.setAttribute('style', replaceRemoteCssUrls(attribute.value, origin));
           }
         }
         return;
@@ -192,7 +216,7 @@ export function cleanHtmlBody(html, options = {}) {
     });
   });
   const styles = Array.from(doc.querySelectorAll('style'))
-    .map(style => (options.showRemoteImages ? style.textContent : blockRemoteCss(style.textContent)))
+    .map(style => (options.showRemoteImages ? style.textContent : blockRemoteCss(style.textContent, origin)))
     .filter(Boolean)
     .map(css => `<style>${css.replace(/<\/style/gi, '<\\/style')}</style>`)
     .join('');
@@ -205,11 +229,12 @@ export function cleanHtmlBody(html, options = {}) {
  * and the whole sheet when it holds a form a url() match cannot read.
  *
  * @param {string} css the sheet's text
+ * @param {string} origin this portal's origin
  * @returns {string} the sheet to keep, empty when none of it is
  */
-function blockRemoteCss(css) {
+function blockRemoteCss(css, origin) {
   const withoutImports = (css || '').replace(CSS_IMPORT, '');
-  return OPAQUE_CSS.test(withoutImports) ? '' : withoutImports.replace(REMOTE_CSS_URL, 'none');
+  return OPAQUE_CSS.test(withoutImports) ? '' : replaceRemoteCssUrls(withoutImports, origin);
 }
 
 /**
