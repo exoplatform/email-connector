@@ -112,6 +112,40 @@ export function scheduleDraft(draftLocalId, draft, scheduledDate, timeZone) {
 }
 
 /**
+ * Sends a draft with an Undo (POST /drafts/{id}/send-undoable, EXO-90837): the server
+ * saves the composer's text onto the draft, freezes it, and holds it for the user's Undo
+ * wait before sending it. The draft is the composer's text, as a schedule carries it.
+ *
+ * @param {String} draftLocalId the draft's local id
+ * @param {Object} draft the composed draft, as scheduleDraft sends it
+ * @returns {Promise<Object>} {draftLocalId, sendDate, delaySeconds}
+ */
+export function sendDraftUndoable(draftLocalId, draft) {
+  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}/send-undoable`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(draft),
+  }).then(resp => (resp?.ok ? resp.json() : refusal(resp, 'Error when sending the email')));
+}
+
+/**
+ * Takes back a mail sent with an Undo while it has not started to go
+ * (POST /drafts/{id}/undo-send, EXO-90837).
+ *
+ * @param {String} draftLocalId the draft's local id
+ * @returns {Promise<Object>} the draft as it was frozen, for the composer to reopen
+ */
+export function undoSend(draftLocalId) {
+  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}/undo-send`, {
+    credentials: 'include',
+    method: 'POST'
+  }).then(resp => (resp?.ok ? resp.json() : refusal(resp, 'Error when undoing the send')));
+}
+
+/**
  * A page of the user's scheduled mails, soonest first (GET /scheduled).
  *
  * @param {Number} offset the first row, a multiple of limit
@@ -259,7 +293,8 @@ export function formatScheduledTime(scheduledDate) {
  */
 export function scheduledStateLine(scheduled) {
   const status = scheduled?.status;
-  if (status === 'SENDING') {
+  // A mail sent with an Undo (EXO-90837) is on its way as far as its sender is concerned.
+  if (status === 'SENDING' || status === 'HELD') {
     return { key: 'emailConnector.mailBox.scheduled.sending', color: 'primary--text' };
   }
   if (status === 'UNCERTAIN') {
@@ -285,9 +320,11 @@ export function scheduledStateLine(scheduled) {
  * @returns {Array<String>} the action names
  */
 export function scheduledActions(scheduled) {
+  // HELD, sent with an Undo (EXO-90837): its own snackbar offers the one action it has.
   switch (scheduled?.status) {
   case 'SENDING':
   case 'SENT':
+  case 'HELD':
     return [];
   case 'FAILED':
     return ['retry', 'edit', 'reschedule', 'moveToDrafts', 'discard'];
