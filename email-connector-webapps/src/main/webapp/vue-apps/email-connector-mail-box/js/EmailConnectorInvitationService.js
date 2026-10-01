@@ -97,6 +97,11 @@ export function replyToInvitation(emailId, answer) {
     .then(invitation => {
       invitations.set(emailId, Promise.resolve(invitation));
       return invitation;
+    }, error => {
+      // The server may have kept the answer (a doubtful send): the next rendering reads
+      // it again rather than the invitation as it was before.
+      invitations.delete(emailId);
+      throw error;
     });
 }
 

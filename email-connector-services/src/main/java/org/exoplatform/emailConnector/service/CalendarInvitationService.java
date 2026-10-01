@@ -23,6 +23,7 @@ import java.util.Date;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.activation.DataHandler;
 import javax.mail.Message;
@@ -43,6 +44,7 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.model.CalendarInvitation;
@@ -54,7 +56,6 @@ import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.InvitationAnswer;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ParsedInvitation;
-import org.exoplatform.emailConnector.model.SendIdentity;
 import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.utils.CalendarInvitationUtils;
@@ -81,7 +82,8 @@ import io.meeds.social.util.JsonUtils;
  * own connector, to the organiser the reader showed -- one plain address, never a
  * group -- and from the mailbox the mail is in: the user's own, or a shared mailbox's
  * owner's when she let the user send in her name (on her behalf preferred, as her
- * otherwise); without that consent the invitation is shown and no answer is offered.
+ * otherwise), with a copy in her Sent saying who sent it, as a composed mail has;
+ * without that consent the invitation is shown and no answer is offered.
  * Every rule is checked again at the answer, whatever the reader was shown.
  * <p>
  * The answer given is remembered per user, attendee address and event (UID and
@@ -129,6 +131,9 @@ public class CalendarInvitationService {
   /** The mail server failed after the answer may have been accepted. */
   public static final String  UNCONFIRMED             = "emailConnector.invitation.unconfirmed";
 
+  /** The highest cap an administrator may set: 64 MiB, far above any calendar. */
+  static final long           MAX_CAP                 = 64L * 1024 * 1024;
+
   /** How many attendees the reader lists at most; the count says how many there are. */
   static final int            MAX_ATTENDEES           = 50;
 
@@ -137,6 +142,12 @@ public class CalendarInvitationService {
 
   /** The logger. */
   private static final Log    LOG                     = ExoLogger.getLogger(CalendarInvitationService.class);
+
+  /** The ical4j version this code is written against, the one the agenda add-on ships. */
+  private static final String ICAL4J_VERSION          = "3.2.x";
+
+  /** Whether the missing library was already said at WARN. */
+  private static final AtomicBoolean LIBRARY_MISSING_LOGGED = new AtomicBoolean();
 
   /** A mail line's end. */
   private static final String CRLF                    = "\r\n";
@@ -212,21 +223,30 @@ public class CalendarInvitationService {
     }
     InternetAddress organizer = organizerAddress(invitation);
     EmailDelegation delegation = emailDelegationService.delegationOf(username, email.getFolder());
-    SendIdentity identity = delegation == null ? null : sendIdentity(username, delegation);
-    if (delegation != null && identity == null) {
+    SendMode mode = delegation == null ? null : sendMode(username, delegation);
+    if (delegation != null && mode == null) {
       throw new IllegalAccessException(SEND_NOT_ALLOWED);
     }
-    String delegateAddress = identity != null && identity.namesTheSender() ? ownAddress(username) : null;
+    EmailBoxService.OutgoingMessageFactory factory = new EmailBoxService.OutgoingMessageFactory() {
+      @Override
+      public MimeMessage build(Session session, InternetAddress from) throws MessagingException {
+        return build(session, from, null);
+      }
+
+      @Override
+      public MimeMessage build(Session session, InternetAddress from, InternetAddress sender) throws MessagingException {
+        return buildReply(session, from, organizer, email, parsed, answer, sender == null ? null : sender.getAddress());
+      }
+    };
     try {
-      emailBoxService.transmitAsUser(username,
-                                     identity,
-                                     (session, from) -> buildReply(session,
-                                                                   from,
-                                                                   organizer,
-                                                                   email,
-                                                                   parsed,
-                                                                   answer,
-                                                                   delegateAddress));
+      if (delegation == null) {
+        emailBoxService.transmitAsUser(username, factory);
+      } else {
+        emailBoxService.transmitFromSharedMailbox(username, delegation.getId(), mode, factory);
+      }
+    } catch (SendModeMissingException | DelegationRevokedException e) {
+      // The owner withdrew her consent, or the share, since the invitation was read.
+      throw new IllegalAccessException(SEND_NOT_ALLOWED);
     } catch (SmtpTransmitter.TransmissionException e) {
       if (e.getPhase() != SmtpTransmitter.Phase.SEND) {
         LOG.warn("The answer of user {} to an invitation could not be sent ({})", username, e.getPhase(), e);
@@ -324,7 +344,13 @@ public class CalendarInvitationService {
     try {
       parsed = CalendarInvitationUtils.parseInvitation(content, mailboxAddress, MAX_ATTENDEES);
     } catch (LinkageError e) {
-      LOG.debug("The iCalendar library is not available; an invitation is not shown as an event", e);
+      // Said once at WARN: the feature is off for everybody until the library is back.
+      if (LIBRARY_MISSING_LOGGED.compareAndSet(false, true)) {
+        LOG.warn("Calendar invitations in mail are not shown as events: the iCalendar library ical4j {}, which the agenda add-on "
+            + "ships in the server's lib folder, is missing or incompatible", ICAL4J_VERSION, e);
+      } else {
+        LOG.debug("The iCalendar library is not available; an invitation is not shown as an event", e);
+      }
       throw new IllegalArgumentException(UNSUPPORTED);
     } catch (Exception e) {
       // The sender's content: not an incident.
@@ -340,7 +366,7 @@ public class CalendarInvitationService {
       invitation.setAnswer(given.getAnswer());
     }
     if (asksForAnswer(email, invitation, delegation, username)) {
-      boolean mayAnswer = delegation == null || sendIdentity(username, delegation) != null;
+      boolean mayAnswer = delegation == null || sendMode(username, delegation) != null;
       invitation.setAnswerable(mayAnswer);
       invitation.setAnswerRefusal(mayAnswer ? null : SEND_NOT_ALLOWED);
     }
@@ -386,18 +412,20 @@ public class CalendarInvitationService {
   }
 
   /**
-   * The name an answer from a shared mailbox goes out in: on the owner's behalf when she
+   * The shape an answer from a shared mailbox goes out in: on the owner's behalf when she
    * allows it, else as her; null when she allows neither, or sending in her name cannot
-   * be used now.
+   * be used now. Decided again by {@link EmailBoxService#transmitFromSharedMailbox} at
+   * the send.
    *
    * @param username the delegate
    * @param delegation the share
-   * @return the identity, or null
+   * @return the shape, or null
    */
-  private SendIdentity sendIdentity(String username, EmailDelegation delegation) {
+  private SendMode sendMode(String username, EmailDelegation delegation) {
     for (SendMode mode : List.of(SendMode.ON_BEHALF, SendMode.AS)) {
       try {
-        return emailDelegationService.checkSendMode(username, delegation.getId(), mode);
+        emailDelegationService.checkSendMode(username, delegation.getId(), mode);
+        return mode;
       } catch (SendModeMissingException | SendModeUnavailableException | ObjectNotFoundException e) {
         LOG.debug("User {} may not answer an invitation of a shared mailbox in mode {}", username, mode, e);
       } catch (RuntimeException e) {
@@ -595,12 +623,14 @@ public class CalendarInvitationService {
    * The most bytes of an iCalendar part the reader parses ({@link #MAX_BYTES_PROPERTY}),
    * read at every use.
    *
-   * @return the cap, the default when the property is not a positive number
+   * @return the cap, the default when the property is not a positive number, at most
+   *         {@link #MAX_CAP}
    */
   static long maxBytes() {
     try {
       long value = Long.parseLong(StringUtils.trim(System.getProperty(MAX_BYTES_PROPERTY, String.valueOf(DEFAULT_MAX_BYTES))));
-      return value > 0 ? value : DEFAULT_MAX_BYTES;
+      // Bounded so the reader's arithmetic on it (twice the cap, the cap plus one) cannot overflow.
+      return value > 0 ? Math.min(value, MAX_CAP) : DEFAULT_MAX_BYTES;
     } catch (NumberFormatException e) {
       return DEFAULT_MAX_BYTES;
     }
