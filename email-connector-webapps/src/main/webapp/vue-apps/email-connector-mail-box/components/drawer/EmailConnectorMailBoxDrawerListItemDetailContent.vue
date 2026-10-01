@@ -49,6 +49,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-if="!scheduled"
       :email="email"
       :auto-allowed="receiptAutoAllowed" />
+    <!-- A calendar invitation the message carries (EXO-90840): the event, and the answer. -->
+    <email-connector-invitation-card
+      v-if="!scheduled"
+      :email="email" />
     <v-list-item
       :class="['height-auto', recipientsClass]">
       <email-connector-mail-box-drawer-list-item-detail-sender-avatar 
