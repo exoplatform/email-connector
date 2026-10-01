@@ -25,6 +25,7 @@ import org.springframework.stereotype.Service;
 
 import org.exoplatform.emailConnector.model.CalendarInvitation;
 import org.exoplatform.emailConnector.model.CalendarLanding;
+import org.exoplatform.emailConnector.model.InvitationAnswer;
 import org.exoplatform.emailConnector.model.InvitationLanding;
 import org.exoplatform.emailConnector.model.LandedInvitation;
 import org.exoplatform.emailConnector.plugin.InvitationCalendarPlugin;
@@ -106,8 +107,7 @@ public class InvitationLandingService {
                     landing.username(),
                     landed.removed() ? "was removed from" : "landed in",
                     plugin.getClass().getName());
-          invitation.setLanding(landed.removed() ? CalendarLanding.REMOVED
-                                                 : landed.alreadyHeld() ? CalendarLanding.ALREADY_HELD : CalendarLanding.LANDED);
+          invitation.setLanding(landingOf(landed, landing.answer()));
           invitation.setLandingLink(landed.removed() ? null : landed.link());
           // The click was honoured: the card does not offer it again.
           invitation.setLandable(invitation.isLandable() && landed.removed());
@@ -139,6 +139,25 @@ public class InvitationLandingService {
         return;
       }
     }
+  }
+
+  /**
+   * What the reader tells of a landing: removed, already held, declined on a copy the
+   * user held -- the add-on sets a decline on a copy and creates none, so what it
+   * holds is a declined event, not an addition -- or landed.
+   *
+   * @param landed what the add-on did
+   * @param answer the answer given, null for an addition or a removal
+   * @return the outcome
+   */
+  private static CalendarLanding landingOf(LandedInvitation landed, InvitationAnswer answer) {
+    if (landed.removed()) {
+      return CalendarLanding.REMOVED;
+    }
+    if (landed.alreadyHeld()) {
+      return CalendarLanding.ALREADY_HELD;
+    }
+    return answer == InvitationAnswer.DECLINED ? CalendarLanding.DECLINED : CalendarLanding.LANDED;
   }
 
   /**
