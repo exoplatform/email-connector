@@ -20,7 +20,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <iframe
     v-else
     ref="iframe"
-    :srcdoc="sanitizedBody"
+    :srcdoc="frameDocument"
     :style="{
       width: '100%',
       border: 'none',
@@ -34,6 +34,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { foldPlainTextQuotedHistory, foldQuotedHistory } from '../../js/EmailQuotedHistoryFold.js';
+import { sanitizeMailBody } from '../../js/EmailBodySanitizer.js';
 
 /**
  * Tags that open a line box of their own. One of them anywhere in an HTML body means
@@ -86,8 +87,25 @@ export default {
     },
   },
   computed: {
+    /**
+     * The received body, purified when it is HTML: every tag and attribute outside the
+     * allow-list gone, the sender's style sheets set apart for the frame's head. A
+     * plain-text body is not markup and is escaped where it is rendered instead.
+     *
+     * @returns {{styles: string, body: string}} the sender's style sheets and the body
+     */
     sanitizedBody() {
-      return this.makeMailHtml(this.emailBody || '');
+      const body = this.emailBody || '';
+      return this.htmlBody ? sanitizeMailBody(body) : { styles: '', body };
+    },
+    /**
+     * The whole document the frame shows: the reader's style, the sender's style
+     * sheets, then the purified body with its quoted history folded.
+     *
+     * @returns {string} the frame's document
+     */
+    frameDocument() {
+      return this.makeMailHtml(this.sanitizedBody);
     },
     isEmptyBody() {
       if (!this.emailBody) {
@@ -104,16 +122,17 @@ export default {
   },
   methods: {
     /**
-     * Wrap the (untrusted) email body into a self-contained HTML document for the
+     * Wrap the purified email body into a self-contained HTML document for the
      * iframe, first folding the quoted history behind a Gmail-style "···" toggle so
      * the reader lands on the latest message and reaches the attachments row without
      * scrolling past the quoted thread. Folding degrades to the untouched body when
      * no clear quoted boundary is found.
      *
-     * @param {string} html the sanitized email body HTML
+     * @param {{styles: string, body: string}} purified the sender's style sheets and the
+     *          purified body (for a plain-text body, no styles and the raw text)
      * @returns {string} the full HTML document served to the iframe srcdoc
      */
-    makeMailHtml(html) {
+    makeMailHtml(purified) {
       const baseCSS = `
         html, body {
           margin: 0 !important;
@@ -179,12 +198,14 @@ export default {
         }
       `;
       const finalCSS = this.expandedDrawer ? baseCSS : baseCSS + responsiveCSS;
-      const renderedBody = this.renderBody(html);
+      const renderedBody = this.renderBody(purified.body);
+      const senderCSS = purified.styles ? `<style>${purified.styles}</style>` : '';
       return `
         <html>
           <head>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>${finalCSS}</style>
+            ${senderCSS}
           </head>
           <body>${renderedBody}</body>
         </html>
@@ -199,13 +220,14 @@ export default {
      * fold cannot see it, there being no markup, so such a reply used to show its whole
      * thread.
      * <p>
-     * An HTML body is served as it always was, except for one shape — typed text
-     * inside a lone wrapper, which the flag cannot and should not tell apart from any
-     * other HTML: the part really is text/html, and the sender's client simply left the
-     * message's line structure in raw newlines instead of markup. So that one stays a
-     * question about the markup, and only about the markup.
+     * An HTML body, already purified, is served as it is, except for one shape — typed
+     * text inside a lone wrapper, which the flag cannot and should not tell apart from
+     * any other HTML: the part really is text/html, and the sender's client simply left
+     * the message's line structure in raw newlines instead of markup. So that one stays
+     * a question about the markup, and only about the markup.
      *
-     * @param {string} html the raw email body
+     * @param {string} html the email body: purified markup, or the raw text of a
+     *          plain-text body
      * @returns {string} the markup to place in the iframe's body
      */
     renderBody(html) {
@@ -213,10 +235,9 @@ export default {
         return this.foldPlainTextHistory(html) || this.wrapPlainText(html);
       }
       if (this.isTextInWrapper(html)) {
-        // Not escaped, and deliberately: this exact string is what already went into
-        // the iframe for such a body. Only the whitespace rule around it changes, so
-        // nothing can render here that did not render before. Folded before being
-        // wrapped, so the fold sees the body's own elements and never our wrapper.
+        // Not escaped: it is markup the purifier has already cleaned, and only the
+        // whitespace rule around it changes. Folded before being wrapped, so the fold
+        // sees the body's own elements and never our wrapper.
         return `<div class="ec-plain-text">${this.foldHistory(html)}</div>`;
       }
       return this.foldHistory(html);
