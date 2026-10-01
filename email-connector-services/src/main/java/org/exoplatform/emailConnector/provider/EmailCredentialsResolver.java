@@ -21,6 +21,7 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import javax.mail.AuthenticationFailedException;
 import javax.mail.Authenticator;
@@ -68,6 +69,12 @@ public class EmailCredentialsResolver {
 
   /** The platform-wide resolution service every question is asked through. */
   private final ConnectorCredentialsService connectorCredentialsService;
+
+  /**
+   * The provider names already reported as not registered: each is said once at
+   * WARN, whatever the number of connectors, users and attempts naming it.
+   */
+  private final Set<String>                 missingProvidersReported = ConcurrentHashMap.newKeySet();
 
   public EmailCredentialsResolver(ConnectorCredentialsService resolutionService) {
     this.connectorCredentialsService = resolutionService;
@@ -244,6 +251,31 @@ public class EmailCredentialsResolver {
       LOG.debug("The credentials providers could not be listed", e);
       return true;
     }
+  }
+
+  /**
+   * Whether a connector names a provider that is not registered with the platform: an
+   * add-on's, while that add-on is not installed or has not started yet. That is a state
+   * of the platform rather than a refusal of this account, so it is said once per
+   * provider name at WARN, without a stack, and the callers that meet it at every send,
+   * login or synchronisation say no more than a debug line.
+   * <p>
+   * A blank name is not missing: it is the legacy typed-credentials connector. Nor is
+   * any name while the registry cannot be read, as {@link #isProviderRegistered} answers
+   * then; the provider is asked as before and reports whatever it reports.
+   *
+   * @param providerName the provider a connector is configured with, possibly blank
+   * @return true only when the name is set and no registered provider carries it
+   */
+  public boolean isProviderMissing(String providerName) {
+    if (StringUtils.isBlank(providerName) || isProviderRegistered(providerName)) {
+      return false;
+    }
+    if (missingProvidersReported.add(providerName)) {
+      LOG.warn("No credentials provider named '{}' is registered: the mail connectors configured with it are not used until it is",
+               providerName);
+    }
+    return true;
   }
 
   /**
