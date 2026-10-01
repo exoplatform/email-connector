@@ -555,6 +555,22 @@ class EmailBoxMailTransferTest {
       }
     };
     assertTrue(emailBoxService.readFolderRawEmails(OWNER, MailFolder.INBOX, 10, gone));
+
+    // A message cut mid-copy is in the file in part: the notice counts it.
+    RecordingVisitor cut = new RecordingVisitor() {
+      /**
+       * Cut mid-copy.
+       *
+       * @param cached unused
+       * @param message unused
+       */
+      @Override
+      public void message(Email cached, MimeMessage message) {
+        throw new org.exoplatform.emailConnector.exception.ExportInterruptedException("cut", null);
+      }
+    };
+    assertTrue(emailBoxService.readFolderRawEmails(OWNER, MailFolder.INBOX, 10, cut));
+    assertEquals(List.of("begin:1", "interrupted:1/1"), cut.events);
   }
 
   /**
