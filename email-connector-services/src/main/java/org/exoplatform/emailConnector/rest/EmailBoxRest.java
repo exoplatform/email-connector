@@ -776,6 +776,10 @@ public class EmailBoxRest {
       criteria.setSinceDays(sinceDays);
       criteria.setAfter(parseSearchDay(after));
       criteria.setBefore(parseSearchDay(before));
+      // Refused by the service once the caller's access is checked: a refusal answers
+      // before a malformed parameter does.
+      criteria.setInvalidDay(StringUtils.isNotBlank(after) && criteria.getAfter() == null
+          || StringUtils.isNotBlank(before) && criteria.getBefore() == null);
       return emailBoxService.searchEmails(request.getRemoteUser(), criteria, folder, limit);
     } catch (DelegationRevokedException e) {
       // The shared mailbox searched is gone, which the drawer answers by leaving it.
@@ -793,9 +797,7 @@ public class EmailBoxRest {
    * Reads a search day as the advanced search sends it (EXO-90838).
    *
    * @param day the day as yyyy-MM-dd, may be blank
-   * @return the day, or null when none was sent
-   * @throws IllegalArgumentException {@code emailConnector.search.invalidDate} for any
-   *           other text
+   * @return the day, or null when none was sent or the text is not a day
    */
   private static LocalDate parseSearchDay(String day) {
     if (StringUtils.isBlank(day)) {
@@ -804,7 +806,7 @@ public class EmailBoxRest {
     try {
       return LocalDate.parse(day.trim());
     } catch (DateTimeParseException e) {
-      throw new IllegalArgumentException("emailConnector.search.invalidDate");
+      return null;
     }
   }
 

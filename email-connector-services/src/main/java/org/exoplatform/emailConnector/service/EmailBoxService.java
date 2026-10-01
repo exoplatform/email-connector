@@ -6707,11 +6707,14 @@ public class EmailBoxService {
   }
 
   /**
-   * Refuses the criteria no search can answer (EXO-90838): a negative age window, a
-   * date range that ends before it starts, and no criterion at all.
+   * Refuses the criteria no search can answer (EXO-90838): a day that is not one, a
+   * negative age window, a date range that ends before it starts, and no criterion at
+   * all. Called once the caller's access is checked, so a refusal answers first.
    *
    * @param criteria the criteria
-   * @throws IllegalArgumentException {@code emailConnector.search.invalidSinceDays} for a
+   * @throws IllegalArgumentException {@code emailConnector.search.invalidDate} for a day
+   *           the caller sent that is not yyyy-MM-dd,
+   *           {@code emailConnector.search.invalidSinceDays} for a
    *           negative window -- a future-dated lower bound that would match nothing,
    *           silently -- {@code emailConnector.search.invalidDateRange} when the day
    *           before which messages are kept is not after the day from which they are,
@@ -6719,6 +6722,9 @@ public class EmailBoxService {
    *           search
    */
   static void validateSearchCriteria(EmailSearchCriteria criteria) {
+    if (criteria.isInvalidDay()) {
+      throw new IllegalArgumentException("emailConnector.search.invalidDate");
+    }
     if (criteria.getSinceDays() != null && criteria.getSinceDays() < 0) {
       throw new IllegalArgumentException("emailConnector.search.invalidSinceDays");
     }
