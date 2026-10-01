@@ -1441,6 +1441,21 @@ public class EmailBoxStorage {
   }
 
   /**
+   * The ids of the cached messages of some folders that carry an attachment, for the
+   * search of eXo's copy of a shared mailbox (EXO-90838). One query, ids only.
+   *
+   * @param userId the user whose copy it is
+   * @param folders the folder keys to read; nothing is read when empty
+   * @return the ids, never null
+   */
+  public Set<Long> getEmailIdsWithAttachmentsInFolders(String userId, Collection<String> folders) {
+    if (folders == null || folders.isEmpty()) {
+      return Set.of();
+    }
+    return new HashSet<>(emailAttachmentDAO.findEmailIdsWithAttachmentsByUserIdAndFolders(userId, folders));
+  }
+
+  /**
    * The owner's cached messages whose subject or sender (name or address) contains
    * a keyword, newest first, for the editors' "/mail" link picker.
    * <p>
@@ -1522,6 +1537,14 @@ public class EmailBoxStorage {
     // The raw body: the caller matches on its text and cuts its own excerpt around the
     // hit, so reducing it to text here would only do the work twice.
     email.setContent(new EmailContent(emailBoxEntity.getBody()));
+    // The To and Cc recipients, for the recipient criterion of the search of a shared
+    // mailbox's copy (EXO-90838): parsed from the row already read, with no profile.
+    email.setTo(EmailConnectorUtils.getEmailRecipients(toRecipientsInternetAddresses(emailBoxEntity.getTo()),
+                                                       emailBoxEntity.getUserId(),
+                                                       false));
+    email.setCc(EmailConnectorUtils.getEmailRecipients(toRecipientsInternetAddresses(emailBoxEntity.getCc()),
+                                                       emailBoxEntity.getUserId(),
+                                                       false));
     String[] emailSenderParts = emailBoxEntity.getSender().split(",");
     email.setSender(EmailConnectorUtils.getEmailSender(new InternetAddress(emailSenderParts[1], emailSenderParts[0]), false));
     return email;
