@@ -72,6 +72,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailDelegation;
+import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.InvitationAnswer;
 import org.exoplatform.emailConnector.model.MailFolder;
@@ -318,13 +319,13 @@ class CalendarInvitationServiceTest {
   }
 
   /**
-   * A REPLY, a COUNTER and a DECLINECOUNTER are answers, never answered back.
+   * A REPLY, a COUNTER, a REFRESH and a DECLINECOUNTER are answers, never answered back.
    *
    * @throws Exception never
    */
   @Test
   void anAnswerIsNeverAnswered() throws Exception {
-    for (String fixture : List.of("reply-no-name.ics", "counter.ics", "declinecounter.ics")) {
+    for (String fixture : List.of("reply-no-name.ics", "counter.ics", "counter-two-attendees.ics", "refresh.ics", "declinecounter.ics")) {
       givenTheCalendarPart(fixture);
       CalendarInvitation answer = service.getInvitation(EMAIL_ID, USER);
       assertFalse(answer.isAnswerable(), fixture);
@@ -334,6 +335,22 @@ class CalendarInvitationServiceTest {
                    fixture);
     }
     verifyNothingSent();
+  }
+
+  /**
+   * A COUNTER listing every attendee is credited to the one who sent the mail, never to
+   * whoever is listed first; to nobody when the sender is not among them.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aCounterIsCreditedToItsSender() throws Exception {
+    givenTheCalendarPart("counter-two-attendees.ics");
+    email.setSender(new EmailSender("Meyer", "MEYER@acme.com", null, null));
+    assertEquals("meyer@acme.com", service.getInvitation(EMAIL_ID, USER).getRespondent().getAddress());
+
+    email.setSender(new EmailSender("Somebody", "somebody@partner.example", null, null));
+    assertNull(service.getInvitation(EMAIL_ID, USER).getRespondent());
   }
 
   /**
