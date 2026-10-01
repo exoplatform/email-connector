@@ -20,6 +20,8 @@ package org.exoplatform.emailConnector.rest;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -252,8 +254,9 @@ public class EmailBoxRestTest {
 
   /**
    * EXO-90838 -- every criterion of the advanced search reaches the service as sent,
-   * the days read as yyyy-MM-dd, and a day in any other form is a 400 carrying its code,
-   * the service never asked.
+   * the days read as yyyy-MM-dd, and a day in any other form reaches it marked invalid:
+   * the service refuses it once the caller's access is checked, so a refusal answers
+   * first (RestRefusalStatusTest).
    *
    * @throws Exception when the request cannot be performed
    */
@@ -291,10 +294,19 @@ public class EmailBoxRestTest {
     assertTrue(criteria.isFavoritesOnly());
     assertEquals(30, criteria.getSinceDays());
 
-    mockMvc.perform(get(EMAIL_BOX_PATH + "/search").param("after", "01/10/2026").with(testSimpleUser()))
-           .andExpect(status().isBadRequest())
-           .andExpect(status().reason("emailConnector.search.invalidDate"));
-    verify(emailBoxService, times(1)).searchEmails(anyString(), any(EmailSearchCriteria.class), anyString(), anyInt());
+    assertFalse(criteria.isInvalidDay());
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search").param("query", "report").param("before", "01/10/2026").with(testSimpleUser()))
+           .andExpect(status().isOk());
+    verify(emailBoxService, times(1)).searchEmails(eq(SIMPLE_USER), sent.capture(), eq("INBOX"), eq(20));
+    assertTrue(sent.getValue().isInvalidDay(), "a day that is not one is marked for the service to refuse");
+    assertNull(sent.getValue().getBefore());
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search").param("query", "report").param("after", "2026-13-01").with(testSimpleUser()))
+           .andExpect(status().isOk());
+    verify(emailBoxService, times(2)).searchEmails(eq(SIMPLE_USER), sent.capture(), eq("INBOX"), eq(20));
+    assertTrue(sent.getValue().isInvalidDay(), "the first day too");
+    assertNull(sent.getValue().getAfter());
   }
 
   /**
