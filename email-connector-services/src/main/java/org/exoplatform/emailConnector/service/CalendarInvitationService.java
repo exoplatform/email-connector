@@ -57,6 +57,7 @@ import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.InvitationAnswer;
+import org.exoplatform.emailConnector.model.InvitationLanding;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ParsedInvitation;
 import org.exoplatform.emailConnector.model.SendMode;
@@ -109,6 +110,10 @@ import io.meeds.social.util.JsonUtils;
  * is never answered either.
  * <p>
  * Nothing lands in a calendar here: the agenda add-on is not a dependency of this one.
+ * The add-on that holds the user's calendar, when one is installed, is handed the
+ * answered invitation after the REPLY left ({@link InvitationLandingService},
+ * EXO-90848) -- for the user's own mailbox only: a shared mailbox's invitation is its
+ * owner's event, and the answer acts for nobody but the user who gave it.
  */
 @Service
 public class CalendarInvitationService {
@@ -186,6 +191,9 @@ public class CalendarInvitationService {
   @Autowired
   private SettingService          settingService;
 
+  @Autowired
+  private InvitationLandingService invitationLandingService;
+
   /**
    * The invitation a message of the user carries, described for the reader.
    *
@@ -205,13 +213,15 @@ public class CalendarInvitationService {
   }
 
   /**
-   * Answers an invitation: sends the attendee's REPLY to its organiser, then remembers
-   * the answer. Everything the reader was shown is decided again here.
+   * Answers an invitation: sends the attendee's REPLY to its organiser, remembers the
+   * answer, then -- from the user's own mailbox -- lands the event in their calendar
+   * when an add-on holds one. Everything the reader was shown is decided again here.
    *
    * @param emailId the cached message's technical id
    * @param username the user answering, who must own the cached row
    * @param answer the answer
-   * @return the invitation, with the answer just given
+   * @return the invitation, with the answer just given and what became of it in the
+   *         user's calendar
    * @throws ObjectNotFoundException {@link #NOT_FOUND}
    * @throws IllegalAccessException when the user's connector is not usable, or
    *           {@link #SEND_NOT_ALLOWED} for a shared mailbox whose owner did not let the
@@ -277,6 +287,15 @@ public class CalendarInvitationService {
     }
     remember(username, parsed, answer);
     invitation.setAnswer(answer);
+    if (delegation == null) {
+      invitation.setLanding(invitationLandingService.land(new InvitationLanding(username,
+                                                                                invitation.getAttendeeAddress(),
+                                                                                invitation.getUid(),
+                                                                                parsed.recurrenceId(),
+                                                                                invitation.getSequence(),
+                                                                                answer,
+                                                                                parsed.icalendar())));
+    }
     return invitation;
   }
 
