@@ -160,7 +160,7 @@ export default {
         const folder = row.folder;
         const counted = this.folderCounts[folder.key];
         const count = counted?.count > 0 ? counted.count : 0;
-        const label = row.showPath ? this.$emailConnectorMailBoxService.folderPath(folder)
+        const label = row.showPath ? row.pathLabel
           : this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this));
         return { ...this.buildEntry(`folder:${folder.key}`, this.$emailConnectorMailBoxService.folderIcon(folder),
           label, count, !!(count && counted.unread),
