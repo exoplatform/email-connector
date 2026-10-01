@@ -138,15 +138,19 @@ export function searchFromUrl(urlParams) {
   const folder = urlParams.get(URL_PARAMS.folder) || '';
   criteria.folder = SEARCH_FOLDER_PATTERN.test(folder) ? folder : null;
   const searchTerm = text('term');
-  if (!searchTerm && !hasSearchCriteria(criteria)) {
+  const searchUnread = urlParams.get(URL_PARAMS.unread) === 'true';
+  const searchFavorites = urlParams.get(URL_PARAMS.favorites) === 'true';
+  // Another folder with Unread or Favorites is a search too (the mailbox drawer's
+  // advancedSearchActive); a folder alone is not.
+  if (!searchTerm && !hasSearchCriteria(criteria) && !(criteria.folder && (searchUnread || searchFavorites))) {
     return null;
   }
   const mailbox = urlParams.get('mailbox') || '';
   return {
     searchTerm,
     searchCriteria: criteria,
-    searchUnread: urlParams.get(URL_PARAMS.unread) === 'true',
-    searchFavorites: urlParams.get(URL_PARAMS.favorites) === 'true',
+    searchUnread,
+    searchFavorites,
     mailbox: /^\d{1,18}$/.test(mailbox) ? mailbox : null,
   };
 }
