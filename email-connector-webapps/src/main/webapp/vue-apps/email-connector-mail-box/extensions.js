@@ -194,6 +194,16 @@ document.addEventListener('open-email-forwarding', () => {
 });
 
 /*
+ * Opens the "Mailbox sharing" drawer on its "Shared with me" tab, from anywhere in the
+ * platform: the web notification of a mailbox shared with the user uses it (EXO-90830)
+ * -- the drawer the mailbox switcher's "Manage shared mailboxes" opens, where a waiting
+ * invitation is listed first, mounted in this app, without opening the mailbox behind it.
+ */
+document.addEventListener('open-email-shared-with-me', () => {
+  window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, {sharedWithMe: true}));
+});
+
+/*
  * Opens the mailbox on one of its built-in folders or views, from anywhere in the
  * platform: the web notification of a scheduled mail uses it to open the Scheduled
  * view (EXO-90434), or Sent for a mail that went out without its owner copy (EXO-90595).
@@ -253,6 +263,11 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
       // forwarding=true opens the forwarding drawer: the link a forwarding
       // notification carries by mail and push (EXO-90656).
       opening = {forwarding: true};
+    } else if (urlParams.get('sharedWithMe') === 'true') {
+      // sharedWithMe=true opens the sharing drawer on "Shared with me": the link a
+      // shared-mailbox invitation carries by mail and push (EXO-90830). Opening it
+      // answers nothing -- the user does, on the drawer.
+      opening = {sharedWithMe: true};
     } else if (mailbox) {
       opening.mailbox = mailbox;
     } else if (!opening.mailRemoteId && /^(INBOX|SENT|ARCHIVE|ALL_MAIL|TRASH|JUNK|CUSTOM:\d{1,18})$/.test(urlParams.get('folder') || '')) {
