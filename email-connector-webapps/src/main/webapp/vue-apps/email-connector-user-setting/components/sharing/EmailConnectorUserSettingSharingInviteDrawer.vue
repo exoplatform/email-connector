@@ -99,17 +99,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             <div class="caption text-sub-title text-wrap mt-2">{{ $t('UserSettings.emailConnector.sharing.folders.inherit') }}</div>
           </div>
         </template>
-        <!-- The consent, said before the button and not in a tooltip: the access is
-             written on the mail server the moment this is pressed, it reaches every
-             mail client the person uses and not only eXo, and declining the invitation
-             will not take it back. Only this button's owner can. -->
-        <v-alert
-          dense
-          outlined
-          type="info"
-          class="caption text-wrap mt-2">
-          {{ consentText }}
-        </v-alert>
       </div>
     </template>
     <template #footer>
@@ -146,8 +135,6 @@ export default {
     // Whether the owner's mail server shares folder by folder (EXO-90556), as the
     // sharing list read it.
     perFolder: false,
-    // Whether the mail server accepts any shape of writing in the owner's name (EXO-90582).
-    sendModeOffered: false,
     // Whether an Editor of the owner's Trash can delete mail there for good (EXO-90816).
     trashExpunge: false,
     foldersOpen: false,
@@ -169,18 +156,6 @@ export default {
       return this.trashExpunge
         ? 'UserSettings.emailConnector.sharing.preset.EDITOR.description.trashExpunge'
         : 'UserSettings.emailConnector.sharing.preset.EDITOR.description';
-    },
-    /**
-     * The consent said before the Share button: with, where the mail server accepts it,
-     * the sentence that writing in the owner's name is a separate choice made afterwards
-     * (EXO-90582) -- a sentence that would be false on a server that accepts none.
-     *
-     * @returns {String} the consent
-     */
-    consentText() {
-      return this.$t(this.sendModeOffered
-        ? 'UserSettings.emailConnector.sharing.invite.consent.sendMode'
-        : 'UserSettings.emailConnector.sharing.invite.consent');
     },
     /**
      * The picked person's eXo username, which is all the server is given: it resolves
@@ -239,16 +214,15 @@ export default {
      * Opens the drawer on an empty choice — never on the last one, which would let a
      * second share go to the first person by a misplaced press.
      *
-     * @param {Object} options {perFolder, sendModes, trashExpunge}: whether the mail server
-     *   shares folder by folder, the shapes of writing in the owner's name it accepts, and
-     *   whether an Editor of the owner's Trash can delete mail there for good
+     * @param {Object} options {perFolder, trashExpunge}: whether the mail server shares
+     *   folder by folder, and whether an Editor of the owner's Trash can delete mail there
+     *   for good
      * @returns {void}
      */
     open(options) {
       this.grantee = null;
       this.preset = 'READER';
       this.perFolder = !!options?.perFolder;
-      this.sendModeOffered = !!options?.sendModes?.length;
       this.trashExpunge = !!options?.trashExpunge;
       this.foldersOpen = false;
       this.folders = [];
