@@ -27,7 +27,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -40,6 +42,9 @@ import org.springframework.stereotype.Service;
 
 import org.exoplatform.commons.api.notification.NotificationContext;
 import org.exoplatform.commons.api.notification.model.PluginKey;
+import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.SettingValue;
+import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
@@ -52,6 +57,8 @@ import org.exoplatform.emailConnector.model.EmailScheduledSend;
 import org.exoplatform.emailConnector.model.ScheduledEmail;
 import org.exoplatform.emailConnector.model.ScheduledSendError;
 import org.exoplatform.emailConnector.model.ScheduledSendStatus;
+import org.exoplatform.emailConnector.model.UndoSendSettings;
+import org.exoplatform.emailConnector.model.UndoableSend;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.notification.plugin.ScheduledEmailFailedNotificationPlugin;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
@@ -64,6 +71,7 @@ import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.manager.IdentityManager;
 
 import io.meeds.common.ContainerTransactional;
+import io.meeds.social.util.JsonUtils;
 import jakarta.annotation.PreDestroy;
 
 /**
@@ -98,6 +106,16 @@ import jakarta.annotation.PreDestroy;
  * <b>Bounded.</b> A tick claims at most the free slots of a small pool
  * ({@value #THREADS_PROPERTY}, default {@value #DEFAULT_THREADS}); every other bound is
  * a JVM property read at each use, so changing one needs no restart.
+ * <p>
+ * <b>Undo send</b> (EXO-90837). A mail sent with an Undo is this same machinery with a
+ * wait of a few seconds: its draft is frozen as a scheduled one, in the HELD state that
+ * the "Scheduled" view does not list, due at the end of the wait. The node that took
+ * the send arms a timer for that instant, so the mail leaves close to it rather than at
+ * the dispatcher's next minute; the timer takes the same database claim as every
+ * dispatcher, so a mail is sent once whichever gets to it, and a node that stops before
+ * its timer fires leaves the mail to the next tick of any node. The Undo is a
+ * conditional removal of the schedule racing that claim: it lands only while the mail
+ * has not started to go.
  */
 @Service
 public class EmailScheduledSendService {
@@ -148,6 +166,21 @@ public class EmailScheduledSendService {
   /** The code of an action on a mail whose sending could not be confirmed. */
   public static final String         UNCERTAIN_CONFLICT           = "emailConnector.scheduled.uncertain";
 
+  /** The code of a send with an Undo by a user who turned the Undo off. */
+  public static final String         UNDO_SEND_OFF                = "emailConnector.undoSend.off";
+
+  /** The code of an Undo wait the server does not offer. */
+  public static final String         UNDO_SEND_INVALID_DELAY      = "emailConnector.undoSend.invalidDelay";
+
+  /** Where the user's Undo send preference is stored, in the add-on's setting scope. */
+  public static final String         UNDO_SEND_SETTINGS_KEY       = "emailUndoSendSettings";
+
+  /** The Undo waits offered, in seconds, in the order the settings screen shows them; 0 is off. */
+  public static final List<Integer>  UNDO_SEND_DELAYS             = List.of(0, 5, 10, 20, 30);
+
+  /** The Undo wait of a user who never chose one, in seconds. */
+  public static final int            DEFAULT_UNDO_SEND_DELAY      = 10;
+
   static final int                   DEFAULT_MAX_PER_USER         = 100;
 
   static final int                   DEFAULT_MAX_HORIZON_DAYS     = 365;
@@ -170,9 +203,22 @@ public class EmailScheduledSendService {
   // provider filing its own copy has had the time to.
   static final long                  CHECK_DELAY_SECONDS          = 60;
 
+  // How long after the end of its wait a held mail's timer fires: the claim compares the
+  // due instant with a clock truncated to the second, so a timer firing on the instant
+  // could find the mail not yet due.
+  static final long                  HELD_TIMER_SLACK_MS          = 1_000L;
+
+  // When a held mail's timer finds the pool full, how soon it tries again, and how many
+  // times before it leaves the mail to the dispatcher's next tick.
+  static final long                  HELD_RETRY_MS                = 1_000L;
+
+  static final int                   HELD_MAX_REARMS              = 30;
+
   private static final Log           LOG                          = ExoLogger.getLogger(EmailScheduledSendService.class);
 
   private static final String        THREAD_PREFIX                = "email-scheduled-send-";
+
+  private static final String        HELD_TIMER_THREAD            = "email-undo-send-timer";
 
   private static final long          SKEW_WARNING_PERIOD_MS       = 3_600_000L;
 
@@ -194,6 +240,9 @@ public class EmailScheduledSendService {
   @Autowired
   private EmailDelegationService     emailDelegationService;
 
+  @Autowired
+  private SettingService             settingService;
+
   // The rows this JVM is sending (or checking) right now: excluded from every recovery,
   // so a restart's recovery, or a stale-claim sweep, never takes a live run for a dead one.
   private final Set<Long>            inFlight                     = ConcurrentHashMap.newKeySet();
@@ -203,6 +252,11 @@ public class EmailScheduledSendService {
   private final AtomicLong           lastSkewWarning              = new AtomicLong();
 
   private ThreadPoolExecutor         executor                     = newExecutor(threads());
+
+  // The timers of the mails held on this node (EXO-90837): one thread, which only takes
+  // the claim and hands the send to the pool above, so a slow mail server never delays
+  // another sender's timer.
+  private ScheduledExecutorService   heldTimer                    = newHeldTimer();
 
   // Recovery runs on the first tick, not in a @PostConstruct: a startup thread has no
   // container to write through, while the tick runs @ContainerTransactional.
@@ -374,6 +428,140 @@ public class EmailScheduledSendService {
   }
 
   /**
+   * Sends a draft with an Undo (EXO-90837): the draft is frozen exactly as a scheduling
+   * freezes it -- the text on screen saved onto it, its copy in the server's Drafts
+   * folder removed, its mailbox and the name it goes out in checked -- and held for the
+   * sender's Undo wait, then sent by the timer this node arms, or by any node's next
+   * tick when this one could not. The wait is the sender's stored preference, never the
+   * client's say.
+   *
+   * @param draft the draft as the composer shows it, carrying its local id
+   * @param username the sender
+   * @return the held mail: its handle, when it goes, and how long the Undo is offered
+   * @throws IllegalAccessException if the sender may not use their mailbox
+   * @throws ObjectNotFoundException if the sender has no such draft
+   * @throws IllegalArgumentException a message code: {@link #UNDO_SEND_OFF} when the
+   *           sender turned the Undo off, no recipient, a file that cannot be carried
+   * @throws ScheduledSendConflictException when the draft is already scheduled or being
+   *           sent
+   */
+  public UndoableSend sendUndoable(Email draft, String username) throws IllegalAccessException, ObjectNotFoundException {
+    requireMailbox(username);
+    int delay = getUndoSendSettings(username).getDelaySeconds();
+    if (delay <= 0) {
+      throw new IllegalArgumentException(UNDO_SEND_OFF);
+    }
+    if (draft == null || !hasRecipient(draft)) {
+      throw new IllegalArgumentException(RECIPIENTS_MANDATORY);
+    }
+    Date now = now();
+    Date due = new Date(now.getTime() + delay * 1000L);
+    EmailScheduledSend created = emailBoxService.scheduleDraft(draft, username, saved -> {
+      EmailScheduledSend row = new EmailScheduledSend(null,
+                                                      saved.getId(),
+                                                      username,
+                                                      saved.getDraftLocalId(),
+                                                      due,
+                                                      null,
+                                                      ScheduledSendStatus.HELD,
+                                                      due,
+                                                      0,
+                                                      null,
+                                                      null,
+                                                      null,
+                                                      now,
+                                                      now);
+      try {
+        return emailScheduledSendStorage.create(row);
+      } catch (DataIntegrityViolationException e) {
+        throw new ScheduledSendConflictException(ScheduledSendConflictException.LOCKED);
+      }
+    });
+    // From the clock read now, not the one read before the draft was frozen: removing
+    // its server copy is a round trip, and the timer counts from here.
+    armHeld(created.getId(), Math.max(0, due.getTime() - now().getTime()) + HELD_TIMER_SLACK_MS, 0);
+    LOG.info("A mail of user {} is held {} s for its Undo", username, delay);
+    return new UndoableSend(created.getDraftLocalId(), due.getTime(), delay);
+  }
+
+  /**
+   * Takes back a mail sent with an Undo (EXO-90837), or one whose send has not started
+   * since: its schedule is removed and its draft answered, as it was frozen -- text,
+   * recipients, files, threading, mailbox and name -- for the composer to reopen. A
+   * draft that lives only here from then on, as a cancelled schedule does, until its
+   * next save pushes it to the mail server again.
+   *
+   * @param draftLocalId the draft's handle
+   * @param username the sender
+   * @return the draft as it now stands
+   * @throws IllegalAccessException if the sender may not use their mailbox
+   * @throws ObjectNotFoundException if the sender has no such held mail (sent and
+   *           cleaned up, or never theirs)
+   * @throws ScheduledSendConflictException when the mail is being sent or was sent
+   *           ({@code emailConnector.scheduled.sending}), or may have been
+   *           ({@link #UNCERTAIN_CONFLICT})
+   */
+  public Email undoSend(String draftLocalId, String username) throws IllegalAccessException, ObjectNotFoundException {
+    requireMailbox(username);
+    if (!emailScheduledSendStorage.cancelUndoable(username, draftLocalId)) {
+      rejectAsConflictOrNotFound(username, draftLocalId);
+    }
+    Email draft = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+    if (draft == null) {
+      throw new ObjectNotFoundException(draftLocalId);
+    }
+    LOG.info("A held mail of user {} was taken back by its Undo", username);
+    return draft;
+  }
+
+  /**
+   * The user's Undo send preference (EXO-90837), with the waits offered: the default
+   * wait when they never chose, or when what is stored is unreadable or no longer
+   * offered. Never null.
+   *
+   * @param username the user
+   * @return the effective preference
+   */
+  public UndoSendSettings getUndoSendSettings(String username) {
+    int delay = DEFAULT_UNDO_SEND_DELAY;
+    SettingValue<?> value = settingService.get(Context.USER.id(username),
+                                               UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                               UNDO_SEND_SETTINGS_KEY);
+    if (value != null && value.getValue() != null) {
+      try {
+        UndoSendSettings stored = JsonUtils.fromJsonString(value.getValue().toString(), UndoSendSettings.class);
+        if (stored != null && UNDO_SEND_DELAYS.contains(stored.getDelaySeconds())) {
+          delay = stored.getDelaySeconds();
+        }
+      } catch (Exception e) {
+        // Unreadable, the default; JsonUtils declares checked parse failures too.
+        LOG.warn("The Undo send preference of user {} could not be read, using the default", username, e);
+      }
+    }
+    return new UndoSendSettings(delay, UNDO_SEND_DELAYS);
+  }
+
+  /**
+   * Stores the user's Undo send wait (EXO-90837), one of the offered ones.
+   *
+   * @param username the user
+   * @param settings the preference; {@code allowedDelays} is ignored
+   * @return the preference as it now stands
+   * @throws IllegalArgumentException {@link #UNDO_SEND_INVALID_DELAY} for a wait not
+   *           offered, or no preference at all
+   */
+  public UndoSendSettings saveUndoSendSettings(String username, UndoSendSettings settings) {
+    if (settings == null || !UNDO_SEND_DELAYS.contains(settings.getDelaySeconds())) {
+      throw new IllegalArgumentException(UNDO_SEND_INVALID_DELAY);
+    }
+    settingService.set(Context.USER.id(username),
+                       UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                       UNDO_SEND_SETTINGS_KEY,
+                       SettingValue.create(JsonUtils.toJsonString(new UndoSendSettings(settings.getDelaySeconds(), null))));
+    return getUndoSendSettings(username);
+  }
+
+  /**
    * Sends a scheduled mail now, or retries a failed or uncertain one, on the caller's
    * thread: the same claim as the dispatcher's, so of the two racing one sends and the
    * other is refused.
@@ -521,18 +709,15 @@ public class EmailScheduledSendService {
       LOG.debug("The scheduled-send pool is full on node {}; nothing dispatched this tick", node);
       return 0;
     }
-    for (Long id : emailScheduledSendStorage.findDueToSend(now, free)) {
-      try {
-        if (!emailScheduledSendStorage.claim(id, node, now)) {
-          LOG.debug("Scheduled mail {} was claimed by another node first", id);
-          continue;
-        }
-        EmailScheduledSend claimed = emailScheduledSendStorage.get(id);
-        if (claimed != null && submit(claimed, () -> runClaimed(claimed))) {
-          dispatched++;
-        }
-      } catch (RuntimeException | LinkageError e) {
-        LOG.warn("Scheduled mail {} could not be dispatched", id, e);
+    // Held mails first (EXO-90837): their sender was told seconds, not minutes.
+    for (Long id : emailScheduledSendStorage.findDueHeld(now, free)) {
+      if (dispatchClaimed(id, node, now, ScheduledSendStatus.HELD)) {
+        dispatched++;
+      }
+    }
+    for (Long id : emailScheduledSendStorage.findDueToSend(now, freeSlots())) {
+      if (dispatchClaimed(id, node, now, ScheduledSendStatus.SCHEDULED)) {
+        dispatched++;
       }
     }
     for (Long id : emailScheduledSendStorage.findDueToCheck(now, freeSlots())) {
@@ -542,13 +727,106 @@ public class EmailScheduledSendService {
         }
         EmailScheduledSend claimed = emailScheduledSendStorage.get(id);
         if (claimed != null) {
-          submit(claimed, () -> runCheck(claimed));
+          submit(claimed, () -> runCheck(claimed), ScheduledSendStatus.UNCERTAIN);
         }
       } catch (RuntimeException | LinkageError e) {
         LOG.warn("The Sent-folder check of scheduled mail {} could not be dispatched", id, e);
       }
     }
     return dispatched;
+  }
+
+  /**
+   * Claims one due row waiting in a given state and hands it to the pool. A lost claim
+   * (another node, or the sender's Undo, won the row) is the mechanism working, logged
+   * at DEBUG; anything thrown is this row's alone.
+   *
+   * @param id the row id
+   * @param node this node
+   * @param now the claim instant
+   * @param from the state the row waits in: SCHEDULED or HELD
+   * @return whether the row was claimed and taken by the pool
+   */
+  private boolean dispatchClaimed(Long id, String node, Date now, ScheduledSendStatus from) {
+    try {
+      if (!emailScheduledSendStorage.claim(id, node, now, from)) {
+        LOG.debug("Scheduled mail {} was claimed by another node first", id);
+        return false;
+      }
+      EmailScheduledSend claimed = emailScheduledSendStorage.get(id);
+      return claimed != null && submit(claimed, () -> runClaimed(claimed), from);
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("Scheduled mail {} could not be dispatched", id, e);
+      return false;
+    }
+  }
+
+  /**
+   * The timer of a mail held for its Undo (EXO-90837), on the node that took the send.
+   * {@link ContainerTransactional} because the timer thread has no container bound; the
+   * work is {@link #dispatchHeldNow}.
+   *
+   * @param id the held row's id
+   * @param rearms how many times this timer was armed again already
+   */
+  @ContainerTransactional
+  public void dispatchHeld(long id, int rearms) {
+    dispatchHeldNow(id, rearms);
+  }
+
+  /**
+   * Sends a held mail whose wait is over: the same claim as the dispatcher's, from
+   * HELD, so of this timer, every node's tick and the sender's Undo, one lands. A mail
+   * no longer held (taken back, or already claimed) is left alone. A mail not yet due on
+   * the database's clock, or a full pool, arms the timer again, at most
+   * {@value #HELD_MAX_REARMS} times; past that the dispatcher's next tick sends it.
+   * Never throws: a failure here leaves the mail held, for that tick.
+   *
+   * @param id the held row's id
+   * @param rearms how many times this timer was armed again already
+   */
+  void dispatchHeldNow(long id, int rearms) {
+    try {
+      EmailScheduledSend row = emailScheduledSendStorage.get(id);
+      if (row == null || row.getStatus() != ScheduledSendStatus.HELD) {
+        return;
+      }
+      Date now = now();
+      long wait = row.getNextAttemptDate() == null ? 0 : row.getNextAttemptDate().getTime() - now.getTime();
+      if (wait > 0) {
+        armHeld(id, wait + HELD_TIMER_SLACK_MS, rearms + 1);
+        return;
+      }
+      if (freeSlots() <= 0) {
+        armHeld(id, HELD_RETRY_MS, rearms + 1);
+        return;
+      }
+      if (dispatchClaimed(id, EmailConnectorUtils.getSyncNodeName(), now, ScheduledSendStatus.HELD)) {
+        LOG.info("A held mail of user {} is going", row.getUserId());
+      }
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("Held mail {} could not be dispatched by its timer; the dispatcher's next tick sends it", id, e);
+    }
+  }
+
+  /**
+   * Arms a held mail's timer on this node, unless it was armed again too many times
+   * already or the node is stopping: the dispatcher's tick is the fallback either way.
+   *
+   * @param id the held row's id
+   * @param delayMs in how many milliseconds
+   * @param rearms how many times it was armed again already
+   */
+  private void armHeld(long id, long delayMs, int rearms) {
+    if (rearms > HELD_MAX_REARMS) {
+      LOG.debug("Held mail {} is left to the dispatcher's next tick", id);
+      return;
+    }
+    try {
+      heldTimer.schedule(() -> dispatchHeld(id, rearms), delayMs, TimeUnit.MILLISECONDS);
+    } catch (RejectedExecutionException e) {
+      LOG.debug("The Undo send timer is stopped; held mail {} is left to the dispatcher's next tick", id);
+    }
   }
 
   /**
@@ -638,6 +916,7 @@ public class EmailScheduledSendService {
    */
   @PreDestroy
   public void shutdown() {
+    heldTimer.shutdownNow();
     executor.shutdownNow();
   }
 
@@ -756,14 +1035,16 @@ public class EmailScheduledSendService {
   /**
    * Hands a claimed row to the pool, recording it as in flight for its whole run. A
    * row the pool refuses was claimed but never run, so nothing was transmitted: its
-   * claim is given back (SCHEDULED, due at once), the one SENDING-to-SCHEDULED
-   * transition that needs no connection to have failed.
+   * claim is given back (to the state it was claimed from, due at once), the one
+   * transition out of SENDING that needs no connection to have failed.
    *
    * @param claimed the claimed row
    * @param run the work
+   * @param from the state the row was claimed from: SCHEDULED, or HELD for a mail sent
+   *          with an Undo, which stays out of the "Scheduled" view
    * @return whether the pool took it
    */
-  private boolean submit(EmailScheduledSend claimed, Runnable run) {
+  private boolean submit(EmailScheduledSend claimed, Runnable run, ScheduledSendStatus from) {
     inFlight.add(claimed.getId());
     try {
       executor.execute(() -> {
@@ -780,7 +1061,7 @@ public class EmailScheduledSendService {
         emailScheduledSendStorage.endRun(claimed.getId(),
                                          claimed.getClaimedBy(),
                                          claimed.getClaimedDate(),
-                                         ScheduledSendStatus.SCHEDULED,
+                                         from,
                                          null,
                                          claimed.getClaimedDate(),
                                          now());
@@ -1070,6 +1351,19 @@ public class EmailScheduledSendService {
    */
   private static int threads() {
     return intProperty(THREADS_PROPERTY, DEFAULT_THREADS);
+  }
+
+  /**
+   * The one daemon thread the held mails' timers run on (EXO-90837).
+   *
+   * @return the timer
+   */
+  private static ScheduledExecutorService newHeldTimer() {
+    return Executors.newSingleThreadScheduledExecutor(runnable -> {
+      Thread thread = new Thread(runnable, HELD_TIMER_THREAD);
+      thread.setDaemon(true);
+      return thread;
+    });
   }
 
   /**
