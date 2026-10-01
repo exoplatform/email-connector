@@ -29,36 +29,46 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       role="alert">
       {{ $t('emailConnector.admin.connectors.drawer.engines.authProviderMissing', {0: value.authProviderName}) }}
     </div>
-    <v-label for="emailConnectorRulesEngine">
-      {{ $t('emailConnector.admin.connectors.drawer.engines.rules') }}
-    </v-label>
-    <v-select
-      id="emailConnectorRulesEngine"
-      :value="value.rulesEngineChoice"
-      :items="items('rules', value.rulesEngines, value.rulesEngineChoice)"
-      class="pt-0"
-      outlined
-      dense
-      hide-details
-      @change="update({ rulesEngineChoice: $event })" />
-    <div class="caption text-light-color text-wrap mt-2 mb-4">
-      {{ overriddenOr('rules', value.rulesEngineProperty, value.rulesEngine, 'emailConnector.admin.connectors.drawer.engines.rules.help') }}
-    </div>
-    <v-label for="emailConnectorAclEngine">
-      {{ $t('emailConnector.admin.connectors.drawer.engines.acl') }}
-    </v-label>
-    <v-select
-      id="emailConnectorAclEngine"
-      :value="value.aclEngineChoice"
-      :items="items('acl', value.aclEngines, value.aclEngineChoice)"
-      class="pt-0"
-      outlined
-      dense
-      hide-details
-      @change="update({ aclEngineChoice: $event })" />
-    <div class="caption text-light-color text-wrap mt-2">
-      {{ overriddenOr('acl', value.aclEngineProperty, value.aclEngine, 'emailConnector.admin.connectors.drawer.engines.acl.help') }}
-    </div>
+    <v-list-item class="pa-0 mb-5" dense>
+      <v-list-item-content class="py-0">
+        <v-list-item-title>
+          <label for="emailConnectorRulesEngine">{{ $t('emailConnector.admin.connectors.drawer.engines.rules') }}</label>
+        </v-list-item-title>
+        <v-select
+          id="emailConnectorRulesEngine"
+          :value="shown('rules')"
+          :items="items('rules', value.rulesEngines, shown('rules'))"
+          :disabled="!!value.rulesEngineProperty"
+          class="pt-3"
+          outlined
+          dense
+          hide-details
+          @change="update({ rulesEngineChoice: $event })" />
+        <div class="caption text-light-color text-wrap mt-2">
+          {{ overriddenOr('rules', value.rulesEngineProperty, value.rulesEngine, 'emailConnector.admin.connectors.drawer.engines.rules.help') }}
+        </div>
+      </v-list-item-content>
+    </v-list-item>
+    <v-list-item class="pa-0" dense>
+      <v-list-item-content class="py-0">
+        <v-list-item-title>
+          <label for="emailConnectorAclEngine">{{ $t('emailConnector.admin.connectors.drawer.engines.acl') }}</label>
+        </v-list-item-title>
+        <v-select
+          id="emailConnectorAclEngine"
+          :value="shown('acl')"
+          :items="items('acl', value.aclEngines, shown('acl'))"
+          :disabled="!!value.aclEngineProperty"
+          class="pt-3"
+          outlined
+          dense
+          hide-details
+          @change="update({ aclEngineChoice: $event })" />
+        <div class="caption text-light-color text-wrap mt-2">
+          {{ overriddenOr('acl', value.aclEngineProperty, value.aclEngine, 'emailConnector.admin.connectors.drawer.engines.acl.help') }}
+        </div>
+      </v-list-item-content>
+    </v-list-item>
   </div>
 </template>
 
@@ -114,6 +124,19 @@ export default {
     label(kind, name) {
       const key = `emailConnector.admin.connectors.drawer.engines.${kind}.${name}`;
       return this.$te(key) ? this.$t(key) : name.charAt(0).toUpperCase() + name.slice(1);
+    },
+    /**
+     * The engine the select shows: the one that applies while a deployment property
+     * decides it (the select is then read-only), the administrator's choice otherwise.
+     * The choice itself is kept either way.
+     *
+     * @param {String} kind - 'rules' or 'acl'
+     * @returns {String} the engine's name
+     */
+    shown(kind) {
+      return this.value[`${kind}EngineProperty`]
+        ? this.value[`${kind}Engine`]
+        : this.value[`${kind}EngineChoice`];
     },
     /**
      * The help under a choice, or, when a deployment property decides the engine,
