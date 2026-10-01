@@ -197,6 +197,31 @@ export function cleanHtmlBody(html, options = {}) {
 }
 
 /**
+ * An attribute that is not a URL cleaned for printing (see {@link cleanAttribute}). Not
+ * only style: an SVG presentation attribute (fill, stroke, mask, clip-path, marker-*,
+ * filter...) is CSS too, and its url() loads an external document. Any attribute but
+ * the two text ones a reader reads gets the same treatment, while remote images are not
+ * shown.
+ *
+ * @param {Element} element the element holding the attribute
+ * @param {Attr} attribute the attribute
+ * @param {string} name the attribute's name, lower-cased
+ * @param {Object} options {showRemoteImages}
+ * @param {string} origin this portal's origin
+ * @returns {void}
+ */
+function cleanCssAttribute(element, attribute, name, options, origin) {
+  if (options.showRemoteImages || TEXT_ATTRIBUTES.includes(name)) {
+    return;
+  }
+  if (OPAQUE_CSS.test(attribute.value)) {
+    element.removeAttribute(attribute.name);
+  } else if (/url\(/i.test(attribute.value)) {
+    element.setAttribute(attribute.name, replaceRemoteCssUrls(attribute.value, origin));
+  }
+}
+
+/**
  * One attribute of a mail's element cleaned for printing (see {@link cleanHtmlBody}): an
  * event handler goes, a script URL goes, and, while remote images are not shown, anything
  * that would load from the network with the page goes or has its url() replaced.
@@ -215,16 +240,7 @@ function cleanAttribute(element, attribute, doc, options, origin) {
     return;
   }
   if (!URL_ATTRIBUTES.includes(name)) {
-    // Not only style: an SVG presentation attribute (fill, stroke, mask, clip-path,
-    // marker-*, filter...) is CSS too, and its url() loads an external document. Any
-    // attribute but the two text ones a reader reads gets the same treatment.
-    if (!options.showRemoteImages && !TEXT_ATTRIBUTES.includes(name)) {
-      if (OPAQUE_CSS.test(attribute.value)) {
-        element.removeAttribute(attribute.name);
-      } else if (/url\(/i.test(attribute.value)) {
-        element.setAttribute(attribute.name, replaceRemoteCssUrls(attribute.value, origin));
-      }
-    }
+    cleanCssAttribute(element, attribute, name, options, origin);
     return;
   }
   const value = attribute.value || '';
