@@ -214,17 +214,19 @@ public class EmailSecurityService {
       // which whoever wrote the message chose.
       boolean ownMessage = MailFolder.SENT.equals(email.getFolder());
       boolean html = content.isHtml() && content.getBody() != null;
-      // Cleaned with remote content held back first: its links are what the warnings
-      // judge, and the warnings decide whether an exemption may apply.
-      SanitizedEmailBody sanitized = html ? EmailHtmlSanitizer.sanitize(content.getBody(), false) : null;
+      // The user's own choice -- the click, blocking switched off -- holds whatever the
+      // message looks like, so one cleaning serves. Otherwise it is cleaned with remote
+      // content held back first: its links are what the warnings judge (they do not
+      // depend on that choice), and the warnings decide whether an exemption may apply.
+      boolean userAllows = showRemoteContent || !settings.isBlockRemoteContent();
+      SanitizedEmailBody sanitized = html ? EmailHtmlSanitizer.sanitize(content.getBody(), userAllows) : null;
       List<EmailSecurityWarning> warnings = warnings(email, senderAddress, sanitized, ownMessage, namesSeen);
-      if (html && sanitized.remoteContentBlocked()) {
-        // The user's own choices hold whatever the message looks like; trusting a sender
-        // or one's own sent mail holds only for a message giving no reason for doubt, so
-        // a forged From does not borrow that trust.
+      if (html && !userAllows && sanitized.remoteContentBlocked()) {
+        // Trusting a sender or one's own sent mail holds only for a message giving no
+        // reason for doubt, so a forged From does not borrow that trust.
         boolean exempt = warnings.isEmpty()
             && (ownMessage || senderAddress != null && settings.getTrustedSenders().contains(senderAddress));
-        if (showRemoteContent || !settings.isBlockRemoteContent() || exempt) {
+        if (exempt) {
           sanitized = EmailHtmlSanitizer.sanitize(content.getBody(), true);
         }
       }
