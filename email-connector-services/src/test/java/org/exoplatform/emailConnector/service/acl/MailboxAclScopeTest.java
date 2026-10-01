@@ -19,20 +19,24 @@ package org.exoplatform.emailConnector.service.acl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
+import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.model.AclScope;
 import org.exoplatform.emailConnector.model.DelegationGrantee;
 import org.exoplatform.emailConnector.model.DelegationPreset;
@@ -80,6 +84,27 @@ class MailboxAclScopeTest {
     engine.revokeWholeMailbox(session, "bob@acme.com");
 
     verify(engine).revoke(session, "INBOX", "bob@acme.com");
+  }
+
+  /**
+   * An engine that does not override the bulk read asks each folder in turn: a folder
+   * whose list is refused is left out of the answer, and a lost connection fails the
+   * whole read.
+   */
+  @Test
+  void theBulkReadAsksEachFolderByDefault() {
+    MailboxAclEngine engine = mock(MailboxAclEngine.class, CALLS_REAL_METHODS);
+    MailboxAclSession session = mock(MailboxAclSession.class);
+    List<MailboxAce> inbox = List.of(MailboxAce.ofLetters("bob", MailboxRights.of("lrs")));
+    doReturn(inbox).when(engine).listAcl(session, "INBOX");
+    doThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED, "NO")).when(engine).listAcl(session, "Sent");
+    doThrow(new MailboxAclException(MailboxAclException.UNREACHABLE, "down")).when(engine).listAcl(session, "Trash");
+
+    Map<String, List<MailboxAce>> acls = engine.listAcls(session, List.of("INBOX", "Sent"));
+
+    assertEquals(Map.of("INBOX", inbox), acls);
+    assertEquals(MailboxAclException.UNREACHABLE,
+                 assertThrows(MailboxAclException.class, () -> engine.listAcls(session, List.of("INBOX", "Trash"))).getCode());
   }
 
   /**
