@@ -163,6 +163,6 @@ export function printLabels(translate) {
 export async function printEmails(messages, labels, language) {
   const full = await Promise.all((messages || []).map(message => (isListingRow(message)
     ? getEmailByRemoteId(message.mailRemoteId, message.folder, { broadcast: false })
-    : message)));
+    : Promise.resolve(message))));
   await printDocument(buildPrintDocument(full, labels, { language }));
 }
