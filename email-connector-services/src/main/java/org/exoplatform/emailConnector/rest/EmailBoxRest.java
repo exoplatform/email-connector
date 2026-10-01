@@ -25,6 +25,7 @@ import java.util.Objects;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.CacheControl;
+import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -60,6 +61,7 @@ import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.RawEmailSource;
 import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
@@ -73,6 +75,7 @@ import org.exoplatform.emailConnector.exception.ReadReceiptConflictException;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailScheduledSendService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -80,6 +83,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 @RestController
 @RequestMapping("/email-box")
@@ -88,6 +92,12 @@ public class EmailBoxRest {
 
   // The largest page of the "Scheduled" view: the per-user limit's default.
   private static final int          MAX_SCHEDULED_PAGE = 100;
+
+  // What a downloaded message is served as: its own RFC 822 media type (EXO-90842).
+  private static final String       EML_CONTENT_TYPE   = "message/rfc822";
+
+  // Keeps a browser from sniffing the sender's bytes into anything but a download.
+  private static final String       NO_SNIFF_HEADER    = "X-Content-Type-Options";
 
   @Autowired
   private EmailBoxService           emailBoxService;
@@ -845,6 +855,106 @@ public class EmailBoxRest {
       }
       readReceiptService.decorate(email, request.getRemoteUser());
       return ResponseEntity.ok().eTag(eTag).cacheControl(CacheControl.noCache().cachePrivate()).body(email);
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  /**
+   * Gets the source of an email. The message's header block and RFC 822 source as text,
+   * for the "Show original" view (EXO-90842), cut at
+   * {@code EmailBoxService#RAW_SOURCE_SHOWN_MAX_BYTES} with a {@code truncated} flag.
+   *
+   * @param request the caller's request, for the acting user
+   * @param mailRemoteId the message's IMAP UID in its folder
+   * @param folder the folder the message is listed in; INBOX when omitted
+   * @return the source, 404 when the caller has no such message in that folder
+   */
+  @GetMapping("/{mailRemoteId}/source")
+  @Secured("users")
+  @Operation(summary = "Gets the source of an email", method = "GET",
+      description = "Returns the message's header block and RFC 822 source as text, as the mail server holds it, cut at a fixed size "
+          + "(truncated=true then; the whole message is the .eml download). Only a message the caller has in that folder of their own "
+          + "mailbox, or of a mailbox shared with them where they hold the read right on that folder.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden: the caller may not read their mailbox, or lacks the read right on that shared folder"),
+      @ApiResponse(responseCode = "404", description = "The caller has no such message in that folder"),
+      @ApiResponse(responseCode = "410", description = "The mailbox share that folder belongs to has ended"),
+      @ApiResponse(responseCode = "500", description = "The mail server could not be read"), })
+  public ResponseEntity<RawEmailSource> getRawEmailSource(HttpServletRequest request,
+                                                          @Parameter(description = "Email id: the IMAP UID in its folder", required = true)
+                                                          @PathVariable("mailRemoteId")
+                                                          long mailRemoteId,
+                                                          @Parameter(description = "The folder the message is listed in; INBOX when omitted")
+                                                          @RequestParam(value = "folder", required = false, defaultValue = MailFolder.INBOX)
+                                                          String folder) {
+    try {
+      RawEmailSource source = emailBoxService.getRawEmailSource(mailRemoteId, request.getRemoteUser(), folder);
+      if (source == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      return ResponseEntity.ok().cacheControl(CacheControl.noStore().cachePrivate()).body(source);
+    } catch (MailboxRightMissingException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  /**
+   * Downloads an email as .eml. Streams the message's RFC 822 source, as the mail server
+   * holds it, as {@code message/rfc822} under a file name made from its subject
+   * (EXO-90842). Nothing is written to the response before the caller's access is
+   * checked and the message found, so a refusal or an absence keeps its own status.
+   *
+   * @param request the caller's request, for the acting user
+   * @param response where the source is streamed
+   * @param mailRemoteId the message's IMAP UID in its folder
+   * @param folder the folder the message is listed in; INBOX when omitted
+   */
+  @GetMapping("/{mailRemoteId}/eml")
+  @Secured("users")
+  @Operation(summary = "Downloads an email as .eml", method = "GET",
+      description = "Streams the message's RFC 822 source as message/rfc822, as an attachment named after its subject. Only a message "
+          + "the caller has in that folder of their own mailbox, or of a mailbox shared with them where they hold the read right on that folder.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden: the caller may not read their mailbox, or lacks the read right on that shared folder"),
+      @ApiResponse(responseCode = "404", description = "The caller has no such message in that folder"),
+      @ApiResponse(responseCode = "410", description = "The mailbox share that folder belongs to has ended"),
+      @ApiResponse(responseCode = "500", description = "The mail server could not be read"), })
+  public void downloadRawEmail(HttpServletRequest request,
+                               HttpServletResponse response,
+                               @Parameter(description = "Email id: the IMAP UID in its folder", required = true)
+                               @PathVariable("mailRemoteId")
+                               long mailRemoteId,
+                               @Parameter(description = "The folder the message is listed in; INBOX when omitted")
+                               @RequestParam(value = "folder", required = false, defaultValue = MailFolder.INBOX)
+                               String folder) {
+    try {
+      boolean found = emailBoxService.writeRawEmail(mailRemoteId, request.getRemoteUser(), folder, (subject, size) -> {
+        response.setContentType(EML_CONTENT_TYPE);
+        response.setHeader(HttpHeaders.CONTENT_DISPOSITION,
+                           ContentDisposition.attachment()
+                                             .filename(EmailConnectorUtils.emlFileName(subject), StandardCharsets.UTF_8)
+                                             .build()
+                                             .toString());
+        response.setHeader(HttpHeaders.CACHE_CONTROL, CacheControl.noStore().cachePrivate().getHeaderValue());
+        response.setHeader(NO_SNIFF_HEADER, "nosniff");
+        return response.getOutputStream();
+      });
+      if (!found) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+    } catch (MailboxRightMissingException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {

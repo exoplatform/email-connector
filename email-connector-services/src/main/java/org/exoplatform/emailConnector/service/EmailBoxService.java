@@ -21,6 +21,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.io.UnsupportedEncodingException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -125,6 +126,7 @@ import com.sun.mail.iap.Argument;
 import com.sun.mail.iap.Response;
 import com.sun.mail.imap.AppendUID;
 import com.sun.mail.imap.IMAPFolder;
+import com.sun.mail.imap.IMAPMessage;
 import com.sun.mail.imap.IMAPStore;
 import com.sun.mail.imap.ResyncData;
 import com.sun.mail.imap.protocol.BASE64MailboxEncoder;
@@ -148,6 +150,7 @@ import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
+import org.exoplatform.emailConnector.exception.RawEmailCapReachedException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
 import org.exoplatform.emailConnector.exception.SendModeMissingException;
@@ -168,6 +171,7 @@ import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.RawEmailSource;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.model.SendIdentity;
 import org.exoplatform.emailConnector.model.SendMode;
@@ -213,6 +217,7 @@ import org.exoplatform.emailConnector.service.filters.FilterRunContext;
 import org.exoplatform.emailConnector.service.filters.SpamSignals;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.emailConnector.utils.CappedOutputStream;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
 import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
@@ -432,6 +437,14 @@ public class EmailBoxService {
    * server-carried cap in the mailbox payload.
    */
   public static final int                UNDO_MAX_MESSAGE_IDS    = 200;
+
+  /**
+   * How much of a message's RFC 822 source the "Show original" view carries (EXO-90842),
+   * in bytes. A longer message is cut there and marked truncated; its whole source is the
+   * {@code .eml} download. The webapp keeps no copy of this number: it reads the
+   * {@code truncated} flag and the size off each answer.
+   */
+  public static final int                RAW_SOURCE_SHOWN_MAX_BYTES = 512 * 1024;
 
   // Every header createEmails reads per message. They must be fetched in the one batched
   // FETCH: JavaMail otherwise goes back to the server for each header of each message.
@@ -706,6 +719,9 @@ public class EmailBoxService {
 
   private static final String     USER_NOT_ALLOWED_FOR_GET_EMAIL_ATTACHMENT                   =
                                                                             "User %s is not allowed to get email attachment";
+
+  private static final String     USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL                          =
+                                                                     "User %s is not allowed to get the source of an email";
 
   private static final String     USER_NOT_ALLOWED_FOR_BROADCAST_OPEN_EMAIL_EVENT_MESSAGE     =
                                                                                           "User %s is not allowed to broadcast open email event";
@@ -6095,6 +6111,174 @@ public class EmailBoxService {
         LOG.warn("Error when closing store", messagingException);
       }
     }
+  }
+
+  /**
+   * A message's header block and RFC 822 source, as text, for the "Show original" view
+   * (EXO-90842). Read through {@link #writeRawEmail}, so every rule of that read holds
+   * here: the same access check, the same 404 cases. The source stops at
+   * {@link #RAW_SOURCE_SHOWN_MAX_BYTES}, and the read from the mail server stops with it.
+   * <p>
+   * Decoded as UTF-8, invalid sequences replaced: the source is 7-bit in the common case,
+   * UTF-8 when a part is sent 8bit, and a byte the decoder cannot read is shown as a
+   * replacement character rather than refused. A cut through a multi-byte character shows
+   * the same way at the very end.
+   *
+   * @param mailRemoteId the message's IMAP UID in its folder
+   * @param username the reader
+   * @param folder the folder the reader lists the message in; INBOX when blank
+   * @return the source, or null when the reader has no such message there
+   * @throws IllegalAccessException when the reader may not read their mailbox, or, in a
+   *           mailbox shared with them, lacks the read right on that folder
+   */
+  public RawEmailSource getRawEmailSource(long mailRemoteId, String username, String folder) throws IllegalAccessException {
+    CappedOutputStream captured = new CappedOutputStream(RAW_SOURCE_SHOWN_MAX_BYTES);
+    AtomicInteger reportedSize = new AtomicInteger(-1);
+    boolean found = writeRawEmail(mailRemoteId, username, folder, (subject, size) -> {
+      reportedSize.set(size);
+      return captured;
+    });
+    if (!found) {
+      return null;
+    }
+    byte[] bytes = captured.toByteArray();
+    String source = new String(bytes, StandardCharsets.UTF_8);
+    RawEmailSource rawEmailSource = new RawEmailSource();
+    rawEmailSource.setSource(source);
+    rawEmailSource.setHeaders(headerBlock(source));
+    rawEmailSource.setTruncated(captured.isCapped());
+    rawEmailSource.setSize(reportedSize.get() >= 0 ? reportedSize.get() : bytes.length);
+    return rawEmailSource;
+  }
+
+  /**
+   * Writes a message's RFC 822 source, as the mail server holds it, to a sink (EXO-90842):
+   * the {@code .eml} download and the "Show original" view.
+   * <p>
+   * <b>Who may read it is the whole of this method.</b> A UID is a small number anybody can
+   * guess, and the source is the mail itself, so the read is refused or answered empty in
+   * this order, before the sink is ever asked for its stream:
+   * <ol>
+   * <li>the reader must be allowed to use their own mailbox ({@code canConnect}), or the
+   * answer is a refusal, as for every other read;</li>
+   * <li>in a folder of a mailbox somebody shared with the reader, the share must still be
+   * accepted ({@link DelegationRevokedException} otherwise) and the reader must hold the
+   * RFC 4314 read right on THAT folder ({@link MailboxRightMissingException} otherwise) --
+   * the check every write already makes, with the letter a read needs;</li>
+   * <li>the reader must have the message cached under that folder and that UID. The cache
+   * is per user, so a UID taken from somebody else's mailbox, or a folder key of a share
+   * the reader is not given, finds nothing here and the answer is "no such message" --
+   * never a read of the mail server on a guess;</li>
+   * <li>the remote folder is resolved the way its rows were cached
+   * ({@link #resolveCachedFolder}), on the reader's own connection, so the mail server
+   * enforces its own rights on top; and the message found under that UID must carry the
+   * Message-ID the row was cached with, when both have one, so a UID the server
+   * renumbered since the last sync is not answered with another message.</li>
+   * </ol>
+   * The folder is opened read-only and the message fetched with PEEK, so reading the
+   * source never marks the message as read.
+   *
+   * @param mailRemoteId the message's IMAP UID in its folder
+   * @param username the reader
+   * @param folder the folder the reader lists the message in; INBOX when blank
+   * @param sink where the source goes, opened once the message is found
+   * @return true when the source was written, false when the reader has no such message
+   * @throws IllegalAccessException when the reader may not read their mailbox, or, in a
+   *           mailbox shared with them, lacks the read right on that folder
+   * @throws IllegalStateException when the mail server could not be read before the sink
+   *           was opened
+   */
+  public boolean writeRawEmail(long mailRemoteId,
+                               String username,
+                               String folder,
+                               RawEmailSink sink) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL, username));
+    }
+    String cachedFolder = StringUtils.defaultIfBlank(folder, MailFolder.INBOX);
+    checkDelegatedRight(username, cachedFolder, MailboxRights.READ);
+    Email cached = emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId, username, null, cachedFolder, false, false, false);
+    if (cached == null) {
+      return false;
+    }
+    Store store = null;
+    Folder remote = null;
+    boolean opened = false;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      remote = resolveCachedFolder(store, cachedFolder, username);
+      if (!(remote instanceof UIDFolder uidFolder)) {
+        return false;
+      }
+      remote.open(Folder.READ_ONLY);
+      Message message = uidFolder.getMessageByUID(mailRemoteId);
+      if (!(message instanceof MimeMessage mimeMessage) || !isCachedMessage(cached, mimeMessage)) {
+        return false;
+      }
+      if (mimeMessage instanceof IMAPMessage imapMessage) {
+        imapMessage.setPeek(true);
+      }
+      OutputStream out = sink.open(cached.getSubject(), mimeMessage.getSize());
+      opened = true;
+      mimeMessage.writeTo(out);
+      out.flush();
+      return true;
+    } catch (RawEmailCapReachedException capReached) {
+      // The sink holds all it may; the rest of the message is deliberately not read.
+      return true;
+    } catch (IOException | MessagingException | ConnectorCredentialsException | RuntimeException e) {
+      if (opened) {
+        // The answer is already under way (a download the browser cancelled, a connection
+        // dropped mid-copy): nothing is left to answer with, and it is not an incident.
+        LOG.debug("Raw source of message {} in folder {} of user {} stopped mid-copy", mailRemoteId, cachedFolder, username, e);
+        return true;
+      }
+      LOG.warn("Could not read the raw source of message {} in folder {} of user {}", mailRemoteId, cachedFolder, username, e);
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
+    } finally {
+      closeQuietly(remote, store, username);
+    }
+  }
+
+  /**
+   * Whether the message the server holds under a UID is the one the reader's row was cached
+   * from: the same Message-ID, angle brackets and surrounding blanks aside. A row or a
+   * message without one cannot be compared and is taken as the same, which is all a UID
+   * read could ever say about it.
+   *
+   * @param cached the reader's cached row
+   * @param message the message the server answered for that UID
+   * @return false only when both carry a Message-ID and the two differ
+   * @throws MessagingException when the header cannot be read
+   */
+  private boolean isCachedMessage(Email cached, MimeMessage message) throws MessagingException {
+    String cachedId = StringUtils.strip(cached.getMailHeaderId(), "<> \t");
+    String remoteId = StringUtils.strip(message.getMessageID(), "<> \t");
+    return StringUtils.isBlank(cachedId) || StringUtils.isBlank(remoteId) || cachedId.equals(remoteId);
+  }
+
+  /**
+   * The header block at the top of an RFC 822 source: everything up to the first empty
+   * line, CRLF or bare LF alike, or the whole text when it holds none (a source cut short
+   * inside its headers).
+   *
+   * @param source the source, from its first byte
+   * @return the header block, without the empty line that ends it
+   */
+  private static String headerBlock(String source) {
+    int crlf = source.indexOf("\r\n\r\n");
+    int lf = source.indexOf("\n\n");
+    int end;
+    if (crlf < 0) {
+      end = lf;
+    } else if (lf < 0) {
+      end = crlf;
+    } else {
+      end = Math.min(crlf, lf);
+    }
+    return end < 0 ? source : source.substring(0, end);
   }
 
   public String broadcastOpenEmail(String username) throws IllegalAccessException {
