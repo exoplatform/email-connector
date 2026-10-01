@@ -97,6 +97,13 @@ public class CalendarInvitation {
   /** The attendees, the first ones only when there are many. */
   private List<CalendarInvitationPerson> attendees = new ArrayList<>();
 
+  /**
+   * Who a message that answers rather than invites speaks for: the attendee of a REPLY
+   * (with the answer as its {@code partStat}), of a COUNTER or of a REFRESH, the organiser
+   * of a DECLINECOUNTER; null for an invitation.
+   */
+  private CalendarInvitationPerson       respondent;
+
   /** How many attendees the invitation names, all of them. */
   private int                            attendeeCount;
 
