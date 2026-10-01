@@ -140,6 +140,10 @@ import { personLabel } from '../../js/EmailRecipientDisplay.js';
 // calendar library, the mailbox is unreachable) shows nothing: the mail is read as before.
 const UNREADABLE_CODES = ['emailConnector.invitation.tooLarge', 'emailConnector.invitation.unreadable'];
 
+// The methods of a message that answers rather than invites: shown as somebody's answer,
+// whoever it could be said to come from.
+const ANSWER_METHODS = ['REPLY', 'COUNTER', 'REFRESH', 'DECLINECOUNTER'];
+
 export default {
   props: {
     // The message on screen, with its technical id and its attachments.
@@ -203,25 +207,25 @@ export default {
      */
     answerLabel() {
       const answer = this.invitation?.answer;
-      return answer && !this.invitation.cancelled && !this.invitation.respondent ? this.$t(`emailConnector.mailBox.invitation.answered.${answer}`) : '';
+      return answer && !this.invitation.cancelled && !ANSWER_METHODS.includes(this.invitation.method) ? this.$t(`emailConnector.mailBox.invitation.answered.${answer}`) : '';
     },
     /**
      * What a message that answers rather than invites says: "MEYER accepted", "MEYER
      * proposed a change"… -- from the person it speaks for, their name or else their
-     * address; empty for an invitation.
+     * address, else "Someone" when the message does not say; empty for an invitation.
      *
      * @returns {String} the sentence, empty when there is none
      */
     respondentLabel() {
-      const respondent = this.invitation?.respondent;
-      if (!respondent) {
+      const method = this.invitation?.method;
+      if (!ANSWER_METHODS.includes(method)) {
         return '';
       }
-      const who = personLabel(respondent) || this.$t('emailConnector.mailBox.invitation.someone');
-      const method = this.invitation.method;
+      const respondent = this.invitation.respondent;
+      const who = (respondent && personLabel(respondent)) || this.$t('emailConnector.mailBox.invitation.someone');
       if (method === 'REPLY') {
         const known = ['ACCEPTED', 'TENTATIVE', 'DECLINED', 'DELEGATED'];
-        const status = known.includes(respondent.partStat) ? respondent.partStat : 'OTHER';
+        const status = known.includes(respondent?.partStat) ? respondent.partStat : 'OTHER';
         return this.$t(`emailConnector.mailBox.invitation.replied.${status}`, { 0: who });
       }
       return this.$t(`emailConnector.mailBox.invitation.respondent.${method}`, { 0: who });
