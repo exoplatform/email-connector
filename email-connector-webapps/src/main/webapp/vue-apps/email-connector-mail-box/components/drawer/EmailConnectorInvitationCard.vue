@@ -38,6 +38,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           class="invitation-title">
           {{ title }}
         </div>
+        <div v-if="respondentLabel" class="font-weight-bold text-wrap text-break invitation-respondent">
+          {{ respondentLabel }}
+        </div>
         <div v-if="invitation.exoMeeting" class="caption primary--text invitation-exo-meeting">
           {{ $t('emailConnector.mailBox.invitation.exoMeeting') }}
         </div>
@@ -200,7 +203,28 @@ export default {
      */
     answerLabel() {
       const answer = this.invitation?.answer;
-      return answer && !this.invitation.cancelled ? this.$t(`emailConnector.mailBox.invitation.answered.${answer}`) : '';
+      return answer && !this.invitation.cancelled && !this.invitation.respondent ? this.$t(`emailConnector.mailBox.invitation.answered.${answer}`) : '';
+    },
+    /**
+     * What a message that answers rather than invites says: "MEYER accepted", "MEYER
+     * proposed a new time"… -- from the person it speaks for, their name or else their
+     * address; empty for an invitation.
+     *
+     * @returns {String} the sentence, empty when there is none
+     */
+    respondentLabel() {
+      const respondent = this.invitation?.respondent;
+      if (!respondent) {
+        return '';
+      }
+      const who = personLabel(respondent) || this.$t('emailConnector.mailBox.invitation.someone');
+      const method = this.invitation.method;
+      if (method === 'REPLY') {
+        const known = ['ACCEPTED', 'TENTATIVE', 'DECLINED', 'DELEGATED'];
+        const status = known.includes(respondent.partStat) ? respondent.partStat : 'OTHER';
+        return this.$t(`emailConnector.mailBox.invitation.replied.${status}`, { 0: who });
+      }
+      return this.$t(`emailConnector.mailBox.invitation.respondent.${method}`, { 0: who });
     },
     /**
      * @returns {Array} the three answers, {answer, label}
