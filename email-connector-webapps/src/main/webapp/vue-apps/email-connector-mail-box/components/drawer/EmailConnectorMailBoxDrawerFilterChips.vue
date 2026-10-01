@@ -67,18 +67,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.filter.unread') }}
       </span>
     </v-chip>
-    <!-- The advanced search (EXO-90838): sender, recipient, words, days, attachment,
-         folder -- opened beside the chips that already narrow the list. -->
-    <v-btn
-      v-if="searchable"
-      :title="$t('emailConnector.mailBox.search.advanced.open')"
-      :aria-label="$t('emailConnector.mailBox.search.advanced.open')"
-      class="ms-auto flex-shrink-0"
-      icon
-      small
-      @click="$emit('advanced-search')">
-      <v-icon size="16" class="icon-default-color">fa-sliders-h</v-icon>
-    </v-btn>
   </div>
 </template>
 
@@ -105,12 +93,6 @@ export default {
     },
     // Whether the list is narrowed to unread messages (client-side filter).
     unreadOnly: {
-      type: Boolean,
-      default: false,
-    },
-    // Whether the folder shown has a search, which the advanced search's button then
-    // opens (EXO-90838): the search box's own condition.
-    searchable: {
       type: Boolean,
       default: false,
     },
