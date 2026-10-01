@@ -63,7 +63,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :value="rail && dropTarget === entry.value"
           right>
           <template #activator="{ on, attrs }">
-            <div :style="dropStyle(entry)" v-on="dropListeners(entry)">
+            <!-- A label (below) takes no pointer event: its name on hover -- the title, or
+                 the rail's tooltip -- rides this wrapper instead. -->
+            <div
+              :style="dropStyle(entry)"
+              :title="!rail && entry.labelOnly ? entry.tooltip : null"
+              v-bind="rail && entry.labelOnly ? attrs : {}"
+              v-on="wrapperListeners(entry, rail && entry.labelOnly ? on : {})">
               <!-- A folder inside another is indented under it (EXO-90839); a rail has no room. -->
               <!-- A folder the user may only see is a label its folders nest under: never
                    listed, never a drop target (EXO-90839). -->
@@ -75,8 +81,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 :title="rail ? null : entry.tooltip"
                 :style="rail ? null : indent(entry)"
                 role="option"
-                v-bind="rail ? attrs : {}"
-                v-on="rail ? on : {}"
+                v-bind="rail && !entry.labelOnly ? attrs : {}"
+                v-on="rail && !entry.labelOnly ? on : {}"
                 @click="entry.select">
                 <v-list-item-icon :class="rail ? 'mx-auto' : 'ms-0 me-2'" class="my-auto align-self-center align-center">
                   <v-badge
@@ -228,6 +234,18 @@ export default {
         described = this.$t('emailConnector.mailBox.list.drawer.navigation.attention', { 0: described });
       }
       return { value, icon, label, count, unread, select, attention, ariaLabel: described, tooltip: described };
+    },
+    /**
+     * The listeners of an entry's wrapper: the drop zone's, and for a label the rail
+     * tooltip's activator, which the label itself cannot carry (it takes no pointer
+     * event).
+     *
+     * @param {Object} entry the entry
+     * @param {Object} tooltipListeners the tooltip activator's listeners, or none
+     * @returns {Object} the listeners
+     */
+    wrapperListeners(entry, tooltipListeners) {
+      return Object.assign({}, tooltipListeners, this.dropListeners(entry));
     },
     /**
      * Indents a folder under the folder it is inside.
