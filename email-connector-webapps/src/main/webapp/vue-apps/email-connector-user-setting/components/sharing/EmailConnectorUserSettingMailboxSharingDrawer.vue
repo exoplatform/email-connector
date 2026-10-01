@@ -69,7 +69,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         ref="mine"
         @can-share="canShare = $event"
         @per-folder="perFolder = $event"
-        @send-modes="sendModes = $event"
         @trash-expunge="trashExpunge = $event" />
       <email-connector-user-setting-shared-with-me-drawer
         v-show="tab === 1"
@@ -105,8 +104,6 @@ export default {
     canShare: false,
     // Whether the owner's mail server shares folder by folder (EXO-90556).
     perFolder: false,
-    // The shapes of writing in the owner's name her mail server accepts (EXO-90582).
-    sendModes: [],
     // Whether an Editor of the owner's Trash can delete mail there for good (EXO-90816).
     trashExpunge: false,
     pendingCount: 0,
@@ -154,7 +151,6 @@ export default {
         this.shown = [];
         this.canShare = false;
         this.perFolder = false;
-        this.sendModes = [];
         this.trashExpunge = false;
       }
       this.tab = index;
@@ -218,15 +214,13 @@ export default {
     /**
      * Opens the second-level drawer that picks a person and a preset -- and, on a server
      * that shares folder by folder, the folders (EXO-90556). This drawer stays open
-     * behind it, as the folders drawer does for its name drawer. The invitation's consent
-     * says whether writing in the owner's name can be allowed afterwards (EXO-90582).
+     * behind it, as the folders drawer does for its name drawer.
      *
      * @returns {void}
      */
     openInvite() {
       this.$root.$emit('open-email-sharing-invite-drawer', {
         perFolder: this.perFolder,
-        sendModes: this.sendModes,
         trashExpunge: this.trashExpunge,
       });
     },
