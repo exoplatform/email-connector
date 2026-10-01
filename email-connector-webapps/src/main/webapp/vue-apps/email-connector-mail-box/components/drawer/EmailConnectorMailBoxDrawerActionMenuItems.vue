@@ -285,7 +285,8 @@ export default {
      * @returns {Array} the folder descriptors to display
      */
     visibleFolders() {
-      // The user's own folders as a tree (EXO-90839), a collapsed one's folders left out.
+      // A mailbox's folders (the user's own, or a shared mailbox's) as a tree (EXO-90839),
+      // a collapsed one's folders left out.
       return visibleFolderRows(buildFolderTree(this.availableFolders, this.namespaceFolders || this.availableFolders), this.collapsed).map(row => {
         const folder = row.folder;
         const scheduled = this.$emailConnectorMailBoxService.isScheduledView(folder.key);
