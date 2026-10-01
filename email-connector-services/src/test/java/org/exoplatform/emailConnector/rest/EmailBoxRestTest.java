@@ -102,6 +102,7 @@ import org.exoplatform.emailConnector.model.DraftMailbox;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
@@ -1687,8 +1688,11 @@ public class EmailBoxRestTest {
     when(emailBoxService.renameCustomFolder(anyString(), anyLong(), anyString())).thenThrow(missing, revoked);
     expectDelegationRefusals(() -> patch(EMAIL_BOX_PATH + "/folders/8/name").param("name", "Projects"));
 
-    doThrow(missing).doThrow(revoked).when(emailBoxService).deleteCustomFolder(anyString(), anyLong());
+    doThrow(missing).doThrow(revoked).when(emailBoxService).deleteCustomFolder(anyString(), anyLong(), anyBoolean());
     expectDelegationRefusals(() -> delete(EMAIL_BOX_PATH + "/folders/8"));
+
+    when(emailBoxService.moveCustomFolder(anyString(), anyLong(), any(), any())).thenThrow(missing, revoked);
+    expectDelegationRefusals(() -> patch(EMAIL_BOX_PATH + "/folders/8/parent").param("parentId", "9"));
 
     doThrow(missing).doThrow(revoked).when(emailBoxService).synchronizeCustomFolder(anyString(), anyLong());
     expectDelegationRefusals(() -> post(EMAIL_BOX_PATH + "/folders/8/synchronization"));
@@ -1773,5 +1777,77 @@ public class EmailBoxRestTest {
     return mockMvc.perform(post(path).with(testSimpleUser())
                                      .content("{\"action\":\"" + action + "\"}")
                                      .contentType(MediaType.APPLICATION_JSON));
+  }
+
+  /**
+   * EXO-90839: a folder is created inside one of the caller's folders when a parent is
+   * named, at the top level otherwise; a parent of a mailbox shared with the caller is
+   * refused with 403, one that cannot hold a folder with 400 and its code.
+   *
+   * @throws Exception when a request cannot be performed
+   */
+  @Test
+  void createFolderPassesTheParentAndAnswersItsRefusals() throws Exception {
+    when(emailBoxService.createCustomFolder(SIMPLE_USER, "Acme", 4L)).thenReturn(new MailFolderView());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/folders").with(testSimpleUser()).param("name", "Acme").param("parentId", "4"))
+           .andExpect(status().isOk());
+    verify(emailBoxService).createCustomFolder(SIMPLE_USER, "Acme", 4L);
+
+    when(emailBoxService.createCustomFolder(SIMPLE_USER, "Top", null)).thenReturn(new MailFolderView());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/folders").with(testSimpleUser()).param("name", "Top")).andExpect(status().isOk());
+    verify(emailBoxService).createCustomFolder(SIMPLE_USER, "Top", null);
+
+    when(emailBoxService.createCustomFolder(SIMPLE_USER, "Acme", 8L)).thenThrow(new MailboxRightMissingException(MailboxRights.DELETE_MAILBOX));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/folders").with(testSimpleUser()).param("name", "Acme").param("parentId", "8"))
+           .andExpect(status().isForbidden());
+
+    when(emailBoxService.createCustomFolder(SIMPLE_USER, "Acme", 5L)).thenThrow(new IllegalArgumentException("emailConnector.folder.parent.invalid"));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/folders").with(testSimpleUser()).param("name", "Acme").param("parentId", "5"))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.folder.parent.invalid"));
+  }
+
+  /**
+   * EXO-90839: a move names its parent, or none for the top level, and an optional new
+   * name; a parent inside the folder is refused with 400 and its code.
+   *
+   * @throws Exception when a request cannot be performed
+   */
+  @Test
+  void moveFolderPassesTheParentAndTheNameAndAnswersAnInvalidParent() throws Exception {
+    when(emailBoxService.moveCustomFolder(SIMPLE_USER, 7L, 4L, "Renamed")).thenReturn(new MailFolderView());
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/7/parent").with(testSimpleUser())
+                                                               .param("parentId", "4")
+                                                               .param("name", "Renamed"))
+           .andExpect(status().isOk());
+    verify(emailBoxService).moveCustomFolder(SIMPLE_USER, 7L, 4L, "Renamed");
+
+    when(emailBoxService.moveCustomFolder(SIMPLE_USER, 7L, null, null)).thenReturn(new MailFolderView());
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/7/parent").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailBoxService).moveCustomFolder(SIMPLE_USER, 7L, null, null);
+
+    when(emailBoxService.moveCustomFolder(SIMPLE_USER, 7L, 9L, null)).thenThrow(new IllegalArgumentException("emailConnector.folder.parent.invalid"));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/7/parent").with(testSimpleUser()).param("parentId", "9"))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.folder.parent.invalid"));
+  }
+
+  /**
+   * EXO-90839: a delete takes the folders inside it only when the caller says so; the
+   * default is not to, and a folder with sub-folders is then refused with its code.
+   *
+   * @throws Exception when a request cannot be performed
+   */
+  @Test
+  void deleteFolderTakesItsSubFoldersOnlyWhenAsked() throws Exception {
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/folders/7").with(testSimpleUser()).param("subFolders", "true"))
+           .andExpect(status().isOk());
+    verify(emailBoxService).deleteCustomFolder(SIMPLE_USER, 7L, true);
+
+    doThrow(new IllegalArgumentException("emailConnector.folder.hasSubFolders")).when(emailBoxService)
+                                                                              .deleteCustomFolder(SIMPLE_USER, 8L, false);
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/folders/8").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.folder.hasSubFolders"));
   }
 }

@@ -219,16 +219,22 @@ public class EmailBoxRest {
   @PostMapping("/folders")
   @Secured("users")
   @Operation(summary = "Creates one of the user's own folders", method = "POST",
-             description = "Creates a top-level folder on the mail server and registers it. Auto-mirrors it unless the cap (emailConnector.folder.tooMany) is already reached, in which case the folder is created but left unmirrored. Answers 400 emailConnector.folder.name.blank / .tooLong / .nested / .reserved for an invalid name, 400 emailConnector.folder.name.duplicate for a name already used, 400 emailConnector.folder.createFailed when the server refuses")
+             description = "Creates a folder on the mail server, at the top level or inside one of the caller's own folders, and registers it. Auto-mirrors it unless the cap (emailConnector.folder.tooMany) is already reached, in which case the folder is created but left unmirrored. Answers 400 emailConnector.folder.name.blank / .tooLong / .nested / .reserved for an invalid name, 400 emailConnector.folder.name.duplicate for a name already used, 400 emailConnector.folder.unknown / emailConnector.folder.parent.invalid for a parent that is not one of the caller's folders or cannot hold one, 403 for a parent of a mailbox shared with the caller, 400 emailConnector.folder.createFailed when the server refuses")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden operation"), })
   public MailFolderView createFolder(HttpServletRequest request,
                                      @Parameter(description = "The folder name, as typed", required = true)
                                      @RequestParam("name")
-                                     String name) {
+                                     String name,
+                                     @Parameter(description = "The registry id of the caller's own folder to create it in; the top level when absent")
+                                     @RequestParam(name = "parentId", required = false)
+                                     Long parentId) {
     try {
-      return emailBoxService.createCustomFolder(request.getRemoteUser(), name);
+      return emailBoxService.createCustomFolder(request.getRemoteUser(), name, parentId);
+    } catch (MailboxRightMissingException e) {
+      // A folder of a mailbox shared with the caller is its owner's to organise.
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
@@ -278,26 +284,72 @@ public class EmailBoxRest {
   }
 
   /**
-   * Deletes one of the user's own folders, on the server and in the registry.
-   * Irreversible, and refused while the folder still holds mail.
+   * Moves one of the user's own folders inside another of their folders, or to the top
+   * level, optionally under a new name, on the server and in the registry.
    *
    * @param request the caller
    * @param id the folder's registry id
+   * @param parentId the registry id of the folder to move it into, null for the top level
+   * @param name the name it takes there, null to keep its own
+   * @return the folder as it now stands
+   */
+  @PatchMapping("/folders/{id}/parent")
+  @Secured("users")
+  @Operation(summary = "Moves one of the user's own folders", method = "PATCH",
+             description = "Moves the folder, and the folders inside it, inside another of the caller's own folders or to the top level when parentId is absent, optionally renaming it in the same step. The registry rows are updated in place, so the mirrored messages keep their place. Answers 400 emailConnector.folder.unknown for a folder that is not the caller's, 400 emailConnector.folder.parent.invalid for a parent that cannot hold it (the folder itself, a folder inside it, a folder no longer found), 400 emailConnector.folder.name.* for an invalid or already used name, 403 for a folder of a mailbox shared with the caller, 400 emailConnector.folder.renameFailed when the server refuses")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"), })
+  public MailFolderView moveFolder(HttpServletRequest request,
+                                   @Parameter(description = "The folder's registry id", required = true)
+                                   @PathVariable("id")
+                                   long id,
+                                   @Parameter(description = "The registry id of the folder to move it into; the top level when absent")
+                                   @RequestParam(name = "parentId", required = false)
+                                   Long parentId,
+                                   @Parameter(description = "The name it takes there, as typed; its own name when absent")
+                                   @RequestParam(name = "name", required = false)
+                                   String name) {
+    try {
+      return emailBoxService.moveCustomFolder(request.getRemoteUser(), id, parentId, name);
+    } catch (MailboxRightMissingException e) {
+      // A folder of a mailbox shared with the caller is its owner's to organise.
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // As for a rename: the share itself is gone, 410.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Deletes one of the user's own folders, and the folders inside it when asked, on the
+   * server and in the registry. Irreversible, and refused while any of them holds mail.
+   *
+   * @param request the caller
+   * @param id the folder's registry id
+   * @param subFolders whether the folders inside it are deleted too
    * @return 200 once the folder and its mirror are gone
    */
   @DeleteMapping("/folders/{id}")
   @Secured("users")
   @Operation(summary = "Deletes one of the user's own folders", method = "DELETE",
-             description = "Deletes the folder on the mail server, permanently, and drops its mirror. Refused with 400 emailConnector.folder.notEmpty while the server still lists mail in it -- empty it first. Answers 400 emailConnector.folder.unknown for a folder that is not the caller's, 400 emailConnector.folder.deleteFailed when the server refuses")
+             description = "Deletes the folder on the mail server, permanently, with the folders inside it when subFolders=true, and drops their mirror. Refused with 400 emailConnector.folder.notEmpty / emailConnector.folder.subFolderNotEmpty while the server still lists mail in it or in one of its sub-folders -- empty them first -- and with 400 emailConnector.folder.hasSubFolders when it has sub-folders and subFolders is not true. Answers 400 emailConnector.folder.unknown for a folder that is not the caller's, 400 emailConnector.folder.deleteFailed when the server refuses")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden operation"), })
   public ResponseEntity<String> deleteFolder(HttpServletRequest request,
                                              @Parameter(description = "The folder's registry id", required = true)
                                              @PathVariable("id")
-                                             long id) {
+                                             long id,
+                                             @Parameter(description = "Whether the folders inside it are deleted too")
+                                             @RequestParam(name = "subFolders", required = false, defaultValue = "false")
+                                             boolean subFolders) {
     try {
-      emailBoxService.deleteCustomFolder(request.getRemoteUser(), id);
+      emailBoxService.deleteCustomFolder(request.getRemoteUser(), id, subFolders);
       return ResponseEntity.ok().build();
     } catch (MailboxRightMissingException e) {
       // The caller asked for something the mail server does not let them do in a mailbox
