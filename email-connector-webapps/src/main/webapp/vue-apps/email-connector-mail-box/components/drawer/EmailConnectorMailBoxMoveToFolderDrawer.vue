@@ -130,7 +130,7 @@ export default {
      * @returns {String} the path
      */
     path(folder) {
-      return this.$emailConnectorMailBoxService.folderPath(folder);
+      return this.$emailConnectorMailBoxService.folderPath(folder, this.$root.mailFolders);
     },
     /**
      * Forgets the messages the picker was opened for, so a later open starts clean.
