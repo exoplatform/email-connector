@@ -3762,6 +3762,8 @@ export default {
       }
       this.currentFolder = folder;
       this.cancelSelectMode();
+      // The search follows the folder chosen, the advanced search's own included.
+      this.followFolderSwitch();
       // A folder with no search -- the Scheduled view (EXO-90434), a shared mailbox's
       // Trash or Spam (EXO-90590) -- ends a running one with the switch, its field too,
       // or its results would stand in for that folder's list.
