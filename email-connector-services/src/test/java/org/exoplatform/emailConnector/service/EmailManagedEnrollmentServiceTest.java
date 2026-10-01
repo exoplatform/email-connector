@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
@@ -47,7 +48,7 @@ import io.meeds.common.ContainerTransactional;
 import org.exoplatform.container.ExoContainer;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
-import org.exoplatform.emailConnector.service.EmailManagedEnrollmentService.Outcome;
+import org.exoplatform.emailConnector.constant.EmailManagedEnrollmentOutcome;
 
 /**
  * EXO-89653. The three rules of the login-time enrolment, in order, and what each
@@ -109,7 +110,7 @@ class EmailManagedEnrollmentServiceTest {
   void doesNothingWhenManagedModeDoesNotApply() {
     when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(null);
 
-    assertEquals(Outcome.NOT_MANAGED, service.enrollOnLogin(USER));
+    assertEquals(EmailManagedEnrollmentOutcome.NOT_MANAGED, service.enrollOnLogin(USER));
 
     verifyNoInteractions(userEmailSettingService);
   }
@@ -120,9 +121,9 @@ class EmailManagedEnrollmentServiceTest {
     when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(7L);
     configured(true);
 
-    assertEquals(Outcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
+    assertEquals(EmailManagedEnrollmentOutcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
 
-    verify(userEmailSettingService, never()).connectThroughProvider(anyLong(), anyString());
+    verify(userEmailSettingService, never()).connectThroughProvider(anyLong(), anyString(), anyBoolean());
   }
 
   /** Rule three: attached through the one-click connect. */
@@ -130,10 +131,25 @@ class EmailManagedEnrollmentServiceTest {
   void attachesAUserWithoutAConfiguration() throws Exception {
     when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(7L);
     configured(false);
+    when(userEmailSettingService.connectThroughProvider(7L, USER, true)).thenReturn(true);
 
-    assertEquals(Outcome.ATTACHED, service.enrollOnLogin(USER));
+    assertEquals(EmailManagedEnrollmentOutcome.ATTACHED, service.enrollOnLogin(USER));
 
-    verify(userEmailSettingService).connectThroughProvider(7L, USER);
+    // Only if still unconfigured: a connection the user saves during the probe stands.
+    verify(userEmailSettingService).connectThroughProvider(7L, USER, true);
+  }
+
+  /**
+   * The user connected a mailbox themselves while the managed one was being
+   * probed: the connect wrote nothing, and rule one stands.
+   */
+  @Test
+  void leavesAloneAUserWhoConfiguredAMailboxDuringTheAttach() throws Exception {
+    when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(7L);
+    configured(false);
+    when(userEmailSettingService.connectThroughProvider(7L, USER, true)).thenReturn(false);
+
+    assertEquals(EmailManagedEnrollmentOutcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
   }
 
   /**
@@ -146,9 +162,9 @@ class EmailManagedEnrollmentServiceTest {
   void leavesUnattachedAUserTheConnectRefuses(Exception refusal) throws Exception {
     when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(7L);
     configured(false);
-    doThrow(refusal).when(userEmailSettingService).connectThroughProvider(7L, USER);
+    doThrow(refusal).when(userEmailSettingService).connectThroughProvider(7L, USER, true);
 
-    assertEquals(Outcome.REFUSED, service.enrollOnLogin(USER));
+    assertEquals(EmailManagedEnrollmentOutcome.REFUSED, service.enrollOnLogin(USER));
   }
 
   /** The three refusals the connect throws, one per type the catch names. */
@@ -170,7 +186,7 @@ class EmailManagedEnrollmentServiceTest {
     Exception transport = new java.nio.channels.ClosedChannelException();
     Exception unreachable = new IllegalStateException("Error when connecting store for user mary",
                                                       new Exception("Cannot reach BlueMind on /api/auth/login", transport));
-    doThrow(unreachable).when(userEmailSettingService).connectThroughProvider(7L, USER);
+    doThrow(unreachable).when(userEmailSettingService).connectThroughProvider(7L, USER, true);
     ch.qos.logback.classic.Logger logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(EmailManagedEnrollmentService.class);
     ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender = new ch.qos.logback.core.read.ListAppender<>();
     ch.qos.logback.classic.Level level = logger.getLevel();
@@ -179,7 +195,7 @@ class EmailManagedEnrollmentServiceTest {
     appender.start();
     logger.addAppender(appender);
     try {
-      assertEquals(Outcome.REFUSED, service.enrollOnLogin(USER));
+      assertEquals(EmailManagedEnrollmentOutcome.REFUSED, service.enrollOnLogin(USER));
 
       assertEquals("User mary left unattached: the managed mail connector 7 refused "
           + "(Error when connecting store for user mary <- Cannot reach BlueMind on /api/auth/login <- ClosedChannelException)",
@@ -199,7 +215,7 @@ class EmailManagedEnrollmentServiceTest {
   void swallowsAFailureAndLeavesTheUserForTheNextLogin() {
     when(emailManagedModeService.designatedConnectorFor(USER)).thenThrow(new RuntimeException("boom"));
 
-    assertEquals(Outcome.FAILED, service.enrollOnLogin(USER));
+    assertEquals(EmailManagedEnrollmentOutcome.FAILED, service.enrollOnLogin(USER));
   }
 
   /** Scheduling hands the user to the executor and returns; a blank login is dropped before that. */

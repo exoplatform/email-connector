@@ -29,6 +29,7 @@ import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.emailConnector.constant.EmailManagedEnrollmentOutcome;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -109,21 +110,30 @@ public class EmailManagedEnrollmentService {
    * @return what happened, for the tests and the log
    */
   @ContainerTransactional
-  public Outcome enrollOnLogin(String username) {
+  public EmailManagedEnrollmentOutcome enrollOnLogin(String username) {
     try {
       Long connectorId = emailManagedModeService.designatedConnectorFor(username);
       if (connectorId == null) {
         LOG.debug("User {} not enrolled: no managed mail connector applies to them", username);
-        return Outcome.NOT_MANAGED;
+        return EmailManagedEnrollmentOutcome.NOT_MANAGED;
       }
       if (hasConfiguration(username)) {
         LOG.debug("User {} not enrolled: they already have a mail configuration", username);
-        return Outcome.ALREADY_CONFIGURED;
+        return EmailManagedEnrollmentOutcome.ALREADY_CONFIGURED;
       }
       return attach(connectorId, username);
     } catch (Exception e) {
       LOG.warn("Cannot attach user {} to the managed mail connector at login; their next login will try again", username, e);
-      return Outcome.FAILED;
+      return EmailManagedEnrollmentOutcome.FAILED;
+    }
+  }
+
+  @PreDestroy
+  public void stop() {
+    if (executor instanceof ExecutorService service) {
+      // Drop what is queued rather than run it against a context being torn
+      // down; the next login retries.
+      service.shutdownNow();
     }
   }
 
@@ -134,14 +144,20 @@ public class EmailManagedEnrollmentService {
    *
    * @param connectorId the designated connector
    * @param username the eXo login of the user who logged in
-   * @return ATTACHED or REFUSED
+   * @return ATTACHED, REFUSED, or ALREADY_CONFIGURED when the user configured a
+   *         mailbox during the attach
    * @throws Exception an unexpected failure, logged by the caller
    */
-  private Outcome attach(Long connectorId, String username) throws Exception {
+  private EmailManagedEnrollmentOutcome attach(Long connectorId, String username) throws Exception {
     try {
-      userEmailSettingService.connectThroughProvider(connectorId, username);
+      if (!userEmailSettingService.connectThroughProvider(connectorId, username, true)) {
+        // The user connected a mailbox themselves while the managed one was being
+        // probed: rule one again, their choice stands.
+        LOG.debug("User {} not enrolled: they configured a mailbox during the attach", username);
+        return EmailManagedEnrollmentOutcome.ALREADY_CONFIGURED;
+      }
       LOG.info("User {} attached to the managed mail connector {} at login", username, connectorId);
-      return Outcome.ATTACHED;
+      return EmailManagedEnrollmentOutcome.ATTACHED;
     } catch (IllegalAccessException | IllegalArgumentException | IllegalStateException e) {
       // The connect refused - the feature is off, the connector inactive, the
       // provider names no mailbox for this user, or the mail server would not open
@@ -150,7 +166,7 @@ public class EmailManagedEnrollmentService {
       // The whole cause chain, not the outer message: the connect wraps the
       // refusal, and the message that says why is not always the innermost one.
       LOG.info("User {} left unattached: the managed mail connector {} refused ({})", username, connectorId, causeChain(e));
-      return Outcome.REFUSED;
+      return EmailManagedEnrollmentOutcome.REFUSED;
     }
   }
 
@@ -172,15 +188,6 @@ public class EmailManagedEnrollmentService {
       thread.setDaemon(true);
       return thread;
     });
-  }
-
-  @PreDestroy
-  public void stop() {
-    if (executor instanceof ExecutorService service) {
-      // Drop what is queued rather than run it against a context being torn
-      // down; the next login retries.
-      service.shutdownNow();
-    }
   }
 
   /**
@@ -206,8 +213,4 @@ public class EmailManagedEnrollmentService {
     this.executor = executor;
   }
 
-  /** What a login attempt came to, one value per branch of the three rules and their failures. */
-  public enum Outcome {
-    NOT_MANAGED, ALREADY_CONFIGURED, ATTACHED, REFUSED, FAILED
-  }
 }
