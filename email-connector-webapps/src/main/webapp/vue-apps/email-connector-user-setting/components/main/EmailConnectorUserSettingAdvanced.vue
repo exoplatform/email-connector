@@ -59,6 +59,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <!-- Undo send (EXO-90837): beside the read receipts, the other choice about how a
            mail the user sends goes out. -->
       <email-connector-user-setting-undo-send />
+      <!-- Images in received mail (EXO-90841): with the read receipts, what a sender
+           learns from a mail being opened. -->
+      <email-connector-user-setting-remote-content />
       <!-- The automatic reply (EXO-90642): a setting of the user's own mailbox, run by
            the mail server. Each of these two rows is self-contained -- it reads its own
            summary and opens a drawer mounted at the app's root -- so it can move in this
