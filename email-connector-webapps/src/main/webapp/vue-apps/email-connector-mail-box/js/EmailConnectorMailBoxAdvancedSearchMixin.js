@@ -92,15 +92,25 @@ export default {
     /**
      * The folders the advanced search offers: the user's own Inbox, Sent and Archive,
      * which the mail server searches, or, in a mailbox shared with the user, the folders
-     * of it a search may read (isFolderSearchable).
+     * of it a search may read (isFolderSearchable) -- never one the share lets the user
+     * see only as the label its folders nest under (readable false), as no other list
+     * offers it either. A shared folder is named by its path, as the move-to picker
+     * names it, so two folders of one name under different parents differ.
      *
      * @returns {Array} [{key, label}]
      */
     searchFolderOptions() {
-      const folders = this.currentSharedMailbox
-        ? (this.availableFolders || []).map(folder => folder.key).filter(key => key?.startsWith('CUSTOM:') && this.isFolderSearchable(key))
-        : OWN_SEARCH_FOLDERS.filter(key => !this.folders?.length || this.folders.some(folder => folder.key === key));
-      return folders.map(key => ({ key, label: this.folderLabelOf(key) }));
+      if (this.currentSharedMailbox) {
+        return (this.availableFolders || [])
+          .filter(folder => folder.key?.startsWith('CUSTOM:') && folder.readable !== false && this.isFolderSearchable(folder.key))
+          .map(folder => ({
+            key: folder.key,
+            // The namespace the move-to picker spells paths in, the mailbox's folders else.
+            label: this.$emailConnectorMailBoxService.folderPath(folder, this.$root.mailNamespaceFolders || this.folders),
+          }));
+      }
+      return OWN_SEARCH_FOLDERS.filter(key => !this.folders?.length || this.folders.some(folder => folder.key === key))
+        .map(key => ({ key, label: this.folderLabelOf(key) }));
     },
     /**
      * Whether the server arm can be offered: in the user's own mailbox only -- a shared
