@@ -87,6 +87,7 @@ import org.exoplatform.web.security.security.TokenServiceInitializationException
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
+import org.exoplatform.emailConnector.exception.CredentialsProviderMissingException;
 
 import io.meeds.social.translation.service.TranslationService;
 import io.meeds.social.util.JsonUtils;
@@ -1191,6 +1192,35 @@ public class UserEmailSettingServiceTest {
       when(session.getStore()).thenReturn(mock(Store.class));
       connect.run();
     }
+  }
+
+  /**
+   * A one-click connect on a connector whose credentials provider is not registered is
+   * refused before the provider or the mail server is asked anything, and records
+   * nothing: no setting, no mark, no sync, so the first attempt after the provider
+   * appears connects. The refusal names the provider and is an
+   * {@link IllegalStateException}, as the connect's other refusals are.
+   */
+  @Test
+  @SneakyThrows
+  void aConnectorWhoseProviderIsNotRegisteredIsRefusedBeforeAnythingIsAsked() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.isProviderMissing("bluemind-sudo")).thenReturn(true);
+
+    CredentialsProviderMissingException refused =
+                                                assertThrows(CredentialsProviderMissingException.class,
+                                                             () -> userEmailSettingService.connectThroughProvider(1L,
+                                                                                                                  TEST_USER,
+                                                                                                                  true));
+
+    assertInstanceOf(IllegalStateException.class, refused);
+    assertEquals("bluemind-sudo", refused.getProviderName());
+    verify(emailCredentialsResolver, never()).requiresUserAction(anyString());
+    verify(emailCredentialsResolver, never()).targetAccount(any(), any(), any());
+    verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+    verify(settingService, never()).remove(any(Context.class), any(Scope.class), anyString());
+    verifyNoInteractions(eventPublisher);
   }
 
   /**

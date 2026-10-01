@@ -1479,7 +1479,7 @@ public class EmailBoxService {
       }
     } catch (Exception e) {
       updateEmailSyncStatus(username, SyncStatus.FAILURE);
-      LOG.error("Error when user {} synchronization ", username, e);
+      logSynchronizationFailure(username, userEmailSetting, e);
     } finally {
       // Persisted in the finally so the folders that DID sync keep their fresh
       // snapshots even when a later folder failed; a folder that failed mid-sync
@@ -1499,6 +1499,43 @@ public class EmailBoxService {
         LOG.warn("Error when closing store", messagingException);
       }
     }
+  }
+
+  /**
+   * Says why a synchronization failed. A connector whose credentials provider is not
+   * registered fails every synchronization of every user bound to it, at each tick, until
+   * the provider appears; the resolver says that once per provider name, so it is a debug
+   * line here, without a stack. Every other failure is logged as an error, with its stack.
+   *
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   * @param failure what the synchronization threw
+   */
+  private void logSynchronizationFailure(String username, UserEmailSetting userEmailSetting, Exception failure) {
+    if (failure instanceof ConnectorCredentialsException && isCredentialsProviderMissing(userEmailSetting)) {
+      LOG.debug("The mailbox of user {} is not synchronized: {}", username, failure.getMessage());
+    } else {
+      LOG.error("Error when user {} synchronization ", username, failure);
+    }
+  }
+
+  /**
+   * Whether the connector a user is bound to names a credentials provider that is not
+   * registered.
+   *
+   * @param userEmailSetting the user's connector binding
+   * @return true when that connector exists and its provider is set and not registered
+   */
+  private boolean isCredentialsProviderMissing(UserEmailSetting userEmailSetting) {
+    EmailConnector emailConnector;
+    try {
+      emailConnector = emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+    } catch (NumberFormatException e) {
+      // A binding naming no connector: not a missing provider, and the failure logged
+      // as it is says more than this would.
+      return false;
+    }
+    return emailConnector != null && isCredentialsProviderMissing(emailConnector);
   }
 
   /**
@@ -8898,6 +8935,18 @@ public class EmailBoxService {
   }
 
   /**
+   * Whether a connector names a credentials provider that is not registered, which the
+   * resolver says once per provider name. False when the credentials contract itself is
+   * not available: the callers then fail on it as they did.
+   *
+   * @param emailConnector the connector preset, holding the provider name
+   * @return true when its provider is set and not registered
+   */
+  private boolean isCredentialsProviderMissing(EmailConnector emailConnector) {
+    return emailCredentialsResolver != null && emailCredentialsResolver.isProviderMissing(emailConnector.getAuthProviderName());
+  }
+
+  /**
    * The SMTP session a send runs on, built from the user's connector and
    * authenticated as the user themselves.
    *
@@ -10888,10 +10937,11 @@ public class EmailBoxService {
    * @param draftLocalId the draft's handle
    * @param onTransmitted run once the mail server accepted the message
    * @return the sent mail's subject and what became of the owner's copy
-   * @throws ScheduledSendFailure classified: TRANSIENT (nothing reached the server),
-   *           PERMANENT (refused before anything was accepted, a mailbox no longer
-   *           shared or a name no longer allowed included), AMBIGUOUS (may have been
-   *           accepted)
+   * @throws ScheduledSendFailure classified: TRANSIENT (nothing reached the server, or
+   *           the connector's credentials provider is not registered:
+   *           {@link ScheduledSendError#AUTHENTICATION}), PERMANENT (refused before
+   *           anything was accepted, a mailbox no longer shared or a name no longer
+   *           allowed included), AMBIGUOUS (may have been accepted)
    * @throws ObjectNotFoundException if the draft is gone
    */
   public StoredDraftSent sendStoredDraft(String username,
@@ -10906,6 +10956,14 @@ public class EmailBoxService {
                                   emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
     if (emailConnector == null) {
       throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.DISCONNECTED, null);
+    }
+    if (isCredentialsProviderMissing(emailConnector)) {
+      // Before anything asks the provider -- the draft's remote parts, its server copy,
+      // the message's session -- and retried like an unreachable server: the provider
+      // is an add-on's that is not installed or has not started yet, and a send that
+      // failed for good on it would be lost for a state that may last a minute. A
+      // registered provider that refuses this account still fails it for good.
+      throw new ScheduledSendFailure(ScheduledSendFailure.Kind.TRANSIENT, ScheduledSendError.AUTHENTICATION, null);
     }
     String lockKey = draftLockKey(username, draftLocalId);
     ReentrantLock lock = draftLocks.computeIfAbsent(lockKey, key -> new ReentrantLock());
