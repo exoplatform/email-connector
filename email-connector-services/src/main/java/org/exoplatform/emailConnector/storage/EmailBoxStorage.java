@@ -1421,7 +1421,7 @@ public class EmailBoxStorage {
   public List<Email> getEmailsForSearch(String userId, List<String> alsoExcluded) {
     List<String> excluded = new ArrayList<>(MailFolder.HIDDEN_FOLDERS);
     excluded.addAll(alsoExcluded == null ? List.of() : alsoExcluded);
-    return emailBoxDao.findByUserIdForSearch(userId, excluded).stream().map(this::fromEntityForSearch).toList();
+    return emailBoxDao.findByUserIdForSearch(userId, excluded).stream().map(entity -> fromEntityForSearch(entity, false)).toList();
   }
 
   /**
@@ -1434,10 +1434,27 @@ public class EmailBoxStorage {
    * @return their cached messages, newest first, carrying only what a search reads
    */
   public List<Email> getEmailsForSearchInFolders(String userId, Collection<String> folders) {
+    return getEmailsForSearchInFolders(userId, folders, false);
+  }
+
+  /**
+   * The same read, with the To and Cc recipients of each message when asked: the search
+   * of a shared mailbox's copy needs them for its recipient criterion (EXO-90838), and
+   * only then -- the unified search, which reads every row, never matches on them.
+   *
+   * @param userId the user whose mirror it is
+   * @param folders the folder keys to read; nothing is read when empty
+   * @param withRecipients whether to read the To and Cc recipients of each message
+   * @return their cached messages, newest first, carrying only what a search reads
+   */
+  public List<Email> getEmailsForSearchInFolders(String userId, Collection<String> folders, boolean withRecipients) {
     if (folders == null || folders.isEmpty()) {
       return List.of();
     }
-    return emailBoxDao.findByUserIdAndFoldersForSearch(userId, folders).stream().map(this::fromEntityForSearch).toList();
+    return emailBoxDao.findByUserIdAndFoldersForSearch(userId, folders)
+                      .stream()
+                      .map(entity -> fromEntityForSearch(entity, withRecipients))
+                      .toList();
   }
 
   /**
@@ -1517,8 +1534,16 @@ public class EmailBoxStorage {
     return "%" + escaped + "%";
   }
 
+  /**
+   * Maps a cached row to what a search reads: its keys, subject, date, flags, raw body
+   * and sender, and its To and Cc recipients when asked -- never its attachments.
+   *
+   * @param emailBoxEntity the row, may be null
+   * @param withRecipients whether to parse the To and Cc recipients
+   * @return the light message, or null for no row
+   */
   @SneakyThrows
-  private Email fromEntityForSearch(EmailBoxEntity emailBoxEntity) {
+  private Email fromEntityForSearch(EmailBoxEntity emailBoxEntity, boolean withRecipients) {
     if (emailBoxEntity == null) {
       return null;
     }
@@ -1537,14 +1562,16 @@ public class EmailBoxStorage {
     // The raw body: the caller matches on its text and cuts its own excerpt around the
     // hit, so reducing it to text here would only do the work twice.
     email.setContent(new EmailContent(emailBoxEntity.getBody()));
-    // The To and Cc recipients, for the recipient criterion of the search of a shared
-    // mailbox's copy (EXO-90838): parsed from the row already read, with no profile.
-    email.setTo(EmailConnectorUtils.getEmailRecipients(toRecipientsInternetAddresses(emailBoxEntity.getTo()),
-                                                       emailBoxEntity.getUserId(),
-                                                       false));
-    email.setCc(EmailConnectorUtils.getEmailRecipients(toRecipientsInternetAddresses(emailBoxEntity.getCc()),
-                                                       emailBoxEntity.getUserId(),
-                                                       false));
+    if (withRecipients) {
+      // The To and Cc recipients, for the recipient criterion of the search of a shared
+      // mailbox's copy (EXO-90838): parsed from the row already read, with no profile.
+      email.setTo(EmailConnectorUtils.getEmailRecipients(toRecipientsInternetAddresses(emailBoxEntity.getTo()),
+                                                         emailBoxEntity.getUserId(),
+                                                         false));
+      email.setCc(EmailConnectorUtils.getEmailRecipients(toRecipientsInternetAddresses(emailBoxEntity.getCc()),
+                                                         emailBoxEntity.getUserId(),
+                                                         false));
+    }
     String[] emailSenderParts = emailBoxEntity.getSender().split(",");
     email.setSender(EmailConnectorUtils.getEmailSender(new InternetAddress(emailSenderParts[1], emailSenderParts[0]), false));
     return email;
