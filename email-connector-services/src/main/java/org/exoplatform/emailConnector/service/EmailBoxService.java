@@ -1512,7 +1512,7 @@ public class EmailBoxService {
    * @param failure what the synchronization threw
    */
   private void logSynchronizationFailure(String username, UserEmailSetting userEmailSetting, Exception failure) {
-    if (failure instanceof ConnectorCredentialsException && isCredentialsProviderMissing(userEmailSetting)) {
+    if (failure instanceof ConnectorCredentialsException && isBoundConnectorProviderMissing(userEmailSetting)) {
       LOG.debug("The mailbox of user {} is not synchronized: {}", username, failure.getMessage());
     } else {
       LOG.error("Error when user {} synchronization ", username, failure);
@@ -1526,7 +1526,7 @@ public class EmailBoxService {
    * @param userEmailSetting the user's connector binding
    * @return true when that connector exists and its provider is set and not registered
    */
-  private boolean isCredentialsProviderMissing(UserEmailSetting userEmailSetting) {
+  private boolean isBoundConnectorProviderMissing(UserEmailSetting userEmailSetting) {
     EmailConnector emailConnector;
     try {
       emailConnector = emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
