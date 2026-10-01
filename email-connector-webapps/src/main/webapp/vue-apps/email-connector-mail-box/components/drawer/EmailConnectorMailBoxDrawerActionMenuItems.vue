@@ -162,8 +162,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.menu.selectSeveral') }}
       </span>
     </v-list-item>
-    <!-- The listed folder as one .mbox file (EXO-90845), offered where the server would
-         allow it. -->
+    <!-- The listed folder as one .mbox file (EXO-90845), and mail imported into it from
+         files (EXO-90846), offered where the server would allow them. -->
     <v-list-item
       v-if="folderExportable"
       class="height-auto"
@@ -180,6 +180,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-sheet>
       <span>
         {{ $t('emailConnector.mailBox.export.folder') }}
+      </span>
+    </v-list-item>
+    <v-list-item
+      v-if="folderImportable"
+      class="height-auto"
+      @click="importIntoFolder()">
+      <v-sheet
+        class="d-flex me-2"
+        width="28"
+        height="36">
+        <v-icon
+          class="icon-default-color mx-auto"
+          size="16">
+          fa-file-import
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.import.folder') }}
       </span>
     </v-list-item>
     <!-- The AI entry is contributed by the enterprise AI addon, which renders a complete
@@ -218,7 +236,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { buildFolderTree, readCollapsedFolders, toggleCollapsedFolder, visibleFolderRows } from '../../js/EmailConnectorFolderTree.js';
-import { canExportFolder, downloadFolderMbox, exportErrorKey } from '../../js/EmailConnectorMailTransfer.js';
+import { OPEN_IMPORT_DRAWER_EVENT, canExportFolder, canImportInto, downloadFolderMbox, exportErrorKey } from '../../js/EmailConnectorMailTransfer.js';
 
 // The folder list scrolls inside its own pane once it is longer than seven rows,
 // built-ins counted with the rest: what makes the menu a wall is its total length, not
@@ -353,6 +371,22 @@ export default {
       return !this.categoryViewId && canExportFolder(this.currentFolder);
     },
     /**
+     * Whether mail can be imported into the listed folder (EXO-90846).
+     *
+     * @returns {Boolean} true when the import is offered
+     */
+    folderImportable() {
+      return !this.categoryViewId && canImportInto(this.currentFolder);
+    },
+    /**
+     * The listed folder's name, as the menu shows it.
+     *
+     * @returns {String} the label
+     */
+    currentFolderLabel() {
+      return this.visibleFolders.find(folder => folder.key === this.currentFolder)?.label || this.currentFolder;
+    },
+    /**
      * Whether the FOLDERS section scrolls in its own bounded pane -- Benjamin's
      * explicit threshold, more than 5 of the user's OWN folders. Built-ins are never
      * counted: their number is fixed by what the mailbox actually has (at most six),
@@ -438,6 +472,14 @@ export default {
     exportFolder() {
       downloadFolderMbox(this.currentFolder)
         .catch(error => this.$root.$emit('alert-message', this.$t(exportErrorKey(error), { 0: error?.max }), 'error'));
+    },
+    /**
+     * Opens the import drawer on the listed folder.
+     *
+     * @returns {void}
+     */
+    importIntoFolder() {
+      this.$root.$emit(OPEN_IMPORT_DRAWER_EVENT, { folder: this.currentFolder, label: this.currentFolderLabel });
     },
     /**
      * Opens the user's webmail in a new tab.
