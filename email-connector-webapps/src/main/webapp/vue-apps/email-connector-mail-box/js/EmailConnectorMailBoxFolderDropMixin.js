@@ -37,13 +37,15 @@ function hasFilesPayload(event) {
 }
 
 /**
- * Whether files may be dropped on an entry: a folder mail can be imported into.
+ * Whether files may be dropped on an entry: a folder mail can be imported into -- the
+ * folder itself, nested or not (its own key), never a label the user may only see
+ * (EXO-90839), which takes no drop of any kind.
  *
  * @param {Object} entry the column's entry
  * @returns {Boolean} true when the entry takes files
  */
 function takesFiles(entry) {
-  return !!entry?.folderKey && entry.categoryId == null && canImportInto(entry.folderKey);
+  return !!entry?.folderKey && entry.categoryId == null && !entry.labelOnly && canImportInto(entry.folderKey);
 }
 
 // How a folder the pointer may drop on is lit: a primary ring, inside the entry, so the
