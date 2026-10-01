@@ -296,6 +296,9 @@ public class CalendarInvitationService {
     }
     remember(username, parsed, answer);
     invitation.setAnswer(answer);
+    // The reader computed what it offers before this answer existed: after a
+    // decline there is nothing to add, as a later read says.
+    invitation.setLandable(invitation.isLandable() && answer != InvitationAnswer.DECLINED);
     if (delegation == null) {
       land(username, parsed, answer);
     }
