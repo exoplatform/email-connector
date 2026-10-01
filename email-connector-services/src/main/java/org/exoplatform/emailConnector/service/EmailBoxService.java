@@ -251,6 +251,9 @@ import jakarta.annotation.PreDestroy;
 @Service
 public class EmailBoxService {
 
+  /** A MIME part is larger than its reader accepts ({@link #readMessagePart}). */
+  public static final String      PART_TOO_LARGE                                              = "emailConnector.part.tooLarge";
+
   /**
    * The texts a mail server's refusal of a sender carries (EXO-90583, EXO-90586): Stalwart
    * ("You are not allowed to send from this address"), Postfix with a login map ("Sender
@@ -6299,6 +6302,75 @@ public class EmailBoxService {
     return end < 0 ? source : source.substring(0, end);
   }
 
+  /**
+   * The decoded bytes of one MIME part of a cached message, read from the server and
+   * capped (EXO-90840): what a reader of the part's content, rather than a download of
+   * it, needs. The part is refused before its body is fetched when the size the server
+   * announces for it is already far beyond the cap, and its body is read no further than
+   * the cap otherwise, so a sender cannot make the reader pull a large part into memory.
+   * The message at the row's UID must still carry the row's Message-ID, so a renumbered
+   * folder never hands out another message's part.
+   *
+   * @param username the mailbox owner, whose own connection reads it
+   * @param email the cached message, already resolved for this user
+   * @param partPath the part's IMAP section path, as the cached attachment names it
+   * @param maxBytes the most decoded bytes the caller accepts
+   * @return the bytes, or null when the folder, the message or the part is gone
+   * @throws IllegalAccessException if the user has no usable connector
+   * @throws IllegalArgumentException {@link #PART_TOO_LARGE} when the part exceeds the cap
+   * @throws IllegalStateException when the mailbox cannot be read
+   */
+  public byte[] readMessagePart(String username, Email email, String partPath, long maxBytes) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_ATTACHMENT, username));
+    }
+    if (email == null || email.getMailRemoteId() == null || email.getMailRemoteId() <= 0 || StringUtils.isBlank(partPath)) {
+      return null;
+    }
+    Store store = null;
+    Folder folder = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      folder = resolveCachedFolder(store, StringUtils.defaultIfBlank(email.getFolder(), MailFolder.INBOX), username);
+      if (folder == null) {
+        return null;
+      }
+      folder.open(Folder.READ_ONLY);
+      Message message = ((UIDFolder) folder).getMessageByUID(email.getMailRemoteId());
+      if (message == null
+          || !isExpectedMessageAtUid(message, email.getMailHeaderId(), email.getMailRemoteId(), email.getFolder(), username)) {
+        return null;
+      }
+      BodyPart bodyPart = getPartByPath(message, partPath);
+      // The announced size is the encoded one: base64 grows a part by a third, so twice
+      // the cap is a refusal whatever the encoding.
+      if (bodyPart.getSize() > maxBytes * 2) {
+        throw new IllegalArgumentException(PART_TOO_LARGE);
+      }
+      try (InputStream input = bodyPart.getInputStream()) {
+        byte[] bytes = input.readNBytes((int) Math.min(Integer.MAX_VALUE - 1L, maxBytes + 1));
+        if (bytes.length > maxBytes) {
+          throw new IllegalArgumentException(PART_TOO_LARGE);
+        }
+        return bytes;
+      }
+    } catch (IllegalArgumentException e) {
+      if (PART_TOO_LARGE.equals(e.getMessage())) {
+        throw e;
+      }
+      // A part path the message does not have: the part is gone.
+      LOG.debug("Part {} of a message of user {} is not in the message", partPath, username, e);
+      return null;
+    } catch (Exception e) {
+      LOG.warn("Part {} of a message of user {} could not be read", partPath, username, e);
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
+    } finally {
+      closeQuietly(folder, store, username);
+    }
+  }
+
   public String broadcastOpenEmail(String username) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
@@ -10131,6 +10203,32 @@ public class EmailBoxService {
    */
   public void transmitAsUser(String username, OutgoingMessageFactory factory) throws IllegalAccessException,
                                                                        SmtpTransmitter.TransmissionException {
+    transmitAsUser(username, null, factory);
+  }
+
+  /**
+   * {@link #transmitAsUser(String, OutgoingMessageFactory)}, in a shared mailbox owner's
+   * name when an identity is given (EXO-90840): the factory is handed the owner's address
+   * as {@code from}, the message then names the sender beside it when the identity is on
+   * the owner's behalf, and the envelope is the one {@link #buildOutgoingMessage} uses
+   * for the same identity. The identity must come from
+   * {@link EmailDelegationService#checkSendMode}, which is where the owner's consent is
+   * checked. A mail server refusing a mail in the owner's name is recorded on the share,
+   * as for a composed mail, and answered with {@link SendModeUnavailableException}.
+   *
+   * @param username the user sending
+   * @param identity the owner's name the message goes out in, null for the user's own
+   * @param factory builds the message on the user's session and the address it is from
+   * @throws IllegalAccessException if the user has no usable connector
+   * @throws SmtpTransmitter.TransmissionException naming the step that failed; a
+   *           message that could not be built fails in {@code PREPARE}
+   * @throws SendModeUnavailableException when the mail server refused a mail in the
+   *           owner's name; nothing was sent
+   */
+  public void transmitAsUser(String username,
+                             SendIdentity identity,
+                             OutgoingMessageFactory factory) throws IllegalAccessException,
+                                                             SmtpTransmitter.TransmissionException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -10141,8 +10239,9 @@ public class EmailBoxService {
     if (emailConnector == null) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE, username));
     }
+    MimeMessage message = buildScheduled(factory, emailConnector, userEmailSetting, username, identity);
     try {
-      smtpTransmitter.transmit(buildScheduled(factory, emailConnector, userEmailSetting, username));
+      transmitInOwnersName(message, username, identity);
     } catch (SmtpTransmitter.TransmissionException e) {
       // The one retry the credentials contract allows (EXO-89649), and only at
       // CONNECT: the server refused the provider's material before accepting a byte
@@ -10158,25 +10257,56 @@ public class EmailBoxService {
                                        emailConnector.getAuthProviderName(),
                                        username,
                                        ConnectorCredentialsChannel.SMTP);
-      smtpTransmitter.transmit(buildScheduled(factory, emailConnector, userEmailSetting, username));
+      message = buildScheduled(factory, emailConnector, userEmailSetting, username, identity);
+      transmitInOwnersName(message, username, identity);
+    }
+    if (identity != null) {
+      recordSentInOwnersName(message, username, identity);
+    }
+  }
+
+  /**
+   * Transmits a built message, and turns the mail server's refusal of a mail in the
+   * owner's name into the refusal a composed mail gets (EXO-90583): recorded on the
+   * share, answered with a fixed code.
+   *
+   * @param message the message
+   * @param username the sender
+   * @param identity the owner's name it goes out in, null for the sender's own
+   * @throws SmtpTransmitter.TransmissionException naming the step that failed
+   */
+  private void transmitInOwnersName(MimeMessage message,
+                                    String username,
+                                    SendIdentity identity) throws SmtpTransmitter.TransmissionException {
+    try {
+      smtpTransmitter.transmit(message);
+    } catch (SmtpTransmitter.TransmissionException e) {
+      if (identity != null && e.getPhase() != SmtpTransmitter.Phase.PREPARE && isSenderPolicyRefusal(e)) {
+        throw refusedInOwnersName(username, identity, e);
+      }
+      throw e;
     }
   }
 
   /**
    * The scheduled message, built on an SMTP session carrying the provider's current
-   * material.
+   * material, in the sender's own name or, with an identity, in the owner's -- the
+   * envelope, From and Sender {@link #buildOutgoingMessage} gives a composed mail in
+   * that identity.
    *
    * @param factory what builds the message on a session
    * @param emailConnector the sender's connector
    * @param userEmailSetting the sender's connector binding
    * @param username the sender
+   * @param identity the owner's name the message goes out in, null for the sender's own
    * @return the message to transmit
    * @throws SmtpTransmitter.TransmissionException at PREPARE when it cannot be built
    */
   private MimeMessage buildScheduled(OutgoingMessageFactory factory,
                                      EmailConnector emailConnector,
                                      UserEmailSetting userEmailSetting,
-                                     String username) throws SmtpTransmitter.TransmissionException {
+                                     String username,
+                                     SendIdentity identity) throws SmtpTransmitter.TransmissionException {
     try {
       // The address resolved exactly as buildOutgoingMessage resolves it.
       String resolved = credentialsResolver().senderAddress(emailConnector.getId(),
@@ -10184,8 +10314,17 @@ public class EmailBoxService {
                                                             username);
       String emailAddress = StringUtils.defaultIfBlank(resolved, userEmailSetting.getEmailAddress());
       Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
-      return factory.build(smtpSession(emailConnector, username, true),
-                           new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
+      InternetAddress sender = new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null);
+      if (identity == null) {
+        return factory.build(smtpSession(emailConnector, username, true), sender);
+      }
+      String envelopeFrom = identity.namesTheSender() ? emailAddress : identity.ownerMailbox();
+      MimeMessage message = factory.build(smtpSession(emailConnector, username, true, envelopeFrom),
+                                          new InternetAddress(identity.ownerMailbox(), displayName(identity.ownerFullName())));
+      if (identity.namesTheSender()) {
+        message.setSender(new InternetAddress(emailAddress, displayName(userProfile != null ? userProfile.getFullName() : null)));
+      }
+      return message;
     } catch (MessagingException | UnsupportedEncodingException | ConnectorCredentialsException | RuntimeException e) {
       throw new SmtpTransmitter.TransmissionException(SmtpTransmitter.Phase.PREPARE, e);
     }
