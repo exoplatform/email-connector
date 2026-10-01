@@ -24,10 +24,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        at all -- an identifier no eXo user holds -- and why those rows carry no button
        rather than a dead one. -->
   <div v-if="active">
-    <v-progress-linear
-      v-if="loading"
-      indeterminate
-      color="primary" />
     <!-- Said before the list and not after it: on a mail server without sharing
          there is nothing to read, and the reason is the whole answer. -->
     <div v-if="loaded && !supported" class="px-4 py-4 text-sub-title text-wrap">
@@ -193,6 +189,16 @@ export default {
     },
   },
   watch: {
+    /**
+     * Tells the drawer whether this tab reads the server, for the drawer's own bar under
+     * its title.
+     *
+     * @param {Boolean} value whether it does
+     * @returns {void}
+     */
+    loading(value) {
+      this.$emit('loading', value);
+    },
     /**
      * Tells the drawer whether to offer its Share button: it lives in the drawer's
      * title bar, which this tab does not own.
