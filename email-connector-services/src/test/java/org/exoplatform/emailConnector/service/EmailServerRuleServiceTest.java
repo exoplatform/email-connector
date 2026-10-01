@@ -370,6 +370,64 @@ public class EmailServerRuleServiceTest {
   }
 
   /**
+   * EXO-90839: after a folder was renamed or moved from eXo, every rule eXo manages that
+   * files into it -- or into a folder inside it -- is written again with the folder's new
+   * full name, resolved by its key; a rule filing elsewhere is left alone.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testARelocatedFolderIsFollowedByTheRulesFilingIntoIt() throws Exception {
+    settings.put(EmailServerRuleService.CONSENT_SETTING_KEY, "1");
+    ServerRule intoMoved = new ServerRule("1", "Acme", true, true, List.of(FROM_ACME),
+                                          List.of(new Action("MOVE_TO_FOLDER", "CUSTOM:6", "Customers/Acme", null)), false);
+    ServerRule intoInside = new ServerRule("2", "2024", true, true, List.of(FROM_ACME),
+                                           List.of(new Action("MOVE_TO_FOLDER", "CUSTOM:7", "Customers/Acme/2024", null)), false);
+    ServerRule elsewhere = new ServerRule("3", "Beta", true, true, List.of(FROM_ACME),
+                                          List.of(new Action("MOVE_TO_FOLDER", "CUSTOM:9", "Beta", null)), false);
+    when(engine.listRules(session)).thenReturn(new ServerRuleSet(List.of(intoMoved, intoInside, elsewhere), ServerRulesState.OWN, null, null));
+    when(emailFolderService.getFolderByKey(USERNAME, "CUSTOM:6")).thenReturn(folder(6L, "Clients/Acme", true, null));
+    when(emailFolderService.getFolderByKey(USERNAME, "CUSTOM:7")).thenReturn(folder(7L, "Clients/Acme/2024", true, null));
+    // Resolvable too, so only the choice of rules keeps it from being written.
+    lenient().when(emailFolderService.getFolderByKey(USERNAME, "CUSTOM:9")).thenReturn(folder(9L, "Beta", true, null));
+    ArgumentCaptor<ServerRule> saved = ArgumentCaptor.forClass(ServerRule.class);
+    when(engine.saveRule(eq(session), saved.capture(), any())).thenReturn(written("h"));
+
+    service.followRelocatedFolders(USERNAME, List.of("CUSTOM:6", "CUSTOM:7"));
+
+    assertEquals(2, saved.getAllValues().size());
+    assertEquals("1", saved.getAllValues().get(0).ref());
+    assertEquals("Clients/Acme", saved.getAllValues().get(0).actions().get(0).folderPath());
+    assertEquals("2", saved.getAllValues().get(1).ref());
+    assertEquals("Clients/Acme/2024", saved.getAllValues().get(1).actions().get(0).folderPath());
+  }
+
+  /**
+   * Nothing is asked of the server when the user never let eXo manage rules there, and a
+   * script edited outside eXo is never overwritten to follow a folder: it is the user's
+   * to re-publish.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  public void testARelocatedFolderLeavesAScriptEXoDoesNotOwnAlone() throws Exception {
+    service.followRelocatedFolders(USERNAME, List.of("CUSTOM:6"));
+    verifyNoInteractions(engine);
+
+    settings.put(EmailServerRuleService.CONSENT_SETTING_KEY, "1");
+    ServerRule intoMoved = new ServerRule("1", "Acme", true, true, List.of(FROM_ACME),
+                                          List.of(new Action("MOVE_TO_FOLDER", "CUSTOM:6", "Customers/Acme", null)), false);
+    when(engine.listRules(session)).thenReturn(new ServerRuleSet(List.of(intoMoved), ServerRulesState.MODIFIED, null, null));
+    // Resolvable, so only the state keeps the rule from being written.
+    lenient().when(emailFolderService.getFolderByKey(USERNAME, "CUSTOM:6")).thenReturn(folder(6L, "Clients/Acme", true, null));
+    lenient().when(engine.saveRule(eq(session), any(), any())).thenReturn(written("h"));
+
+    service.followRelocatedFolders(USERNAME, List.of("CUSTOM:6"));
+
+    verify(engine, never()).saveRule(any(), any(), any());
+  }
+
+  /**
    * A rule from acme.com with the given actions.
    *
    * @param actions the actions
