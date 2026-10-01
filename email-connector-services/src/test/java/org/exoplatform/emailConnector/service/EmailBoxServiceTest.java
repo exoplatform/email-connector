@@ -227,6 +227,7 @@ import org.exoplatform.emailConnector.model.EmailFolder;
 import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
+import org.exoplatform.emailConnector.LogCapture;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
@@ -2992,6 +2993,80 @@ public class EmailBoxServiceTest {
     assertEquals(SyncStatus.FAILURE, userEmailSetting.getEmailSyncStatus());
     verify(userEmailSettingService, never()).connectWithTypedCredentials(any(), any());
     verify(userEmailSettingService, never()).connect(any(EmailConnector.class), any(Authenticator.class));
+  }
+
+  /**
+   * A connector whose credentials provider is not registered fails each sync as any
+   * failure to connect does -- FAILURE recorded, so the existing back-off applies and the
+   * next sync after the provider appears clears it -- but says it at debug, without a
+   * stack: the resolver has said it once for the provider's name. A registered provider
+   * that cannot authenticate the mailbox is still logged as an error, with its stack.
+   */
+  @Test
+  @SneakyThrows
+  void aSyncOnAConnectorWhoseProviderIsNotRegisteredFailsQuietly() {
+    UserEmailSetting userEmailSetting = givenAUsableMailbox();
+    EmailConnector connector = emailConnector();
+    connector.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(connector);
+    when(userEmailSettingService.connect(anyString(), anyString()))
+        .thenThrow(new ConnectorCredentialsException("No ConnectorCredentialsProvider registered for name bluemind-sudo"));
+    when(emailCredentialsResolver.isProviderMissing("bluemind-sudo")).thenReturn(true);
+
+    try (LogCapture log = new LogCapture(EmailBoxService.class)) {
+      emailBoxService.synchronize(TEST_USER);
+
+      assertEquals(SyncStatus.FAILURE, userEmailSetting.getEmailSyncStatus());
+      assertTrue(log.warningsAndAbove().isEmpty(), log.events().toString());
+      assertFalse(log.anyStack(), log.events().toString());
+    }
+
+    when(emailCredentialsResolver.isProviderMissing("bluemind-sudo")).thenReturn(false);
+    try (LogCapture log = new LogCapture(EmailBoxService.class)) {
+      emailBoxService.synchronize(TEST_USER);
+
+      assertEquals(1, log.warningsAndAbove().size(), log.events().toString());
+      assertTrue(log.anyStack(), "a refusal of a registered provider keeps its stack");
+    }
+  }
+
+  /**
+   * A scheduled send on a connector whose credentials provider is not registered -- an
+   * add-on's, not installed or not started yet -- is TRANSIENT, so it is retried like an
+   * unreachable server, and refused before the draft is read or the provider asked. A
+   * registered provider that refuses to produce credentials still fails it for good.
+   */
+  @Test
+  void aScheduledSendIsRetriedWhileItsConnectorsProviderIsNotRegistered() throws Exception {
+    givenAUsableMailbox();
+    EmailConnector connector = emailConnector();
+    connector.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(connector);
+    when(emailCredentialsResolver.isProviderMissing("bluemind-sudo")).thenReturn(true);
+    Runnable onTransmitted = mock(Runnable.class);
+
+    ScheduledSendFailure failure = assertThrows(ScheduledSendFailure.class,
+                                                () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted));
+
+    assertEquals(ScheduledSendFailure.Kind.TRANSIENT, failure.getKind());
+    assertEquals(ScheduledSendError.AUTHENTICATION, failure.getError());
+    verify(emailBoxStorage, never()).getDraftByLocalId(anyString(), anyString());
+    verify(emailCredentialsResolver, never()).authenticator(any(), any(), any(), any());
+    verify(smtpTransmitter, never()).transmit(any(MimeMessage.class));
+
+    when(emailCredentialsResolver.isProviderMissing("bluemind-sudo")).thenReturn(false);
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailCredentialsResolver.authenticator(any(), any(), any(), any()))
+        .thenThrow(new ConnectorCredentialsException("the technical account was refused"));
+
+    failure = assertThrows(ScheduledSendFailure.class, () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted));
+
+    assertEquals(ScheduledSendFailure.Kind.PERMANENT, failure.getKind());
+    assertEquals(ScheduledSendError.AUTHENTICATION, failure.getError());
+    verify(smtpTransmitter, never()).transmit(any(MimeMessage.class));
+    verify(onTransmitted, never()).run();
   }
 
   /** A bound, connectable mailbox on a connector row: everything a send needs before it asks the contract. */

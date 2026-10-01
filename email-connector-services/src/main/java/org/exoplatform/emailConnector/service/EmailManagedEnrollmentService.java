@@ -30,6 +30,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.emailConnector.constant.EmailManagedEnrollmentOutcome;
+import org.exoplatform.emailConnector.exception.CredentialsProviderMissingException;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -181,6 +182,16 @@ public class EmailManagedEnrollmentService {
       }
       LOG.info("User {} attached to the managed mail connector {} at login", username, connectorId);
       return EmailManagedEnrollmentOutcome.ATTACHED;
+    } catch (CredentialsProviderMissingException e) {
+      // Met at every login of every governed user while the provider is not
+      // registered, which the resolver has said once for its name: nothing more than
+      // a debug line here, and nothing recorded, so the first login after the
+      // provider appears attaches.
+      LOG.debug("User {} left unattached: the managed mail connector {} names a provider that is not registered ({})",
+                username,
+                connectorId,
+                e.getProviderName());
+      return EmailManagedEnrollmentOutcome.REFUSED;
     } catch (IllegalAccessException | IllegalArgumentException | IllegalStateException e) {
       // The connect refused - the feature is off, the connector inactive, the
       // provider names no mailbox for this user, or the mail server would not open
