@@ -28,8 +28,20 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          platform's indicator — rather than a thinner bar of this list's own. -->
     <div
       v-if="statusLine"
+      aria-live="polite"
       class="px-4 pt-2 pb-1 caption text-light-color">
       {{ statusLine }}
+      <!-- The server arm of an advanced search, asked by the user (EXO-90838). -->
+      <template v-if="localStatus && localStatus.offerServer">
+        ·
+        <a
+          class="primary--text"
+          href="#"
+          role="button"
+          @click.prevent="$emit('search-server')">
+          {{ $t('emailConnector.mailBox.search.local.server') }}
+        </a>
+      </template>
     </div>
     <template v-if="hasResults">
       <email-connector-mail-box-drawer-search-result-item
@@ -93,6 +105,17 @@ export default {
       type: Array,
       default: () => [],
     },
+    // What an advanced search read in eXo's copy while the mail server was not asked:
+    // {folder, since, shown, total, offerServer}, or null (EXO-90838).
+    localStatus: {
+      type: Object,
+      default: null,
+    },
+    // How many server matches were examined for an attachment, when not all; 0 else.
+    scanned: {
+      type: Number,
+      default: 0,
+    },
   },
   computed: {
     hasResults() {
@@ -107,11 +130,17 @@ export default {
      * @returns {String} the caption, or null for none
      */
     statusLine() {
+      if (this.localStatus) {
+        return this.localStatusLineOf(this.localStatus);
+      }
       if (this.serverSearching) {
         return this.$t(this.sharedMailbox ? 'emailConnector.mailBox.search.shared.searching' : 'emailConnector.mailBox.search.searching');
       }
       if (this.serverError) {
         return this.$t(this.sharedMailbox ? 'emailConnector.mailBox.search.shared.error' : 'emailConnector.mailBox.search.error');
+      }
+      if (this.scanned) {
+        return this.$t('emailConnector.mailBox.search.attachmentScanned', { 0: this.scanned });
       }
       if (this.totalMatches > this.results.length) {
         return this.$t(this.sharedMailbox ? 'emailConnector.mailBox.search.shared.showingOf' : 'emailConnector.mailBox.search.showingOf', {
@@ -123,6 +152,26 @@ export default {
     },
   },
   methods: {
+    /**
+     * The line an advanced search shows while only eXo's copy was read (EXO-90838): the
+     * folder, since when eXo holds its mail -- the date of its oldest message there, the
+     * copy keeping the newest of each folder, never a number of days -- and how many of
+     * the matches are shown when not all; while the copy is read, that it is.
+     *
+     * @param {Object} status {folder, since, shown, total, running}
+     * @returns {String} the line
+     */
+    localStatusLineOf(status) {
+      if (status.running) {
+        return this.$t('emailConnector.mailBox.search.local.searching');
+      }
+      const where = status.since
+        ? this.$t('emailConnector.mailBox.search.local.status', { 0: status.folder, 1: status.since })
+        : this.$t('emailConnector.mailBox.search.local.statusNoDate', { 0: status.folder });
+      return status.total > status.shown
+        ? `${this.$t('emailConnector.mailBox.search.showingOf', { 0: status.shown, 1: status.total })} · ${where}`
+        : where;
+    },
     /**
      * A hit's key: its folder and UID, a UID being unique only within its folder --
      * the key the arrow keys walk the results by (searchRows).
