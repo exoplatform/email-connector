@@ -34,7 +34,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <v-icon size="14" class="icon-default-color me-2">fas fa-info-circle</v-icon>
       <span class="text-subtitle">{{ $t('emailConnector.mailBox.scheduled.readOnly') }}</span>
       <v-btn
-        :disabled="email.scheduledStatus === 'SENDING'"
+        :disabled="email.scheduledStatus === 'SENDING' || email.scheduledStatus === 'HELD'"
         class="ms-2 scheduled-mail-edit"
         color="primary"
         text
