@@ -44,6 +44,9 @@ public class RawEmailSource {
    */
   private long    size;
 
+  /** How many bytes of the message {@link #source} was decoded from. */
+  private long    shownBytes;
+
   /** Whether {@link #source} stops before the end of the message. */
   private boolean truncated;
 }
