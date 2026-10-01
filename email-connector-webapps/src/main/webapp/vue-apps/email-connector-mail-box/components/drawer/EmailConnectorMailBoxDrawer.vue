@@ -430,8 +430,9 @@ const NAVIGATION_BACKGROUND = 'var(--allPagesGreyColorLighten1Opacity2, rgba(112
 const NAVIGATION_RAIL_STORAGE_KEY = 'emailConnector.mailBox.navigationRail';
 
 /**
- * A folder of a shared mailbox as the folder lists read it: its key, role and name, and
- * its place in the owner's tree -- the owner's full name and delimiter (EXO-90839).
+ * A folder of a shared mailbox as the folder lists read it: its key, role and name, its
+ * place in the owner's tree -- the owner's full name and delimiter -- and whether the
+ * user may read it (EXO-90839).
  *
  * @param {Object} folder the folder as the switcher entry lists it
  * @returns {Object} the folder descriptor
@@ -444,8 +445,27 @@ function sharedFolderView(folder) {
     displayName: folder.displayName,
     path: folder.path,
     delimiter: folder.delimiter,
+    // False for a folder the share lets the user see but not read: a label only.
+    readable: folder.readable !== false,
     syncEnabled: true,
   };
+}
+
+/**
+ * Whether a folder of a shared mailbox holds, at any depth, a folder the user may read --
+ * what keeps a folder the user may only see in the lists, as the label its folders nest
+ * under.
+ *
+ * @param {Object} folder the folder as the switcher entry lists it
+ * @param {Array} folders the shared mailbox's folders
+ * @returns {Boolean} true when a readable folder is inside it
+ */
+function holdsReadableFolder(folder, folders) {
+  if (!folder?.path || !folder.delimiter) {
+    return false;
+  }
+  const prefix = `${folder.path}${folder.delimiter}`;
+  return folders.some(candidate => candidate.readable && candidate.path?.startsWith(prefix));
 }
 
 /**
@@ -1022,15 +1042,17 @@ export default {
       // rest, roles first as the server orders them (EXO-90548). That is the whole column,
       // the whole menu and the whole move-to list: no folder of the user's to file into.
       // A folder listed without the right to read it is left out rather than offered
-      // empty.
+      // empty -- unless a folder the user may read is inside it: then it stays, as the
+      // label its folders nest under, never listed (EXO-90839).
       if (this.currentSharedMailbox) {
+        const shared = this.currentSharedMailbox.folders || [];
         return [{
           key: this.currentSharedMailbox.folderKey,
           type: SHARED_INBOX_TYPE,
           syncEnabled: true,
           unreadCount: this.currentSharedMailbox.unreadCount || 0,
-        }].concat((this.currentSharedMailbox.folders || [])
-          .filter(folder => folder.readable)
+        }].concat(shared
+          .filter(folder => folder.readable || holdsReadableFolder(folder, shared))
           .map(sharedFolderView));
       }
       return this.emailBox?.folders || [{ key: 'INBOX', type: 'BUILT_IN', syncEnabled: true }];
