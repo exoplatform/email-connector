@@ -49,14 +49,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-if="!scheduled"
       :email="email"
       :auto-allowed="receiptAutoAllowed" />
-    <!-- Why the message looks suspicious, and the images it would fetch from the
-         internet held back until asked for (EXO-90841). -->
-    <email-connector-security-banner
-      v-if="!scheduled"
-      :content="content"
-      :sender-address="senderAddress"
-      :loading="remoteContentLoading"
-      @show-remote-content="loadRemoteContent" />
     <v-list-item
       :class="['height-auto', recipientsClass]">
       <email-connector-mail-box-drawer-list-item-detail-sender-avatar 
@@ -170,6 +162,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <email-connector-mail-box-drawer-list-item-detail-header 
       v-if="expandedHeader"
       :email="email" />
+    <!-- Why the message looks suspicious, and the images it would fetch from the
+         internet held back until asked for (EXO-90841): between the header and the body,
+         where the missing images are. -->
+    <email-connector-security-banner
+      v-if="!scheduled && !unavailable"
+      :content="content"
+      :sender-address="senderAddress"
+      :loading="remoteContentLoading"
+      :wide="expandedDrawer"
+      @show-remote-content="loadRemoteContent" />
     <div
       v-if="unavailable"
       class="px-0 pb-4">
