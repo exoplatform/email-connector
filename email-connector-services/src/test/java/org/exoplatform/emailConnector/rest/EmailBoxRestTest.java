@@ -38,6 +38,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -542,7 +543,7 @@ public class EmailBoxRestTest {
                                                               .content(asJsonString(emailIds))
                                                               .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isBadRequest())
-           .andExpect(status().reason("emailConnector.folder.crossMailbox"));
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.crossMailbox"));
     mockMvc.perform(delete(EMAIL_BOX_PATH + "/archive?folder=CUSTOM:8").with(testSimpleUser())
                                                                       .content(asJsonString(emailIds))
                                                                       .contentType(MediaType.APPLICATION_JSON))
@@ -1012,7 +1013,7 @@ public class EmailBoxRestTest {
                                                                                      .contentType(MediaType.APPLICATION_JSON)
                                                                                      .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isBadRequest())
-            .andExpect(status().reason("emailConnector.folder.notBrowsable"));
+            .andExpect(jsonPath("$.message").value("emailConnector.folder.notBrowsable"));
   }
 
   @Test
@@ -1061,7 +1062,7 @@ public class EmailBoxRestTest {
                                                                                        .contentType(MediaType.APPLICATION_JSON)
                                                                                        .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isBadRequest())
-            .andExpect(status().reason("emailConnector.folder.notBrowsable"));
+            .andExpect(jsonPath("$.message").value("emailConnector.folder.notBrowsable"));
   }
 
 
@@ -1188,7 +1189,8 @@ public class EmailBoxRestTest {
 
   /**
    * The opt-in is a PATCH on the folder's id, and the cap's refusal reaches the client
-   * as a 400 carrying the message code the screen shows.
+   * as a 400 carrying the message code the screen shows -- in the BODY, under
+   * {@code message}, where the Folders drawer reads it (EXO-90849).
    */
   @Test
   void setFolderSync() throws Exception {
@@ -1202,7 +1204,8 @@ public class EmailBoxRestTest {
                                                                           .setCustomFolderSync(SIMPLE_USER, 6L, true);
     mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/6").param("sync", "true").with(testSimpleUser()))
            .andExpect(status().isBadRequest())
-           .andExpect(status().reason("emailConnector.folder.tooMany"));
+           .andExpect(jsonPath("$.status").value(400))
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.tooMany"));
     mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/5").with(testSimpleUser())).andExpect(status().isBadRequest());
   }
 
@@ -1260,7 +1263,89 @@ public class EmailBoxRestTest {
                                                   .contentType(MediaType.APPLICATION_JSON)
                                                   .accept(MediaType.APPLICATION_JSON))
            .andExpect(status().isBadRequest())
-           .andExpect(status().reason("emailConnector.folder.unknown"));
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.unknown"));
+  }
+
+  /**
+   * Every folder endpoint's 400 carries its folder code in the body, where the Folders
+   * drawer and the folder name drawer read it (EXO-90849): create and rename with the
+   * name codes, delete with {@code notEmpty}, the on-demand refresh with
+   * {@code notMirrored}.
+   *
+   * @throws Exception when a request cannot be performed
+   */
+  @Test
+  void everyFolderEndpointAnswersItsCodeInTheBody() throws Exception {
+    when(emailBoxService.createCustomFolder(SIMPLE_USER, "Inbox")).thenThrow(new IllegalArgumentException("emailConnector.folder.name.reserved"));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/folders").param("name", "Inbox").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.name.reserved"));
+
+    when(emailBoxService.renameCustomFolder(SIMPLE_USER, 5L, "Taken")).thenThrow(new IllegalArgumentException("emailConnector.folder.name.duplicate"));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/5/name").param("name", "Taken").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.name.duplicate"));
+
+    doThrow(new IllegalArgumentException("emailConnector.folder.notEmpty")).when(emailBoxService).deleteCustomFolder(SIMPLE_USER, 5L);
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/folders/5").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.notEmpty"));
+
+    doThrow(new IllegalArgumentException("emailConnector.folder.notMirrored")).when(emailBoxService)
+                                                                              .synchronizeCustomFolder(SIMPLE_USER, 7L);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/folders/7/synchronization").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.notMirrored"));
+  }
+
+  /**
+   * Only a folder code is written into a body. A folder endpoint's 403, a 400 whose
+   * reason is not a folder code, and another endpoint's 500 carrying an engine's text
+   * all go on to Spring's own resolver untouched: the reason is the status line's, and
+   * nothing is written into the body -- which on the platform's error page means no
+   * {@code message} either (EXO-90849).
+   *
+   * @throws Exception when a request cannot be performed
+   */
+  @Test
+  void anyOtherRefusalKeepsItsReasonOutOfTheBody() throws Exception {
+    when(emailBoxService.setCustomFolderSync(SIMPLE_USER, 8L, true)).thenThrow(new IllegalAccessException("refused"));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/8").param("sync", "true").with(testSimpleUser()))
+           .andExpect(status().isForbidden())
+           .andExpect(content().string(""));
+
+    when(emailBoxService.setCustomFolderSync(SIMPLE_USER, 9L, true)).thenThrow(new IllegalArgumentException("For input string: \"x\""));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/9").param("sync", "true").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("For input string: \"x\""))
+           .andExpect(content().string(""));
+
+    when(emailBoxService.renameCustomFolder(SIMPLE_USER, 8L, "Projects")).thenThrow(new MailboxRightMissingException(MailboxRights.DELETE_MAILBOX));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/8/name").param("name", "Projects").with(testSimpleUser()))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason(MailboxRightMissingException.CODE_PREFIX + MailboxRights.DELETE_MAILBOX))
+           .andExpect(content().string(""));
+
+    doThrow(new IllegalStateException("A1 NO [ALERT] /var/mail/simple locked")).when(emailBoxService).synchronize(SIMPLE_USER);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/synchronization").with(testSimpleUser()))
+           .andExpect(status().isInternalServerError())
+           .andExpect(content().string(""));
+  }
+
+  /**
+   * The status half of the guard: a folder code is written into a body on a 400 only.
+   * No service raises a folder code as anything but an {@code IllegalArgumentException}
+   * today, so this 500 is constructed rather than observed: it pins that a reason which
+   * merely looks like a folder code, on another status, still never reaches a body.
+   *
+   * @throws Exception when a request cannot be performed
+   */
+  @Test
+  void aFolderCodeOnAnotherStatusStaysOutOfTheBody() throws Exception {
+    doThrow(new IllegalStateException("emailConnector.folder.notBrowsable")).when(emailBoxService).synchronize(SIMPLE_USER);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/synchronization").with(testSimpleUser()))
+           .andExpect(status().isInternalServerError())
+           .andExpect(content().string(""));
   }
 
   /**
@@ -1303,7 +1388,7 @@ public class EmailBoxRestTest {
                                                        .contentType(MediaType.APPLICATION_JSON)
                                                        .accept(MediaType.APPLICATION_JSON))
            .andExpect(status().isBadRequest())
-           .andExpect(status().reason("emailConnector.folder.notMirrored"));
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.notMirrored"));
     doThrow(new IllegalAccessException("not yours")).when(emailBoxService)
                                                     .undoMove(mailHeaderIds, SIMPLE_USER, "CUSTOM:7", MailFolder.INBOX);
     mockMvc.perform(post(EMAIL_BOX_PATH + "/move/undo").param("folder", "CUSTOM:7")
