@@ -29,10 +29,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       color="primary"
       close
       :close-label="$t('emailConnector.mailBox.search.chip.remove', { 0: chip.label })"
-      outlined
       small
       @click:close="$emit('remove', chip.key)">
-      <span class="text-truncate" style="max-width: 220px;">{{ chip.label }}</span>
+      <span class="text-truncate white--text" style="max-width: 220px;">{{ chip.label }}</span>
     </v-chip>
     <v-btn
       v-if="chips.length > 1"
