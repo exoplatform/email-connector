@@ -440,9 +440,10 @@ public class EmailServerRuleService {
    * file into a folder that no longer exists.
    * <p>
    * Best effort, on the owner's own action: the rename has happened, and nothing here
-   * undoes it or fails it. Only a script eXo can read as its own, unchanged since eXo
-   * wrote it, is written -- a script edited outside eXo is the user's to re-publish, as
-   * any other write would ask. Nothing is asked of the server when the user never let
+   * undoes it or fails it. Only the script eXo wrote, unchanged and running, is written:
+   * a save publishes and activates it, so a script edited outside eXo, or one another
+   * client's script replaced as the running one, is left as it is -- the user's to
+   * re-publish or re-activate. Nothing is asked of the server when the user never let
    * eXo manage rules there. A rule that can no longer be resolved (a folder no longer
    * mirrored) is left as it is.
    *
@@ -457,8 +458,10 @@ public class EmailServerRuleService {
       ServerRuleEngine engine = engineOf(username, null);
       try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
         ServerRuleSet read = compared(engine.listRules(session), storedHash(username));
-        if (read.state() != ServerRulesState.OWN && read.state() != ServerRulesState.INACTIVE) {
-          LOG.info("The server rules of user {} are not eXo's as written; their folders were left as they are", username);
+        if (read.state() != ServerRulesState.OWN) {
+          // Not run by the server (INACTIVE) or not eXo's as written: a save would
+          // publish, and so activate, a script the user did not ask to run.
+          LOG.info("The server rules of user {} are not eXo's running script; their folders were left as they are", username);
           return;
         }
         for (ServerRule rule : read.rules()) {
