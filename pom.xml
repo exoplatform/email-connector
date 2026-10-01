@@ -30,6 +30,9 @@
     <io.meeds.mcp-server.version>7.3.x-ai-contribution-SNAPSHOT</io.meeds.mcp-server.version>
     <!-- vCard parsing for the CardDAV address book sync -->
     <ez-vcard.version>0.12.1</ez-vcard.version>
+    <!-- iCalendar parsing of the invitations a mail carries: the version the agenda
+         add-on ships in the server's lib folder, which is the jar this code runs on -->
+    <org.mnode.ical4j.version>3.2.19</org.mnode.ical4j.version>
     <!-- Sonar properties -->
     <sonar.organization>exoplatform</sonar.organization>
   </properties>
@@ -77,6 +80,28 @@
           <exclusion>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-core</artifactId>
+          </exclusion>
+        </exclusions>
+      </dependency>
+      <!-- iCalendar parsing of the invitations a mail carries. Provided: the agenda
+           add-on ships the jar in the server's lib folder, this add-on does not ship a
+           second copy. The exclusions are agenda's own. -->
+      <dependency>
+        <groupId>org.mnode.ical4j</groupId>
+        <artifactId>ical4j</artifactId>
+        <version>${org.mnode.ical4j.version}</version>
+        <exclusions>
+          <exclusion>
+            <groupId>commons-logging</groupId>
+            <artifactId>commons-logging</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>commons-lang</groupId>
+            <artifactId>commons-lang</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>commons-codec</groupId>
+            <artifactId>commons-codec</artifactId>
           </exclusion>
         </exclusions>
       </dependency>
