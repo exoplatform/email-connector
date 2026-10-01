@@ -21,7 +21,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        the search row's own chips, never set here.
        Laid out like the platform's drawer forms: a plain label above each field, the two
        days as two date pickers side by side, empty meaning no bound. "Search" hands the
-       criteria to the mailbox drawer, which shows them as chips above the results;
+       criteria to the mailbox drawer, which shows them as chips under the search row;
        "Reset" empties the form. -->
   <exo-drawer
     id="emailAdvancedSearchDrawer"
