@@ -252,8 +252,8 @@ public class EmailBoxRestTest {
 
   /**
    * EXO-90838 -- every criterion of the advanced search reaches the service as sent,
-   * the days read as yyyy-MM-dd, and a day in any other form is a 400 carrying the code
-   * the drawer shows, the service never asked.
+   * the days read as yyyy-MM-dd, and a day in any other form is a 400 carrying its code,
+   * the service never asked.
    *
    * @throws Exception when the request cannot be performed
    */
