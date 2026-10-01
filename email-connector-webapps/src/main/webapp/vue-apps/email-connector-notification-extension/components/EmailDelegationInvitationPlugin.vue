@@ -50,37 +50,56 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           class="mt-2"
           @click.stop
           @keydown.stop>
-          <div v-if="pending" class="d-flex flex-wrap align-center">
-            <v-btn
-              :loading="accepting"
-              :disabled="answering"
-              class="ignore-vuetify-classes me-2 mb-1"
-              color="success"
-              elevation="0"
-              small
-              outlined
-              @click.stop.prevent="answer('accept')">
-              <v-icon size="14" class="me-2 pt-2px">fa-check</v-icon>
-              <span class="text-none">{{ $t('emailDelegationInvitation.notification.accept') }}</span>
-            </v-btn>
-            <v-btn
-              :loading="refusing"
-              :disabled="answering"
-              class="ignore-vuetify-classes me-2 mb-1"
-              color="error"
-              elevation="0"
-              small
-              outlined
-              @click.stop.prevent="answer('decline')">
-              <v-icon size="14" class="me-2 pt-2px">fa-times</v-icon>
-              <span class="text-none">{{ $t('emailDelegationInvitation.notification.refuse') }}</span>
-            </v-btn>
-          </div>
-          <div
-            v-else-if="status"
-            :class="statusClass"
-            class="caption text-wrap">
-            {{ statusText }}
+          <div class="d-flex flex-wrap align-center">
+            <template v-if="pending">
+              <v-btn
+                :loading="accepting"
+                :disabled="answering"
+                class="ignore-vuetify-classes me-2 mb-1"
+                color="success"
+                elevation="0"
+                small
+                outlined
+                @click.stop.prevent="answer('accept')">
+                <v-icon size="14" class="me-2 pt-2px">fa-check</v-icon>
+                <span class="text-none">{{ $t('emailDelegationInvitation.notification.accept') }}</span>
+              </v-btn>
+              <v-btn
+                :loading="refusing"
+                :disabled="answering"
+                class="ignore-vuetify-classes me-2 mb-1"
+                color="error"
+                elevation="0"
+                small
+                outlined
+                @click.stop.prevent="answer('decline')">
+                <v-icon size="14" class="me-2 pt-2px">fa-times</v-icon>
+                <span class="text-none">{{ $t('emailDelegationInvitation.notification.refuse') }}</span>
+              </v-btn>
+            </template>
+            <div
+              v-else-if="status"
+              :class="statusClass"
+              class="caption text-wrap me-2">
+              {{ statusText }}
+            </div>
+            <!-- A button, not a link: the row itself is the platform's link to the
+                 notification's url, and links do not nest. -->
+            <v-tooltip bottom>
+              <template #activator="{ on, attrs }">
+                <v-btn
+                  :aria-label="$t('emailDelegationInvitation.notification.openSettings')"
+                  class="mb-1"
+                  icon
+                  small
+                  v-bind="attrs"
+                  v-on="on"
+                  @click.stop.prevent="openSettings">
+                  <v-icon size="16" class="icon-default-color">fa-cog</v-icon>
+                </v-btn>
+              </template>
+              <span>{{ $t('emailDelegationInvitation.notification.openSettings') }}</span>
+            </v-tooltip>
           </div>
           <div
             v-if="error"
@@ -88,17 +107,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             role="alert">
             {{ error }}
           </div>
-          <!-- A button, not a link: the row itself is the platform's link to the
-               notification's url, and links do not nest. -->
-          <v-btn
-            class="ignore-vuetify-classes px-0"
-            color="primary"
-            elevation="0"
-            x-small
-            text
-            @click.stop.prevent="openSettings">
-            <span class="text-none text-decoration-underline">{{ $t('emailDelegationInvitation.notification.openSettings') }}</span>
-          </v-btn>
         </div>
       </template>
     </user-notification-template>
