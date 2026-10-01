@@ -38,6 +38,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           class="invitation-title">
           {{ title }}
         </div>
+        <div v-if="invitation.exoMeeting" class="caption primary--text invitation-exo-meeting">
+          {{ $t('emailConnector.mailBox.invitation.exoMeeting') }}
+        </div>
         <div
           v-if="invitation.cancelled"
           class="error--text invitation-cancelled-line">
@@ -93,6 +96,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             {{ choice.label }}
           </v-btn>
         </div>
+        <!-- The server rebuilt this link from the portal's own domain: an event of this
+             deployment's Agenda is answered there. -->
+        <v-btn
+          v-if="invitation.exoMeeting && invitation.agendaUrl"
+          :href="invitation.agendaUrl"
+          class="mt-2 px-0 text-none invitation-open-agenda"
+          color="primary"
+          text
+          small>
+          <v-icon size="14" class="me-1">far fa-calendar-alt</v-icon>
+          {{ $t('emailConnector.mailBox.invitation.openInAgenda') }}
+        </v-btn>
         <div
           v-if="invitation.answerable && organizerAddress"
           class="caption text-sub-title invitation-reply-to">
