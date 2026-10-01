@@ -155,7 +155,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-import { buildFolderTree, descendantKeys, readCollapsedFolders, toggleCollapsedFolder, visibleFolderRows } from '../../../../email-connector-mail-box/js/EmailConnectorFolderTree.js';
+import { buildFolderTree, descendantKeys, folderPathLabel, readCollapsedFolders, toggleCollapsedFolder, visibleFolderRows } from '../../../../email-connector-mail-box/js/EmailConnectorFolderTree.js';
 
 // The server's refusals of a delete the user can act on, in their own words.
 const DELETE_ERROR_KEYS = {
@@ -431,10 +431,7 @@ export default {
      * @returns {String} the path
      */
     pathOf(folder) {
-      if (!folder?.path) {
-        return folder?.displayName || '';
-      }
-      return folder.delimiter ? folder.path.split(folder.delimiter).join(' / ') : folder.path;
+      return folderPathLabel(folder) || folder?.displayName || '';
     },
     /**
      * Closes the drawer and tells the settings row to re-read its counter, since the
