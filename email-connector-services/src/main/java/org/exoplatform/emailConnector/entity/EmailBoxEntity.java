@@ -225,4 +225,12 @@ public class EmailBoxEntity {
   // Declared last and set by name, like the draft's mailbox.
   @Column(name = "DRAFT_SEND_MODE")
   private String                      draftSendMode;
+
+  // The sender-authentication method the receiving server reported as failed in the
+  // message's own Authentication-Results header (EXO-90841): DMARC, SPF or DKIM; null when
+  // none failed, the server said nothing, or the row predates changeset 1.0.0-98. Decided
+  // at sync, when the header still exists. Declared last and set by name, like the
+  // draft's send mode.
+  @Column(name = "AUTH_FAILURE")
+  private String                      authFailure;
 }

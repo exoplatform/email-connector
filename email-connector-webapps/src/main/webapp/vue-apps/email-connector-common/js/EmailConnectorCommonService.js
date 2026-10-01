@@ -290,6 +290,70 @@ export function getReadReceiptSettings() {
 }
 
 /**
+ * Reads the caller's choices about the resources received mail fetches from the
+ * internet (EXO-90841): whether they wait for consent, and the senders always trusted.
+ *
+ * @returns {Promise<object>} {blockRemoteContent, trustedSenders}
+ */
+export function getRemoteContentSettings() {
+  return fetch('/email-connector/rest/user-email-setting/remote-content', {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the remote content settings');
+    }
+  });
+}
+
+/**
+ * Switches the holding back of remote content on or off for the caller's mail.
+ *
+ * @param {boolean} blockRemoteContent - whether remote content waits for consent
+ * @returns {Promise<object>} the choices as they now stand
+ */
+export function saveRemoteContentBlocking(blockRemoteContent) {
+  return fetch('/email-connector/rest/user-email-setting/remote-content', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({ blockRemoteContent: !!blockRemoteContent }),
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when saving the remote content settings');
+    }
+  });
+}
+
+/**
+ * Trusts a sender, or stops trusting them: their mail loads its remote content without
+ * asking, or holds it back again.
+ *
+ * @param {string} address - the sender's address
+ * @param {boolean} trusted - true to trust, false to stop
+ * @returns {Promise<object>} the choices as they now stand
+ */
+export function setSenderTrusted(address, trusted) {
+  return fetch(`/email-connector/rest/user-email-setting/remote-content/trusted-senders?address=${encodeURIComponent(address || '')}`, {
+    credentials: 'include',
+    method: trusted ? 'POST' : 'DELETE',
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when changing the trusted senders');
+    }
+  });
+}
+
+/**
  * Stores the caller's read-receipt preferences. The server refuses ALWAYS while the
  * administrator disables it, and answers the preferences as they now stand.
  *

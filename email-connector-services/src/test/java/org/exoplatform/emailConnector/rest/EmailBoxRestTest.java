@@ -94,6 +94,7 @@ import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.model.ReadReceiptAction;
 import org.exoplatform.emailConnector.model.ReadReceiptPrompt;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
+import org.exoplatform.emailConnector.service.EmailSecurityService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FavoriteRemoval;
@@ -159,6 +160,9 @@ public class EmailBoxRestTest {
 
   @MockitoBean
   private ReadReceiptService    readReceiptService;
+
+  @MockitoBean
+  private EmailSecurityService  emailSecurityService;
 
   @Autowired
   private SecurityFilterChain   filterChain;
@@ -422,7 +426,7 @@ public class EmailBoxRestTest {
     mockMvc.perform(get(EMAIL_BOX_PATH + "/7").param("broadcast", "false").with(testSimpleUser())).andExpect(status().isOk());
     verify(emailBoxService).getEmailByMailRemoteIdAndUserId(7L, SIMPLE_USER, "INBOX", true, true, true, false);
 
-    String eTag = "\"" + java.util.Objects.hash(7L, "INBOX", SIMPLE_USER) + "\"";
+    String eTag = "\"" + java.util.Objects.hash(7L, "INBOX", SIMPLE_USER, false, 0) + "\"";
     mockMvc.perform(get(EMAIL_BOX_PATH + "/7").param("broadcast", "false").header("If-None-Match", eTag).with(testSimpleUser()))
            .andExpect(status().isNotModified());
     verify(emailBoxService, never()).broadcastOpenEmail(anyString());
@@ -430,6 +434,41 @@ public class EmailBoxRestTest {
     mockMvc.perform(get(EMAIL_BOX_PATH + "/7").header("If-None-Match", eTag).with(testSimpleUser()))
            .andExpect(status().isNotModified());
     verify(emailBoxService).broadcastOpenEmail(SIMPLE_USER);
+  }
+
+  /**
+   * EXO-90841: every read the reader renders is prepared for display -- cleaned, its
+   * remote content held back unless asked for -- and asking for it is explicit. A copy
+   * cached with remote content held back is not confirmed once the caller asked for it,
+   * or changed their choices (the setting fingerprint is part of the validator).
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void readsArePreparedForDisplayAndRemoteContentIsAskedForExplicitly() throws Exception {
+    Email email = new Email();
+    email.setId(7L);
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(anyLong(), anyString(), anyString(), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean()))
+      .thenReturn(email);
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/7").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailSecurityService).decorate(email, SIMPLE_USER, false);
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/7").param("remoteContent", "true").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailSecurityService).decorate(email, SIMPLE_USER, true);
+
+    String blockedTag = "\"" + java.util.Objects.hash(7L, "INBOX", SIMPLE_USER, false, 0) + "\"";
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/7").param("remoteContent", "true").header("If-None-Match", blockedTag).with(testSimpleUser()))
+           .andExpect(status().isOk());
+    when(emailSecurityService.settingsFingerprint(SIMPLE_USER)).thenReturn(42);
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/7").header("If-None-Match", blockedTag).with(testSimpleUser()))
+           .andExpect(status().isOk());
+    String trustedTag = "\"" + java.util.Objects.hash(7L, "INBOX", SIMPLE_USER, false, 42) + "\"";
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/7").header("If-None-Match", trustedTag).with(testSimpleUser()))
+           .andExpect(status().isNotModified());
+
+    List<Email> thread = List.of(email);
+    when(emailBoxService.getThread("t-1", SIMPLE_USER, null)).thenReturn(thread);
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/thread/t-1").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailSecurityService).decorate(thread, SIMPLE_USER, false);
   }
 
   /**
