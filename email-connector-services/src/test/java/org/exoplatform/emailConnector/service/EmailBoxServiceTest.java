@@ -3000,7 +3000,8 @@ public class EmailBoxServiceTest {
    * failure to connect does -- FAILURE recorded, so the existing back-off applies and the
    * next sync after the provider appears clears it -- but says it at debug, without a
    * stack: the resolver has said it once for the provider's name. A registered provider
-   * that cannot authenticate the mailbox is still logged as an error, with its stack.
+   * that cannot authenticate the mailbox is still logged as an error, with its stack, and
+   * so is a failure of another kind on a connector whose provider is missing.
    */
   @Test
   @SneakyThrows
@@ -3027,6 +3028,17 @@ public class EmailBoxServiceTest {
 
       assertEquals(1, log.warningsAndAbove().size(), log.events().toString());
       assertTrue(log.anyStack(), "a refusal of a registered provider keeps its stack");
+    }
+
+    when(emailCredentialsResolver.isProviderMissing("bluemind-sudo")).thenReturn(true);
+    reset(userEmailSettingService);
+    givenAUsableMailbox();
+    when(userEmailSettingService.connect(anyString(), anyString())).thenThrow(new MessagingException("the mailbox is gone"));
+    try (LogCapture log = new LogCapture(EmailBoxService.class)) {
+      emailBoxService.synchronize(TEST_USER);
+
+      assertEquals(1, log.warningsAndAbove().size(), log.events().toString());
+      assertTrue(log.anyStack(), "a failure that is not the missing provider keeps its stack");
     }
   }
 
