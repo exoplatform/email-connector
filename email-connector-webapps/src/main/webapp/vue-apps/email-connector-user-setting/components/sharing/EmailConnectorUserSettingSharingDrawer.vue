@@ -213,16 +213,6 @@ export default {
       this.$emit('per-folder', value);
     },
     /**
-     * Tells the drawer which shapes of writing in the owner's name the server accepts,
-     * for the invitation's consent sentence (EXO-90582).
-     *
-     * @param {Array} value the declared shapes
-     * @returns {void}
-     */
-    sendModes(value) {
-      this.$emit('send-modes', value);
-    },
-    /**
      * Tells the drawer what an Editor can do in the owner's Trash, for the invitation's
      * wording (EXO-90816).
      *
