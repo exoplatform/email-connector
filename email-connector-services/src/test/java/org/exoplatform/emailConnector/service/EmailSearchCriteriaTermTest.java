@@ -208,6 +208,13 @@ public class EmailSearchCriteriaTermTest {
                                                                      multipart("related", text("html"), file("image/png", null)))),
                                                    "alice"),
                "a file in a nested multipart");
+    assertFalse(EmailBoxService.hasStoredAttachment(message(multipart("mixed",
+                                                                      text("html"),
+                                                                      multipart("appledouble",
+                                                                                file("application/applefile", null),
+                                                                                file("application/pdf", null)))),
+                                                    "alice"),
+                "a nested level with no text: eXo keeps none of its files");
     assertFalse(EmailBoxService.hasStoredAttachment(message(multipart("alternative", text("plain"), text("html"))), "alice"));
     assertFalse(EmailBoxService.hasStoredAttachment(message(multipart("related", text("html"), file("image/png", Part.INLINE))),
                                                     "alice"),
