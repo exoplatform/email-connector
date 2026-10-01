@@ -91,10 +91,12 @@ import io.meeds.social.util.JsonUtils;
  * RECURRENCE-ID) with the SEQUENCE it answered, in the setting service, so the reader
  * says it again when the mail is opened later; an update that raises the sequence asks
  * again. An answer may be changed: each click sends a new REPLY, as other clients do.
- * Two limits are stated, not decided here: an answer is remembered for the user who gave
- * it, so in a shared mailbox its owner and her other delegates do not see it (the
- * owner's Sent copy is their record); and remembered answers are never deleted -- one
- * small setting per answered event.
+ * Three limits are stated, not decided here: an answer is remembered for the user who
+ * gave it, so in a shared mailbox its owner and her other delegates do not see it (the
+ * owner's Sent copy is their record); remembered answers are never deleted -- one small
+ * setting per answered event; and a mail whose whole body is the iCalendar object (a
+ * single-part {@code text/calendar}, which iMIP allows and the mainstream clients do not
+ * send) carries no part the sync describes, so it shows no event.
  * <p>
  * Nothing lands in a calendar here: the agenda add-on is not a dependency of this one.
  */
