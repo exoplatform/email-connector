@@ -66,6 +66,7 @@ import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.model.ScheduledEmail;
+import org.exoplatform.emailConnector.model.UndoableSend;
 import org.exoplatform.emailConnector.rest.model.ReadReceiptRequest;
 import org.exoplatform.emailConnector.rest.model.ScheduleRequest;
 import org.exoplatform.emailConnector.exception.ReadReceiptConflictException;
@@ -1859,6 +1860,86 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  /**
+   * Sends a draft with an Undo (EXO-90837): held for the caller's Undo wait, then sent.
+   *
+   * @param request the caller, the only owner a draft is looked up for
+   * @param draftLocalId the draft's local id
+   * @param draft the draft as the composer shows it
+   * @return the held mail: its handle, when it goes, how long the Undo is offered
+   */
+  @PostMapping("/drafts/{draftLocalId}/send-undoable")
+  @Secured("users")
+  @Operation(summary = "Sends a draft with an Undo", method = "POST",
+             description = "Saves the text the composer shows onto the draft and freezes it as a scheduling does (its copy in the mail server's Drafts folder removed, the draft locked), then holds it for the caller's Undo wait (GET /user-email-setting/undo-send) before it is sent as the caller, from the mailbox and in the name the draft records, by whichever node gets to it first and only once -- a closed tab or a restarted node does not stop it. A held mail is not listed under Scheduled. POST /drafts/{draftLocalId}/undo-send takes it back while it has not started to go. Answers draftLocalId, sendDate (epoch ms, the server's clock) and delaySeconds; 400 with a message code (emailConnector.undoSend.off when the caller turned the Undo off -- send with POST /drafts/{draftLocalId}/send instead -- emailConnector.scheduled.recipientsMandatory, emailConnector.scheduled.attachmentsNotStored, emailConnector.drafts.send.attachmentGone, emailConnector.sendMode.*), 403 for a mailbox the caller may not use (emailConnector.sendMode.missing.ON_BEHALF|AS when the owner's consent does not cover the draft's name), 404 for a draft the caller does not have, 409 when it is already scheduled or being sent, 410 when its mailbox is no longer shared with the caller, 500 when its copy on the mail server could not be removed (emailConnector.scheduled.serverCopyRemains; nothing is held then).")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Held for its Undo"),
+      @ApiResponse(responseCode = "400", description = "Bad Request, or the Undo is off (emailConnector.undoSend.off)"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Already scheduled, or being sent"),
+      @ApiResponse(responseCode = "410", description = "The draft's mailbox is no longer shared with the caller"),
+      @ApiResponse(responseCode = "500", description = "The draft's copy on the mail server could not be removed"), })
+  public UndoableSend sendDraftUndoable(HttpServletRequest request,
+                                        @Parameter(description = "The draft's local id", required = true)
+                                        @PathVariable("draftLocalId")
+                                        String draftLocalId,
+                                        @Parameter(description = "The draft as the composer shows it", required = true)
+                                        @RequestBody
+                                        Email draft) {
+    if (draft == null) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+    }
+    try {
+      // The path names the draft, as it does for the send and the schedule.
+      draft.setDraftLocalId(draftLocalId);
+      return emailScheduledSendService.sendUndoable(draft, request.getRemoteUser());
+    } catch (SendModeMissingException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
+    } catch (ScheduledSendConflictException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  /**
+   * Takes back a mail sent with an Undo (EXO-90837), answering its draft.
+   *
+   * @param request the caller, the only owner a held mail is looked up for
+   * @param draftLocalId the draft's local id
+   * @return the draft as it was frozen, for the composer to reopen
+   */
+  @PostMapping("/drafts/{draftLocalId}/undo-send")
+  @Secured("users")
+  @Operation(summary = "Takes back a mail sent with an Undo", method = "POST",
+             description = "Takes back a mail sent with POST /drafts/{draftLocalId}/send-undoable, while it has not started to go: it is not sent, and goes back to Drafts as it was frozen -- recipients, subject, body, files, threading, mailbox and name -- as a draft that lives only here until its next save pushes it to the mail server again. Answers that draft. 404 for a mail the caller has no such draft or held mail under (one sent and cleaned up included), 409 when it is being sent or was sent (emailConnector.scheduled.sending), or may have been (emailConnector.scheduled.uncertain).")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Taken back"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Being sent, sent, or uncertain"), })
+  public Email undoSend(HttpServletRequest request,
+                        @Parameter(description = "The draft's local id", required = true)
+                        @PathVariable("draftLocalId")
+                        String draftLocalId) {
+    try {
+      return emailScheduledSendService.undoSend(draftLocalId, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (ScheduledSendConflictException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     }
   }
 
