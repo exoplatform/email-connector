@@ -13257,7 +13257,9 @@ public class EmailBoxServiceTest {
     verify(emailFolderStorage, never()).createFolder(any());
 
     EmailFolder moved = registeredFolder(6L, "Acme", true);
-    EmailFolder inside = registeredFolder(7L, "Acme/" + "d".repeat(240), true);
+    // Moved under target, Acme's own full name is 255 characters, within the bound; the
+    // folder inside it would grow to 506 -- only the descendants' check refuses it.
+    EmailFolder inside = registeredFolder(7L, "Acme/" + "d".repeat(250), true);
     EmailFolder target = registeredFolder(9L, "e".repeat(250), true);
     when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(moved);
     when(emailFolderStorage.getFolder(TEST_USER, 9L)).thenReturn(target);
