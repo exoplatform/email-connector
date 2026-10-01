@@ -362,7 +362,7 @@ public class EmailBoxRestTest {
                                                                                                        .thenThrow(new IllegalArgumentException("emailConnector.folder.notBrowsable"));
     mockMvc.perform(get(EMAIL_BOX_PATH + "/search/local").param("words", "x").param("folder", "TRASH").with(testSimpleUser()))
            .andExpect(status().isBadRequest())
-           .andExpect(status().reason("emailConnector.folder.notBrowsable"));
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.notBrowsable"));
     when(emailBoxService.searchCachedFolder(anyString(), any(EmailSearchCriteria.class), eq("ARCHIVE"), anyInt()))
                                                                                                          .thenThrow(new IllegalAccessException("no"));
     mockMvc.perform(get(EMAIL_BOX_PATH + "/search/local").param("words", "x").param("folder", "ARCHIVE").with(testSimpleUser()))
