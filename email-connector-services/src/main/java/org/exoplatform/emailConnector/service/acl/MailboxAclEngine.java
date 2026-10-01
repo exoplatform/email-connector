@@ -145,6 +145,45 @@ public interface MailboxAclEngine {
   void revoke(MailboxAclSession session, String mailbox, String identifier);
 
   /**
+   * Grants one preset to one identifier on the owner's <b>whole mailbox</b>, where a
+   * server that grants per folder also keeps whole-mailbox entries
+   * ({@link MailboxAclCapabilities#mailboxScope()}, EXO-90816): what changes or replaces
+   * an entry whose {@link MailboxAce#scope()} is {@link org.exoplatform.emailConnector.model.AclScope#MAILBOX}
+   * -- a write on one folder would only add to it, never narrow it. The engine expands
+   * and caps the preset as {@link #grant} does, and replaces the identifier's
+   * whole-mailbox entry, never widens it. The default is the grant on INBOX, which names
+   * the mailbox as a whole on a per-mailbox server; a per-folder engine is called here only
+   * when it says {@code mailboxScope}.
+   *
+   * @param session the owner's session
+   * @param identifier the grantee as the server names them
+   * @param preset READER or EDITOR
+   * @param ownerRights the owner's own rights on INBOX
+   * @return the entry as written, its scope {@code MAILBOX} on an engine that keeps both
+   * @throws MailboxAclException when nothing is left to grant or the server refuses
+   */
+  default MailboxAce grantWholeMailbox(MailboxAclSession session, String identifier, DelegationPreset preset, MailboxRights ownerRights) {
+    return grant(session, "INBOX", identifier, preset, ownerRights);
+  }
+
+  /**
+   * Removes one identifier's whole-mailbox entry, where a server that grants per folder
+   * also keeps such entries ({@link MailboxAclCapabilities#mailboxScope()}, EXO-90816):
+   * the part of "Remove access" no folder write reaches. Nothing is written when the
+   * identifier holds no whole-mailbox entry; their per-folder entries are left to
+   * {@link #revoke}. The default is the removal on INBOX, which names the mailbox as a
+   * whole on a per-mailbox server; a per-folder engine is called here only when it says
+   * {@code mailboxScope}.
+   *
+   * @param session the owner's session
+   * @param identifier the grantee as the server names them
+   * @throws MailboxAclException when the server refuses
+   */
+  default void revokeWholeMailbox(MailboxAclSession session, String identifier) {
+    revoke(session, "INBOX", identifier);
+  }
+
+  /**
    * The letters a preset stands for on one folder of the owner's mailbox, by the
    * folder's role (EXO-90548). The default is the preset's own letters whatever the
    * folder: a per-mailbox engine never sees a role.
