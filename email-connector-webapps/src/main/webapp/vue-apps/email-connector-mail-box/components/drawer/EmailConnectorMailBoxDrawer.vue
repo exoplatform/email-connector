@@ -24,10 +24,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     allow-expand
     :drawer-width="drawerWidth"
     @expand-updated="updateExpand"
-    :loading="loading || syncInProgress || (searchActive && searchServerRunning) || readerLoading || scheduledLoading || (loadingEmail && readerPartial)"
-    :use-filter="canSearch"
-    :filter-placeholder="$t('emailConnector.mailBox.search.placeholder')"
-    @filter-updated="onFilterUpdated"
+    :loading="loading || syncInProgress || (searchActive && (searchServerRunning || searchLocalRunning)) || readerLoading || scheduledLoading || (loadingEmail && readerPartial)"
     :confirm-close="activeDownload"
     :go-back-button="canGoBack"
     :confirm-close-labels="{
@@ -189,6 +186,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             <email-connector-absence-band />
             <email-connector-forwarding-band />
           </div>
+          <!-- The search row (EXO-90838): the chips, or the search field, and the
+               search and advanced search buttons; the Scheduled view has none. -->
+          <email-connector-mail-box-search-bar
+            v-if="!scheduledView"
+            v-bind="searchBarProps"
+            :style="{ minHeight: LIST_TOP_ROW_HEIGHT }"
+            class="full-width border-box-sizing application-border application-border-radius px-3"
+            v-on="searchBarListeners" />
           <email-connector-mail-box-drawer-search-results
             v-if="searchActive"
             ref="expandedSearchResults"
@@ -199,11 +204,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :server-error="searchServerError"
             :shared-mailbox="!!currentSharedMailbox"
             :criteria-chips="searchCriteriaChips"
+            :local-status="localSearchStatus"
+            :scanned="searchScanned"
             draggable-hits
             @open-result="openSearchResult"
             @remove-criterion="removeSearchCriterion"
             @clear-criteria="clearSearchCriteria"
-            @advanced-search="openAdvancedSearch" />
+            @search-server="searchWholeMailbox" />
           <!-- The Scheduled view (EXO-90434): its own list, no chips. -->
           <email-connector-mail-box-scheduled-list
             v-else-if="scheduledView"
@@ -211,18 +218,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             compact
             @loading="scheduledLoading = $event" />
           <template v-else>
-            <email-connector-mail-box-drawer-filter-chips
-              :important-category="importantCategory"
-              :category-view-id="categoryViewId"
-              :favorite-only="favoriteOnly"
-              :unread-only="unreadOnly"
-              :style="{ minHeight: LIST_TOP_ROW_HEIGHT }"
-              class="full-width border-box-sizing application-border application-border-radius px-3"
-              @toggle-important="toggleImportantView"
-              @toggle-favorite="onToggleFavoriteFilter"
-              @toggle-unread="toggleUnreadFilter"
-              :searchable="canSearch"
-              @advanced-search="openAdvancedSearch" />
             <email-connector-mail-box-drawer-content
               v-if="hasEmails"
               ref="expandedListContent"
@@ -297,19 +292,26 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             </div>
           </v-list-item-content>
         </v-list-item>
-        <email-connector-mail-box-drawer-search-results
-          v-else-if="searchActive && !expanded"
-          ref="searchResults"
-          :results="mergedSearchResults"
-          :total-matches="searchTotalMatches"
-          :server-searching="searchServerRunning"
-          :server-error="searchServerError"
-          :shared-mailbox="!!currentSharedMailbox"
-          :criteria-chips="searchCriteriaChips"
-          @open-result="openSearchResult"
-          @remove-criterion="removeSearchCriterion"
-          @clear-criteria="clearSearchCriteria"
-          @advanced-search="openAdvancedSearch" />
+        <template v-else-if="searchActive && !expanded">
+          <email-connector-mail-box-search-bar
+            v-bind="searchBarProps"
+            class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
+            v-on="searchBarListeners" />
+          <email-connector-mail-box-drawer-search-results
+            ref="searchResults"
+            :results="mergedSearchResults"
+            :total-matches="searchTotalMatches"
+            :server-searching="searchServerRunning"
+            :server-error="searchServerError"
+            :shared-mailbox="!!currentSharedMailbox"
+            :criteria-chips="searchCriteriaChips"
+            :local-status="localSearchStatus"
+            :scanned="searchScanned"
+            @open-result="openSearchResult"
+            @remove-criterion="removeSearchCriterion"
+            @clear-criteria="clearSearchCriteria"
+            @search-server="searchWholeMailbox" />
+        </template>
         <!-- Full screen: the reader. With nothing open it shows the "select an email"
              placeholder while the list beside it holds something to select, and nothing
              over an empty list, which says so itself (EXO-90415). -->
@@ -340,17 +342,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :signal="scheduledViewSignal"
           @loading="scheduledLoading = $event" />
         <template v-else>
-          <email-connector-mail-box-drawer-filter-chips
-            :important-category="importantCategory"
-            :category-view-id="categoryViewId"
-            :favorite-only="favoriteOnly"
-            :unread-only="unreadOnly"
+          <email-connector-mail-box-search-bar
+            v-bind="searchBarProps"
             class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
-            @toggle-important="toggleImportantView"
-            @toggle-favorite="onToggleFavoriteFilter"
-            @toggle-unread="toggleUnreadFilter"
-            :searchable="canSearch"
-            @advanced-search="openAdvancedSearch" />
+            v-on="searchBarListeners" />
           <template v-if="hasEmails">
             <email-connector-mail-box-drawer-content
               ref="listContent"
@@ -384,6 +379,7 @@ import listNavigationMixin, { firstOpenableThread, searchRows, threadIndexOf, th
 import emailDragMixin from '../../js/EmailConnectorMailBoxEmailDragMixin.js';
 import columnWidthsMixin, { DEFAULT_LIST_WIDTH_PX } from '../../js/EmailConnectorMailBoxColumnWidths.js';
 import advancedSearchMixin from '../../js/EmailConnectorMailBoxAdvancedSearchMixin.js';
+import { listedRowMatches } from '../../js/EmailConnectorMailBoxSearchCriteria.js';
 
 // The drawer's width in its narrow layout: exo-drawer's own default, which is also the
 // full-screen list's default width.
@@ -1263,11 +1259,10 @@ export default {
       return this.favoriteOnly || this.unreadOnly || !!this.categoryViewId;
     },
     /**
-     * Whether the header filter field is offered. The filter is the platform's own
-     * (exo-drawer); it hides the go-back button, so it steps aside while select mode
-     * needs that button, and it is off where there is nothing to search
-     * (isFolderSearchable). In a shared mailbox it searches that mailbox's copy of the
-     * folder shown (EXO-90590).
+     * Whether the search row offers its search and advanced search buttons (EXO-90838).
+     * Off in select mode, which owns the row's place, and where there is nothing to
+     * search (isFolderSearchable). In a shared mailbox it searches that mailbox's copy
+     * of the folder shown (EXO-90590).
      *
      * @returns {Boolean} true when the search box is offered
      */
@@ -1305,22 +1300,21 @@ export default {
     },
     /**
      * Instant matches from the emails the app already holds (the whole cached window of
-     * the current folder), on the same fields the server searches -- subject and sender
-     * -- so the instant list and the final one agree. None under advanced criteria or for
-     * another folder (EXO-90838): the listed window cannot tell a body's words, a
-     * recipient or an attachment, nor read another folder; the server answers alone.
+     * the current folder), drawn before any answer: the search box's text over the
+     * subject and the sender, as the server searches it, and the advanced criteria as
+     * listedRowMatches can tell them from a listed row (EXO-90838) -- never more than
+     * the copy's own search finds. None for another folder than the one listed, nor
+     * under a range of days.
      *
      * @returns {Array} the instant hits
      */
     localSearchMatches() {
       const term = this.searchTerm.toLowerCase();
-      if (!term || this.advancedSearchActive || this.searchFolder !== this.currentFolder) {
+      if (!this.searchActive || this.searchFolder !== this.currentFolder) {
         return [];
       }
       return (this.emailBox?.emails || [])
-        .filter(e => (e.subject || '').toLowerCase().includes(term)
-          || (e.sender?.name || '').toLowerCase().includes(term)
-          || (e.sender?.address || '').toLowerCase().includes(term))
+        .filter(e => listedRowMatches(e, term, this.searchCriteria) === true)
         .map(e => ({
           mailRemoteId: e.mailRemoteId,
           folder: e.folder || this.currentFolder,
@@ -1337,13 +1331,18 @@ export default {
           categoryIds: e.categoryIds || [],
         }));
     },
-    // Local matches shown instantly, server hits MERGED in when they land — never
-    // replacing: the server returns only the newest matches, so with many hits a
-    // result the user is already reading could vanish under a replacement. Keyed
-    // on (folder, uid), server fields winning.
+    // Local matches shown instantly, the copy's and the server's hits MERGED in when
+    // they land — never replacing: the server returns only the newest matches, so with
+    // many hits a result the user is already reading could vanish under a replacement.
+    // Keyed on (folder, uid), the copy's fields over the listed row's (EXO-90838), the
+    // server's over both.
     mergedSearchResults() {
       const merged = new Map();
       this.localSearchMatches.forEach(result => merged.set(`${result.folder}:${result.mailRemoteId}`, result));
+      this.searchLocalResults.forEach(result => {
+        const key = `${result.folder}:${result.mailRemoteId}`;
+        merged.set(key, { categoryIds: [], ...merged.get(key), ...result });
+      });
       this.searchServerResults.forEach(result => {
         const key = `${result.folder}:${result.mailRemoteId}`;
         // Server hits carry no categoryIds; default them for the reader's list.
@@ -1725,8 +1724,7 @@ export default {
     },
     /**
      * The exo-drawer INSIDE the pinneable-drawer wrapper the emailBoxDrawer ref points
-     * at: the one that holds the header filter field (showFilter, filterText,
-     * resetFilter) and the expand state (expand). The wrapper (EXO-89874) forwards
+     * at: the one that holds the expand state (expand). The wrapper (EXO-89874) forwards
      * only open, close, startLoading, endLoading and toogleExpand, so reading or
      * setting any of those on the ref itself reaches nothing (EXO-90578: the search
      * from outside never filled the field, the field was never emptied, and a
@@ -1754,11 +1752,8 @@ export default {
      * @returns {void}
      */
     openSearchFromOutside(term) {
-      const drawer = this.innerMailDrawer();
-      if (drawer) {
-        drawer.showFilter = true;
-        drawer.filterText = term;
-      }
+      this.searchFieldOpen = true;
+      this.searchFieldText = term;
       this.runSearch(term);
     },
     /**
@@ -1967,7 +1962,7 @@ export default {
       return this.expanded && (!this.email || emails.includes(this.email.mailRemoteId));
     },
     /**
-     * The drawer's header filter field emitted a new value: instant local matches apply
+     * The search row's field has a new value: instant local matches apply
      * as soon as the debounce elapses, and the server search runs alongside. Clearing the
      * field returns to the normal folder view at once -- unless advanced criteria still
      * make a search (EXO-90838), which then runs without the text.
@@ -1982,7 +1977,7 @@ export default {
         this.clearSearch();
         return;
       }
-      this.searchDebounceTimer = window.setTimeout(() => this.runSearch(term), this.searchPause(SEARCH_DEBOUNCE_MS));
+      this.searchDebounceTimer = window.setTimeout(() => this.runSearch(term), SEARCH_DEBOUNCE_MS);
     },
     /**
      * Runs the search for a text, with the advanced criteria that stand, and writes it
@@ -1994,7 +1989,7 @@ export default {
     runSearch(term) {
       this.searchTerm = term;
       this.cancelSelectMode();
-      this.runServerSearch();
+      this.runSearchArms();
       this.syncSearchUrl();
     },
     /**
@@ -2015,24 +2010,25 @@ export default {
       return role !== 'TRASH' && role !== 'JUNK';
     },
     /**
-     * Empties the header filter field, on the exo-drawer inside the pinneable-drawer
-     * wrapper ({@link innerMailDrawer}, EXO-90578).
+     * Closes and empties the search row's field (EXO-90838).
      *
      * @returns {void}
      */
     resetSearchField() {
-      this.innerMailDrawer()?.resetFilter?.();
+      this.searchFieldOpen = false;
+      this.searchFieldText = '';
     },
     /**
      * The search of the folder shown, beside the instant local matches: an IMAP SEARCH
      * on the server in the user's own mailbox, the copy kept here of the folder in a
      * shared one (EXO-90590). The request id guards against out-of-order answers: only
-     * the latest term's response may land.
+     * the latest term's response may land. The server arm of an advanced search
+     * (EXO-90838) runs under the local arm's id, so neither drops the other's answer.
      *
+     * @param {Number} requestId the search's request id; a new one by default
      * @returns {void}
      */
-    runServerSearch() {
-      const requestId = ++this.searchRequestId;
+    runServerSearch(requestId = ++this.searchRequestId) {
       const sharedMailbox = this.currentSharedMailbox;
       this.searchServerRunning = true;
       this.searchServerError = false;
@@ -2043,6 +2039,7 @@ export default {
           }
           this.searchServerResults = this.withLocalFavorites(page?.results || [], requestId);
           this.searchTotalMatches = page?.totalMatches || 0;
+          this.searchScanned = page?.scanned || 0;
         })
         .catch(async () => {
           if (requestId !== this.searchRequestId) {
@@ -2317,8 +2314,8 @@ export default {
       // Nothing prunes an override until a server answer lands, so a user who toggles
       // stars and never searches again would keep the entries for the page's lifetime.
       this.favoriteOverrides.clear();
-      // Also empty the drawer's own header filter field for the next open.
-      this.innerMailDrawer()?.resetFilter?.();
+      // Also empty the search row's field for the next open.
+      this.resetSearchField();
       document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
       this.cancelSelectMode();
       this.selectEmailPlaceHolder = false;
@@ -3789,7 +3786,7 @@ export default {
         // A running search follows the folder: local matches recompute from the
         // new list, and the server search re-runs scoped to the new folder.
         if (this.searchActive) {
-          this.runServerSearch();
+          this.runSearchArms();
         }
         this.openFirstAfterNavigation();
       });
