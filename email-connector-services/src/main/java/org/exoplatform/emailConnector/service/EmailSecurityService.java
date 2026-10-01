@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.service;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -26,6 +27,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -392,10 +394,9 @@ public class EmailSecurityService {
    * @return the domains, lower-cased
    */
   private Set<String> organisationDomains(Email email, String userAddress) {
-    Set<String> domains = new LinkedHashSet<>();
-    for (String domain : StringUtils.split(System.getProperty(ORGANISATION_DOMAINS_PROPERTY, ""), ", ")) {
-      domains.add(StringUtils.removeStart(domain.trim().toLowerCase(Locale.ROOT), "@"));
-    }
+    Set<String> domains = Arrays.stream(StringUtils.split(System.getProperty(ORGANISATION_DOMAINS_PROPERTY, ""), ", "))
+                                .map(domain -> StringUtils.removeStart(domain.trim().toLowerCase(Locale.ROOT), "@"))
+                                .collect(Collectors.toCollection(LinkedHashSet::new));
     for (String address : new String[] { normaliseOrNull(email.getUserEmail()), userAddress }) {
       String domain = EmailContactUtils.domainOf(address);
       if (domain != null && !EmailContactUtils.isFreemailDomain(domain)) {
