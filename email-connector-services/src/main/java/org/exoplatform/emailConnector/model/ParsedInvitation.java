@@ -25,7 +25,8 @@ import org.exoplatform.emailConnector.utils.InvitationReplyWriter;
  *
  * @param invitation the description
  * @param recurrenceId the RECURRENCE-ID as written, null for a whole series or a single event
+ * @param url the event's URL property as written, the sender's: null when it has none
  * @param replyWriter writes the REPLY
  */
-public record ParsedInvitation(CalendarInvitation invitation, String recurrenceId, InvitationReplyWriter replyWriter) {
+public record ParsedInvitation(CalendarInvitation invitation, String recurrenceId, String url, InvitationReplyWriter replyWriter) {
 }
