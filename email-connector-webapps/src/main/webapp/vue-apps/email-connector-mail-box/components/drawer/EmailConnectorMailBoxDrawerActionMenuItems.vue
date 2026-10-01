@@ -229,6 +229,13 @@ export default {
       type: Array,
       default: () => [{ key: 'INBOX', type: 'BUILT_IN' }],
     },
+    // Every folder of the user's, mirrored or not: what decides whether INBOX is the
+    // namespace their folders live under, so a path reads the same on every screen
+    // (EXO-90839). The offered folders when not given.
+    namespaceFolders: {
+      type: Array,
+      default: null,
+    },
     // The categories offered as views ({id, name, icon}) — the add-on's full
     // set, Important included (its chip above the list is a shortcut to the
     // same view). Empty hides the section.
@@ -279,14 +286,14 @@ export default {
      */
     visibleFolders() {
       // The user's own folders as a tree (EXO-90839), a collapsed one's folders left out.
-      return visibleFolderRows(buildFolderTree(this.availableFolders), this.collapsed).map(row => {
+      return visibleFolderRows(buildFolderTree(this.availableFolders, this.namespaceFolders || this.availableFolders), this.collapsed).map(row => {
         const folder = row.folder;
         const scheduled = this.$emailConnectorMailBoxService.isScheduledView(folder.key);
         return {
           key: folder.key,
           depth: row.depth,
           hasChildren: row.hasChildren,
-          path: this.$emailConnectorMailBoxService.folderPath(folder, this.availableFolders),
+          path: this.$emailConnectorMailBoxService.folderPath(folder, this.namespaceFolders || this.availableFolders),
           icon: this.$emailConnectorMailBoxService.folderIcon(folder),
           label: row.showPath ? row.pathLabel : this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)),
           // Counted in the menu only for the Scheduled view, which is listed only when it
