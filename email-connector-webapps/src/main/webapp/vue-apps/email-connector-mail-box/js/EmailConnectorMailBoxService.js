@@ -20,6 +20,8 @@
 export * from './EmailConnectorScheduledSendService.js';
 // Read receipts (EXO-90435), reached the same way.
 export * from './EmailConnectorReadReceiptService.js';
+// Calendar invitations in mail (EXO-90840), reached the same way.
+export * from './EmailConnectorInvitationService.js';
 // The mailboxes shared with the user, and what their rights let the interface offer.
 export * from './EmailConnectorSharedMailboxes.js';
 import { inboxOnlyShareOf, isSharedMailboxFolder, sharedFolderRole, sharedMailboxAllows, sharedMailboxAllowsMoveOut, sharedMailboxCanFileInto, sharedMailboxOfFolder } from './EmailConnectorSharedMailboxes.js';
