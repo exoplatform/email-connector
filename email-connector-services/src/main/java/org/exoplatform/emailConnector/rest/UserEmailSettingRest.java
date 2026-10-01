@@ -64,6 +64,7 @@ import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.ForwardingStatus;
 import org.exoplatform.emailConnector.model.GrantedDelegations;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
+import org.exoplatform.emailConnector.model.RemoteContentSettings;
 import org.exoplatform.emailConnector.model.UndoSendSettings;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -77,6 +78,7 @@ import org.exoplatform.emailConnector.service.EmailAbsenceService;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.service.EmailForwardingService;
 import org.exoplatform.emailConnector.service.EmailScheduledSendService;
+import org.exoplatform.emailConnector.service.EmailSecurityService;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
@@ -122,6 +124,9 @@ public class UserEmailSettingRest {
 
   @Autowired
   private EmailScheduledSendService emailScheduledSendService;
+
+  @Autowired
+  private EmailSecurityService    emailSecurityService;
 
   /**
    * Connects the caller to a connector whose provider asks them for nothing - the
@@ -332,6 +337,97 @@ public class UserEmailSettingRest {
                                                UndoSendSettings settings) {
     try {
       return emailScheduledSendService.saveUndoSendSettings(request.getRemoteUser(), settings);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * The caller's choices about the resources received mail would fetch from the
+   * internet (EXO-90841).
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @return whether they are held back, and the senders always trusted
+   */
+  @GetMapping("/remote-content")
+  @Secured("users")
+  @Operation(summary = "Gets the caller's remote-content choices", method = "GET",
+             description = "Answers whether the images and other resources received mail would fetch from the internet wait for the caller's consent (blockRemoteContent, true unless switched off) and the sender addresses whose mail always loads them (trustedSenders).")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
+  public RemoteContentSettings getRemoteContentSettings(HttpServletRequest request) {
+    return emailSecurityService.getSettings(request.getRemoteUser());
+  }
+
+  /**
+   * Switches the holding back of remote content on or off for the caller's mail.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param settings carries blockRemoteContent; trustedSenders is ignored
+   * @return the choices as they now stand
+   */
+  @PutMapping("/remote-content")
+  @Secured("users")
+  @Operation(summary = "Switches the caller's remote-content blocking", method = "PUT",
+             description = "Stores blockRemoteContent. The trusted senders are changed through /remote-content/trusted-senders only and are ignored here.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "No body"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
+  public RemoteContentSettings saveRemoteContentSettings(HttpServletRequest request,
+                                                         @RequestBody(required = false)
+                                                         RemoteContentSettings settings) {
+    if (settings == null) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+    }
+    return emailSecurityService.setBlockRemoteContent(request.getRemoteUser(), settings.isBlockRemoteContent());
+  }
+
+  /**
+   * Trusts a sender: the caller's mail from that address always loads its remote
+   * content.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param address the sender's address
+   * @return the choices as they now stand
+   */
+  @PostMapping("/remote-content/trusted-senders")
+  @Secured("users")
+  @Operation(summary = "Trusts a sender's remote content", method = "POST",
+             description = "Adds the address to the caller's trusted senders, whose mail always loads the images and other resources it fetches from the internet. The list keeps the 500 most recently trusted.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Not a mail address (emailConnector.remoteContent.invalidSender)"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
+  public RemoteContentSettings trustSender(HttpServletRequest request,
+                                           @Parameter(description = "The sender's address", required = true)
+                                           @RequestParam("address")
+                                           String address) {
+    try {
+      return emailSecurityService.trustSender(request.getRemoteUser(), address);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Stops trusting a sender.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param address the sender's address
+   * @return the choices as they now stand
+   */
+  @DeleteMapping("/remote-content/trusted-senders")
+  @Secured("users")
+  @Operation(summary = "Stops trusting a sender's remote content", method = "DELETE",
+             description = "Removes the address from the caller's trusted senders; their mail holds its remote content back again while blocking is on.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Not a mail address (emailConnector.remoteContent.invalidSender)"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
+  public RemoteContentSettings forgetSender(HttpServletRequest request,
+                                            @Parameter(description = "The sender's address", required = true)
+                                            @RequestParam("address")
+                                            String address) {
+    try {
+      return emailSecurityService.forgetSender(request.getRemoteUser(), address);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
