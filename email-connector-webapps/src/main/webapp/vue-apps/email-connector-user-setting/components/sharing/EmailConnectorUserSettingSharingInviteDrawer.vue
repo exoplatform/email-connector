@@ -62,7 +62,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               <div class="d-flex flex-column">
                 <span class="text-color">{{ $t('UserSettings.emailConnector.sharing.preset.EDITOR') }}</span>
                 <span class="caption text-sub-title text-wrap">
-                  {{ $t('UserSettings.emailConnector.sharing.preset.EDITOR.description') }}
+                  {{ $t(editorDescriptionKey) }}
                 </span>
               </div>
             </template>
@@ -148,6 +148,8 @@ export default {
     perFolder: false,
     // Whether the mail server accepts any shape of writing in the owner's name (EXO-90582).
     sendModeOffered: false,
+    // Whether an Editor of the owner's Trash can delete mail there for good (EXO-90816).
+    trashExpunge: false,
     foldersOpen: false,
     foldersLoading: false,
     folders: [],
@@ -157,6 +159,17 @@ export default {
     choices: {},
   }),
   computed: {
+    /**
+     * What an Editor may do, as this mail server holds it (EXO-90816): where an Editor of
+     * the owner's Trash can delete mail there for good, the description says so.
+     *
+     * @returns {String} the message key
+     */
+    editorDescriptionKey() {
+      return this.trashExpunge
+        ? 'UserSettings.emailConnector.sharing.preset.EDITOR.description.trashExpunge'
+        : 'UserSettings.emailConnector.sharing.preset.EDITOR.description';
+    },
     /**
      * The consent said before the Share button: with, where the mail server accepts it,
      * the sentence that writing in the owner's name is a separate choice made afterwards
@@ -226,8 +239,9 @@ export default {
      * Opens the drawer on an empty choice — never on the last one, which would let a
      * second share go to the first person by a misplaced press.
      *
-     * @param {Object} options {perFolder, sendModes}: whether the mail server shares folder
-     *   by folder, and the shapes of writing in the owner's name it accepts
+     * @param {Object} options {perFolder, sendModes, trashExpunge}: whether the mail server
+     *   shares folder by folder, the shapes of writing in the owner's name it accepts, and
+     *   whether an Editor of the owner's Trash can delete mail there for good
      * @returns {void}
      */
     open(options) {
@@ -235,6 +249,7 @@ export default {
       this.preset = 'READER';
       this.perFolder = !!options?.perFolder;
       this.sendModeOffered = !!options?.sendModes?.length;
+      this.trashExpunge = !!options?.trashExpunge;
       this.foldersOpen = false;
       this.folders = [];
       this.truncated = false;
