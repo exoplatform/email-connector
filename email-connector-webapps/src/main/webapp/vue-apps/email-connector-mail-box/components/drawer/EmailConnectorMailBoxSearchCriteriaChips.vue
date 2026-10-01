@@ -15,7 +15,9 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- The search's criteria above its results (EXO-90838): one chip each, closed to take
+  <!-- The criteria line under the search row, for the list and the results alike
+       (EXO-90838): the search's criteria, and a lit Unread or Favorites while the search
+       field hides the row's own chips -- one chip each, closed to take
        that criterion off and search again, in the chip language of the list's own filter
        chips (small, primary), on one line that scrolls sideways; "Clear all" once there
        are two. The search box's own text is in the box, not a chip, and the advanced
