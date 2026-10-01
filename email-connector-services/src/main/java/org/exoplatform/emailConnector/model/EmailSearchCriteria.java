@@ -64,6 +64,10 @@ public class EmailSearchCriteria {
   // Only the messages received before that day, that day excluded.
   private LocalDate before;
 
+  // Whether the caller sent a day that is not one (not yyyy-MM-dd): refused with
+  // emailConnector.search.invalidDate, once the caller's access to the mailbox is checked.
+  private boolean   invalidDay;
+
   /**
    * Whether at least one criterion is set: a search with none would list the whole
    * folder, which is what the folder's own list is for.
