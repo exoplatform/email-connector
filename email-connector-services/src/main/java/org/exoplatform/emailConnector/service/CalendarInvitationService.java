@@ -45,6 +45,7 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
@@ -59,6 +60,7 @@ import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ParsedInvitation;
 import org.exoplatform.emailConnector.model.SendMode;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.utils.AgendaEventLinks;
 import org.exoplatform.emailConnector.utils.CalendarInvitationUtils;
 import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 import org.exoplatform.services.log.ExoLogger;
@@ -97,6 +99,11 @@ import io.meeds.social.util.JsonUtils;
  * setting per answered event; and a mail whose whole body is the iCalendar object (a
  * single-part {@code text/calendar}, which iMIP allows and the mainstream clients do not
  * send) carries no part the sync describes, so it shows no event.
+ * <p>
+ * An event this deployment's own Agenda mailed (its {@code event.ics}, METHOD:PUBLISH) is
+ * recognised by its UID and its link back to this portal ({@link AgendaEventLinks}): the
+ * card says it is an eXo meeting and links to it in Agenda, where it is answered, and
+ * never offers Accept / Maybe / Decline.
  * <p>
  * Nothing lands in a calendar here: the agenda add-on is not a dependency of this one.
  */
@@ -373,6 +380,14 @@ public class CalendarInvitationService {
     if (given != null && given.getAnswer() != null && given.getSequence() >= invitation.getSequence()) {
       invitation.setAnswer(given.getAnswer());
     }
+    String agendaUrl = AgendaEventLinks.localAgendaLink(invitation.getUid(), parsed.url(), ownDomain());
+    if (agendaUrl != null) {
+      // One of this deployment's own Agenda events: answered in Agenda, whatever the
+      // method says, so the attendee's answer is recorded where the event lives.
+      invitation.setExoMeeting(true);
+      invitation.setAgendaUrl(agendaUrl);
+      return parsed;
+    }
     if (asksForAnswer(email, invitation, delegation, username)) {
       boolean mayAnswer = delegation == null || sendMode(username, delegation) != null;
       invitation.setAnswerable(mayAnswer);
@@ -624,6 +639,20 @@ public class CalendarInvitationService {
       return ANSWER_KEY_PREFIX + HexFormat.of().formatHex(digest);
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException("SHA-256 is not available", e);
+    }
+  }
+
+  /**
+   * This deployment's configured domain, the one its Agenda builds event links from.
+   *
+   * @return the domain, null when the portal cannot be asked
+   */
+  String ownDomain() {
+    try {
+      return CommonsUtils.getCurrentDomain();
+    } catch (RuntimeException | LinkageError e) {
+      LOG.debug("This deployment's domain could not be read; no invitation is recognised as its Agenda's", e);
+      return null;
     }
   }
 
