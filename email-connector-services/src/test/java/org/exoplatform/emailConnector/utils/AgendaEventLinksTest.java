@@ -22,8 +22,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import org.junit.jupiter.api.Test;
 
 /**
- * Only this deployment's own Agenda events are recognised (EXO-90840): Agenda's UID and
- * link, agreeing on the event, on this deployment's authority.
+ * Only this deployment's own Agenda events are recognised (EXO-90840): Agenda's link, on
+ * this deployment's authority, whatever the UID -- and, when the UID is Agenda's, both
+ * agreeing on the deployment and the event.
  */
 class AgendaEventLinksTest {
 
@@ -32,6 +33,9 @@ class AgendaEventLinksTest {
   private static final String UID  = "agenda-event-42@exo.example.test";
 
   private static final String LINK = "https://exo.example.test/portal/dw/agenda?eventId=42";
+
+  /** The UID a CalDAV copy or a calendar server's answer carries: its own, random. */
+  private static final String RANDOM_UID = "3f1c0b52-9d0e-4f7e-8b5e-4f2e0a8d1c11";
 
   /**
    * An event this deployment mailed is recognised, and its link is rebuilt from the
@@ -50,8 +54,37 @@ class AgendaEventLinksTest {
   }
 
   /**
+   * A copy of the event -- a CalDAV copy, a calendar server's answer about it -- keeps the
+   * link and has a UID of its own: the link alone recognises it, on this deployment's
+   * authority only.
+   */
+  @Test
+  void aCopyIsRecognisedByItsLinkAlone() {
+    assertEquals(LINK, AgendaEventLinks.localAgendaLink(RANDOM_UID, LINK, OWN));
+    assertEquals(LINK, AgendaEventLinks.localAgendaLink(null, LINK, OWN), "no UID at all");
+    assertEquals("http://localhost:8080/portal/dw/agenda?eventId=168",
+                 AgendaEventLinks.localAgendaLink(RANDOM_UID, "http://localhost:8080/portal/dw/agenda?eventId=168", "http://localhost:8080"));
+    for (String foreign : java.util.List.of("https://other.example.test/portal/dw/agenda?eventId=42",
+                                            "https://exo.example.test:8443/portal/dw/agenda?eventId=42",
+                                            "http://localhost:8081/portal/dw/agenda?eventId=42",
+                                            "exo.example.test/portal/dw/agenda?eventId=42",
+                                            "javascript://exo.example.test/portal/dw/agenda?eventId=42",
+                                            "https://user@exo.example.test/portal/dw/agenda?eventId=42",
+                                            "https://exo.example.test@evil.example.test/portal/dw/agenda?eventId=42",
+                                            LINK + "#x",
+                                            LINK + "&x=1",
+                                            "https://exo.example.test/portal/d%22w/agenda?eventId=42",
+                                            "https://exo.example.test/portal/dw/agenda?eventId=",
+                                            " ")) {
+      assertNull(AgendaEventLinks.localAgendaLink(RANDOM_UID, foreign, OWN), foreign);
+    }
+    assertNull(AgendaEventLinks.localAgendaLink(RANDOM_UID, null, OWN), "no URL");
+  }
+
+  /**
    * Another eXo's event, a forged UID with a link elsewhere, a link on another port of
-   * the same host, and a link or UID of another event are not recognised.
+   * the same host, and Agenda's UID naming another deployment or event than the link are
+   * not recognised.
    */
   @Test
   void anotherDeploymentsOrAForgedEventIsNotRecognised() {
@@ -66,7 +99,6 @@ class AgendaEventLinksTest {
     assertNull(AgendaEventLinks.localAgendaLink(UID, "https://exo.example.test:8443/portal/dw/agenda?eventId=42", OWN),
                "another port is another deployment");
     assertNull(AgendaEventLinks.localAgendaLink("agenda-event-43@exo.example.test", LINK, OWN), "another event");
-    assertNull(AgendaEventLinks.localAgendaLink("weekly-sync@google.com", LINK, OWN), "not Agenda's UID");
   }
 
   /**
@@ -85,7 +117,6 @@ class AgendaEventLinksTest {
     assertNull(AgendaEventLinks.localAgendaLink(UID, "https://exo.example.test/portal/d%22w/agenda?eventId=42", OWN));
     assertNull(AgendaEventLinks.localAgendaLink(UID, "https://user@exo.example.test/portal/dw/agenda?eventId=42", OWN));
     assertNull(AgendaEventLinks.localAgendaLink(UID, LINK, null), "this deployment's domain unknown");
-    assertNull(AgendaEventLinks.localAgendaLink(null, LINK, OWN));
   }
 
   /**

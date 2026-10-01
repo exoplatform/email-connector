@@ -100,10 +100,12 @@ import io.meeds.social.util.JsonUtils;
  * single-part {@code text/calendar}, which iMIP allows and the mainstream clients do not
  * send) carries no part the sync describes, so it shows no event.
  * <p>
- * An event this deployment's own Agenda mailed (its {@code event.ics}, METHOD:PUBLISH) is
- * recognised by its UID and its link back to this portal ({@link AgendaEventLinks}): the
- * card says it is an eXo meeting and links to it in Agenda, where it is answered, and
- * never offers Accept / Maybe / Decline.
+ * An event of this deployment's own Agenda -- the {@code event.ics} Agenda mails, a CalDAV
+ * copy of it, or a calendar server's answer about one -- is recognised by its link back to
+ * this portal ({@link AgendaEventLinks}): the card says it is an eXo meeting and links to
+ * it in Agenda, where it is answered, and never offers Accept / Maybe / Decline. A REPLY,
+ * a COUNTER, a REFRESH or a DECLINECOUNTER is shown as what it is, someone's answer, and
+ * is never answered either.
  * <p>
  * Nothing lands in a calendar here: the agenda add-on is not a dependency of this one.
  */
