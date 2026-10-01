@@ -827,7 +827,7 @@ export default {
         this.email.subject = prefill.subject;
       }
       if (email) {
-        this.seedAnsweredBody(email, forward, signature);
+        this.seedAnsweredBody(await this.withRemoteContent(email), forward, signature);
       } else {
         this.seedNewMailBody(prefill, signature);
       }
@@ -842,6 +842,24 @@ export default {
           this.carryForwardedFiles(email);
         }
       });
+    },
+    /**
+     * The message being answered with the images it fetches from the internet, when the
+     * reader held them back (EXO-90841): answering or forwarding quotes the message as
+     * its sender wrote it, so the recipient does not get a copy stripped of its images.
+     * Read again without counting as an opening; on failure the message is quoted as
+     * the reader showed it.
+     *
+     * @param {object} email - the message being replied to or forwarded
+     * @returns {Promise<object>} the message, its body with remote content when it had any held back
+     */
+    withRemoteContent(email) {
+      if (!email?.content?.remoteContentBlocked || !email.mailRemoteId) {
+        return Promise.resolve(email);
+      }
+      return this.$emailConnectorMailBoxService.getEmailByRemoteId(email.mailRemoteId, email.folder, { broadcast: false, remoteContent: true })
+        .then(read => (read?.content ? { ...email, content: { ...email.content, body: read.content.body } } : email))
+        .catch(() => email);
     },
     /**
      * The body a new mail opens with: an empty line for the words, then the signature

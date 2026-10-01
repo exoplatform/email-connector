@@ -49,6 +49,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-if="!scheduled"
       :email="email"
       :auto-allowed="receiptAutoAllowed" />
+    <!-- Why the message looks suspicious, and the images it would fetch from the
+         internet held back until asked for (EXO-90841). -->
+    <email-connector-security-banner
+      v-if="!scheduled"
+      :content="content"
+      :sender-address="senderAddress"
+      :loading="remoteContentLoading"
+      @show-remote-content="loadRemoteContent" />
     <v-list-item
       :class="['height-auto', recipientsClass]">
       <email-connector-mail-box-drawer-list-item-detail-sender-avatar 
@@ -197,7 +205,22 @@ export default {
   data() {
     return {
       expandedHeader: false,
+      // The content read again with its remote content once the user asked for it
+      // (EXO-90841); null while the message shows as it was first read.
+      remoteContentLoaded: null,
+      remoteContentLoading: false,
     };
+  },
+  watch: {
+    /**
+     * Another message in this place shows as it was read: the remote content loaded
+     * for the previous one was for that one only.
+     *
+     * @returns {void}
+     */
+    'email.id'() {
+      this.remoteContentLoaded = null;
+    },
   },
   created() {
     this.$root.$on('email-detail-drawer-closed', () => {
@@ -368,10 +391,27 @@ export default {
     // Read off the message in script rather than in the template: the template
     // compiler of the component tests (vue-jest) does not parse optional chaining.
     emailBody() {
-      return this.email.content?.body;
+      return this.content?.body;
     },
     htmlBody() {
-      return this.email.content?.html !== false;
+      return this.content?.html !== false;
+    },
+    /**
+     * The content on screen: as the message was read, or as read again with its remote
+     * content once the user asked for it.
+     *
+     * @returns {Object} the content, or null when the message carries none
+     */
+    content() {
+      return this.remoteContentLoaded || this.email.content || null;
+    },
+    /**
+     * The address the message comes from, which "Always show images" trusts.
+     *
+     * @returns {String} the address, or null
+     */
+    senderAddress() {
+      return this.email.sender?.address || null;
     },
     excerpt() {
       return this.email.content?.excerpt || '';
@@ -434,6 +474,21 @@ export default {
      */
     retryRead() {
       this.$root.$emit('retry-email-read', this.email);
+    },
+    /**
+     * Reads the message again with the images and other resources it fetches from the
+     * internet, the user having asked for them, and shows that content in place. The
+     * read does not count as opening the message again.
+     *
+     * @returns {Promise<void>} resolved once shown or given up
+     */
+    loadRemoteContent() {
+      this.remoteContentLoading = true;
+      const options = { broadcast: false, remoteContent: true };
+      return this.$emailConnectorMailBoxService.getEmailByRemoteId(this.email.mailRemoteId, this.email.folder, options)
+        .then(read => this.remoteContentLoaded = read?.content || null)
+        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.remoteContent.loadError'), 'error'))
+        .finally(() => this.remoteContentLoading = false);
     },
     openReplyEmailDrawer() {
       this.$root.$emit('open-new-email-drawer', this.email);
