@@ -15566,9 +15566,22 @@ public class EmailBoxServiceTest {
     assertEquals(List.of(2L), cachedUids(sender));
 
     EmailSearchResultPage page = emailBoxService.searchCachedFolder(TEST_USER, words, MailFolder.INBOX, 10);
-    assertEquals(ccDave.getReceivedDate(), page.getCachedSince(), "the copy's oldest message there");
+    assertNull(page.getCachedSince(), "a folder no synchronization captured yet states no date");
     assertEquals(MailFolder.INBOX, page.getResults().get(0).getFolder());
     assertTrue(page.getResults().get(0).isCached());
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 2));
+    doReturn(SettingValue.create(JsonUtils.toJsonString(state))).when(settingService)
+                                                                .get(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
+    assertEquals(toDave.getReceivedDate(),
+                 emailBoxService.searchCachedFolder(TEST_USER, words, MailFolder.INBOX, 10).getCachedSince(),
+                 "the oldest of the synchronized window (2), never an older message opened from a server search");
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 1000));
+    doReturn(SettingValue.create(JsonUtils.toJsonString(state))).when(settingService)
+                                                                .get(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
+    assertEquals(ccDave.getReceivedDate(),
+                 emailBoxService.searchCachedFolder(TEST_USER, words, MailFolder.INBOX, 10).getCachedSince(),
+                 "a window wider than the copy: its oldest message");
     verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
