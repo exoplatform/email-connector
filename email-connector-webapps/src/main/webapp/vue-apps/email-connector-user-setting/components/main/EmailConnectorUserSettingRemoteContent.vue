@@ -15,78 +15,42 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- Images in received mail (EXO-90841): whether the images a mail fetches from the
-       internet wait until asked for, and the senders whose mail always shows them,
-       each of which can be forgotten. A one-line row under Advanced settings, like the
-       read receipts, that opens on its choices. -->
-  <div class="remote-content-settings">
-    <v-list-item>
-      <v-list-item-content>
-        <v-list-item-title class="text-color">
-          {{ $t('UserSettings.emailConnector.remoteContent.title') }}
-        </v-list-item-title>
-        <v-list-item-subtitle>
-          {{ summary }}
-        </v-list-item-subtitle>
-      </v-list-item-content>
-      <v-list-item-action>
-        <v-btn
-          :aria-expanded="expanded ? 'true' : 'false'"
-          :title="$t('UserSettings.emailConnector.remoteContent.edit.tooltip')"
-          aria-controls="emailConnectorRemoteContentChoices"
-          icon
-          @click="expanded = !expanded">
-          <v-icon size="16" class="icon-default-color">
-            {{ expanded ? 'fa-chevron-up' : 'fa-chevron-down' }}
-          </v-icon>
-        </v-btn>
-      </v-list-item-action>
-    </v-list-item>
-    <div v-show="expanded" id="emailConnectorRemoteContentChoices">
-      <v-list-item>
-        <v-list-item-content class="ps-4">
-          <v-list-item-subtitle class="text-wrap">
-            {{ $t('UserSettings.emailConnector.remoteContent.block') }}
-          </v-list-item-subtitle>
-        </v-list-item-content>
-        <v-list-item-action>
-          <v-switch
-            v-model="blockRemoteContent"
-            :disabled="!loaded || saving"
-            :aria-label="$t('UserSettings.emailConnector.remoteContent.block')"
-            class="remote-content-block"
-            @change="saveBlocking" />
-        </v-list-item-action>
-      </v-list-item>
-      <v-list-item
-        v-for="sender in trustedSenders"
-        :key="sender"
-        class="remote-content-trusted-sender">
-        <v-list-item-content class="ps-4">
-          <v-list-item-subtitle class="text-truncate">
-            {{ sender }}
-          </v-list-item-subtitle>
-        </v-list-item-content>
-        <v-list-item-action>
-          <v-btn
-            :disabled="saving"
-            :title="$t('UserSettings.emailConnector.remoteContent.forget', { 0: sender })"
-            :aria-label="$t('UserSettings.emailConnector.remoteContent.forget', { 0: sender })"
-            icon
-            small
-            @click="forget(sender)">
-            <v-icon size="14" class="icon-default-color">fa-times</v-icon>
-          </v-btn>
-        </v-list-item-action>
-      </v-list-item>
-    </div>
-  </div>
+  <!-- Images in received mail (EXO-90841): one line, like the address book's, with the
+       switch on it -- whether the images a mail fetches from the internet wait until
+       asked for -- and, once a sender is trusted, a pencil that opens the drawer listing
+       the trusted senders, each removable there. -->
+  <v-list-item class="remote-content-settings">
+    <v-list-item-content>
+      <v-list-item-title class="text-color">
+        {{ $t('UserSettings.emailConnector.remoteContent.title') }}
+      </v-list-item-title>
+      <v-list-item-subtitle>
+        {{ summary }}
+      </v-list-item-subtitle>
+    </v-list-item-content>
+    <v-list-item-action class="d-flex flex-row align-center">
+      <v-btn
+        v-if="trustedSenders.length"
+        :title="$t('UserSettings.emailConnector.remoteContent.edit.tooltip')"
+        :aria-label="$t('UserSettings.emailConnector.remoteContent.edit.tooltip')"
+        class="remote-content-edit-senders"
+        icon
+        @click="$root.$emit('open-email-trusted-senders-drawer')">
+        <v-icon size="18" class="icon-default-color">fas fa-pen</v-icon>
+      </v-btn>
+      <v-switch
+        v-model="blockRemoteContent"
+        :disabled="!loaded || saving"
+        :aria-label="$t('UserSettings.emailConnector.remoteContent.block')"
+        class="remote-content-block ms-2"
+        @change="saveBlocking" />
+    </v-list-item-action>
+  </v-list-item>
 </template>
 
 <script>
 export default {
   data: () => ({
-    expanded: false,
     loaded: false,
     saving: false,
     blockRemoteContent: true,
@@ -111,6 +75,11 @@ export default {
   },
   created() {
     this.read();
+    // The drawer is where senders are forgotten: what it stored is what this row shows.
+    this.$root.$on('email-trusted-senders-updated', this.apply);
+  },
+  beforeDestroy() {
+    this.$root.$off('email-trusted-senders-updated', this.apply);
   },
   methods: {
     /**
@@ -131,15 +100,6 @@ export default {
      */
     saveBlocking() {
       return this.save(() => this.$emailConnectorCommonService.saveRemoteContentBlocking(this.blockRemoteContent));
-    },
-    /**
-     * Stops trusting a sender.
-     *
-     * @param {String} sender the sender's address
-     * @returns {Promise<void>} resolved once saved or refused
-     */
-    forget(sender) {
-      return this.save(() => this.$emailConnectorCommonService.setSenderTrusted(sender, false));
     },
     /**
      * Runs one save and shows what the server kept, or puts the screen back.
