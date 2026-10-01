@@ -64,6 +64,7 @@ import org.exoplatform.emailConnector.model.ForwardingSetting;
 import org.exoplatform.emailConnector.model.ForwardingStatus;
 import org.exoplatform.emailConnector.model.GrantedDelegations;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
+import org.exoplatform.emailConnector.model.UndoSendSettings;
 import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.model.VacationSetting;
@@ -75,6 +76,7 @@ import org.exoplatform.emailConnector.rest.model.ForwardingRequest;
 import org.exoplatform.emailConnector.service.EmailAbsenceService;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.service.EmailForwardingService;
+import org.exoplatform.emailConnector.service.EmailScheduledSendService;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
@@ -117,6 +119,9 @@ public class UserEmailSettingRest {
 
   @Autowired
   private EmailForwardingService  emailForwardingService;
+
+  @Autowired
+  private EmailScheduledSendService emailScheduledSendService;
 
   /**
    * Connects the caller to a connector whose provider asks them for nothing - the
@@ -287,6 +292,46 @@ public class UserEmailSettingRest {
                                                      ReadReceiptSettings settings) {
     try {
       return readReceiptService.saveSettings(request.getRemoteUser(), settings);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * The caller's Undo send preference (EXO-90837).
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @return the effective preference and the waits offered
+   */
+  @GetMapping("/undo-send")
+  @Secured("users")
+  @Operation(summary = "Gets the caller's Undo send preference", method = "GET",
+             description = "Answers how many seconds a mail the caller sends waits, with an Undo, before it goes (delaySeconds; 10 unless chosen; 0 is off: a mail goes at once), and the waits the server offers (allowedDelays, in the order a settings screen shows them).")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
+  public UndoSendSettings getUndoSendSettings(HttpServletRequest request) {
+    return emailScheduledSendService.getUndoSendSettings(request.getRemoteUser());
+  }
+
+  /**
+   * Stores the caller's Undo send preference (EXO-90837).
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param settings the preference
+   * @return the preference as it now stands
+   */
+  @PutMapping("/undo-send")
+  @Secured("users")
+  @Operation(summary = "Stores the caller's Undo send preference", method = "PUT",
+             description = "Stores delaySeconds, one of the offered waits (allowedDelays is ignored). Any other value, or no body, is refused with 400 emailConnector.undoSend.invalidDelay and nothing is stored.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "A wait not offered (emailConnector.undoSend.invalidDelay)"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
+  public UndoSendSettings saveUndoSendSettings(HttpServletRequest request,
+                                               @RequestBody(required = false)
+                                               UndoSendSettings settings) {
+    try {
+      return emailScheduledSendService.saveUndoSendSettings(request.getRemoteUser(), settings);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }

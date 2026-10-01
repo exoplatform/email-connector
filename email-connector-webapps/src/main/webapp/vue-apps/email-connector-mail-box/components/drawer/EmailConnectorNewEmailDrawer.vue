@@ -381,6 +381,13 @@ const LOCAL_SAVE_DEBOUNCE_MS = 1000;
 // unreasonable for a page of text plus 20 MB.
 const SERVER_PUSH_IDLE_MS = 2 * 60 * 1000;
 
+// Undo send (EXO-90837): the snackbar shows half a second after it is asked for and must
+// be gone before the server's timer sends the mail, so it is offered this much less than
+// the wait; and the mailbox is told the mail went this much after the wait, the time the
+// server's timer and its send take.
+const UNDO_SNACKBAR_MARGIN_MS = 1000;
+const UNDO_SENT_ANNOUNCE_MS = 3000;
+
 /**
  * A fresh record for the draft one composer session is writing: nothing saved yet,
  * no save in flight, and an empty queue for the saves to come.
@@ -476,6 +483,9 @@ export default {
       // (EXO-90434).
       scheduleMenu: false,
       scheduleMode: false,
+      // Set for the one pass of sendEmail that must not offer the Undo again (EXO-90837):
+      // the user turned it off, or the Undo send path is handing over to the immediate one.
+      undoSendChecked: false,
       scheduling: false,
       // The scheduled mail on screen, when the composer edits one (EXO-90434, Outlook's
       // way): it stays scheduled while the composer is open, nothing is saved until
@@ -2480,6 +2490,11 @@ export default {
           mimeType: attachment.mimeType,
           size: attachment.size,
         }));
+      if (!this.undoSendChecked && this.undoSendable()) {
+        this.sendWithUndo();
+        return;
+      }
+      this.undoSendChecked = false;
       this.loading = true;
       // Nothing may push a draft of a message that is about to be sent: the close
       // handler below would otherwise upload one, and showing someone a draft of a
@@ -2568,6 +2583,143 @@ export default {
           this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.error'), 'error');
         }
       }).finally(() => this.loading = false);
+    },
+    /**
+     * Whether what the composer holds can go through an Undo send (EXO-90837): the
+     * server sends it later from its stored draft, so every file must already be on it.
+     * A file still held as an upload -- one whose storing failed -- goes through the
+     * immediate send instead, which carries it.
+     *
+     * @returns {boolean} true when nothing on screen would be left behind
+     */
+    undoSendable() {
+      return !this.storingImages
+        && !this.attachments.some(attachment => attachment.uploading || (attachment.uploadId && !attachment.stored));
+    },
+    /**
+     * Sends what the composer holds with an Undo (EXO-90837), when the user did not turn
+     * it off: the draft is created when there is none yet and the saves in flight are
+     * waited for -- the schedule's own path -- then the server holds it for the user's
+     * wait and sends it, whatever becomes of this tab. The composer closes at once, and
+     * the snackbar offers the Undo for the wait. With the Undo off, the immediate send
+     * runs, as before.
+     *
+     * @returns {Promise<void>} resolved once held, sent, or refused
+     */
+    async sendWithUndo() {
+      const session = this.draftSession;
+      this.loading = true;
+      this.cancelDraftTimers();
+      let delay = 0;
+      try {
+        delay = (await this.$emailConnectorCommonService.getUndoSendSettings())?.delaySeconds || 0;
+      } catch (e) {
+        delay = 0;
+      }
+      if (session !== this.draftSession) {
+        this.loading = false;
+        return;
+      }
+      if (delay <= 0) {
+        this.sendImmediately();
+        return;
+      }
+      try {
+        await (session.localId ? session.queue : this.forceDraft(session));
+        if (!session.localId || session !== this.draftSession) {
+          throw new Error('No draft to send');
+        }
+        const held = await this.$emailConnectorMailBoxService.sendDraftUndoable(session.localId, this.outgoingDraft());
+        this.offerUndoSend(held);
+        // Forgotten before the close, so the close finds nothing to save back.
+        this.emptyComposer();
+        this.$root.$emit('refresh-email-box');
+        this.close();
+        this.loading = false;
+      } catch (error) {
+        if (error?.code === 'emailConnector.undoSend.off') {
+          // Turned off in another tab since: sent at once, as the user now wants.
+          this.sendImmediately();
+          return;
+        }
+        this.loading = false;
+        if (!this.onScheduleIdentityRefused(error)) {
+          this.$root.$emit('alert-message', this.$emailConnectorMailBoxService.scheduledErrorMessage(error, this,
+            'emailConnector.mailBox.newEmail.drawer.send.error'), 'error');
+        }
+      }
+    },
+    /**
+     * The send as it was before the Undo (EXO-90837): what Send does with the Undo off,
+     * or for a mail with a file not stored on its draft.
+     *
+     * @returns {void}
+     */
+    sendImmediately() {
+      this.loading = false;
+      this.undoSendChecked = true;
+      this.sendEmail(this.email);
+    },
+    /**
+     * The snackbar of a mail sent with an Undo (EXO-90837): "Sending..." with Undo, for
+     * the wait the server answered. The Undo is single-shot and closes the snackbar on
+     * its click, as the move's does. Once the wait is over and nobody took the mail
+     * back, the mailbox is told it went, so it watches Sent for its copy.
+     *
+     * @param {Object} held {draftLocalId, delaySeconds}, as the server answered
+     * @returns {void}
+     */
+    offerUndoSend(held) {
+      const delayMs = Math.max(0, (held?.delaySeconds || 0) * 1000);
+      let undone = false;
+      const announce = setTimeout(() => {
+        if (!undone) {
+          this.$root.$emit('email-sent');
+          this.$root.$emit('refresh-email-box');
+        }
+      }, delayMs + UNDO_SENT_ANNOUNCE_MS);
+      document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+        alertType: 'success',
+        alertMessage: this.$t('emailConnector.mailBox.newEmail.drawer.undoSend.sending'),
+        alertLinkText: this.$t('emailConnector.mailBox.newEmail.drawer.undoSend.undo'),
+        alertTimeout: Math.max(UNDO_SNACKBAR_MARGIN_MS, delayMs - UNDO_SNACKBAR_MARGIN_MS),
+        alertLinkCallback: () => {
+          if (undone) {
+            return Promise.resolve(null);
+          }
+          undone = true;
+          clearTimeout(announce);
+          document.dispatchEvent(new CustomEvent('close-alert-message'));
+          return this.undoSend(held.draftLocalId);
+        },
+      }}));
+    },
+    /**
+     * Takes a mail sent with an Undo back (EXO-90837) and reopens it in the composer as
+     * it was frozen: recipients, subject, body, files, the mailbox and the name it was
+     * to go out in. A mail being written meanwhile is saved as a draft first, as closing
+     * the composer would. Too late -- the mail is going or gone -- the user is told so.
+     *
+     * @param {String} draftLocalId the draft's local id
+     * @returns {Promise<void>} resolved once reopened or refused
+     */
+    async undoSend(draftLocalId) {
+      try {
+        const draft = await this.$emailConnectorMailBoxService.undoSend(draftLocalId);
+        if (this.newEmailDrawer) {
+          this.flushDraft();
+        }
+        this.openOnDraft(draft);
+        this.$root.$emit('refresh-email-box');
+        this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.undoSend.undone'), 'info');
+      } catch (error) {
+        const tooLate = error?.status === 409 || error?.status === 404;
+        this.$root.$emit('alert-message', this.$t(tooLate ? 'emailConnector.mailBox.newEmail.drawer.undoSend.tooLate'
+          : 'emailConnector.mailBox.newEmail.drawer.undoSend.error'), tooLate ? 'info' : 'error');
+        if (tooLate) {
+          this.$root.$emit('email-sent');
+        }
+      }
     },
     /**
      * Opens the date and time card of the split Send button, from its caret menu.
