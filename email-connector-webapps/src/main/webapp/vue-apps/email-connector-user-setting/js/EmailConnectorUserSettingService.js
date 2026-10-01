@@ -218,13 +218,16 @@ export function setMailFolderMirror(id, enabled) {
  * write to the account's real mailbox, done only on this explicit call. A refusal
  * carries the server's message code as the error message
  * ("emailConnector.folder.name.duplicate", ".nested", ".reserved", ".blank",
- * ".tooLong" or ".createFailed"), so the screen can say why in the user's words.
+ * ".tooLong", "emailConnector.folder.parent.invalid" or ".createFailed"), so the
+ * screen can say why in the user's words.
  *
  * @param {String} name the folder name, as typed
+ * @param {Number} parentId the registry id of the folder to create it in; the top level when omitted
  * @returns {Promise<Object>} the folder as registered
  */
-export function createMailFolder(name) {
-  return fetch(`/email-connector/rest/email-box/folders?name=${encodeURIComponent(name)}`, {
+export function createMailFolder(name, parentId) {
+  const parent = parentId ? `&parentId=${encodeURIComponent(parentId)}` : '';
+  return fetch(`/email-connector/rest/email-box/folders?name=${encodeURIComponent(name)}${parent}`, {
     credentials: 'include',
     method: 'POST'
   }).then(resp => {
@@ -265,15 +268,53 @@ export function renameMailFolder(id, name) {
 }
 
 /**
- * Deletes one of the user's own folders, on the mail server and in the registry --
- * permanently, and refused by the server while the folder still holds mail
- * ("emailConnector.folder.notEmpty").
+ * Moves one of the user's own folders, with the folders inside it, inside another of
+ * their folders or to the top level, optionally under a new name in the same step
+ * (EXO-90839). A refusal carries the server's message code the same way
+ * {@link createMailFolder} does ("emailConnector.folder.parent.invalid" for a folder
+ * it cannot go into).
  *
  * @param {Number} id the folder's registry id
+ * @param {Number} parentId the registry id of the folder to move it into; the top level when omitted
+ * @param {String} name the name it takes there, as typed; its own when omitted
+ * @returns {Promise<Object>} the folder as it now stands
+ */
+export function moveMailFolder(id, parentId, name) {
+  const params = new URLSearchParams();
+  if (parentId) {
+    params.append('parentId', parentId);
+  }
+  if (name) {
+    params.append('name', name);
+  }
+  return fetch(`/email-connector/rest/email-box/folders/${id}/parent?${params}`, {
+    credentials: 'include',
+    method: 'PATCH'
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json()
+      .catch(() => ({}))
+      .then(body => {
+        throw new Error(body?.message || 'Error when moving the mail folder');
+      });
+  });
+}
+
+/**
+ * Deletes one of the user's own folders, on the mail server and in the registry --
+ * permanently, and refused by the server while the folder, or one inside it, still
+ * holds mail ("emailConnector.folder.notEmpty", "emailConnector.folder.subFolderNotEmpty"),
+ * or while it has folders inside it the caller did not say it deletes
+ * ("emailConnector.folder.hasSubFolders").
+ *
+ * @param {Number} id the folder's registry id
+ * @param {Boolean} subFolders whether the folders inside it are deleted too
  * @returns {Promise<void>} resolved once the folder and its mirror are gone
  */
-export function deleteMailFolder(id) {
-  return fetch(`/email-connector/rest/email-box/folders/${id}`, {
+export function deleteMailFolder(id, subFolders) {
+  return fetch(`/email-connector/rest/email-box/folders/${id}${subFolders ? '?subFolders=true' : ''}`, {
     credentials: 'include',
     method: 'DELETE'
   }).then(resp => {
