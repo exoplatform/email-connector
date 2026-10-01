@@ -328,8 +328,8 @@ class EmailHtmlSanitizerTest {
    * A crafted stylesheet cannot make the cleaning slow: many unclosed or unterminated
    * {@code url(} calls, long white space inside one, long unquoted arguments, nested
    * comment openings -- each finishes well inside a second and stays safe. The
-   * {@code url()} calls are read by hand ({@code urlCallAt}); a backtracking expression
-   * took quadratic time or worse on these.
+   * {@code url()} calls are read by hand ({@code urlCallAt}): a backtracking expression
+   * on these inputs is quadratic or worse.
    */
   @Test
   void aCraftedStylesheetIsCleanedInLinearTime() {
