@@ -34,6 +34,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <email-connector-user-setting-mailbox-sharing-drawer />
       <email-connector-user-setting-sharing-invite-drawer />
       <email-connector-user-setting-folder-access-drawer />
+      <email-connector-user-setting-trusted-senders-drawer />
     </template>
   </v-app>
 </template>
