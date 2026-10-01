@@ -203,10 +203,11 @@ public class EmailScheduledSendService {
   // provider filing its own copy has had the time to.
   static final long                  CHECK_DELAY_SECONDS          = 60;
 
-  // How far ahead a held mail's row is due while its draft is being frozen: beyond the
-  // freeze's worst case (the IMAP connect and read timeouts, 15 s and 30 s), so no
-  // dispatcher claims it before the freeze ends; a node stopping meanwhile leaves it to
-  // a tick past this margin.
+  // How far ahead a held mail's row is due while its draft is being frozen, so no
+  // dispatcher claims it before the freeze ends (the removal of the server copy is a few
+  // IMAP round trips, each bounded by a 30 s read timeout). A freeze still running past it
+  // loses its Undo, never its single send; a node stopping meanwhile leaves the mail to a
+  // tick past it.
   static final long                  HELD_FREEZE_MARGIN_MS        = 120_000L;
 
   // How long after the end of its wait a held mail's timer fires: the claim compares the
@@ -488,7 +489,17 @@ public class EmailScheduledSendService {
     // The wait starts now that the draft is frozen, so the sender gets all of it.
     Date started = now();
     Date due = new Date(started.getTime() + delay * 1000L);
-    if (emailScheduledSendStorage.startHeldWait(created.getId(), due, started)) {
+    boolean waiting;
+    try {
+      waiting = emailScheduledSendStorage.startHeldWait(created.getId(), due, started);
+    } catch (RuntimeException e) {
+      // The sender is about to be told the send failed: so it must not go. Taken back
+      // while it still waits (a row claimed meanwhile is the send's); the draft stays,
+      // its text in the composer.
+      emailScheduledSendStorage.deleteWaiting(created.getId());
+      throw e;
+    }
+    if (waiting) {
       armHeld(created.getId(), delay * 1000L + HELD_TIMER_SLACK_MS, 0);
       LOG.info("A mail of user {} is held {} s for its Undo", username, delay);
     } else {
