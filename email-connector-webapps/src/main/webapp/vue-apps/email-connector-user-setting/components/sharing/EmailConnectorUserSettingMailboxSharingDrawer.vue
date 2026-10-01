@@ -24,6 +24,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     id="userSettingMailboxSharingDrawer"
     ref="mailboxSharingDrawer"
     v-model="drawer"
+    :loading="mineLoading || theirsLoading"
     right
     allow-expand
     @opened="onOpened"
@@ -67,12 +68,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <email-connector-user-setting-sharing-drawer
         v-show="tab === 0"
         ref="mine"
+        @loading="mineLoading = $event"
         @can-share="canShare = $event"
         @per-folder="perFolder = $event"
         @trash-expunge="trashExpunge = $event" />
       <email-connector-user-setting-shared-with-me-drawer
         v-show="tab === 1"
-        ref="sharedWithMe" />
+        ref="sharedWithMe"
+        @loading="theirsLoading = $event" />
     </template>
     <template #footer>
       <div class="d-flex align-center">
@@ -107,6 +110,9 @@ export default {
     // Whether an Editor of the owner's Trash can delete mail there for good (EXO-90816).
     trashExpunge: false,
     pendingCount: 0,
+    // Whether either tab reads the server, shown in the drawer's own bar.
+    mineLoading: false,
+    theirsLoading: false,
     // The tabs already loaded since the drawer opened.
     shown: [],
   }),
@@ -152,6 +158,8 @@ export default {
         this.canShare = false;
         this.perFolder = false;
         this.trashExpunge = false;
+        this.mineLoading = false;
+        this.theirsLoading = false;
       }
       this.tab = index;
       this.drawer = true;
