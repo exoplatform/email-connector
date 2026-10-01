@@ -46,6 +46,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <email-connector-mail-box-drawer-action-menu-items
         :current-folder="currentFolder"
         :available-folders="availableFolders"
+        :namespace-folders="namespaceFolders"
         :categories="categories"
         :category-view-id="categoryViewId"
         :sync-in-progress="syncInProgress"
@@ -67,6 +68,13 @@ export default {
     availableFolders: {
       type: Array,
       default: () => [{ key: 'INBOX', type: 'BUILT_IN' }],
+    },
+    // Every folder of the user's, mirrored or not: what decides whether INBOX is the
+    // namespace their folders live under, so a path reads the same on every screen
+    // (EXO-90839). The offered folders when not given.
+    namespaceFolders: {
+      type: Array,
+      default: null,
     },
     // The categories offered as views (the add-on's full set, Important included).
     categories: {
