@@ -50,6 +50,62 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.forward.label') }}
       </span>
     </v-list-item>
+    <!-- Print, Show original and Download as .eml (EXO-90842): reads, offered wherever the
+         message can be read, a shared mailbox's included -- the server answers whether
+         this reader may. The last two need the message on the mail server. -->
+    <v-list-item
+      class="ps-2 pe-3 height-auto"
+      @click="printEmail">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="icon-default-color mx-auto"
+          size="16">
+          fa-print
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.print.label') }}
+      </span>
+    </v-list-item>
+    <template v-if="hasRawSource">
+      <v-list-item
+        class="ps-2 pe-3 height-auto"
+        @click="showSource">
+        <v-sheet
+          class="d-flex"
+          width="28"
+          height="36">
+          <v-icon
+            class="icon-default-color mx-auto"
+            size="16">
+            fa-code
+          </v-icon>
+        </v-sheet>
+        <span>
+          {{ $t('emailConnector.mailBox.source.label') }}
+        </span>
+      </v-list-item>
+      <v-list-item
+        class="ps-2 pe-3 height-auto"
+        @click="downloadEml">
+        <v-sheet
+          class="d-flex"
+          width="28"
+          height="36">
+          <v-icon
+            class="icon-default-color mx-auto"
+            size="16">
+            fa-file-download
+          </v-icon>
+        </v-sheet>
+        <span>
+          {{ $t('emailConnector.mailBox.source.download') }}
+        </span>
+      </v-list-item>
+    </template>
     <!-- The AI actions an administrator has already written for a mail, on the one
          message the reader opened out of the conversation — the same seam the mail
          list's own row menu offers (see EmailConnectorMailBoxDrawerListItemActionMenuItems),
@@ -107,6 +163,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 import { OPEN_FILTERS_DRAWER_EVENT, ruleFromMail } from '../../../email-connector-user-setting/js/EmailConnectorFilters.js';
 import { canCreateFilterFrom } from '../../js/EmailConnectorMailFilters.js';
+import { OPEN_SOURCE_DRAWER_EVENT, downloadRawEmail, hasRawSource, printEmails, printLabels, rawEmailErrorKey } from '../../js/EmailConnectorRawEmail.js';
 
 export default {
   props: {
@@ -131,8 +188,43 @@ export default {
     canCreateFilter() {
       return canCreateFilterFrom(this.email);
     },
+    /**
+     * Whether "Show original" and "Download as .eml" apply: the message is on the mail
+     * server (EXO-90842).
+     *
+     * @returns {Boolean} true when offered
+     */
+    hasRawSource() {
+      return hasRawSource(this.email);
+    },
   },
   methods: {
+    /**
+     * Prints this one message (EXO-90842).
+     *
+     * @returns {void}
+     */
+    printEmail() {
+      printEmails([this.email], printLabels(this.$t.bind(this)), eXo.env.portal.language)
+        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.print.error'), 'error'));
+    },
+    /**
+     * Opens the "Show original" drawer on this message (EXO-90842).
+     *
+     * @returns {void}
+     */
+    showSource() {
+      this.$root.$emit(OPEN_SOURCE_DRAWER_EVENT, this.email);
+    },
+    /**
+     * Downloads this message as a .eml file (EXO-90842).
+     *
+     * @returns {void}
+     */
+    downloadEml() {
+      downloadRawEmail(this.email)
+        .catch(error => this.$root.$emit('alert-message', this.$t(rawEmailErrorKey(error)), 'error'));
+    },
     /**
      * Opens the filters drawer on the rule this mail suggests (EXO-90654).
      *
