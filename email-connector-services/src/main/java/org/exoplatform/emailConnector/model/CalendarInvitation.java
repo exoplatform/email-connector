@@ -134,4 +134,10 @@ public class CalendarInvitation {
    * ({@code emailConnector.invitation.sendNotAllowed}); null otherwise.
    */
   private String                         answerRefusal;
+
+  /**
+   * What became of the answer just given in the user's calendar (EXO-90848); null when
+   * no add-on holds a calendar for the user, and on a read.
+   */
+  private CalendarLanding                landing;
 }

@@ -176,7 +176,7 @@ public final class CalendarInvitationUtils {
    * @param content the part's bytes, already capped by the caller
    * @param attendeeAddress the address the reader answers for
    * @param maxAttendees how many attendees to list at most
-   * @return the invitation, its occurrence and its reply writer
+   * @return the invitation, its occurrence, its reply writer and the part's text
    * @throws IOException if it cannot be read
    * @throws ParserException if it is not an iCalendar object
    * @throws IllegalArgumentException when it holds no event
@@ -193,7 +193,8 @@ public final class CalendarInvitationUtils {
     return new ParsedInvitation(invitation,
                                 recurrenceId == null ? null : StringUtils.trimToNull(recurrenceId.getValue()),
                                 value(event.getProperty(Property.URL)),
-                                (address, name, answer, sentBy) -> buildReply(calendar, event, address, name, answer, sentBy));
+                                (address, name, answer, sentBy) -> buildReply(calendar, event, address, name, answer, sentBy),
+                                new String(content, StandardCharsets.UTF_8));
   }
 
   /**
