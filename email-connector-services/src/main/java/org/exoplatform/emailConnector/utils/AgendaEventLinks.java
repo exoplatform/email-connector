@@ -30,22 +30,21 @@ import org.apache.commons.lang3.StringUtils;
  * ({@code EventIcsBuilder.eventUrl}). Such an event is answered in Agenda, never by a
  * REPLY mail.
  * <p>
- * Both must hold, and say the same thing: the UID's prefix and event id, the URL's shape
- * and event id, and the URL's authority -- host and port -- equal to this deployment's
- * configured domain, the one Agenda builds the link from (the rule, and the address
- * shape, of caldav-integration's {@code CaldavInboundService.EXO_EVENT_LINK} and
- * {@code deploymentNamedBy}, copied here: email-connector does not depend on it). The UID
- * names the host without its port, as Agenda writes it. A UID of Agenda's shape with a
- * URL on another host -- another eXo's event, or a forgery -- is not recognised, and is
- * an ordinary invitation.
+ * The URL decides: the whole value of Agenda's shape, with its authority -- host and port
+ * -- equal to this deployment's configured domain, the one Agenda builds the link from
+ * (the rule, and the address shape, of caldav-integration's
+ * {@code CaldavInboundService.EXO_EVENT_LINK} and {@code deploymentNamedBy}, copied here:
+ * email-connector does not depend on it). That is all a copy of the event carries: the
+ * CalDAV copies caldav-integration writes, and the answers a calendar server mails back
+ * about them, have a UID of their own and keep the URL. When the UID is Agenda's, it must
+ * say the same thing -- its host, which Agenda writes without the port, and its event id.
+ * A URL on another host or port -- another eXo's event, or a forgery -- is not
+ * recognised, whatever the UID, and the event is an ordinary invitation.
  * <p>
  * The link handed to the reader is rebuilt from this deployment's own domain and the
  * validated site name and event id, never copied from the sender's text.
  */
 public final class AgendaEventLinks {
-
-  /** The prefix of the UID Agenda gives an event it mails. */
-  static final String          UID_PREFIX = "agenda-event-";
 
   /** Agenda's UID: its prefix, the event id, the host. */
   private static final Pattern AGENDA_UID = Pattern.compile("^agenda-event-(\\d+)@([^\\s@]+)$", Pattern.CASE_INSENSITIVE);
@@ -68,7 +67,7 @@ public final class AgendaEventLinks {
   /**
    * The Agenda link of an event this deployment mailed.
    *
-   * @param uid the event's UID
+   * @param uid the event's UID, may be null
    * @param url the event's URL property
    * @param ownDomain this deployment's configured domain, {@code CommonsUtils.getCurrentDomain()}
    * @return the link to the event in this portal's Agenda, rebuilt from {@code ownDomain};
@@ -76,18 +75,18 @@ public final class AgendaEventLinks {
    */
   public static String localAgendaLink(String uid, String url, String ownDomain) {
     String own = authorityOf(ownDomain);
-    if (own == null || StringUtils.isBlank(uid) || StringUtils.isBlank(url)) {
+    if (own == null || StringUtils.isBlank(url)) {
       return null;
     }
-    Matcher uidMatch = AGENDA_UID.matcher(uid.trim());
     Matcher link = AGENDA_LINK.matcher(url.trim());
-    if (!uidMatch.matches() || !link.matches()) {
+    if (!link.matches() || !own.equals(link.group(1).toLowerCase(Locale.ROOT))) {
       return null;
     }
-    String ownHost = StringUtils.substringBefore(own, ":");
-    if (!own.equals(link.group(1).toLowerCase(Locale.ROOT))
-        || !ownHost.equals(uidMatch.group(2).toLowerCase(Locale.ROOT))
-        || !uidMatch.group(1).equals(link.group(3))) {
+    Matcher uidMatch = AGENDA_UID.matcher(StringUtils.trimToEmpty(uid));
+    if (uidMatch.matches()
+        && (!StringUtils.substringBefore(own, ":").equals(uidMatch.group(2).toLowerCase(Locale.ROOT))
+            || !uidMatch.group(1).equals(link.group(3)))) {
+      // Agenda's UID naming another deployment or another event than the link does.
       return null;
     }
     return StringUtils.removeEnd(ownDomain.trim(), "/") + "/portal/" + link.group(2) + "/agenda?eventId=" + link.group(3);
