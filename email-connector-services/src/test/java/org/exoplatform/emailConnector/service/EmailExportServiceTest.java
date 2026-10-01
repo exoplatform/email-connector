@@ -351,8 +351,8 @@ class EmailExportServiceTest {
   }
 
   /**
-   * An mbox message the server fails to copy mid-way interrupts the export: an mbox has
-   * no place to say a message is cut short.
+   * An mbox message the server fails to copy mid-way stops the export, for the file to
+   * end with the notice that says so.
    *
    * @throws Exception when a mock cannot be stubbed
    */
@@ -363,6 +363,59 @@ class EmailExportServiceTest {
     MimeMessage failing = org.mockito.Mockito.mock(MimeMessage.class);
     org.mockito.Mockito.doThrow(new com.sun.mail.util.MessageRemovedIOException("gone")).when(failing).writeTo(any());
     assertThrows(org.exoplatform.emailConnector.exception.ExportInterruptedException.class, () -> visitor.message(null, failing));
+  }
+
+  /**
+   * A message cut mid-line is closed before the notice, so the notice is a mail of its
+   * own -- not body text of the cut one -- and counts the cut message.
+   *
+   * @throws Exception when a mock cannot be stubbed
+   */
+  @Test
+  void aMessageCutMidLineIsClosedBeforeTheNotice() throws Exception {
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    MboxExportVisitor visitor = new MboxExportVisitor((name, size) -> out, "Inbox");
+    visitor.begin(3);
+    MimeMessage cut = org.mockito.Mockito.mock(MimeMessage.class);
+    org.mockito.Mockito.doAnswer(invocation -> {
+      java.io.OutputStream stream = invocation.getArgument(0);
+      stream.write("From: a@example.com\r\nDate: Mon, 1 Jan 2024 10:00:00 +0000\r\n\r\nhalf a li".getBytes(StandardCharsets.US_ASCII));
+      throw new com.sun.mail.util.MessageRemovedIOException("gone");
+    }).when(cut).writeTo(any());
+    assertThrows(org.exoplatform.emailConnector.exception.ExportInterruptedException.class, () -> visitor.message(null, cut));
+    visitor.interrupted(1, 3);
+    visitor.finish();
+    java.io.File file = dir.resolve("cut.mbox").toFile();
+    java.nio.file.Files.write(file.toPath(), out.toByteArray());
+    List<String> mails = new ArrayList<>();
+    new org.exoplatform.emailConnector.utils.MailArchiveReader(1 << 20, 1 << 16, 10, 100, 1L << 30)
+                                                              .read(file, new org.exoplatform.emailConnector.utils.MailArchiveSink() {
+                                                                /**
+                                                                 * Keeps a mail.
+                                                                 *
+                                                                 * @param message its bytes
+                                                                 * @return true
+                                                                 */
+                                                                @Override
+                                                                public boolean mail(byte[] message) {
+                                                                  mails.add(new String(message, StandardCharsets.UTF_8));
+                                                                  return true;
+                                                                }
+
+                                                                /**
+                                                                 * Fails on a refusal.
+                                                                 *
+                                                                 * @param reason why
+                                                                 * @return never
+                                                                 */
+                                                                @Override
+                                                                public boolean refused(org.exoplatform.emailConnector.model.MailImportRefusal reason) {
+                                                                  throw new AssertionError(reason);
+                                                                }
+                                                              });
+    assertEquals(2, mails.size());
+    assertTrue(mails.get(0).endsWith("half a li\n"), mails.get(0));
+    assertTrue(mails.get(1).contains("Subject: Export incomplete: 1 of 3 emails"), mails.get(1));
   }
 
   /**
