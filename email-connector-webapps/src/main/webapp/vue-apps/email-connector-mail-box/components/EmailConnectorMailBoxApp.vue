@@ -70,6 +70,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <!-- The mailbox's advanced search (EXO-90838), opened from the list's chips row and
          from the search's own chips. -->
     <email-connector-mail-box-advanced-search-drawer />
+    <!-- "Import mail..." (EXO-90846), opened from the actions menu and by files dropped on
+         a folder of the full-screen column. -->
+    <email-connector-mail-box-import-drawer />
     <email-connector-mail-box-drawer-attachments-drawer />
     <email-connector-mail-box-drawer-list-item-action-menu-drawer />
   </v-app>
