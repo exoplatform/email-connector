@@ -79,6 +79,7 @@ import org.exoplatform.emailConnector.rest.model.ScheduleRequest;
 import org.exoplatform.emailConnector.exception.ReadReceiptConflictException;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailScheduledSendService;
+import org.exoplatform.emailConnector.service.EmailSecurityService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 
@@ -119,6 +120,9 @@ public class EmailBoxRest {
 
   @Autowired
   private ReadReceiptService        readReceiptService;
+
+  @Autowired
+  private EmailSecurityService      emailSecurityService;
 
   /**
    * Gets user emails. Gets the user's emails for a folder (INBOX by default, or SENT /
@@ -610,6 +614,7 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       readReceiptService.decorate(email, request.getRemoteUser());
+      emailSecurityService.decorate(email, request.getRemoteUser(), false);
       return ResponseEntity.ok().cacheControl(CacheControl.noCache().cachePrivate()).body(email);
     } catch (IllegalAccessException e) {
       // Somebody else's mail is reported as missing rather than forbidden: the
@@ -942,6 +947,7 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       readReceiptService.decorate(email, request.getRemoteUser());
+      emailSecurityService.decorate(email, request.getRemoteUser(), false);
       return ResponseEntity.ok(email);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
@@ -968,13 +974,16 @@ public class EmailBoxRest {
    *          -- the first mail of a list, the next one after an action, the one the
    *          arrow keys stopped on -- and signals the opening through
    *          {@link #broadcastOpenEmail} once the user has stayed on it (EXO-90414).
+   * @param remoteContent whether the resources the message would fetch from the
+   *          internet are loaded although the caller holds them back: true once the
+   *          caller asked for them from the reader's banner (EXO-90841)
    * @param ifNoneMatch the eTag the caller already holds
    * @return the message, or 304 when the caller's copy is current
    */
   @GetMapping("/{mailRemoteId}")
   @Secured("users")
   @Operation(summary = "Gets remote email by id", method = "GET",
-      description = "This will get remote email by id. With broadcast=false the read does not count as the user opening the message (no open-email event).")
+      description = "This will get remote email by id. With broadcast=false the read does not count as the user opening the message (no open-email event). The HTML body is cleaned for display; the resources it would fetch from the internet are taken out (content.remoteContentBlocked) unless remoteContent=true, the caller switched blocking off or trusts the sender. content.securityWarnings lists why the message looks suspicious.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -990,11 +999,22 @@ public class EmailBoxRest {
                                                   @Parameter(description = "Whether this read counts as the user opening the message (open-email event); true when omitted")
                                                   @RequestParam(value = "broadcast", required = false, defaultValue = "true")
                                                   boolean broadcast,
+                                                  @Parameter(description = "Whether the images and other resources the message would fetch from the internet are loaded although the caller blocks them: true once the caller asked for them; false when omitted")
+                                                  @RequestParam(value = "remoteContent", required = false, defaultValue = "false")
+                                                  boolean remoteContent,
                                                   @RequestHeader(value = "If-None-Match", required = false)
                                                   String ifNoneMatch) {
     try {
       // UIDs are per-folder, so the folder is part of the message identity / eTag.
-      String eTag = "\"" + Objects.hash(mailRemoteId, folder, request.getRemoteUser()) + "\"";
+      // And so is what the reader may fetch from the internet: a copy served with its
+      // remote content held back must not be confirmed once the caller asked for it,
+      // trusted its sender or switched blocking off (EXO-90841).
+      String eTag = "\"" + Objects.hash(mailRemoteId,
+                                        folder,
+                                        request.getRemoteUser(),
+                                        remoteContent,
+                                        emailSecurityService.settingsFingerprint(request.getRemoteUser()))
+          + "\"";
       if (ifNoneMatch != null && ifNoneMatch.replace("W/", "").equals(eTag)) {
         if (broadcast) {
           emailBoxService.broadcastOpenEmail(request.getRemoteUser());
@@ -1012,6 +1032,7 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       readReceiptService.decorate(email, request.getRemoteUser());
+      emailSecurityService.decorate(email, request.getRemoteUser(), remoteContent);
       return ResponseEntity.ok().eTag(eTag).cacheControl(CacheControl.noCache().cachePrivate()).body(email);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
@@ -1145,6 +1166,7 @@ public class EmailBoxRest {
     try {
       List<Email> thread = emailBoxService.getThread(threadId, request.getRemoteUser(), folder);
       readReceiptService.decorate(thread, request.getRemoteUser());
+      emailSecurityService.decorate(thread, request.getRemoteUser(), false);
       return thread;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
@@ -1176,6 +1198,7 @@ public class EmailBoxRest {
     try {
       List<Email> thread = emailBoxService.completeThread(threadId, request.getRemoteUser(), folder);
       readReceiptService.decorate(thread, request.getRemoteUser());
+      emailSecurityService.decorate(thread, request.getRemoteUser(), false);
       return thread;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
