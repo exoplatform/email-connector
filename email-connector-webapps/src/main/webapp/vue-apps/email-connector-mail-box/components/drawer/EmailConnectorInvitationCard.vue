@@ -124,7 +124,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-btn>
         </div>
         <div
-          v-if="invitation.landing === 'LANDED' && invitation.landingLink"
+          v-if="(invitation.landing === 'LANDED' || invitation.landing === 'ALREADY_HELD') && invitation.landingLink"
           class="caption invitation-landed">
           <a
             :href="invitation.landingLink"
