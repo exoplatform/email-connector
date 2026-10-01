@@ -173,7 +173,7 @@ public class EmailDelegationNotificationListener {
    * @param status the status to write, or null to leave the invitations alone
    */
   private void markInvitations(EmailDelegation delegation, String status) {
-    if (status == null || webNotificationService == null || StringUtils.isBlank(delegation.getGranteeId())
+    if (status == null || StringUtils.isBlank(delegation.getGranteeId())
         || delegation.getId() == null) {
       return;
     }
