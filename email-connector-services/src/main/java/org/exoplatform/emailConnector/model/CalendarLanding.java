@@ -29,6 +29,9 @@ public enum CalendarLanding {
   /** The event was removed from the user's calendar: its organiser cancelled it. */
   REMOVED,
 
+  /** Nothing was written: the event is one of the platform's own, in the calendar already. */
+  ALREADY_HELD,
+
   /**
    * An add-on holds the user's calendar and refused the invitation as it is -- about
    * one occurrence only, or not to be trusted; the answer left anyway.

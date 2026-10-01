@@ -558,6 +558,20 @@ class CalendarInvitationServiceTest {
     assertNull(invitation.getAnswer());
     verifyNothingSent();
     verify(settingService, never()).set(any(), any(), anyString(), any());
+
+    // An answer already given for this revision goes with it, so the calendar
+    // says what the organiser was told; after a decline nothing is offered.
+    String key = CalendarInvitationService.answerKey(ME, "weekly-sync@google.com", null);
+    when(settingService.get(Context.USER.id(USER), UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, key))
+                                                                                                 .thenAnswer(call -> SettingValue.create("{\"answer\":\"TENTATIVE\",\"sequence\":2,\"answeredAt\":1}"));
+    service.addToCalendar(EMAIL_ID, USER);
+    assertEquals(InvitationAnswer.TENTATIVE, landing.getValue().answer());
+    verifyNothingSent();
+    when(settingService.get(Context.USER.id(USER), UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, key))
+                                                                                                 .thenAnswer(call -> SettingValue.create("{\"answer\":\"DECLINED\",\"sequence\":2,\"answeredAt\":1}"));
+    assertFalse(service.getInvitation(EMAIL_ID, USER).isLandable(), "declined: nothing to add");
+    assertEquals(CalendarInvitationService.NOT_LANDABLE,
+                 assertThrows(IllegalArgumentException.class, () -> service.addToCalendar(EMAIL_ID, USER)).getMessage());
   }
 
   /**

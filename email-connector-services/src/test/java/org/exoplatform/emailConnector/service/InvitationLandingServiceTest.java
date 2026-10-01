@@ -98,7 +98,7 @@ class InvitationLandingServiceTest {
     givenThePlugins();
     when(first.holdsCalendarFor("john")).thenReturn(false);
     when(second.holdsCalendarFor("john")).thenReturn(true);
-    when(second.land(LANDING)).thenReturn(new LandedInvitation(77L, "/portal/dw/agenda?eventId=77", false));
+    when(second.land(LANDING)).thenReturn(new LandedInvitation(77L, "/portal/dw/agenda?eventId=77", false, false));
     CalendarInvitation invitation = land(new InvitationLandingService(applicationContext));
     assertEquals(CalendarLanding.LANDED, invitation.getLanding());
     assertEquals("/portal/dw/agenda?eventId=77", invitation.getLandingLink());
@@ -106,12 +106,18 @@ class InvitationLandingServiceTest {
     verify(first, never()).land(any());
 
     when(first.holdsCalendarFor("john")).thenReturn(true);
-    when(first.land(LANDING)).thenReturn(new LandedInvitation(78L, null, true));
+    when(first.land(LANDING)).thenReturn(new LandedInvitation(78L, null, true, false));
     invitation = land(new InvitationLandingService(applicationContext));
     assertEquals(CalendarLanding.REMOVED, invitation.getLanding());
     assertNull(invitation.getLandingLink());
     assertFalse(invitation.isRemovable(), "the click was honoured");
     verify(second, times(1)).land(LANDING);
+
+    when(first.land(LANDING)).thenReturn(new LandedInvitation(79L, "/portal/dw/agenda?eventId=79", false, true));
+    invitation = land(new InvitationLandingService(applicationContext));
+    assertEquals(CalendarLanding.ALREADY_HELD, invitation.getLanding());
+    assertEquals("/portal/dw/agenda?eventId=79", invitation.getLandingLink());
+    assertFalse(invitation.isLandable());
 
     // The one holding the calendar answers nothing: nothing to do, and the
     // next add-on is not asked.
@@ -147,7 +153,7 @@ class InvitationLandingServiceTest {
     verify(second, never()).land(any());
 
     doThrow(new NoClassDefFoundError("net/fortuna/ical4j/model/Calendar")).when(first).land(LANDING);
-    when(second.land(LANDING)).thenReturn(new LandedInvitation(77L, null, false));
+    when(second.land(LANDING)).thenReturn(new LandedInvitation(77L, null, false, false));
     assertEquals(CalendarLanding.LANDED, land(new InvitationLandingService(applicationContext)).getLanding());
   }
 
