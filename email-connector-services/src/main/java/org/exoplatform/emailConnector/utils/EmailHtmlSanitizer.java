@@ -102,7 +102,7 @@ public final class EmailHtmlSanitizer {
    * on a sender's crafted stylesheet. An opening that is not a well-formed call is never
    * kept.
    */
-  private static final Pattern CSS_URL_LEFTOVER       = Pattern.compile("(?:url|src)\\s*\\(", Pattern.CASE_INSENSITIVE);
+  private static final Pattern CSS_URL_OPENING       = Pattern.compile("(?:url|src)\\s*\\(", Pattern.CASE_INSENSITIVE);
 
   /** The functions that take an image address as a bare string, or that run code (IE's expression). */
   private static final Pattern CSS_STRING_IMAGE_FN    =
@@ -280,7 +280,7 @@ public final class EmailHtmlSanitizer {
     decoded = CSS_STRING_IMAGE_FN.matcher(decoded).replaceAll(NEUTRALISED + "(");
     decoded = CSS_BINDING_PROPERTY.matcher(decoded).replaceAll(NEUTRALISED + ":");
     StringBuilder out = new StringBuilder(decoded.length());
-    Matcher opening = CSS_URL_LEFTOVER.matcher(decoded);
+    Matcher opening = CSS_URL_OPENING.matcher(decoded);
     CssScan scan = null;
     int last = 0;
     while (opening.find()) {
@@ -401,7 +401,7 @@ public final class EmailHtmlSanitizer {
    * @return the stretch with every such opening renamed
    */
   private static String neutraliseLeftoverUrls(String css) {
-    return CSS_URL_LEFTOVER.matcher(css).replaceAll(NEUTRALISED + "(");
+    return CSS_URL_OPENING.matcher(css).replaceAll(NEUTRALISED + "(");
   }
 
   /**
