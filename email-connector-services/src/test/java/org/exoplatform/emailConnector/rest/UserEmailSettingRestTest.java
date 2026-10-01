@@ -21,6 +21,7 @@ package org.exoplatform.emailConnector.rest;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
@@ -130,12 +131,17 @@ public class UserEmailSettingRestTest {
 
   @Test
   void connectUserEmailSetting() throws Exception {
+    // A hand-written body: the shared mapper honours WRITE_ONLY and would leave the
+    // password out, while a browser's PUT carries it.
     ResultActions response = mockMvc.perform(put(USER_EMAIL_SETTING_PATH
         + "?broadcast=false").with(testSimpleUser())
-                             .content(asJsonString(userEmailSetting()))
+                             .content("{\"emailConnectorId\":\"1\",\"emailAddress\":\"testEmail\",\"emailPassword\":\"testPassword\"}")
                              .contentType(MediaType.APPLICATION_JSON)
                              .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk());
+    verify(userEmailSettingService).connectUserEmailSetting(argThat(setting -> "testPassword".equals(setting.getEmailPassword())),
+                                                            eq(SIMPLE_USER),
+                                                            eq(false));
   }
 
   @Test
