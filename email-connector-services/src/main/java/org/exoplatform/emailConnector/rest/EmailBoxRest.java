@@ -18,6 +18,8 @@ package org.exoplatform.emailConnector.rest;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -57,6 +59,7 @@ import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
+import org.exoplatform.emailConnector.model.EmailSearchCriteria;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.FavoriteRemoval;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
@@ -706,6 +709,10 @@ public class EmailBoxRest {
    * @param unread restrict to unread messages
    * @param favorites when true, only the messages carrying the IMAP \Flagged flag match
    * @param sinceDays restrict to messages received in the last N days
+   * @param words text matched against the subject or the body
+   * @param after restrict to messages received on that day or later, as yyyy-MM-dd
+   * @param before restrict to messages received before that day, as yyyy-MM-dd
+   * @param attachment restrict to messages carrying an attachment
    * @param folder folder to search: INBOX, SENT or ARCHIVE, or CUSTOM:&lt;id&gt; for a
    * folder of a mailbox shared with the caller
    * @param limit maximum number of hits to return (newest first)
@@ -714,9 +721,9 @@ public class EmailBoxRest {
   @GetMapping("/search")
   @Secured("users")
   @Operation(summary = "Searches the mailbox on the server", method = "GET",
-             description = "Runs an IMAP SEARCH over the remote folder (INBOX by default), so it finds mail anywhere in the mailbox, not just the locally-cached window. Returns the newest hits (uid, folder, subject, sender, date, read flag, cached flag) plus the total match count. At least one criterion (query, from, to, unread, favorites or sinceDays) is required. A folder of a mailbox shared with the caller (CUSTOM:<id>) is searched in the caller's copy of it instead, never on the server: its recent window only, while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read, and without the to filter.")
+             description = "Runs an IMAP SEARCH over the remote folder (INBOX by default), so it finds mail anywhere in the mailbox, not just the locally-cached window. Returns the newest hits (uid, folder, subject, sender, date, read flag, cached flag) plus the total match count. At least one criterion (query, from, to, words, unread, favorites, attachment, sinceDays, after or before) is required; all of them are combined. A folder of a mailbox shared with the caller (CUSTOM:<id>) is searched in the caller's copy of it instead, never on the server: its recent window only, while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Bad Request: a folder that cannot be searched (emailConnector.folder.notBrowsable) -- which is also the answer for a folder of a share whose folders were already removed -- or no search criterion"),
+      @ApiResponse(responseCode = "400", description = "Bad Request: a folder that cannot be searched (emailConnector.folder.notBrowsable) -- which is also the answer for a folder of a share whose folders were already removed -- no search criterion (emailConnector.search.criteriaRequired), a day that is not yyyy-MM-dd (emailConnector.search.invalidDate) or a before day not after the after day (emailConnector.search.invalidDateRange)"),
       @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "410", description = "The folder belongs to a share of the caller's that is no longer accepted (emailConnector.delegation.revoked)"),
       @ApiResponse(responseCode = "500", description = "The mailbox could not be reached or searched"), })
@@ -739,6 +746,18 @@ public class EmailBoxRest {
                                             @Parameter(description = "Restrict to messages received in the last N days")
                                             @RequestParam(value = "sinceDays", required = false)
                                             Integer sinceDays,
+                                            @Parameter(description = "Text matched against the subject or the body")
+                                            @RequestParam(value = "words", required = false)
+                                            String words,
+                                            @Parameter(description = "Restrict to messages received on that day or later, as yyyy-MM-dd")
+                                            @RequestParam(value = "after", required = false)
+                                            String after,
+                                            @Parameter(description = "Restrict to messages received before that day, that day excluded, as yyyy-MM-dd")
+                                            @RequestParam(value = "before", required = false)
+                                            String before,
+                                            @Parameter(description = "Restrict to messages carrying an attachment")
+                                            @RequestParam(value = "attachment", required = false, defaultValue = "false")
+                                            boolean attachment,
                                             @Parameter(description = "Folder to search: INBOX, SENT or ARCHIVE, or CUSTOM:<id> for a folder of a mailbox shared with the caller")
                                             @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
                                             String folder,
@@ -746,7 +765,18 @@ public class EmailBoxRest {
                                             @RequestParam(value = "limit", required = false, defaultValue = "20")
                                             int limit) {
     try {
-      return emailBoxService.searchEmails(request.getRemoteUser(), query, from, to, unread, favorites, sinceDays, folder, limit);
+      EmailSearchCriteria criteria = new EmailSearchCriteria();
+      criteria.setQuery(query);
+      criteria.setFrom(from);
+      criteria.setTo(to);
+      criteria.setWords(words);
+      criteria.setUnreadOnly(unread);
+      criteria.setFavoritesOnly(favorites);
+      criteria.setAttachmentsOnly(attachment);
+      criteria.setSinceDays(sinceDays);
+      criteria.setAfter(parseSearchDay(after));
+      criteria.setBefore(parseSearchDay(before));
+      return emailBoxService.searchEmails(request.getRemoteUser(), criteria, folder, limit);
     } catch (DelegationRevokedException e) {
       // The shared mailbox searched is gone, which the drawer answers by leaving it.
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
@@ -756,6 +786,25 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  /**
+   * Reads a search day as the advanced search sends it (EXO-90838).
+   *
+   * @param day the day as yyyy-MM-dd, may be blank
+   * @return the day, or null when none was sent
+   * @throws IllegalArgumentException {@code emailConnector.search.invalidDate} for any
+   *           other text
+   */
+  private static LocalDate parseSearchDay(String day) {
+    if (StringUtils.isBlank(day)) {
+      return null;
+    }
+    try {
+      return LocalDate.parse(day.trim());
+    } catch (DateTimeParseException e) {
+      throw new IllegalArgumentException("emailConnector.search.invalidDate");
     }
   }
 

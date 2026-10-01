@@ -72,6 +72,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -213,6 +214,7 @@ import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
+import org.exoplatform.emailConnector.model.EmailSearchCriteria;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.SharedMailboxSearchFolders;
 import org.exoplatform.emailConnector.model.SharedMailboxSearchScope;
@@ -15319,9 +15321,9 @@ public class EmailBoxServiceTest {
                  "the Favorites chip alone is a criterion");
     verify(userEmailSettingService, never()).connect(anyString(), anyString());
 
-    assertThrows(IllegalArgumentException.class,
-                 () -> emailBoxService.searchEmails(TEST_USER, "budget", null, "bob", false, false, null, "CUSTOM:8", 10),
-                 "no recipient filter in a shared mailbox");
+    assertEquals(0,
+                 emailBoxService.searchEmails(TEST_USER, "budget", null, "bob", false, false, null, "CUSTOM:8", 10).getTotalMatches(),
+                 "the recipient filter applies in a shared mailbox too (EXO-90838)");
     assertThrows(IllegalArgumentException.class,
                  () -> emailBoxService.searchEmails(TEST_USER, "budget", null, null, false, false, null, "CUSTOM:9", 10),
                  "a folder the delegation service does not find searchable for this user");
@@ -15331,6 +15333,110 @@ public class EmailBoxServiceTest {
                  "a share withdrawn meanwhile");
     verify(emailBoxStorage, never()).getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:9"));
     verify(emailBoxStorage, never()).getEmails(anyString(), anyString());
+  }
+
+  /**
+   * EXO-90838 -- the advanced search of a shared folder applies every criterion to the
+   * user's copy of it, as the mail server would to the user's own folders: the To or Cc
+   * recipients (never Bcc), the words in the subject or the body read as text (never its
+   * markup), the messages eXo holds an attachment row for -- read only when that
+   * criterion is asked -- and the days of the server's zone, the first one included and
+   * the one before which the range stops excluded.
+   */
+  @Test
+  void theAdvancedSearchOfASharedFolderAppliesEveryCriterionToItsCopy() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    when(emailDelegationService.isSearchableSharedFolder(TEST_USER, "CUSTOM:8")).thenReturn(true);
+    LocalDate today = LocalDate.now();
+    Email toDave = mirrored(1L, "Budget", "carol@acme.com", false, 0);
+    toDave.setId(101L);
+    toDave.setTo(List.of(new EmailRecipient("Dave Smith", "dave@acme.com", null, false)));
+    toDave.setContent(new EmailContent("<div class=\"quarterly\">See the attached figures</div>"));
+    toDave.setReceivedDate(EmailBoxService.startOfServerDay(today));
+    Email ccDave = mirrored(2L, "Lunch", "erin@acme.com", false, 0);
+    ccDave.setId(102L);
+    ccDave.setCc(List.of(new EmailRecipient(null, "dave@acme.com", null, false)));
+    ccDave.setContent(new EmailContent("<p>quarterly figures inside</p>"));
+    ccDave.setReceivedDate(new Date(EmailBoxService.startOfServerDay(today).getTime() - 1));
+    Email bccDave = mirrored(3L, "Quarterly", "frank@acme.com", false, 0);
+    bccDave.setId(103L);
+    bccDave.setTo(List.of(new EmailRecipient("Grace", "grace@acme.com", null, false)));
+    bccDave.setBcc(List.of(new EmailRecipient("Dave", "dave@acme.com", null, false)));
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"))).thenReturn(List.of(toDave, ccDave, bccDave));
+
+    EmailSearchCriteria recipient = new EmailSearchCriteria();
+    recipient.setTo("DAVE");
+    assertEquals(List.of(1L, 2L), searchedUids(recipient), "To or Cc, by name or address, never Bcc");
+
+    EmailSearchCriteria words = new EmailSearchCriteria();
+    words.setWords("quarterly");
+    assertEquals(List.of(3L, 2L), searchedUids(words), "the subject or the body's text, not a class name of its markup");
+
+    verify(emailBoxStorage, never()).getEmailIdsWithAttachmentsInFolders(anyString(), any());
+    when(emailBoxStorage.getEmailIdsWithAttachmentsInFolders(TEST_USER, List.of("CUSTOM:8"))).thenReturn(Set.of(101L, 103L));
+    EmailSearchCriteria attachments = new EmailSearchCriteria();
+    attachments.setAttachmentsOnly(true);
+    assertEquals(List.of(3L, 1L), searchedUids(attachments), "the rows eXo holds an attachment for");
+
+    EmailSearchCriteria fromToday = new EmailSearchCriteria();
+    fromToday.setAfter(today);
+    assertEquals(List.of(3L, 1L), searchedUids(fromToday), "the first instant of the day is in, the one before is out");
+    EmailSearchCriteria beforeToday = new EmailSearchCriteria();
+    beforeToday.setBefore(today);
+    assertEquals(List.of(2L), searchedUids(beforeToday), "the day the range stops before is out");
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * EXO-90838 -- in the user's own mailbox the advanced criteria are terms of the one
+   * IMAP SEARCH, and an unanswerable range is refused before the server is reached.
+   */
+  @Test
+  void theAdvancedSearchOfAnOwnFolderIsOneServerSearch() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    EmailSearchCriteria reversed = new EmailSearchCriteria();
+    reversed.setAfter(LocalDate.of(2026, 10, 2));
+    reversed.setBefore(LocalDate.of(2026, 10, 1));
+    assertEquals("emailConnector.search.invalidDateRange",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchEmails(TEST_USER, reversed, "INBOX", 10)).getMessage());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[0]);
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setWords("budget");
+    criteria.setAttachmentsOnly(true);
+    criteria.setAfter(LocalDate.of(2026, 10, 1));
+
+    emailBoxService.searchEmails(TEST_USER, criteria, "INBOX", 10);
+
+    ArgumentCaptor<SearchTerm> searched = ArgumentCaptor.forClass(SearchTerm.class);
+    verify(inbox).search(searched.capture());
+    assertTrue(searched.getValue() instanceof AndTerm);
+    assertEquals(3, ((AndTerm) searched.getValue()).getTerms().length, "words, attachment and day: one search");
+  }
+
+  /**
+   * The UIDs an advanced search of the shared folder CUSTOM:8 returns, newest first.
+   *
+   * @param criteria the criteria
+   * @return the UIDs
+   * @throws IllegalAccessException never, the user may read the mailbox
+   */
+  private List<Long> searchedUids(EmailSearchCriteria criteria) throws IllegalAccessException {
+    return emailBoxService.searchEmails(TEST_USER, criteria, "CUSTOM:8", 10)
+                          .getResults()
+                          .stream()
+                          .map(EmailSearchResult::getMailRemoteId)
+                          .toList();
   }
 
   /**

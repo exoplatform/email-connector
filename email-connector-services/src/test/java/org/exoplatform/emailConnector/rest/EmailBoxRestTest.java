@@ -20,6 +20,7 @@ package org.exoplatform.emailConnector.rest;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -31,6 +32,7 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
@@ -42,6 +44,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.time.LocalDate;
 import java.util.Date;
 import java.util.ArrayList;
 import java.util.List;
@@ -97,6 +100,7 @@ import org.exoplatform.emailConnector.model.UndoableSend;
 import org.exoplatform.emailConnector.model.ScheduledSendStatus;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailCategory;
+import org.exoplatform.emailConnector.model.EmailSearchCriteria;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
@@ -238,12 +242,79 @@ public class EmailBoxRestTest {
    */
   @Test
   void aSearchInAWithdrawnShareAnswersGone() throws Exception {
-    when(emailBoxService.searchEmails(anyString(), anyString(), any(), any(), anyBoolean(), anyBoolean(), any(), anyString(), anyInt()))
-                                                                                                                                   .thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    when(emailBoxService.searchEmails(anyString(), any(EmailSearchCriteria.class), anyString(), anyInt()))
+                                                                                                .thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
 
     mockMvc.perform(get(EMAIL_BOX_PATH + "/search").param("query", "budget").param("folder", "CUSTOM:8").with(testSimpleUser()))
            .andExpect(status().isGone())
            .andExpect(status().reason(DelegationRevokedException.REVOKED));
+  }
+
+  /**
+   * EXO-90838 -- every criterion of the advanced search reaches the service as sent,
+   * the days read as yyyy-MM-dd, and a day in any other form is a 400 carrying the code
+   * the drawer shows, the service never asked.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void theAdvancedSearchCriteriaReachTheService() throws Exception {
+    when(emailBoxService.searchEmails(anyString(), any(EmailSearchCriteria.class), anyString(), anyInt()))
+                                                                                                .thenReturn(new EmailSearchResultPage(List.of(), 0));
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search").param("query", "report")
+                                                   .param("from", "carol")
+                                                   .param("to", "dave")
+                                                   .param("words", "budget")
+                                                   .param("after", "2026-10-01")
+                                                   .param("before", "2026-10-31")
+                                                   .param("attachment", "true")
+                                                   .param("unread", "true")
+                                                   .param("favorites", "true")
+                                                   .param("sinceDays", "30")
+                                                   .param("folder", "SENT")
+                                                   .param("limit", "7")
+                                                   .with(testSimpleUser()))
+           .andExpect(status().isOk());
+
+    ArgumentCaptor<EmailSearchCriteria> sent = ArgumentCaptor.forClass(EmailSearchCriteria.class);
+    verify(emailBoxService).searchEmails(eq(SIMPLE_USER), sent.capture(), eq("SENT"), eq(7));
+    EmailSearchCriteria criteria = sent.getValue();
+    assertEquals("report", criteria.getQuery());
+    assertEquals("carol", criteria.getFrom());
+    assertEquals("dave", criteria.getTo());
+    assertEquals("budget", criteria.getWords());
+    assertEquals(LocalDate.of(2026, 10, 1), criteria.getAfter());
+    assertEquals(LocalDate.of(2026, 10, 31), criteria.getBefore());
+    assertTrue(criteria.isAttachmentsOnly());
+    assertTrue(criteria.isUnreadOnly());
+    assertTrue(criteria.isFavoritesOnly());
+    assertEquals(30, criteria.getSinceDays());
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search").param("after", "01/10/2026").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.search.invalidDate"));
+    verify(emailBoxService, times(1)).searchEmails(anyString(), any(EmailSearchCriteria.class), anyString(), anyInt());
+  }
+
+  /**
+   * EXO-90838 -- the search the unified search and the drawer's search box already send
+   * carries no advanced criterion: none of them is set by default.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void aPlainSearchCarriesNoAdvancedCriterion() throws Exception {
+    when(emailBoxService.searchEmails(anyString(), any(EmailSearchCriteria.class), anyString(), anyInt()))
+                                                                                                .thenReturn(new EmailSearchResultPage(List.of(), 0));
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search").param("query", "report").with(testSimpleUser())).andExpect(status().isOk());
+
+    ArgumentCaptor<EmailSearchCriteria> sent = ArgumentCaptor.forClass(EmailSearchCriteria.class);
+    verify(emailBoxService).searchEmails(eq(SIMPLE_USER), sent.capture(), eq("INBOX"), eq(20));
+    EmailSearchCriteria expected = new EmailSearchCriteria();
+    expected.setQuery("report");
+    assertEquals(expected, sent.getValue());
   }
 
   @Test
