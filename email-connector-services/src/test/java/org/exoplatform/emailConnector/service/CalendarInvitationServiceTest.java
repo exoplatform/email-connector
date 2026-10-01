@@ -506,6 +506,17 @@ class CalendarInvitationServiceTest {
     assertNull(declined.getLanding());
     assertFalse(declined.isLandable(), "nothing to add after a decline");
     assertTrue(service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED).isLandable(), "an acceptance keeps the offer");
+
+    // The mirror path: a decline remembered, then an acceptance whose landing
+    // failed — the offer is back, as a later read would say.
+    String key = CalendarInvitationService.answerKey(ME, "weekly-sync@google.com", null);
+    when(settingService.get(Context.USER.id(USER), UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, key))
+                                                                                                 .thenAnswer(call -> SettingValue.create("{\"answer\":\"DECLINED\",\"sequence\":2,\"answeredAt\":1}"));
+    assertFalse(service.getInvitation(EMAIL_ID, USER).isLandable());
+    givenTheLanding(landing, CalendarLanding.FAILED, null);
+    CalendarInvitation accepted = service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED);
+    assertEquals(CalendarLanding.FAILED, accepted.getLanding());
+    assertTrue(accepted.isLandable(), "the offer is back after an acceptance");
   }
 
   /**
