@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.storage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
@@ -92,7 +93,8 @@ public class EmailBoxSharedSearchStorageTest {
 
   /**
    * The search read carries the To and the Cc recipients a row was cached with, name
-   * and address, and never its Bcc ones.
+   * and address, and never its Bcc ones -- when asked: the unified search's read, which
+   * never matches on them, does not parse them.
    */
   @Test
   void theSearchReadCarriesTheToAndCcRecipients() {
@@ -103,12 +105,15 @@ public class EmailBoxSharedSearchStorageTest {
     email.setBcc(List.of(new EmailRecipient("Grace", "grace@acme.com", null, false)));
     emailBoxStorage.createEmail(email);
 
-    Email read = emailBoxStorage.getEmailsForSearchInFolders(RECIPIENTS_USER, List.of("CUSTOM:21")).get(0);
+    Email read = emailBoxStorage.getEmailsForSearchInFolders(RECIPIENTS_USER, List.of("CUSTOM:21"), true).get(0);
 
     assertEquals(List.of("dave@acme.com"), read.getTo().stream().map(EmailRecipient::getAddress).toList());
     assertEquals("Dave Smith", read.getTo().get(0).getName());
     assertEquals(List.of("erin@acme.com", "frank@acme.com"), read.getCc().stream().map(EmailRecipient::getAddress).toList());
     assertTrue(read.getBcc() == null || read.getBcc().isEmpty(), "the Bcc recipients are not read");
+    Email unifiedRead = emailBoxStorage.getEmailsForSearchInFolders(RECIPIENTS_USER, List.of("CUSTOM:21")).get(0);
+    assertNull(unifiedRead.getTo(), "not parsed when not asked");
+    assertNull(unifiedRead.getCc(), "not parsed when not asked");
   }
 
   /**
