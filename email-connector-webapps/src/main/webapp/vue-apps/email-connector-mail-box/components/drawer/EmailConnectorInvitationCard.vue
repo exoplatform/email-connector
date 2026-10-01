@@ -319,7 +319,7 @@ export default {
       this.busy = true;
       this.pending = answer;
       return this.$emailConnectorMailBoxService.replyToInvitation(this.email.id, answer)
-        .then(invitation => this.landed(invitation))
+        .then(invitation => this.landed(invitation, 'ANSWER'))
         .catch(error => {
           const outcome = this.$emailConnectorMailBoxService.invitationReplyOutcome(error, answer);
           if (outcome.answer) {
@@ -363,7 +363,7 @@ export default {
       this.busy = true;
       this.pending = pending;
       return call()
-        .then(invitation => this.landed(invitation))
+        .then(invitation => this.landed(invitation, pending))
         .catch(error => {
           this.$root.$emit('alert-message', this.$t(this.$emailConnectorMailBoxService.invitationLandingError(error)), 'error');
         })
@@ -377,11 +377,12 @@ export default {
      * became of the event in the user's calendar, when anything did.
      *
      * @param {Object} invitation the invitation returned
+     * @param {String} click ANSWER, ADD or REMOVE
      * @returns {void} nothing
      */
-    landed(invitation) {
+    landed(invitation, click) {
       this.invitation = invitation;
-      const landing = this.$emailConnectorMailBoxService.invitationLandingOutcome(invitation?.landing);
+      const landing = this.$emailConnectorMailBoxService.invitationLandingOutcome(invitation?.landing, click);
       if (landing) {
         this.$root.$emit('alert-message', this.$t(landing.messageKey), landing.alertType);
       }

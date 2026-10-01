@@ -516,7 +516,11 @@ public class CalendarInvitationService {
     // is its owner's event. Asked only when there is a UID to land under.
     if (delegation == null && StringUtils.isNotBlank(invitation.getUid()) && invitationLandingService.holdsCalendarFor(username)) {
       boolean cancellation = CalendarInvitationUtils.METHOD_CANCEL.equals(invitation.getMethod());
-      invitation.setLandable(!invitation.isCancelled());
+      // An invitation, a published event, or an object naming no method: a REPLY
+      // or a COUNTER speaks to an organiser, not to a calendar.
+      boolean addable = invitation.getMethod() == null || CalendarInvitationUtils.METHOD_REQUEST.equals(invitation.getMethod())
+          || CalendarInvitationUtils.METHOD_PUBLISH.equals(invitation.getMethod());
+      invitation.setLandable(addable && !invitation.isCancelled());
       invitation.setRemovable(cancellation);
     }
     return parsed;
