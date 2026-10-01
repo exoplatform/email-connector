@@ -175,6 +175,7 @@ import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.RawEmailRef;
 import org.exoplatform.emailConnector.model.RawEmailSource;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.model.SendIdentity;
@@ -457,6 +458,15 @@ public class EmailBoxService {
    * {@code truncated} flag and the size off each answer.
    */
   public static final int                RAW_SOURCE_SHOWN_MAX_BYTES = 512 * 1024;
+
+  /**
+   * Message code answered as a 400 when a folder holds more messages than one export file
+   * may (EXO-90845).
+   */
+  public static final String             EXPORT_TOO_MANY         = "emailConnector.export.tooMany";
+
+  // How many messages a whole-folder export fetches the envelopes of at once (EXO-90845).
+  private static final int               EXPORT_FETCH_WINDOW     = 100;
 
   // Every header createEmails reads per message. They must be fetched in the one batched
   // FETCH: JavaMail otherwise goes back to the server for each header of each message.
@@ -6213,11 +6223,7 @@ public class EmailBoxService {
                                String username,
                                String folder,
                                RawEmailSink sink) throws IllegalAccessException {
-    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
-    if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
-        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
-      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL, username));
-    }
+    UserEmailSetting userEmailSetting = requireConnectable(username, USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL);
     String cachedFolder = StringUtils.defaultIfBlank(folder, MailFolder.INBOX);
     checkDelegatedRight(username, cachedFolder, MailboxRights.READ);
     Email cached = emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId, username, null, cachedFolder, false, false, false);
@@ -6369,6 +6375,294 @@ public class EmailBoxService {
     } finally {
       closeQuietly(folder, store, username);
     }
+  }
+
+  /**
+   * The caller's mailbox setting, when they may use their mailbox at all: connected, on a
+   * connector they may connect to. The first step of every raw read (EXO-90842, EXO-90845),
+   * refused before anything else is read.
+   *
+   * @param username the caller
+   * @param refusal the refusal's message format, given the username
+   * @return the caller's setting, never null
+   * @throws IllegalAccessException when the caller may not use their mailbox
+   */
+  private UserEmailSetting requireConnectable(String username, String refusal) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(refusal, username));
+    }
+    return userEmailSetting;
+  }
+
+  /**
+   * The cached rows of messages named by the mailbox list, for an export (EXO-90845): the
+   * rule of {@link #writeRawEmail} applied to each, and ALL of them checked before any is
+   * read. The caller may use their mailbox; every shared folder named is still shared
+   * with them and they hold its read right; every message is in their own cache under
+   * that folder and that UID. A reference repeated is kept once.
+   * <p>
+   * <b>Refuse-all, never skip.</b> One message refused, or not in the cache, refuses the
+   * whole export: the selection came from the caller's own list, so a reference it does
+   * not hold is a stale list or a forged one, and an archive quietly missing some of what
+   * the user ticked is the outcome this check exists to rule out. The checks read the
+   * database only, so the whole answer is known before a byte is written.
+   *
+   * @param username the caller
+   * @param refs the messages, as the list names them
+   * @return the cached rows in the order named, or null when one of them is not in the
+   *         caller's cache
+   * @throws IllegalAccessException when the caller may not read their mailbox, or lacks
+   *           the read right on one of the shared folders named
+   */
+  public List<Email> getExportableEmails(String username, List<RawEmailRef> refs) throws IllegalAccessException {
+    requireConnectable(username, USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL);
+    Set<String> checkedFolders = new HashSet<>();
+    Set<String> seen = new HashSet<>();
+    List<Email> rows = new ArrayList<>();
+    for (RawEmailRef ref : refs) {
+      String folderKey = StringUtils.defaultIfBlank(ref.getFolder(), MailFolder.INBOX);
+      if (!seen.add(folderKey + "/" + ref.getMailRemoteId())) {
+        continue;
+      }
+      if (checkedFolders.add(folderKey)) {
+        checkDelegatedRight(username, folderKey, MailboxRights.READ);
+      }
+      Email cached = emailBoxStorage.getEmailByMailRemoteIdAndUserId(ref.getMailRemoteId(), username, null, folderKey, false, false, false);
+      if (cached == null) {
+        return null; // NOSONAR the caller tells "no such message" from an empty export
+      }
+      // The row says the folder it is cached under; the export reads it back from there.
+      cached.setFolder(folderKey);
+      rows.add(cached);
+    }
+    return rows;
+  }
+
+  /**
+   * Reads the messages named by the mailbox list, as the mail server holds them, and
+   * hands them one by one to a visitor (EXO-90845: "Download as .zip"). Every check of
+   * {@link #getExportableEmails} runs first, every folder is resolved the way its rows
+   * were cached ({@link #resolveCachedFolder}) on the caller's own connection, and only
+   * then is {@link RawEmailVisitor#begin} called. Each folder is opened read-only and
+   * each message fetched with PEEK, so an export never marks mail read; one connection
+   * serves the whole export.
+   * <p>
+   * A message the server no longer holds under its UID, or holds another message under
+   * (by {@link #isCachedMessage}), is handed to {@link RawEmailVisitor#missing}: the
+   * answer is under way by then, and the visitor reports it in the file.
+   *
+   * @param username the caller
+   * @param refs the messages, as the list names them
+   * @param visitor where the messages go
+   * @return true when the export ran, false when a message or a folder named is not the
+   *         caller's
+   * @throws IllegalAccessException when the caller may not read their mailbox, or lacks
+   *           the read right on a shared folder named
+   * @throws IllegalStateException when the mail server could not be read before the
+   *           export began
+   */
+  public boolean readRawEmails(String username, List<RawEmailRef> refs, RawEmailVisitor visitor) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = requireConnectable(username, USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL);
+    List<Email> rows = getExportableEmails(username, refs);
+    if (rows == null) {
+      return false;
+    }
+    Map<String, List<Email>> byFolder = new LinkedHashMap<>();
+    rows.forEach(row -> byFolder.computeIfAbsent(row.getFolder(), key -> new ArrayList<>()).add(row));
+    Store store = null;
+    Folder remote = null;
+    boolean begun = false;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      Map<String, Folder> remotes = new LinkedHashMap<>();
+      for (String folderKey : byFolder.keySet()) {
+        Folder resolved = resolveCachedFolder(store, folderKey, username);
+        if (!(resolved instanceof UIDFolder)) {
+          return false;
+        }
+        remotes.put(folderKey, resolved);
+      }
+      visitor.begin(rows.size());
+      begun = true;
+      for (Map.Entry<String, List<Email>> group : byFolder.entrySet()) {
+        remote = remotes.get(group.getKey());
+        remote.open(Folder.READ_ONLY);
+        visitFolderGroup((UIDFolder) remote, group.getValue(), visitor);
+        remote.close(false);
+        remote = null;
+      }
+      return true;
+    } catch (IOException | MessagingException | ConnectorCredentialsException | RuntimeException e) {
+      if (begun) {
+        // The answer is under way: a download the browser cancelled, a connection that
+        // dropped mid-copy. Nothing is left to answer with, and it is not an incident.
+        LOG.debug("Export of {} message(s) of user {} stopped mid-copy", rows.size(), username, e);
+        return true;
+      }
+      LOG.warn("Could not read {} message(s) of user {} for an export", rows.size(), username, e);
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
+    } finally {
+      closeQuietly(remote, store, username);
+    }
+  }
+
+  /**
+   * Hands the messages of one open folder to the visitor, in the order named: fetched by
+   * UID in one command, their envelopes in one more, each checked against its cached row.
+   *
+   * @param folder the open folder
+   * @param rows the cached rows of that folder
+   * @param visitor where the messages go
+   * @throws IOException when the visitor's output fails
+   * @throws MessagingException when the folder cannot be read
+   */
+  private void visitFolderGroup(UIDFolder folder, List<Email> rows, RawEmailVisitor visitor) throws IOException,
+                                                                                                    MessagingException {
+    long[] uids = rows.stream().mapToLong(Email::getMailRemoteId).toArray();
+    Message[] messages = folder.getMessagesByUID(uids);
+    Message[] found = Arrays.stream(messages).filter(Objects::nonNull).toArray(Message[]::new);
+    if (found.length > 0) {
+      FetchProfile profile = new FetchProfile();
+      profile.add(FetchProfile.Item.ENVELOPE);
+      ((Folder) folder).fetch(found, profile);
+    }
+    for (int i = 0; i < rows.size(); i++) {
+      Email row = rows.get(i);
+      Message message = i < messages.length ? messages[i] : null;
+      if (!(message instanceof MimeMessage mimeMessage) || message.isExpunged() || !isCachedMessage(row, mimeMessage)) {
+        visitor.missing(row);
+        continue;
+      }
+      if (mimeMessage instanceof IMAPMessage imapMessage) {
+        imapMessage.setPeek(true);
+      }
+      visitor.message(row, mimeMessage);
+    }
+  }
+
+  /**
+   * How many messages a folder holds on the mail server, for the check an export makes
+   * before its download starts (EXO-90845: "Export folder as .mbox"). The access rule of
+   * {@link #readFolderRawEmails}, without opening the folder.
+   *
+   * @param username the caller
+   * @param folder the folder key
+   * @return the count, or -1 when the caller has no such folder
+   * @throws IllegalAccessException when the caller may not read their mailbox, or lacks
+   *           the read right on that shared folder
+   * @throws IllegalStateException when the mail server could not be read
+   */
+  public int countFolderRawEmails(String username, String folder) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = requireConnectable(username, USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL);
+    String folderKey = StringUtils.defaultIfBlank(folder, MailFolder.INBOX);
+    checkDelegatedRight(username, folderKey, MailboxRights.READ);
+    if (!isExportableFolderKey(folderKey)) {
+      return -1;
+    }
+    Store store = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      Folder remote = resolveCachedFolder(store, folderKey, username);
+      return remote == null ? -1 : remote.getMessageCount();
+    } catch (MessagingException | ConnectorCredentialsException | RuntimeException e) {
+      LOG.warn("Could not count folder {} of user {} for an export", folderKey, username, e);
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
+    } finally {
+      closeQuietly(null, store, username);
+    }
+  }
+
+  /**
+   * Reads a whole folder as the mail server holds it, oldest first, and hands its
+   * messages to a visitor (EXO-90845: "Export folder as .mbox", a backup or a move to
+   * another mail application).
+   * <p>
+   * The access rule is {@link #writeRawEmail}'s, for a folder: the caller may use their
+   * mailbox; in a shared folder the share is still accepted and the caller holds its read
+   * right. The folder is resolved through the caller's own folder registry, so a key the
+   * caller was not given names nothing here -- which is what the per-message cache check
+   * guards against for a UID, and why the folder's messages are read from the server
+   * rather than from the cache: the cache keeps a window of each folder, and a backup
+   * that stopped at that window would be a silent loss. The folder is opened read-only
+   * and every message fetched with PEEK; envelopes are fetched a window at a time, so a
+   * large folder never sits in memory at once.
+   *
+   * @param username the caller
+   * @param folder the folder key
+   * @param max the most messages the export may hold; above it nothing is read
+   * @param visitor where the messages go
+   * @return true when the export ran, false when the caller has no such folder
+   * @throws IllegalAccessException when the caller may not read their mailbox, or lacks
+   *           the read right on that shared folder
+   * @throws IllegalArgumentException {@link #EXPORT_TOO_MANY} when the folder holds more
+   *           than {@code max} messages
+   * @throws IllegalStateException when the mail server could not be read before the
+   *           export began
+   */
+  public boolean readFolderRawEmails(String username, String folder, int max, RawEmailVisitor visitor) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = requireConnectable(username, USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL);
+    String folderKey = StringUtils.defaultIfBlank(folder, MailFolder.INBOX);
+    checkDelegatedRight(username, folderKey, MailboxRights.READ);
+    if (!isExportableFolderKey(folderKey)) {
+      return false;
+    }
+    Store store = null;
+    Folder remote = null;
+    boolean begun = false;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      remote = resolveCachedFolder(store, folderKey, username);
+      if (remote == null) {
+        return false;
+      }
+      remote.open(Folder.READ_ONLY);
+      int count = remote.getMessageCount();
+      if (count > max) {
+        throw new IllegalArgumentException(EXPORT_TOO_MANY);
+      }
+      visitor.begin(count);
+      begun = true;
+      for (int start = 1; start <= count; start += EXPORT_FETCH_WINDOW) {
+        Message[] window = remote.getMessages(start, Math.min(count, start + EXPORT_FETCH_WINDOW - 1));
+        FetchProfile profile = new FetchProfile();
+        profile.add(FetchProfile.Item.ENVELOPE);
+        remote.fetch(window, profile);
+        for (Message message : window) {
+          if (message instanceof MimeMessage mimeMessage && !message.isExpunged()) {
+            if (mimeMessage instanceof IMAPMessage imapMessage) {
+              imapMessage.setPeek(true);
+            }
+            visitor.message(null, mimeMessage);
+          }
+        }
+      }
+      return true;
+    } catch (IllegalArgumentException e) {
+      throw e;
+    } catch (IOException | MessagingException | ConnectorCredentialsException | RuntimeException e) {
+      if (begun) {
+        LOG.debug("Export of folder {} of user {} stopped mid-copy", folderKey, username, e);
+        return true;
+      }
+      LOG.warn("Could not read folder {} of user {} for an export", folderKey, username, e);
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
+    } finally {
+      closeQuietly(remote, store, username);
+    }
+  }
+
+  /**
+   * Whether a folder key names a folder a whole-folder export reads: any folder of the
+   * mailbox, but not the Scheduled view, which is a list of drafts rather than a folder,
+   * nor All Mail, the Gmail superset the add-on reads for conversations only.
+   *
+   * @param folderKey the key
+   * @return true for a folder that can be exported whole
+   */
+  private static boolean isExportableFolderKey(String folderKey) {
+    return !MailFolder.SCHEDULED.equals(folderKey) && !MailFolder.ALL_MAIL.equals(folderKey);
   }
 
   public String broadcastOpenEmail(String username) throws IllegalAccessException {
