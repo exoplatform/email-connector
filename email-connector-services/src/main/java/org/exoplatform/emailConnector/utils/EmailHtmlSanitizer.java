@@ -60,8 +60,8 @@ import org.exoplatform.emailConnector.model.SanitizedEmailBody;
  * <p>
  * The {@code <style>} elements of the message's {@code <head>} are kept, moved into the
  * body: mail clients rely on them, and the reader's frame places the whole result in
- * its own {@code <body>}. The {@code <body>}'s own colours, which the browser used to
- * merge into the frame's body, are carried by a wrapping div.
+ * its own {@code <body>}. The cleaning drops the {@code <body>} element itself, so the
+ * colours, background and style it asks for are carried by a wrapping div.
  */
 public final class EmailHtmlSanitizer {
 
@@ -121,6 +121,13 @@ public final class EmailHtmlSanitizer {
     List<Element> headStyles = new ArrayList<>(dirty.head().select("style"));
     for (int i = headStyles.size() - 1; i >= 0; i--) {
       dirty.body().prependChild(headStyles.get(i));
+    }
+    // A protocol-relative image is an http(s) one: given its scheme, it is held back or
+    // shown like the others, where the allow-list would drop it for good.
+    for (Element image : dirty.body().select("img[src]")) {
+      if (compact(image.attr("src")).startsWith("//")) {
+        image.attr("src", "https:" + compact(image.attr("src")));
+      }
     }
     String bodyStyle = bodyStyle(dirty.body());
     Document clean = new Cleaner(SAFELIST).clean(dirty);
@@ -342,9 +349,9 @@ public final class EmailHtmlSanitizer {
 
   /**
    * The presentation the message's {@code <body>} element asks for, as CSS: its
-   * {@code style}, then its {@code bgcolor} and {@code text} colours. The browser used to
-   * merge them into the reader frame's own body; the cleaning drops the element, so they
-   * are carried over by a wrapper.
+   * {@code bgcolor}, {@code text} and {@code background}, then its {@code style}. The
+   * cleaning drops the element, so they are carried by a wrapper; the background image
+   * goes through the same {@code url()} policy as any other CSS.
    *
    * @param body the parsed message's body element
    * @return the CSS declarations, or null when it asks for none
@@ -356,6 +363,10 @@ public final class EmailHtmlSanitizer {
     }
     if (body.hasAttr("text") && CSS_COLOR_VALUE.matcher(body.attr("text").trim()).matches()) {
       style.append("color:").append(body.attr("text").trim()).append(';');
+    }
+    String background = body.attr("background").trim();
+    if (!background.isEmpty() && background.indexOf('"') < 0 && background.indexOf('\\') < 0) {
+      style.append("background-image:url(\"").append(background).append("\");");
     }
     if (StringUtils.isNotBlank(body.attr("style"))) {
       style.append(body.attr("style"));
