@@ -51,6 +51,7 @@ import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.model.CalendarInvitation;
 import org.exoplatform.emailConnector.model.CalendarInvitationAnswer;
+import org.exoplatform.emailConnector.model.CalendarInvitationPerson;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailDelegation;
@@ -378,6 +379,9 @@ public class CalendarInvitationService {
     if (invitation.getAttendeeAddress() == null) {
       invitation.setAttendeeAddress(mailboxAddress);
     }
+    if (invitation.getRespondent() == null && CalendarInvitationUtils.METHOD_COUNTER.equals(invitation.getMethod())) {
+      invitation.setRespondent(proposer(email, invitation));
+    }
     CalendarInvitationAnswer given = rememberedAnswer(username, invitation, parsed.recurrenceId());
     if (given != null && given.getAnswer() != null && given.getSequence() >= invitation.getSequence()) {
       invitation.setAnswer(given.getAnswer());
@@ -396,6 +400,26 @@ public class CalendarInvitationService {
       invitation.setAnswerRefusal(mayAnswer ? null : SEND_NOT_ALLOWED);
     }
     return parsed;
+  }
+
+  /**
+   * Who proposes the change a COUNTER listing several attendees carries: the attendee
+   * whose address is the mail's sender's; null when none is.
+   *
+   * @param email the message, for its sender
+   * @param invitation the COUNTER
+   * @return the attendee, or null
+   */
+  private static CalendarInvitationPerson proposer(Email email, CalendarInvitation invitation) {
+    String sender = email.getSender() == null ? null : StringUtils.trimToNull(email.getSender().getAddress());
+    if (sender == null) {
+      return null;
+    }
+    return invitation.getAttendees()
+                     .stream()
+                     .filter(attendee -> StringUtils.equalsIgnoreCase(sender, attendee.getAddress()))
+                     .findFirst()
+                     .orElse(null);
   }
 
   /**
