@@ -45,15 +45,21 @@ public interface InvitationCalendarPlugin {
    * calendar with this add-on.
    * <p>
    * The answer is final at this point: the REPLY left for the organiser already.
-   * An implementer that holds a calendar for the user either lands the event with
-   * this answer and returns true, or throws when it tried and could not -- the user
-   * is then told their calendar could not be updated. It returns false only when it
-   * holds no calendar for this user, which lets the next implementer answer; false
-   * is also what it answers on anything it cannot establish.
+   * An implementer that holds a calendar for the user lands the event with this
+   * answer and returns true; it returns false only when it holds no calendar for
+   * this user, which lets the next implementer answer, and false is also what it
+   * answers on anything about the user it cannot establish. Two things it says by
+   * throwing, told apart by the exception: an invitation it refuses to land as it is
+   * -- unreadable, about another event, about one occurrence only, or one it must
+   * not trust -- is an {@link IllegalArgumentException}, and the user is told the
+   * event was not added; a landing it attempted and could not finish is any other
+   * exception, and the user is told their calendar could not be updated. Only the
+   * second is an incident.
    *
    * @param landing the invitation, the user and their answer
    * @return true when the user's calendar now holds the event with this answer,
    *         false when this add-on holds no calendar for the user
+   * @throws IllegalArgumentException when the invitation cannot be landed as it is
    * @throws RuntimeException when the landing was attempted and failed
    */
   boolean land(InvitationLanding landing);
