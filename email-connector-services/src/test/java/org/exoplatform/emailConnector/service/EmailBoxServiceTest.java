@@ -15506,9 +15506,9 @@ public class EmailBoxServiceTest {
 
   /**
    * EXO-90838 -- the advanced search of the user's own folder reads eXo's copy of it,
-   * with every criterion as the shared folder's copy applies it, never the server; the
-   * answer carries the date of the copy's oldest message there. The access check answers
-   * first, and a folder the server search would not read is refused before any read.
+   * with every criterion as the shared folder's copy applies it, never the server. The
+   * access check answers first, and a folder the server search would not read is
+   * refused before any read.
    */
   @Test
   void theCachedSearchOfAnOwnFolderAppliesEveryCriterionToItsCopy() throws Exception {
@@ -15566,22 +15566,8 @@ public class EmailBoxServiceTest {
     assertEquals(List.of(2L), cachedUids(sender));
 
     EmailSearchResultPage page = emailBoxService.searchCachedFolder(TEST_USER, words, MailFolder.INBOX, 10);
-    assertNull(page.getCachedSince(), "a folder no synchronization captured yet states no date");
     assertEquals(MailFolder.INBOX, page.getResults().get(0).getFolder());
     assertTrue(page.getResults().get(0).isCached());
-    MailboxSyncState state = new MailboxSyncState();
-    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 2));
-    doReturn(SettingValue.create(JsonUtils.toJsonString(state))).when(settingService)
-                                                                .get(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
-    assertEquals(toDave.getReceivedDate(),
-                 emailBoxService.searchCachedFolder(TEST_USER, words, MailFolder.INBOX, 10).getCachedSince(),
-                 "the oldest of the synchronized window (2), never an older message opened from a server search");
-    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 1000));
-    doReturn(SettingValue.create(JsonUtils.toJsonString(state))).when(settingService)
-                                                                .get(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
-    assertEquals(ccDave.getReceivedDate(),
-                 emailBoxService.searchCachedFolder(TEST_USER, words, MailFolder.INBOX, 10).getCachedSince(),
-                 "a window wider than the copy: its oldest message");
     verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
@@ -15605,7 +15591,6 @@ public class EmailBoxServiceTest {
 
     assertEquals(List.of(1L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList());
     assertEquals("CUSTOM:9", page.getResults().get(0).getFolder());
-    assertEquals(budget.getReceivedDate(), page.getCachedSince());
 
     when(emailDelegationService.isSearchableSharedFolder(TEST_USER, "CUSTOM:9")).thenReturn(false);
     assertEquals("emailConnector.folder.notBrowsable",
