@@ -78,6 +78,7 @@ class CalendarInvitationUtilsTest {
     assertFalse(invitation.isAllDay());
     assertEquals(ZonedDateTime.parse("2026-10-05T08:00:00Z").toInstant().toEpochMilli(), invitation.getStart());
     assertEquals(ZonedDateTime.parse("2026-10-05T09:00:00Z").toInstant().toEpochMilli(), invitation.getEnd());
+    assertFalse(invitation.isFloating());
     assertEquals("Europe/Paris", invitation.getTimeZone());
     assertTrue(invitation.isRecurring());
     CalendarInvitationRecurrence rule = invitation.getRecurrence();
@@ -115,6 +116,47 @@ class CalendarInvitationUtilsTest {
 
     assertEquals(1, invitation.getAttendeeCount());
     assertEquals(InvitationAnswer.ACCEPTED, invitation.getAnswer());
+  }
+
+  /**
+   * A series bounded by a date says its last day in the organiser's zone: Google writes
+   * UNTIL as the end of the last local day in UTC, 04:59:59Z on the 31st being still the
+   * 30th in New York.
+   *
+   * @throws Exception when the fixture cannot be read
+   */
+  @Test
+  void theLastDayOfASeriesIsSaidInTheOrganisersZone() throws Exception {
+    CalendarInvitationRecurrence rule = CalendarInvitationUtils.parseInvitation(fixture("until-new-york.ics"), ME, 50)
+                                                               .invitation()
+                                                               .getRecurrence();
+
+    assertEquals("WEEKLY", rule.getFrequency());
+    assertEquals("2026-12-30", rule.getUntil());
+    assertNull(rule.getCount());
+  }
+
+  /**
+   * A floating time is handed over as the wall-clock time it is, never read as an
+   * instant in the server's zone.
+   *
+   * @throws Exception when the fixture cannot be read
+   */
+  @Test
+  void aFloatingTimeStaysAWallClockTime() throws Exception {
+    java.util.TimeZone serverZone = java.util.TimeZone.getDefault();
+    java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("Asia/Tokyo"));
+    try {
+      CalendarInvitation invitation = CalendarInvitationUtils.parseInvitation(fixture("floating.ics"), ME, 50).invitation();
+
+      assertTrue(invitation.isFloating());
+      assertEquals("2026-10-05T10:00", invitation.getStartLocal());
+      assertEquals("2026-10-05T11:30", invitation.getEndLocal());
+      assertNull(invitation.getStart(), "no instant: it would be the server's zone's");
+      assertNull(invitation.getTimeZone());
+    } finally {
+      java.util.TimeZone.setDefault(serverZone);
+    }
   }
 
   /**
