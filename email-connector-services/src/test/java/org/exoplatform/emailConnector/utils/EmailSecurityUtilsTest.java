@@ -18,7 +18,9 @@ package org.exoplatform.emailConnector.utils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
+import java.time.Duration;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -138,6 +140,65 @@ class EmailSecurityUtilsTest {
     assertEquals("www.photos.zip", EmailSecurityUtils.hostOfText("www.photos.zip"));
     assertEquals("photos.zip", EmailSecurityUtils.hostOfText("https://photos.zip/"));
     assertNull(EmailSecurityUtils.hostOfText("photos.zip"));
+  }
+
+  /**
+   * A crafted link text cannot make the check slow or overflow the stack: a host of half
+   * a million labels, a near-address that fails at its very end, a long hyphen run, a
+   * long path. Each is judged well inside a second; an expression repeating a group per
+   * label overflowed the stack on the first.
+   */
+  @Test
+  void aCraftedLinkTextIsJudgedInLinearTime() {
+    String[] hostile = { "a.".repeat(500_000) + "com",
+        "a.".repeat(500_000) + "com x",
+        "a" + "-".repeat(1_000_000) + "b.com",
+        "a-".repeat(500_000) + ".com",
+        "www.bank.com/" + "a".repeat(1_000_000) + " ",
+        "https://" + "1.".repeat(500_000) };
+    for (String text : hostile) {
+      assertTimeoutPreemptively(Duration.ofSeconds(3),
+                                () -> EmailSecurityUtils.deceptiveLink(List.of(new EmailLink(text, "https://evil.example/"))),
+                                () -> "slow on a " + text.length() + "-character link text");
+    }
+    assertEquals("evil.example",
+                 EmailSecurityUtils.deceptiveLink(List.of(new EmailLink("a.".repeat(200_000) + "com", "https://evil.example/")))
+                                   .getActual());
+  }
+
+  /**
+   * A crafted Authentication-Results header -- deeply nested comments, a long run of
+   * signing identities with no {@code @} -- is judged in bounded time: only its first
+   * 8192 characters are read, ample for a real one.
+   */
+  @Test
+  void aCraftedHeaderIsJudgedInBoundedTime() {
+    String[] hostile = { "mx.example.com; " + "(".repeat(200_000) + ")".repeat(200_000) + "; dmarc=fail",
+        "mx.example.com; dkim=pass " + "header.i=x".repeat(200_000) + "; spf=fail" };
+    for (String header : hostile) {
+      assertTimeoutPreemptively(Duration.ofSeconds(3), () -> verdict(header), () -> "slow on a " + header.length() + "-character header");
+    }
+    assertEquals(EmailSecurityUtils.AUTH_DMARC, verdict("mx.example.com; " + "(c)".repeat(1_000) + " dmarc=fail"));
+  }
+
+  /**
+   * The edges of what reads as an address: a trailing dot, a port, a path with no
+   * white space and no {@code @}, and what does not.
+   */
+  @Test
+  void whatReadsAsAnAddress() {
+    assertEquals("bank.example", EmailSecurityUtils.hostOfText("HTTPS://Bank.Example./login?x=1#y"));
+    assertEquals("bank.example", EmailSecurityUtils.hostOfText("bank.example:8443/a"));
+    assertEquals("xn--bcher-kva.example", EmailSecurityUtils.hostOfText("b\u00fccher.example"));
+    for (String text : new String[] { "bank", "bank.", ".bank.example", "bank..example", "-bank.example", "bank-.example",
+        "bank.example:", "bank.example:123456", "bank.example:80x", "bank.example x", "bank.example/a b", "bank.example/a@b",
+        "bank.e", "bank.c0m", "user@bank.example", "ftp://bank.example", "bank.example..", "www.bank.example#" }) {
+      if ("www.bank.example#".equals(text)) {
+        assertEquals("www.bank.example", EmailSecurityUtils.hostOfText(text), text);
+      } else {
+        assertNull(EmailSecurityUtils.hostOfText(text), text);
+      }
+    }
   }
 
   /**

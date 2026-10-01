@@ -64,13 +64,17 @@ public final class EmailSecurityUtils {
   private static final String  UNALIGNED                     = "-unaligned";
 
   /**
-   * A text that reads as a web address: an optional scheme, a host of at least two
-   * labels ending in an alphabetic top-level domain, an optional port and path. No white
-   * space and no {@code @}, so a sentence or a mail address never qualifies.
+   * How much of an {@code Authentication-Results} header is read. A real one is a few
+   * hundred characters; reading a bounded prefix keeps the comment stripping and the
+   * result matching linear whatever a sender writes when the receiving server adds none.
    */
-  private static final Pattern URL_LIKE_TEXT                 =
-                                             Pattern.compile("^(?:https?://)?((?:[\\p{L}\\p{N}](?:[\\p{L}\\p{N}-]*[\\p{L}\\p{N}])?\\.)+[\\p{L}]{2,63})\\.?(?::\\d{1,5})?(?:[/?#][^\\s@]*)?$",
-                                                             Pattern.CASE_INSENSITIVE);
+  private static final int    MAX_HEADER_LENGTH               = 8192;
+
+  /** The longest port a displayed address may carry, in digits. */
+  private static final int    MAX_PORT_DIGITS                 = 5;
+
+  /** The longest top-level domain, in characters. */
+  private static final int    MAX_TOP_LEVEL_LENGTH            = 63;
 
   /**
    * The second-level labels under which a country-code domain registers names
@@ -130,7 +134,7 @@ public final class EmailSecurityUtils {
     if (headerValues == null || headerValues.length == 0 || StringUtils.isBlank(headerValues[0])) {
       return null;
     }
-    String header = headerValues[0].replaceAll("[\\r\\n]+", " ").toLowerCase(Locale.ROOT);
+    String header = StringUtils.left(headerValues[0], MAX_HEADER_LENGTH).replaceAll("[\\r\\n]+", " ").toLowerCase(Locale.ROOT);
     String previous;
     do {
       previous = header;
@@ -229,15 +233,127 @@ public final class EmailSecurityUtils {
       return null;
     }
     String value = text.trim();
-    Matcher url = URL_LIKE_TEXT.matcher(value);
-    if (!url.matches()) {
+    String host = displayedHost(value);
+    if (host == null) {
       return null;
     }
-    String host = url.group(1);
     String topLevel = StringUtils.substringAfterLast(host, ".").toLowerCase(Locale.ROOT);
     boolean explicit = value.regionMatches(true, 0, "http", 0, 4) || host.regionMatches(true, 0, "www.", 0, 4);
     return !explicit && FILE_EXTENSIONS.contains(topLevel) ? null : asciiHost(host);
   }
+
+  /**
+   * The host of a text that reads, as a whole, as a web address: an optional
+   * {@code http://} or {@code https://}, a host of at least two labels ending in an
+   * alphabetic top-level domain (and an optional trailing dot), an optional port of one
+   * to five digits, then an optional path, query or fragment holding no white space and
+   * no {@code @} -- so a sentence or a mail address never qualifies. Read by hand, in
+   * time linear in the text, which the sender wrote: no backtracking expression is run on
+   * it.
+   *
+   * @param value the trimmed link text
+   * @return the host as written, without its trailing dot, or null when the text is not
+   *         an address
+   */
+  private static String displayedHost(String value) {
+    int length = value.length();
+    int start = 0;
+    if (value.regionMatches(true, 0, "https://", 0, 8)) {
+      start = 8;
+    } else if (value.regionMatches(true, 0, "http://", 0, 7)) {
+      start = 7;
+    }
+    int hostEnd = start;
+    while (hostEnd < length && "/?#:".indexOf(value.charAt(hostEnd)) < 0) {
+      hostEnd++;
+    }
+    String host = StringUtils.removeEnd(value.substring(start, hostEnd), ".");
+    if (!isHostName(host)) {
+      return null;
+    }
+    int next = hostEnd;
+    if (next < length && value.charAt(next) == ':') {
+      int digits = next + 1;
+      while (digits < length && value.charAt(digits) >= '0' && value.charAt(digits) <= '9') {
+        digits++;
+      }
+      if (digits == next + 1 || digits - next - 1 > MAX_PORT_DIGITS) {
+        return null;
+      }
+      next = digits;
+    }
+    if (next < length) {
+      if ("/?#".indexOf(value.charAt(next)) < 0) {
+        return null;
+      }
+      for (int i = next + 1; i < length; i++) {
+        char c = value.charAt(i);
+        if (c == '@' || isRegexSpace(c)) {
+          return null;
+        }
+      }
+    }
+    return host;
+  }
+
+  /**
+   * Whether a text is a host name of at least two labels: each label letters, digits and
+   * inner hyphens, starting and ending with a letter or a digit, and the last one, the
+   * top-level domain, two to sixty-three letters.
+   *
+   * @param host the candidate host
+   * @return true when it is one
+   */
+  private static boolean isHostName(String host) {
+    String[] labels = host.split("\\.", -1);
+    if (labels.length < 2) {
+      return false;
+    }
+    String topLevel = labels[labels.length - 1];
+    int topLength = topLevel.codePointCount(0, topLevel.length());
+    if (topLength < 2 || topLength > MAX_TOP_LEVEL_LENGTH || !topLevel.codePoints().allMatch(Character::isLetter)) {
+      return false;
+    }
+    return Arrays.stream(labels, 0, labels.length - 1).allMatch(EmailSecurityUtils::isLabel);
+  }
+
+  /**
+   * Whether a text is one label of a host name: letters, digits and hyphens, not
+   * starting or ending with a hyphen.
+   *
+   * @param label the candidate label
+   * @return true when it is one
+   */
+  private static boolean isLabel(String label) {
+    if (label.isEmpty() || label.startsWith("-") || label.endsWith("-")) {
+      return false;
+    }
+    return label.codePoints().allMatch(c -> c == '-' || isLetterOrNumber(c));
+  }
+
+  /**
+   * Whether a code point is a letter or a number in any script, as {@code \p{L}} and
+   * {@code \p{N}} read it.
+   *
+   * @param codePoint the code point
+   * @return true for a letter or a number
+   */
+  private static boolean isLetterOrNumber(int codePoint) {
+    int type = Character.getType(codePoint);
+    return Character.isLetter(codePoint) || type == Character.DECIMAL_DIGIT_NUMBER || type == Character.LETTER_NUMBER
+        || type == Character.OTHER_NUMBER;
+  }
+
+  /**
+   * Whether a character is white space as {@code \s} reads it.
+   *
+   * @param c the character
+   * @return true for space, tab, line feed, vertical tab, form feed or carriage return
+   */
+  private static boolean isRegexSpace(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\u000B' || c == '\f' || c == '\r';
+  }
+
 
   /**
    * The host a link leads to, for a web link.
