@@ -16,7 +16,6 @@
  */
 package org.exoplatform.emailConnector.model;
 
-import java.util.Date;
 import java.util.List;
 
 import lombok.Data;
@@ -42,18 +41,14 @@ public class EmailSearchResultPage {
   // results can continue the same search on the mail server without being told twice.
   private boolean                 favoritesOnly;
 
-  // For a search of eXo's copy of a folder (EXO-90838): the date of the copy's oldest
-  // message in that folder, which bounds what such a search can find; null otherwise.
-  private Date                    cachedSince;
-
   // For a search of the mail server narrowed to the messages with an attachment
   // (EXO-90838): how many of the newest matches were examined for one, when there were
   // more matches than that -- the count then covers those only; 0 when every match was.
   private int                     scanned;
 
   /**
-   * A page of hits, as every search builds one; the two fields above are set by name
-   * by the searches that have them.
+   * A page of hits, as every search builds one; the field above is set by name by
+   * the search that has it.
    *
    * @param results the newest matching messages
    * @param totalMatches how many matched in total
