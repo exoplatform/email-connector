@@ -26,11 +26,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        text. The reasons quote what the message presents as text, never as markup.
        "Always show" is not offered on a message that looks suspicious. Inline style for
        the accent because this webapp's webpack has no CSS loader. -->
-  <div v-if="hasWarnings || remoteContentBlocked" class="mail-security-banners text-start">
+  <div
+    v-if="hasWarnings || remoteContentBlocked"
+    :style="{ paddingBottom: '12px' }"
+    class="mail-security-banners text-start">
     <div
       v-if="hasWarnings"
       :style="frameStyle(WARNING_COLOR)"
-      class="mail-security-warning d-flex align-start px-3 py-2 mb-3"
+      :class="{ 'mb-2': remoteContentBlocked }"
+      class="mail-security-warning d-flex align-start px-3 py-2"
       role="alert">
       <v-icon
         size="14"
@@ -50,7 +54,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <div
       v-if="remoteContentBlocked"
       :style="frameStyle(PRIMARY_COLOR)"
-      class="mail-remote-content-banner d-flex align-start px-3 py-2 mb-3"
+      class="mail-remote-content-banner d-flex align-start px-3 py-2"
       role="status">
       <v-icon
         size="14"
