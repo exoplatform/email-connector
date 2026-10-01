@@ -23,7 +23,10 @@ import java.io.OutputStream;
 import javax.mail.MessagingException;
 import javax.mail.internet.MimeMessage;
 
+import org.exoplatform.emailConnector.exception.ExportInterruptedException;
+import org.exoplatform.emailConnector.exception.ExportOutputClosedException;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.utils.GuardedOutputStream;
 import org.exoplatform.emailConnector.utils.MboxrdOutputStream;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -62,7 +65,7 @@ class MboxExportVisitor implements RawEmailVisitor {
    */
   @Override
   public void begin(int count) throws IOException {
-    out = new BufferedOutputStream(sink.open(folder, -1), OUTPUT_BUFFER);
+    out = new BufferedOutputStream(new GuardedOutputStream(sink.open(folder, -1)), OUTPUT_BUFFER);
     mbox = new MboxrdOutputStream(out);
   }
 
@@ -71,8 +74,10 @@ class MboxExportVisitor implements RawEmailVisitor {
    *
    * @param cached null: a folder export reads the folder, not the cache
    * @param message the message as the server holds it
-   * @throws IOException when the output fails
-   * @throws MessagingException never; a message the server drops mid-copy ends there
+   * @throws IOException when the output fails ({@link ExportOutputClosedException})
+   * @throws MessagingException never
+   * @throws ExportInterruptedException when the server fails mid-copy: an mbox has no
+   *           place to say a message is cut short, so the download must fail instead
    */
   @Override
   public void message(Email cached, MimeMessage message) throws IOException, MessagingException {
@@ -80,10 +85,10 @@ class MboxExportVisitor implements RawEmailVisitor {
     mbox.startMessage();
     try {
       message.writeTo(mbox);
-    } catch (MessagingException e) {
-      // The server dropped the message mid-copy; the file stays readable, the message
-      // ends where the copy stopped.
-      LOG.debug("A message stopped mid-copy into an mbox export", e);
+    } catch (ExportOutputClosedException e) {
+      throw e;
+    } catch (MessagingException | IOException e) {
+      throw new ExportInterruptedException("A message stopped mid-copy into an mbox export", e);
     }
     mbox.endMessage();
   }

@@ -29,7 +29,9 @@ import java.util.zip.ZipOutputStream;
 import javax.mail.MessagingException;
 import javax.mail.internet.MimeMessage;
 
+import org.exoplatform.emailConnector.exception.ExportOutputClosedException;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.utils.GuardedOutputStream;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -65,7 +67,8 @@ class ZipExportVisitor implements RawEmailVisitor {
    */
   @Override
   public void begin(int count) throws IOException {
-    zip = new ZipOutputStream(new BufferedOutputStream(sink.open(null, -1), OUTPUT_BUFFER), StandardCharsets.UTF_8);
+    zip = new ZipOutputStream(new BufferedOutputStream(new GuardedOutputStream(sink.open(null, -1)), OUTPUT_BUFFER),
+                              StandardCharsets.UTF_8);
     // The report entry's name is taken first, so no message can be named like it.
     usedNames.add(EmailExportService.NOT_EXPORTED_ENTRY);
   }
@@ -75,8 +78,8 @@ class ZipExportVisitor implements RawEmailVisitor {
    *
    * @param cached the message's cached row
    * @param message the message as the server holds it
-   * @throws IOException when the output fails
-   * @throws MessagingException never; a message the server drops mid-copy is reported
+   * @throws IOException when the output fails ({@link ExportOutputClosedException})
+   * @throws MessagingException never; a message the server fails to copy is reported
    */
   @Override
   public void message(Email cached, MimeMessage message) throws IOException, MessagingException {
@@ -87,10 +90,12 @@ class ZipExportVisitor implements RawEmailVisitor {
     zip.putNextEntry(entry);
     try {
       message.writeTo(zip);
-    } catch (MessagingException e) {
-      // The server dropped the message mid-copy: its entry is cut short, and named in
-      // the report as such.
-      LOG.debug("A message stopped mid-copy into a zip export", e);
+    } catch (ExportOutputClosedException e) {
+      throw e;
+    } catch (MessagingException | IOException e) {
+      // The server failed mid-copy (a message removed, a folder closed, a connection
+      // dropped): the entry is cut short, and named in the report as such.
+      LOG.warn("A message stopped mid-copy into a zip export", e);
       notExported.add(EmailExportService.notExportedLine(cached));
     } finally {
       zip.closeEntry();
@@ -98,7 +103,7 @@ class ZipExportVisitor implements RawEmailVisitor {
   }
 
   /**
-   * Notes a message the server no longer holds, for the report entry.
+   * Notes a message the server no longer holds, or failed to give, for the report entry.
    *
    * @param cached the message's cached row
    */
@@ -117,7 +122,7 @@ class ZipExportVisitor implements RawEmailVisitor {
     try {
       if (!notExported.isEmpty()) {
         zip.putNextEntry(new ZipEntry(EmailExportService.NOT_EXPORTED_ENTRY));
-        StringBuilder report = new StringBuilder("These emails could not be exported: the mail server no longer holds them.\r\n\r\n");
+        StringBuilder report = new StringBuilder("These emails could not be exported, or only in part: the mail server no longer holds them, or failed while they were read.\r\n\r\n");
         notExported.forEach(report::append);
         zip.write(report.toString().getBytes(StandardCharsets.UTF_8));
         zip.closeEntry();
