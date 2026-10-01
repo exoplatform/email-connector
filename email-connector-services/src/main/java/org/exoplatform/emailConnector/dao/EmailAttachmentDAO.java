@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.dao;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -122,4 +123,22 @@ public interface EmailAttachmentDAO extends JpaRepository<EmailAttachmentEntity,
       + "WHERE attachment.email.id IN :emailIds AND attachment.fileId IS NOT NULL")
   List<Long> findFileIdsByEmailIds(@Param("emailIds")
   List<Long> emailIds);
+
+  /**
+   * The ids of a user's cached messages, in some folders, that carry at least one
+   * attachment row: what the search of eXo's copy of a shared mailbox narrows to when it
+   * is asked for the messages with an attachment (EXO-90838). Ids only, so neither the
+   * messages nor their attachments are loaded. An inline image is no attachment row (it
+   * is part of the body), so a message whose only files are inline ones is not listed.
+   * Never called with an empty list -- an empty {@code IN} is not valid SQL everywhere.
+   *
+   * @param userId the user whose copy it is
+   * @param folders the folder keys
+   * @return the ids, in no particular order, each once
+   */
+  @Query("SELECT DISTINCT attachment.email.id FROM EmailAttachmentEntity attachment "
+      + "WHERE attachment.email.userId = :userId AND attachment.email.folder IN :folders")
+  List<Long> findEmailIdsWithAttachmentsByUserIdAndFolders(@Param("userId")
+  String userId, @Param("folders")
+  Collection<String> folders);
 }
