@@ -15676,7 +15676,7 @@ public class EmailBoxServiceTest {
     order.verify(scheduler).apply(any(Email.class));
     order.verify(serverCopy).setFlag(Flags.Flag.DELETED, true);
     order.verify(emailBoxStorage).detachDraftFromServerCopy(TEST_USER, "draft-1");
-    verify(emailScheduledSendStorage, never()).delete(anyLong());
+    verify(emailScheduledSendStorage, never()).deleteWaiting(anyLong());
   }
 
   /**
@@ -15774,14 +15774,39 @@ public class EmailBoxServiceTest {
     EmailScheduledSend created = new EmailScheduledSend();
     created.setId(31L);
 
+    when(emailScheduledSendStorage.deleteWaiting(31L)).thenReturn(true);
+
     IllegalStateException refused = assertThrows(IllegalStateException.class,
                                                  () -> emailBoxService.scheduleDraft(draft("draft-1"), TEST_USER, saved -> created));
     assertEquals("emailConnector.scheduled.serverCopyRemains", refused.getMessage());
-    verify(emailScheduledSendStorage).delete(31L);
+    verify(emailScheduledSendStorage).deleteWaiting(31L);
     verify(emailBoxStorage, never()).detachDraftFromServerCopy(anyString(), anyString());
 
     when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
     assertLocked(() -> emailBoxService.scheduleDraft(draft("draft-1"), TEST_USER, saved -> created));
+  }
+
+  /**
+   * A schedule claimed by a dispatcher while its server copy's removal was failing
+   * (EXO-90837: a mail held seconds for its Undo) is not taken back from the run sending
+   * it: the scheduling answers the schedule, never "nothing scheduled" about a mail that
+   * is on its way, and its send removes the leftover copy.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduleClaimedWhileItsServerCopyRemainsIsNotTakenBack() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    doThrow(new MessagingException("no")).when(draftsFolder).open(Folder.READ_WRITE);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(storedDraft());
+    EmailScheduledSend created = new EmailScheduledSend();
+    created.setId(31L);
+    when(emailScheduledSendStorage.deleteWaiting(31L)).thenReturn(false);
+
+    assertSame(created, emailBoxService.scheduleDraft(draft("draft-1"), TEST_USER, saved -> created));
+    verify(emailBoxStorage, never()).detachDraftFromServerCopy(anyString(), anyString());
   }
 
   /**

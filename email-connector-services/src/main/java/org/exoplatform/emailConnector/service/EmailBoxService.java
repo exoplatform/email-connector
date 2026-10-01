@@ -10756,7 +10756,13 @@ public class EmailBoxService {
       long serverCopyUid = serverDraftCopyUid(stored);
       if (serverCopyUid > 0 && isServerDraftsEnabled()) {
         if (!removeServerDraftCopy(serverCopyUid, stored.getMailHeaderId(), username, userEmailSetting)) {
-          emailScheduledSendStorage.delete(schedule.getId());
+          if (!emailScheduledSendStorage.deleteWaiting(schedule.getId())) {
+            // Claimed while the removal was failing: the mail is on its way, and its send
+            // removes the leftover copy (sendStoredDraft). Saying "nothing scheduled"
+            // now would be false.
+            LOG.warn("The server copy of a scheduled draft of user {} remains, but its send has started", username);
+            return schedule;
+          }
           throw new IllegalStateException("emailConnector.scheduled.serverCopyRemains");
         }
         emailBoxStorage.detachDraftFromServerCopy(username, draftLocalId);
