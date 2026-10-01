@@ -17,11 +17,14 @@
 package org.exoplatform.emailConnector.listener;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+
+import jakarta.annotation.PostConstruct;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -63,10 +66,12 @@ class EmailManagedLoginListenerTest {
 
   /** A listener nobody binds enrols nobody: the binding is the event the platform raises at login. */
   @Test
-  void bindsItselfToTheSessionRegistrationEvent() {
+  void bindsItselfToTheSessionRegistrationEvent() throws Exception {
     listener.init();
 
     verify(listenerService).addListener("exo.core.security.ConversationRegistry.register", listener);
+    // The container calls init: without the annotation nobody is ever enrolled.
+    assertTrue(EmailManagedLoginListener.class.getMethod("init").isAnnotationPresent(PostConstruct.class));
   }
 
   @Test

@@ -42,6 +42,8 @@ import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import io.meeds.common.ContainerTransactional;
+
 import org.exoplatform.container.ExoContainer;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -91,6 +93,18 @@ class EmailManagedEnrollmentServiceTest {
   }
 
   /** Managed mode does not apply: the user's own settings are not even opened. */
+  /**
+   * The enrolment runs on its own thread: without a container bound by the
+   * annotation, the storage and the services it calls have none.
+   *
+   * @throws Exception when the method is not found
+   */
+  @Test
+  void theEnrolmentBindsTheContainerForItsThread() throws Exception {
+    assertTrue(EmailManagedEnrollmentService.class.getMethod("enrollOnLogin", String.class)
+                                                  .isAnnotationPresent(ContainerTransactional.class));
+  }
+
   @Test
   void doesNothingWhenManagedModeDoesNotApply() {
     when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(null);

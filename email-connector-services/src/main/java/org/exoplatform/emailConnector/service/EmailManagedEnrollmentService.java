@@ -46,7 +46,7 @@ import jakarta.annotation.PreDestroy;
  * excluded and nothing happens; otherwise they are attached to the designated
  * connector. The designation is read first here because it is the cheapest read and
  * the one that is null on every instance where managed mode is off: such an instance
- * pays two setting reads per login and never opens the user's own settings.
+ * pays one setting read per login and never opens the user's own settings.
  * <p>
  * Having no configuration and having removed one are the same case: a user who
  * disconnects is attached again at their next login, and disconnecting stays useful

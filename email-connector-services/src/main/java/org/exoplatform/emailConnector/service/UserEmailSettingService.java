@@ -228,8 +228,8 @@ public class UserEmailSettingService {
     } catch (ConnectorCredentialsException | MessagingException e) {
       // A refusal: the provider produced no material for this user, or the mail
       // server would not open the mailbox with it. Routine, not an incident -
-      // since EXO-89653 it happens at every attempt for every unattached managed
-      // user - so the stack goes to debug and the cause travels with the
+      // the login-time enrolment meets it at every attempt for every unattached
+      // managed user - so the stack goes to debug and the cause travels with the
       // exception, for the caller to say why. Anything else is not a refusal and
       // propagates as it is.
       LOG.debug("Error when connecting store for user {} through its provider", username, e);
