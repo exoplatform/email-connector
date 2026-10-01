@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -662,6 +663,102 @@ class EmailFolderServiceTest {
   void removeFolderDelegatesToStorage() {
     emailFolderService.removeFolder(USER, 5L);
     verify(emailFolderStorage).deleteFolder(USER, 5L);
+  }
+
+  /**
+   * EXO-90839: "inside" is by full name and the folder's own delimiter, at any depth,
+   * never the folder itself, never a folder whose name merely starts the same way, and
+   * nothing on a flat namespace.
+   */
+  @Test
+  void isInsideIsByFullNameAndDelimiterAtAnyDepth() {
+    assertTrue(EmailFolderService.isInside("Customers/Acme", "Customers", "/"));
+    assertTrue(EmailFolderService.isInside("Customers/Acme/2024", "Customers", "/"));
+    assertFalse(EmailFolderService.isInside("Customers", "Customers", "/"), "never inside itself");
+    assertFalse(EmailFolderService.isInside("CustomersOld", "Customers", "/"), "a lookalike name is not inside");
+    assertFalse(EmailFolderService.isInside("Customers/Acme", "Customers", null), "a flat namespace has no inside");
+    assertTrue(EmailFolderService.isInside("INBOX.Customers.Acme", "INBOX.Customers", "."));
+  }
+
+  /**
+   * A folder's own name is its full name without its parent's prefix -- what a move to
+   * another parent keeps.
+   */
+  @Test
+  void ownNameIsTheLastSegmentOfTheFullName() {
+    assertEquals("Acme", EmailFolderService.ownName(registered(1L, "Customers/Acme", true, false)));
+    assertEquals("Invoices", EmailFolderService.ownName(registered(2L, "Invoices", true, false)));
+  }
+
+  /**
+   * A parent is one of the user's own folders, found at the last walk, on a mailbox
+   * with a hierarchy delimiter; anything else is refused with its own code, an unknown
+   * id with the unknown-folder one.
+   */
+  @Test
+  void getParentFolderRefusesWhatCannotHoldAFolder() {
+    EmailFolder own = registered(1L, "Customers", true, false);
+    when(emailFolderStorage.getFolder(USER, 1L)).thenReturn(own);
+    assertSame(own, emailFolderService.getParentFolder(USER, 1L));
+
+    EmailFolder missing = registered(2L, "Gone", true, true);
+    EmailFolder delegated = registered(3L, "Shared/bob/Projects", true, false);
+    delegated.setDelegationId(9L);
+    EmailFolder flat = registered(4L, "Flat", true, false);
+    flat.setDelimiter(null);
+    EmailFolder sharedInbox = registered(5L, "Shared/bob", true, false);
+    sharedInbox.setType(MailFolderView.TYPE_DELEGATED_INBOX);
+    when(emailFolderStorage.getFolder(USER, 2L)).thenReturn(missing);
+    when(emailFolderStorage.getFolder(USER, 3L)).thenReturn(delegated);
+    when(emailFolderStorage.getFolder(USER, 4L)).thenReturn(flat);
+    when(emailFolderStorage.getFolder(USER, 5L)).thenReturn(sharedInbox);
+    for (long id : new long[] { 2L, 3L, 4L, 5L }) {
+      assertEquals(EmailFolderService.FOLDER_PARENT_INVALID_MESSAGE,
+                   assertThrows(IllegalArgumentException.class, () -> emailFolderService.getParentFolder(USER, id)).getMessage(),
+                   "folder " + id);
+    }
+    assertEquals(EmailFolderService.UNKNOWN_FOLDER_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailFolderService.getParentFolder(USER, 6L)).getMessage());
+  }
+
+  /**
+   * A relocation moves the rows of the folders inside the folder to the new prefix,
+   * keeping their own names; one row that cannot be written is left to the next walk
+   * rather than failing a rename the server already made, and the others still follow.
+   */
+  @Test
+  void relocateFolderMovesTheRowsInsideItAndSurvivesOneThatCannotBeWritten() {
+    EmailFolder parent = registered(1L, "Customers", true, false);
+    EmailFolder child = registered(2L, "Customers/Acme", true, false);
+    child.setDisplayName("Acme");
+    EmailFolder other = registered(3L, "Customers/Beta", true, false);
+    other.setDisplayName("Beta");
+    when(emailFolderStorage.getFolders(USER)).thenReturn(List.of(parent, child, other));
+    lenient().when(emailFolderStorage.renameFolder(USER, 2L, "Clients/Acme", "Acme")).thenThrow(new IllegalStateException("unique index"));
+
+    emailFolderService.relocateFolder(USER, parent, "Clients", "Clients");
+
+    verify(emailFolderStorage).renameFolder(USER, 1L, "Clients", "Clients");
+    verify(emailFolderStorage).renameFolder(USER, 2L, "Clients/Acme", "Acme");
+    verify(emailFolderStorage).renameFolder(USER, 3L, "Clients/Beta", "Beta");
+  }
+
+  /**
+   * A folder made as a sub-folder in another mail client is registered under its full
+   * name, with the delimiter the tree is drawn from and its own name as what is shown.
+   */
+  @Test
+  void aSubFolderMadeElsewhereIsRegisteredWithItsFullNameAndDelimiter() {
+    when(emailFolderStorage.getFolders(USER)).thenReturn(List.of());
+
+    emailFolderService.reconcileDiscovered(USER,
+                                           List.of(new DiscoveredFolder("Customers/Acme", null, "/", Set.of(), true, true)));
+
+    ArgumentCaptor<EmailFolder> created = ArgumentCaptor.forClass(EmailFolder.class);
+    verify(emailFolderStorage).createFolder(created.capture());
+    assertEquals("Customers/Acme", created.getValue().getRemoteName());
+    assertEquals("Acme", created.getValue().getDisplayName());
+    assertEquals("/", created.getValue().getDelimiter());
   }
 
   /**

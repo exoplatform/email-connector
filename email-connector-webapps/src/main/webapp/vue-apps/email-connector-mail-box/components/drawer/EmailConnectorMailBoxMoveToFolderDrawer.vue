@@ -61,6 +61,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { buildFolderTree } from '../../js/EmailConnectorFolderTree.js';
+
 export default {
   data() {
     return {
@@ -92,7 +94,10 @@ export default {
         return;
       }
       this.sourceFolder = sourceFolder || 'INBOX';
-      this.targets = this.$emailConnectorMailBoxService.moveTargets(this.$root.mailFolders, this.sourceFolder);
+      // In tree order, a folder followed by the folders inside it (EXO-90839); the path
+      // under each name says where a nested one lives.
+      this.targets = buildFolderTree(this.$emailConnectorMailBoxService.moveTargets(this.$root.mailFolders, this.sourceFolder))
+        .map(row => row.folder);
       this.drawer = true;
       this.$refs.moveToFolderDrawer.open();
     },
