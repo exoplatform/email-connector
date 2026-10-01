@@ -647,12 +647,10 @@ public class EmailConnectorRest {
    * Puts a refusal's message code in the body the browser reads.
    * <p>
    * The controller methods refuse with {@code ResponseStatusException(status,
-   * code)}, and Spring Boot's default error body does not carry the reason on
-   * this platform - the browser received {@code {"status":400,"error":"Bad
-   * Request"}} and nothing else, so the drawers fell back to "could not be
-   * saved" for every rule (EXO-89652). The same shape the CalDAV add-on's {@code CaldavShareRest}
-   * answers its own failures with: the status, and the code under
-   * {@code message}, which is what the JS services read.
+   * code)}, and Spring Boot's default error body leaves out the reason on this
+   * platform, so the code goes under {@code message}, which the JS services
+   * read. The same shape the CalDAV add-on's {@code CaldavShareRest} answers
+   * its own failures with.
    *
    * @param refusal the refusal a controller method threw
    * @return the same status, with the code in the body

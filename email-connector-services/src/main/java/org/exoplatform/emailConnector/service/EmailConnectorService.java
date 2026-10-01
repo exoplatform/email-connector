@@ -706,7 +706,7 @@ public class EmailConnectorService {
     // would otherwise leave the connector on a provider whose configuration was never
     // stored - an authentication nothing can perform, that no screen shows as broken.
     validateProviderConfig(emailConnector);
-	// The managed connector may not move to a provider that asks each user for
+    // The managed connector may not move to a provider that asks each user for
     // something: designating it refused exactly that, and an edit must not be the way
     // around the refusal. Judged on the effective provider - a blank one in the
     // payload keeps the stored provider, as the storage does.

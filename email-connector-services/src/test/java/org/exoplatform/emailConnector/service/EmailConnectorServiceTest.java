@@ -227,7 +227,7 @@ public class EmailConnectorServiceTest {
   }
 
   /**
-   * EXO-89652 (review round 2). Editing the managed connector with {@code active=false}
+   * EXO-89652. Editing the managed connector with {@code active=false}
    * is refused like the status toggle refuses it - the payload carries the flag and the
    * storage writes it, so the edit must not be the way around the guard. An edit that
    * keeps the connector active asks nothing of that guard.
