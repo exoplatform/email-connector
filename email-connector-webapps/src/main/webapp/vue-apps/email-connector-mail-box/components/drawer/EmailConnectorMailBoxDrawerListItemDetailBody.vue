@@ -17,10 +17,21 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <span v-if="isEmptyBody">
     {{ $t('emailConnector.mailBox.list.drawer.emptyEmail') }}</span>
+  <!--
+    The message is somebody else's markup, so the frame it is shown in allows no
+    script (no `allow-scripts`, never together with `allow-same-origin`: a frame with
+    both can lift its own sandbox), no form, no navigation of the page around it. It
+    keeps the page's origin only so that this component can read the frame's document
+    from outside: the mail's height, its images, the quoted-history toggle. Popups
+    are allowed so that a link, which the document's base targets at a new tab, opens
+    one that is not sandboxed itself. No referrer leaves with the images it loads.
+  -->
   <iframe
     v-else
     ref="iframe"
     :srcdoc="frameDocument"
+    sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+    referrerpolicy="no-referrer"
     :style="{
       width: '100%',
       border: 'none',
@@ -33,7 +44,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-import { foldPlainTextQuotedHistory, foldQuotedHistory } from '../../js/EmailQuotedHistoryFold.js';
+import { HISTORY_ID, TOGGLE_ID, TOGGLE_OPEN_CLASS, foldPlainTextQuotedHistory, foldQuotedHistory } from '../../js/EmailQuotedHistoryFold.js';
 import { sanitizeMailBody } from '../../js/EmailBodySanitizer.js';
 
 /**
@@ -127,6 +138,10 @@ export default {
      * the reader lands on the latest message and reaches the attachments row without
      * scrolling past the quoted thread. Folding degrades to the untouched body when
      * no clear quoted boundary is found.
+     * <p>
+     * The document carries no script: the frame would refuse to run one, and the
+     * toggle is wired from this component once the frame has loaded. Its base targets
+     * every link at a new tab, so a click never navigates the frame itself.
      *
      * @param {{styles: string, body: string}} purified the sender's style sheets and the
      *          purified body (for a plain-text body, no styles and the raw text)
@@ -204,6 +219,7 @@ export default {
         <html>
           <head>
             <meta name="viewport" content="width=device-width, initial-scale=1">
+            <base target="_blank">
             <style>${finalCSS}</style>
             ${senderCSS}
           </head>
@@ -353,6 +369,7 @@ export default {
      * @returns {void}
      */
     onLoadIframe() {
+      this.wireQuotedHistoryToggle();
       this.recalculateIframeHeight();
 
       setTimeout(() => this.recalculateIframeHeight(), 150);
@@ -360,17 +377,59 @@ export default {
     },
 
     /**
+     * Give the quoted-history toggle its behaviour, from outside the frame: the frame
+     * allows no script, so the fold left a plain element in the document and this
+     * component attaches the click and the keyboard handlers through the frame's
+     * document, which the sandbox lets it read. Nothing to do when the body had no
+     * history to fold.
+     *
+     * @returns {void}
+     */
+    wireQuotedHistoryToggle() {
+      const doc = this.frameContentDocument();
+      const toggle = doc && doc.getElementById(TOGGLE_ID);
+      const history = doc && doc.getElementById(HISTORY_ID);
+      if (!toggle || !history) {
+        return;
+      }
+      const labels = this.quotedHistoryLabels();
+      const set = open => {
+        history.style.display = open ? 'block' : 'none';
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        toggle.setAttribute('title', open ? labels.hide : labels.show);
+        toggle.textContent = open ? labels.hide : labels.show;
+        toggle.className = open ? `ec-quoted-toggle ${TOGGLE_OPEN_CLASS}` : 'ec-quoted-toggle';
+        this.recalculateIframeHeight();
+      };
+      const flip = () => set(toggle.getAttribute('aria-expanded') !== 'true');
+      toggle.addEventListener('click', flip);
+      toggle.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          flip();
+        }
+      });
+    },
+    /**
+     * The frame's document, when the frame is there and has one.
+     *
+     * @returns {Document|null} the document the frame shows
+     */
+    frameContentDocument() {
+      const iframe = this.$refs.iframe;
+      if (!iframe) {
+        return null;
+      }
+      return iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document) || null;
+    },
+    /**
      * Match the iframe's height to the mail it holds, so the drawer scrolls as one
      * page instead of the mail scrolling inside a fixed frame.
      *
      * @returns {void}
      */
     recalculateIframeHeight() {
-      const iframe = this.$refs.iframe;
-      if (!iframe) {
-        return;
-      }
-      const doc = iframe.contentDocument || iframe.contentWindow.document;
+      const doc = this.frameContentDocument();
       if (!doc || !doc.body) {
         return;
       }
