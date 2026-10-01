@@ -69,7 +69,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :disabled="disabled"
           :can-extend="canExtend"
           :extend-label="extendLabel"
-          :can-choose-folders="actionable && perFolder"
+          :can-choose-folders="canChooseFolders"
           :current-send-mode="currentSendMode"
           :send-modes="sendModes"
           :can-set-send-mode="canSetSendMode"
@@ -118,7 +118,7 @@ export default {
     'email-connector-user-setting-grantee-row-menu': EmailConnectorUserSettingGranteeRowMenu,
   },
   props: {
-    // One entry of the owner's ACL: {identifier, granteeId, delegation, preset, rights, nativeRights, affordances}.
+    // One entry of the owner's ACL: {identifier, granteeId, delegation, preset, rights, nativeRights, affordances, scope}.
     grantee: { type: Object, required: true },
     disabled: { type: Boolean, default: false },
     // Whether the owner's mail server shares folder by folder (EXO-90556).
@@ -201,6 +201,17 @@ export default {
     actionable() {
       const delegation = this.grantee.delegation;
       return !!delegation?.id && delegation.status !== 'REVOKED' && delegation.status !== 'GONE';
+    },
+    /**
+     * Whether the owner can choose this person's folders one by one: on a server that
+     * shares folder by folder, for a share that does not stand on the whole mailbox --
+     * a folder's access adds to a whole-mailbox access and never narrows it (EXO-90816).
+     *
+     * @returns {Boolean} true when "Folders and access" is offered
+     */
+    canChooseFolders() {
+      const wholeMailbox = this.grantee.scope === 'MAILBOX' || this.grantee.delegation?.grantedRoles === 'MAILBOX';
+      return this.actionable && this.perFolder && !wholeMailbox;
     },
     /**
      * Whether eXo may extend the share: the owner's mailbox has role folders (Sent,
