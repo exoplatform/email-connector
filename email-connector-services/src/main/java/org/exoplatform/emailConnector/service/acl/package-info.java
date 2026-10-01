@@ -52,9 +52,14 @@
  * with one open question the engine must settle against live rows: BlueMind's own read
  * share carried {@code Freebusy} and {@code Invitation} beside {@code Read}
  * (section 13.B.15), so the Reader match may need to tolerate those two.</li>
- * <li><b>Per mailbox, not per folder</b>. {@code _acls} is on the mailbox;
- * {@code probe} answers {@link org.exoplatform.emailConnector.model.GrantGranularity#MAILBOX}
- * and {@code grant} ignores the folder argument beyond validation. The allowlist
+ * <li><b>Per mailbox and per folder at once</b> (EXO-90816). {@code _acls} is on the
+ * mailbox, and each folder has a list of its own (its {@code mbox_records_<uid>}
+ * container); a folder's entry adds to a whole-mailbox entry and never narrows it. The
+ * engine answers {@link org.exoplatform.emailConnector.model.GrantGranularity#FOLDER} with
+ * {@code mailboxScope}: the per-folder lifecycle runs as on an RFC 4314 server, and an
+ * entry that stands on the whole mailbox is listed with that
+ * {@link org.exoplatform.emailConnector.model.AclScope} and changed or removed only through
+ * {@code grantWholeMailbox} / {@code revokeWholeMailbox}. The allowlist
  * caveat of the plan (section 3.4, 8) applies: the {@code Write} verb pushes
  * {@code k x e} along with {@code lrswit}, so "never {@code x e k}" holds on IMAP
  * engines only and the guarantee here is "never more than the preset's verb";
