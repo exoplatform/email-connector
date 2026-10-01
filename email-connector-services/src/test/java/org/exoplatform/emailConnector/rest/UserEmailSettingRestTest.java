@@ -376,7 +376,9 @@ public class UserEmailSettingRestTest {
                                                                                                                                            "lrs",
                                                                                                                                            MailboxRights.of("lrs")
                                                                                                                                                         .affordances(),
-                                                                                                                                           true)),
+                                                                                                                                           true,
+                                                                                                                                           "Trash",
+                                                                                                                                           "/")),
                                                                                                            true,
                                                                                                            true,
                                                                                                            List.of(SendMode.ON_BEHALF))));

@@ -96,8 +96,8 @@ export default {
       this.sourceFolder = sourceFolder || 'INBOX';
       // In tree order, a folder followed by the folders inside it (EXO-90839); the path
       // under each name says where a nested one lives.
-      this.targets = buildFolderTree(this.$emailConnectorMailBoxService.moveTargets(this.$root.mailFolders, this.sourceFolder))
-        .map(row => row.folder);
+      this.targets = buildFolderTree(this.$emailConnectorMailBoxService.moveTargets(this.$root.mailFolders, this.sourceFolder),
+        this.namespaceFolders()).map(row => row.folder);
       this.drawer = true;
       this.$refs.moveToFolderDrawer.open();
     },
@@ -124,13 +124,22 @@ export default {
       return this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this));
     },
     /**
+     * Every folder of the mailbox listed, readable or not: what decides whether INBOX is
+     * the namespace its folders live under, as the column and the menu decide it.
+     *
+     * @returns {Array} the folders
+     */
+    namespaceFolders() {
+      return this.$root.mailNamespaceFolders || this.$root.mailFolders;
+    },
+    /**
      * A folder's readable path.
      *
      * @param {Object} folder the folder
      * @returns {String} the path
      */
     path(folder) {
-      return this.$emailConnectorMailBoxService.folderPath(folder, this.$root.mailFolders);
+      return this.$emailConnectorMailBoxService.folderPath(folder, this.namespaceFolders());
     },
     /**
      * Forgets the messages the picker was opened for, so a later open starts clean.
