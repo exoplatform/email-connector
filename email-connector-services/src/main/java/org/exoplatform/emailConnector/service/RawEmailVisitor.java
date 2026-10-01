@@ -60,4 +60,16 @@ public interface RawEmailVisitor {
    * @throws IOException when the output fails
    */
   void missing(Email cached) throws IOException;
+
+  /**
+   * The mail server failed once the export began, after {@code handed} of {@code count}
+   * messages: the file must say it is incomplete, since the answer is under way and
+   * cannot change its status. Called for a folder-wide export; a selection reports each
+   * message through {@link #missing} instead.
+   *
+   * @param handed how many messages were handed over whole
+   * @param count how many the export was to hold
+   * @throws IOException when the output fails
+   */
+  void interrupted(int handed, int count) throws IOException;
 }
