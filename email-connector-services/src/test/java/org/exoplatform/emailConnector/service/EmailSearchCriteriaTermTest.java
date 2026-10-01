@@ -203,6 +203,11 @@ public class EmailSearchCriteriaTermTest {
                "a file with no disposition, beside a nested body");
     assertTrue(EmailBoxService.hasStoredAttachment(message(multipart("related", text("html"), file("image/png", null))), "alice"),
                "an image with no disposition is listed by eXo");
+    assertTrue(EmailBoxService.hasStoredAttachment(message(multipart("mixed",
+                                                                     text("plain"),
+                                                                     multipart("related", text("html"), file("image/png", null)))),
+                                                   "alice"),
+               "a file in a nested multipart");
     assertFalse(EmailBoxService.hasStoredAttachment(message(multipart("alternative", text("plain"), text("html"))), "alice"));
     assertFalse(EmailBoxService.hasStoredAttachment(message(multipart("related", text("html"), file("image/png", Part.INLINE))),
                                                     "alice"),
