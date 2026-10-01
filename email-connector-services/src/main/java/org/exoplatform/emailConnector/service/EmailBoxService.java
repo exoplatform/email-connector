@@ -5235,6 +5235,19 @@ public class EmailBoxService {
   }
 
   /**
+   * Creates one of the user's own folders on the mail server at the top level -- see
+   * {@link #createCustomFolder(String, String, Long)}.
+   *
+   * @param username the mailbox owner
+   * @param name the folder name, as typed
+   * @return the folder as registered
+   * @throws IllegalAccessException if the user may not manage their mailbox
+   */
+  public MailFolderView createCustomFolder(String username, String name) throws IllegalAccessException {
+    return createCustomFolder(username, name, null);
+  }
+
+  /**
    * Creates one of the user's own folders on the mail server -- the explicit act
    * {@code +} in the folders drawer stands for, and the one this add-on never takes on
    * its own behalf, the single exception being the Archive folder an archive creates on
@@ -5244,10 +5257,10 @@ public class EmailBoxService {
    * user shares with every other client of theirs acceptable here is that the user
    * asked for exactly this, by name, on this screen).
    * <p>
-   * Created flat, directly under the account's own root ({@code store.getDefaultFolder()}):
-   * v1 offers no parent picker, so every folder this add-on creates is top-level, and
-   * a name embedding the mailbox's own hierarchy delimiter is refused rather than
-   * silently nested or silently flattened (see
+   * Created directly under the account's own root ({@code store.getDefaultFolder()}),
+   * or inside one of the user's own folders when a parent is given (EXO-90839): the
+   * parent's full name, its delimiter, then the typed name. The name itself never
+   * embeds the delimiter -- nesting is chosen by the parent, never typed (see
    * {@link EmailFolderService#FOLDER_NAME_NESTED_MESSAGE}). The row is registered
    * directly ({@link EmailFolderService#registerCreatedFolder}, never through
    * {@link #walkAndReconcileFolders}, which would mark every OTHER custom folder of
@@ -5256,28 +5269,40 @@ public class EmailBoxService {
    * and as a "Move to..." target, the moment this call returns.
    *
    * @param username the mailbox owner
-   * @param name the folder name as typed
+   * @param name the folder name, as typed
+   * @param parentId the registry id of the user's own folder to create it in, or null
+   *          for the top level
    * @return the folder as registered -- {@code syncEnabled} false only when the cap
    *         was already reached
-   * @throws IllegalAccessException if the user may not manage their mailbox
+   * @throws IllegalAccessException if the user may not manage their mailbox, or the
+   *           parent is a folder of a mailbox shared with them
    * @throws IllegalArgumentException if the name is blank, too long, reserved, nests
    *           (embeds the delimiter), or is already used by another of this user's
-   *           folders ({@link EmailFolderService#FOLDER_NAME_DUPLICATE_MESSAGE}), or the
-   *           server refused the {@code CREATE}
+   *           folders ({@link EmailFolderService#FOLDER_NAME_DUPLICATE_MESSAGE}), the
+   *           parent cannot hold it ({@link EmailFolderService#FOLDER_PARENT_INVALID_MESSAGE}),
+   *           or the server refused the {@code CREATE}
    *           ({@link EmailFolderService#FOLDER_CREATE_FAILED_MESSAGE})
    */
-  public MailFolderView createCustomFolder(String username, String name) throws IllegalAccessException {
+  public MailFolderView createCustomFolder(String username, String name, Long parentId) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = checkCanManageFolders(username);
     checkCustomFoldersEnabled();
     String trimmedName = emailFolderService.validateFolderName(name);
+    EmailFolder parent = null;
+    if (parentId != null) {
+      // A folder is created inside the caller's own folders only: a shared mailbox's
+      // folders are its owner's to organise.
+      emailDelegationService.checkOwnFolder(username, parentId);
+      parent = emailFolderService.getParentFolder(username, parentId);
+    }
     Store store = null;
     try {
       store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       Folder defaultFolder = store.getDefaultFolder();
-      String delimiter = defaultNamespaceDelimiter(defaultFolder);
+      String delimiter = parent == null ? defaultNamespaceDelimiter(defaultFolder) : parent.getDelimiter();
       emailFolderService.checkNotNested(trimmedName, delimiter);
-      emailFolderService.checkNameAvailable(username, trimmedName, null);
-      Folder toCreate = defaultFolder.getFolder(trimmedName);
+      String remoteName = parent == null ? trimmedName : parent.getRemoteName() + delimiter + trimmedName;
+      emailFolderService.checkNameAvailable(username, remoteName, null);
+      Folder toCreate = parent == null ? defaultFolder.getFolder(trimmedName) : store.getFolder(remoteName);
       if (toCreate.exists()) {
         // A folder the server already has under that name, that our registry does not
         // know about yet (created from another client since the last walk, say). The
@@ -5288,7 +5313,7 @@ public class EmailBoxService {
       if (!toCreate.create(Folder.HOLDS_MESSAGES) || !(toCreate instanceof IMAPFolder)) {
         throw new IllegalArgumentException(EmailFolderService.FOLDER_CREATE_FAILED_MESSAGE);
       }
-      EmailFolder registered = emailFolderService.registerCreatedFolder(username, trimmedName, delimiter);
+      EmailFolder registered = emailFolderService.registerCreatedFolder(username, remoteName, trimmedName, delimiter);
       boolean enabled = emailFolderService.tryAutoEnable(username, registered.getId());
       EmailFolder finalFolder = enabled ? emailFolderService.getFolder(username, registered.getId()) : registered;
       return customFolderView(finalFolder, emailBoxStorage.getFolderMessageCounts(username));
@@ -5318,13 +5343,10 @@ public class EmailBoxService {
    * Renames one of the user's own folders, on the server and in the registry.
    * <p>
    * Only the folder's OWN name changes -- the new name replaces the last segment of
-   * its full path, its parent untouched (v1 offers no parent picker; see
-   * {@link EmailFolderService#FOLDER_NAME_NESTED_MESSAGE}). The registry row is
-   * updated IN PLACE, after the server confirms the rename, never deleted and
-   * re-created: see {@link EmailFolderService#renameFolder} for why that is what keeps
-   * every mirrored row -- addressed by the row's id, never by its remote name (verified
-   * across this module) -- exactly where it was. A folder the owner shares one by one
-   * follows its new name for its delegates ({@link EmailDelegationService#ownerFolderChanged}).
+   * its full path, its parent untouched; a move to another parent is
+   * {@link #moveCustomFolder}. See {@link #relocateCustomFolder} for what follows the
+   * new name: the registry rows of the folder and of every folder inside it, updated in
+   * place, and the folder's shares.
    *
    * @param username the mailbox owner
    * @param id the registry id
@@ -5347,12 +5369,88 @@ public class EmailBoxService {
     String trimmedName = emailFolderService.validateFolderName(newName);
     emailFolderService.checkNotNested(trimmedName, customFolder.getDelimiter());
     String newRemoteName = EmailFolderService.parentPrefix(customFolder.getRemoteName(), customFolder.getDelimiter()) + trimmedName;
+    return relocateCustomFolder(username, userEmailSetting, customFolder, newRemoteName, trimmedName);
+  }
+
+  /**
+   * Moves one of the user's own folders inside another of their folders, or to the top
+   * level, on the server and in the registry (EXO-90839) -- optionally under a new name
+   * in the same step, so a move and a rename are one {@code RENAME} on the server and
+   * never a half-done pair. The folders inside it go with it, as the server moves them.
+   * A folder is never moved inside itself or inside one of its own folders, and only
+   * the owner of the mailbox moves its folders.
+   *
+   * @param username the mailbox owner
+   * @param id the registry id of the folder to move
+   * @param parentId the registry id of the user's own folder to move it into, or null
+   *          for the top level
+   * @param newName the name it takes there, as typed, or null to keep its own
+   * @return the folder as it now stands
+   * @throws IllegalAccessException if the user may not manage their mailbox, or either
+   *           folder belongs to a mailbox shared with them
+   * @throws IllegalArgumentException if either folder is unknown to this user, the
+   *           parent cannot hold it ({@link EmailFolderService#FOLDER_PARENT_INVALID_MESSAGE}),
+   *           the name is invalid or already used there, or the server refused the
+   *           {@code RENAME} ({@link EmailFolderService#FOLDER_RENAME_FAILED_MESSAGE})
+   */
+  public MailFolderView moveCustomFolder(String username, long id, Long parentId, String newName) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = checkCanManageFolders(username);
+    checkCustomFoldersEnabled();
+    // As for a rename: the folder, and the folder it goes into, are the owner's.
+    emailDelegationService.checkOwnFolder(username, id);
+    EmailFolder customFolder = emailFolderService.getFolder(username, id);
+    String name = newName == null ? EmailFolderService.ownName(customFolder) : emailFolderService.validateFolderName(newName);
+    String newRemoteName;
+    if (parentId == null) {
+      emailFolderService.checkNotNested(name, customFolder.getDelimiter());
+      newRemoteName = name;
+    } else {
+      emailDelegationService.checkOwnFolder(username, parentId);
+      EmailFolder parent = emailFolderService.getParentFolder(username, parentId);
+      if (parent.getId().equals(customFolder.getId())
+          || EmailFolderService.isInside(parent.getRemoteName(), customFolder.getRemoteName(), customFolder.getDelimiter())) {
+        throw new IllegalArgumentException(EmailFolderService.FOLDER_PARENT_INVALID_MESSAGE);
+      }
+      emailFolderService.checkNotNested(name, parent.getDelimiter());
+      newRemoteName = parent.getRemoteName() + parent.getDelimiter() + name;
+    }
+    return relocateCustomFolder(username, userEmailSetting, customFolder, newRemoteName, name);
+  }
+
+  /**
+   * Gives one of the user's own folders a new full name on the server, then in the
+   * registry -- what a rename and a move both are.
+   * <p>
+   * The registry rows are updated IN PLACE, after the server confirms the
+   * {@code RENAME}, never deleted and re-created: see
+   * {@link EmailFolderService#renameFolder} for why that is what keeps every mirrored
+   * row -- addressed by the row's id, never by its remote name (verified across this
+   * module) -- exactly where it was. The server takes the folders inside it along, and
+   * so does the registry ({@link EmailFolderService#relocateFolder}). A folder the
+   * owner shares one by one follows its new name for its delegates, the folders inside
+   * it with it ({@link EmailDelegationService#ownerFolderChanged}).
+   *
+   * @param username the mailbox owner
+   * @param userEmailSetting the owner's connector binding
+   * @param customFolder the folder as registered
+   * @param newRemoteName its new full name
+   * @param newDisplayName its new own name
+   * @return the folder as it now stands
+   * @throws IllegalArgumentException if the new name collides with another of this
+   *           user's folders, the folder is gone from the server, or the server refused
+   *           the {@code RENAME}
+   */
+  private MailFolderView relocateCustomFolder(String username,
+                                              UserEmailSetting userEmailSetting,
+                                              EmailFolder customFolder,
+                                              String newRemoteName,
+                                              String newDisplayName) {
     if (newRemoteName.equals(customFolder.getRemoteName())) {
-      // The name typed back is the name it already has: nothing to change, nothing to
-      // risk on the server for it.
+      // The name and place it already has: nothing to change, nothing to risk on the
+      // server for it.
       return customFolderView(customFolder, emailBoxStorage.getFolderMessageCounts(username));
     }
-    emailFolderService.checkNameAvailable(username, newRemoteName, id);
+    emailFolderService.checkNameAvailable(username, newRemoteName, customFolder.getId());
     Store store = null;
     try {
       store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
@@ -5376,57 +5474,84 @@ public class EmailBoxService {
     } finally {
       closeQuietly(null, store, username);
     }
-    EmailFolder renamed = emailFolderService.renameFolder(username, id, newRemoteName, trimmedName);
+    EmailFolder renamed = emailFolderService.relocateFolder(username, customFolder, newRemoteName, newDisplayName);
     // A folder shared one by one follows its new name for its delegates (EXO-90556).
     emailDelegationService.ownerFolderChanged(username, customFolder.getRemoteName(), newRemoteName);
     return customFolderView(renamed, emailBoxStorage.getFolderMessageCounts(username));
   }
 
   /**
-   * Deletes one of the user's own folders, on the server and in the registry --
-   * irreversible, and refused outright while the folder still holds mail.
-   * <p>
-   * <b>The sharp edge.</b> A folder deleted here is deleted everywhere the user reads
-   * their mailbox from, permanently. So: a folder the live server still lists any
-   * messages in is refused whole ({@link EmailFolderService#FOLDER_NOT_EMPTY_MESSAGE}) --
-   * the user is told to empty it first, this add-on never cascades a delete into the
-   * messages it would destroy. Only once the server itself says the folder is empty is
-   * the {@code DELETE} issued, non-recursively: a folder that turns out to still have
-   * sub-folders of its own is left to the server's own refusal
-   * ({@link EmailFolderService#FOLDER_DELETE_FAILED_MESSAGE}) rather than this code
-   * choosing whether to take them with it. A folder already gone from the server (the
-   * user deleted it from another client since the last walk) is treated as already
-   * deleted: only the local mirror and registry row are cleared, nothing is sent to a
-   * server that no longer has anything to delete. The copies the owner's delegates hold of
-   * a folder shared one by one go with it ({@link EmailDelegationService#ownerFolderChanged}).
+   * Deletes one of the user's own folders that has no sub-folders -- see
+   * {@link #deleteCustomFolder(String, long, boolean)}.
    *
    * @param username the mailbox owner
    * @param id the registry id
    * @throws IllegalAccessException if the user may not manage their mailbox
-   * @throws IllegalArgumentException if the folder is unknown to this user, still
-   *           holds mail on the server, or the server refused the {@code DELETE}
    */
   public void deleteCustomFolder(String username, long id) throws IllegalAccessException {
+    deleteCustomFolder(username, id, false);
+  }
+
+  /**
+   * Deletes one of the user's own folders, and the folders inside it when the caller
+   * says so, on the server and in the registry -- irreversible, and refused outright
+   * while any of them still holds mail.
+   * <p>
+   * <b>The sharp edge.</b> A folder deleted here is deleted everywhere the user reads
+   * their mailbox from, permanently. So: a folder the live server still lists any
+   * messages in, or one of whose sub-folders does, is refused whole
+   * ({@link EmailFolderService#FOLDER_NOT_EMPTY_MESSAGE},
+   * {@link EmailFolderService#FOLDER_SUB_FOLDER_NOT_EMPTY_MESSAGE}) -- the user is told
+   * to empty it first, this add-on never cascades a delete into the messages it would
+   * destroy. A folder with sub-folders on the server is deleted only when the caller
+   * says it deletes them too ({@link EmailFolderService#FOLDER_HAS_SUB_FOLDERS_MESSAGE}
+   * otherwise): the interface asks for that after a confirmation that says so. The
+   * folders are then deleted deepest first, each with a non-recursive {@code DELETE},
+   * the folder itself last; when the server refuses one, what it already deleted is
+   * cleared locally and the rest is left as it is. A folder already gone from the server
+   * (the user deleted it from another client since the last walk) is treated as already
+   * deleted: only the local mirror and registry rows are cleared, nothing is sent to a
+   * server that no longer has anything to delete. The copies the owner's delegates hold
+   * of a folder shared one by one go with it ({@link EmailDelegationService#ownerFolderChanged}).
+   *
+   * @param username the mailbox owner
+   * @param id the registry id
+   * @param withSubFolders whether the caller deletes the folders inside it too
+   * @throws IllegalAccessException if the user may not manage their mailbox
+   * @throws IllegalArgumentException if the folder is unknown to this user, it or one
+   *           of its sub-folders still holds mail on the server, it has sub-folders the
+   *           caller did not say it deletes, or the server refused a {@code DELETE}
+   */
+  public void deleteCustomFolder(String username, long id, boolean withSubFolders) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = checkCanManageFolders(username);
     checkCustomFoldersEnabled();
     // As for the rename, and with more at stake: this issues a DELETE on the server.
     // A folder of somebody else's mailbox is never destroyed from here.
     emailDelegationService.checkOwnFolder(username, id);
     EmailFolder customFolder = emailFolderService.getFolder(username, id);
+    List<String> deletedNames = new ArrayList<>();
     Store store = null;
     try {
       store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       Folder remote = store.getFolder(customFolder.getRemoteName());
       if (remote instanceof IMAPFolder imapFolder && remote.exists()) {
+        List<Folder> subFolders = subFoldersDeepestFirst(imapFolder);
+        if (!subFolders.isEmpty() && !withSubFolders) {
+          throw new IllegalArgumentException(EmailFolderService.FOLDER_HAS_SUB_FOLDERS_MESSAGE);
+        }
         if (imapFolder.getMessageCount() != 0) {
           throw new IllegalArgumentException(EmailFolderService.FOLDER_NOT_EMPTY_MESSAGE);
         }
-        if (imapFolder.isOpen()) {
-          imapFolder.close(false);
+        for (Folder subFolder : subFolders) {
+          if ((subFolder.getType() & Folder.HOLDS_MESSAGES) != 0 && subFolder.getMessageCount() != 0) {
+            throw new IllegalArgumentException(EmailFolderService.FOLDER_SUB_FOLDER_NOT_EMPTY_MESSAGE);
+          }
         }
-        if (!imapFolder.delete(false)) {
-          throw new IllegalArgumentException(EmailFolderService.FOLDER_DELETE_FAILED_MESSAGE);
+        for (Folder subFolder : subFolders) {
+          deleteRemoteFolder(subFolder);
+          deletedNames.add(subFolder.getFullName());
         }
+        deleteRemoteFolder(imapFolder);
       } else {
         LOG.info("Folder '{}' of user {} is already gone from the server; clearing its local mirror",
                  customFolder.getRemoteName(),
@@ -5434,14 +5559,83 @@ public class EmailBoxService {
       }
     } catch (MessagingException | ConnectorCredentialsException e) {
       LOG.warn("Could not delete folder '{}' of user {}", customFolder.getRemoteName(), username, e);
+      forgetDeletedSubFolders(username, customFolder, deletedNames);
       throw new IllegalArgumentException(EmailFolderService.FOLDER_DELETE_FAILED_MESSAGE);
+    } catch (IllegalArgumentException e) {
+      forgetDeletedSubFolders(username, customFolder, deletedNames);
+      throw e;
     } finally {
       closeQuietly(null, store, username);
     }
+    for (EmailFolder descendant : emailFolderService.getOwnDescendants(username, customFolder)) {
+      deleteUserEmails(username, descendant.getKey());
+      emailFolderService.removeFolder(username, descendant.getId());
+    }
     deleteUserEmails(username, customFolder.getKey());
     emailFolderService.removeFolder(username, id);
-    // Its delegates' copies go with it (EXO-90556).
+    // Its delegates' copies go with it, the folders inside it included (EXO-90556).
     emailDelegationService.ownerFolderChanged(username, customFolder.getRemoteName(), null);
+  }
+
+  /**
+   * The folders inside a folder on the server, at any depth, deepest first: a longer
+   * full name is never an ancestor of a shorter one, so the order deletes every folder
+   * before the folder that holds it.
+   *
+   * @param folder the folder
+   * @return the folders inside it, possibly empty, never null
+   * @throws MessagingException if the server cannot list them
+   */
+  private static List<Folder> subFoldersDeepestFirst(IMAPFolder folder) throws MessagingException {
+    Folder[] listed = folder.list("*");
+    if (listed == null) {
+      return List.of();
+    }
+    return Arrays.stream(listed)
+                 .filter(Objects::nonNull)
+                 .filter(subFolder -> !StringUtils.equals(subFolder.getFullName(), folder.getFullName()))
+                 .sorted(Comparator.comparingInt((Folder subFolder) -> StringUtils.length(subFolder.getFullName())).reversed())
+                 .toList();
+  }
+
+  /**
+   * One non-recursive {@code DELETE}, its refusal translated.
+   *
+   * @param folder the folder to delete
+   * @throws MessagingException if the server cannot be asked
+   * @throws IllegalArgumentException if the server refused it
+   *           ({@link EmailFolderService#FOLDER_DELETE_FAILED_MESSAGE})
+   */
+  private static void deleteRemoteFolder(Folder folder) throws MessagingException {
+    if (folder.isOpen()) {
+      folder.close(false);
+    }
+    if (!folder.delete(false)) {
+      throw new IllegalArgumentException(EmailFolderService.FOLDER_DELETE_FAILED_MESSAGE);
+    }
+  }
+
+  /**
+   * After a delete the server refused part-way: the sub-folders it already deleted are
+   * cleared locally -- their mirror, their registry row, their delegates' copies -- so
+   * nothing lists a folder the server no longer has; the folder itself and what is left
+   * inside it stay as they are.
+   *
+   * @param username the mailbox owner
+   * @param customFolder the folder the delete was asked for
+   * @param deletedNames the full names of the sub-folders the server deleted
+   */
+  private void forgetDeletedSubFolders(String username, EmailFolder customFolder, List<String> deletedNames) {
+    if (deletedNames.isEmpty()) {
+      return;
+    }
+    for (EmailFolder descendant : emailFolderService.getOwnDescendants(username, customFolder)) {
+      if (deletedNames.contains(descendant.getRemoteName())) {
+        deleteUserEmails(username, descendant.getKey());
+        emailFolderService.removeFolder(username, descendant.getId());
+      }
+    }
+    deletedNames.forEach(name -> emailDelegationService.ownerFolderChanged(username, name, null));
   }
 
   /**
