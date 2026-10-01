@@ -23,6 +23,8 @@ package org.exoplatform.emailConnector.model;
  * <ul>
  * <li>{@link #SCHEDULED} to {@link #SENDING}: the claim, by the dispatcher (due rows
  * only) or by the owner's "send now" (from SCHEDULED, FAILED or UNCERTAIN);</li>
+ * <li>{@link #HELD} to {@link #SENDING}: the same claim, on a mail sent with an Undo
+ * once its wait is over (EXO-90837);</li>
  * <li>{@link #SENDING} to {@link #SENT}: the mail server accepted the message;</li>
  * <li>{@link #SENDING} to {@link #FAILED}: refused before anything was accepted;</li>
  * <li>{@link #SENDING} to {@link #SCHEDULED}: ONLY when the connection to the mail
@@ -47,5 +49,13 @@ public enum ScheduledSendStatus {
   UNCERTAIN,
 
   /** Transmitted; its draft row is about to be removed. Never listed. */
-  SENT
+  SENT,
+
+  /**
+   * Sent with an Undo (EXO-90837): waiting a few seconds before it goes, during which
+   * its sender may take it back. Never listed in the "Scheduled" view nor counted
+   * against the limit; once claimed it follows the SCHEDULED mail's transitions, so a
+   * failure to connect makes it an ordinary, listed, SCHEDULED mail.
+   */
+  HELD
 }
