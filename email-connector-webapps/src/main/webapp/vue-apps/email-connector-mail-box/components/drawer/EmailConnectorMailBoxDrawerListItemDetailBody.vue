@@ -402,7 +402,9 @@ export default {
       const doc = this.frameContentDocument();
       const toggle = doc && doc.getElementById(TOGGLE_ID);
       const history = doc && doc.getElementById(HISTORY_ID);
-      if (!toggle || !history) {
+      // The fold's own elements, never the body: the ids are looked up in document
+      // order, and the body comes first.
+      if (!toggle || !history || toggle === doc.body || history === doc.body) {
         return;
       }
       const labels = this.quotedHistoryLabels();
@@ -443,12 +445,42 @@ export default {
           return;
         }
         event.preventDefault();
-        const name = decodeURIComponent(link.getAttribute('href').slice(1));
-        const target = name ? (doc.getElementById(name) || doc.getElementsByName(name)[0]) : doc.body;
+        const target = this.fragmentTarget(doc, link.getAttribute('href').slice(1));
         if (target) {
           target.scrollIntoView();
         }
       });
+    },
+    /**
+     * The element a fragment names, resolved the way the browser resolves one: the
+     * fragment as written first, then percent-decoded; an empty fragment or "top" is
+     * the top of the document.
+     *
+     * @param {Document} doc the frame's document
+     * @param {string} fragment the part of the link after the "#"
+     * @returns {Element|null} the element to bring into view
+     */
+    fragmentTarget(doc, fragment) {
+      if (!fragment || fragment.toLowerCase() === 'top') {
+        return doc.body;
+      }
+      const candidates = [fragment];
+      try {
+        const decoded = decodeURIComponent(fragment);
+        if (decoded !== fragment) {
+          candidates.push(decoded);
+        }
+      } catch (e) {
+        // A malformed escape is not an address of anything: the fragment as written is
+        // the only name left to try.
+      }
+      for (const name of candidates) {
+        const found = doc.getElementById(name) || doc.getElementsByName(name)[0];
+        if (found) {
+          return found;
+        }
+      }
+      return null;
     },
     /**
      * The frame's document, when the frame is there and has one.

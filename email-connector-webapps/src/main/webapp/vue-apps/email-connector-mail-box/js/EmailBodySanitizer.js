@@ -46,9 +46,11 @@ const FORBIDDEN_TAGS = [
 
 /**
  * Attributes removed on top of the profile's own list: the ones that make a request
- * or name a target on their own, which no formatting needs.
+ * or name a target on their own, which no formatting needs, and `rel`, whose
+ * `opener` link type would hand the tab a link opens a handle on the reader's page,
+ * where the frame's base otherwise opens every link without one.
  */
-const FORBIDDEN_ATTRIBUTES = ['action', 'formaction', 'ping', 'srcdoc', 'poster', 'background', 'usemap', 'ismap', 'autofocus', 'open'];
+const FORBIDDEN_ATTRIBUTES = ['action', 'formaction', 'ping', 'srcdoc', 'poster', 'background', 'usemap', 'ismap', 'autofocus', 'open', 'rel'];
 
 /**
  * The purifier's settings. The HTML profile alone: no SVG and no MathML, which carry
@@ -83,6 +85,15 @@ let purifier = null;
 const ATTRIBUTE_NAME = /^[a-z][a-z0-9-]*$/i;
 
 /**
+ * Attributes that stay behind when a document's or a body's attributes travel onto
+ * the reader's tags: an `id` on the body would come before every element of the
+ * message in document order, where the reader looks its own elements up by id, so a
+ * sender's `<body id>` could stand in for the quoted-history toggle. A mail's style
+ * sheets key on classes, so nothing a mail needs is lost.
+ */
+const DOCUMENT_ATTRIBUTES_LEFT_BEHIND = ['id'];
+
+/**
  * The attributes of a purified element, written as they would appear in its opening
  * tag (a leading space included, or an empty string), so that the reader can put
  * them into a tag of its own. Each value is escaped here for an attribute: the four
@@ -97,7 +108,7 @@ function serializedAttributes(element) {
     return '';
   }
   return Array.from(element.attributes)
-    .filter(attribute => ATTRIBUTE_NAME.test(attribute.name))
+    .filter(attribute => ATTRIBUTE_NAME.test(attribute.name) && !DOCUMENT_ATTRIBUTES_LEFT_BEHIND.includes(attribute.name.toLowerCase()))
     .map(attribute => ` ${attribute.name}="${escapeAttribute(attribute.value)}"`)
     .join('');
 }
