@@ -125,22 +125,24 @@ export function invitationReplyOutcome(error, answer) {
   };
 }
 
+// What the reader says of each landing outcome the server tells.
+const LANDING_MESSAGES = {
+  LANDED: { messageKey: 'emailConnector.mailBox.invitation.landed', alertType: 'success' },
+  REFUSED: { messageKey: 'emailConnector.mailBox.invitation.landingRefused', alertType: 'warning' },
+  FAILED: { messageKey: 'emailConnector.mailBox.invitation.landingFailed', alertType: 'warning' },
+};
+
 /**
  * What the reader says of the answer's landing in the user's calendar: that it is
- * there, or that the add-on holding the calendar could not update it -- the answer
- * left either way. Nothing when no add-on holds a calendar for the user.
+ * there, that the add-on holding the calendar did not take this invitation, or that it
+ * could not update the calendar -- the answer left either way. Nothing when no add-on
+ * holds a calendar for the user.
  *
- * @param {String} landing LANDED, FAILED or nothing, as the server told it
+ * @param {String} landing LANDED, REFUSED, FAILED or nothing, as the server told it
  * @returns {Object} {messageKey, alertType}, null when there is nothing to say
  */
 export function invitationLandingOutcome(landing) {
-  if (landing === 'LANDED') {
-    return { messageKey: 'emailConnector.mailBox.invitation.landed', alertType: 'success' };
-  }
-  if (landing === 'FAILED') {
-    return { messageKey: 'emailConnector.mailBox.invitation.landingFailed', alertType: 'warning' };
-  }
-  return null;
+  return LANDING_MESSAGES[landing] || null;
 }
 
 /**
