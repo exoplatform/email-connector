@@ -498,6 +498,14 @@ class CalendarInvitationServiceTest {
 
     givenTheLanding(landing, CalendarLanding.FAILED, null);
     assertEquals(CalendarLanding.FAILED, service.respond(EMAIL_ID, USER, InvitationAnswer.TENTATIVE).getLanding());
+
+    // A decline the add-on landed nothing for: the reply offers nothing to add.
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    doAnswer(call -> null).when(invitationLandingService).land(any(), any());
+    CalendarInvitation declined = service.respond(EMAIL_ID, USER, InvitationAnswer.DECLINED);
+    assertNull(declined.getLanding());
+    assertFalse(declined.isLandable(), "nothing to add after a decline");
+    assertTrue(service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED).isLandable(), "an acceptance keeps the offer");
   }
 
   /**

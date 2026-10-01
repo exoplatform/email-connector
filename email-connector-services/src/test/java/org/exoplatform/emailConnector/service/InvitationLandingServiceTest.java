@@ -113,6 +113,15 @@ class InvitationLandingServiceTest {
     assertFalse(invitation.isRemovable(), "the click was honoured");
     verify(second, times(1)).land(LANDING);
 
+    // A decline on a copy the user held: the calendar shows a declined event,
+    // which is not an addition.
+    InvitationLanding declined = new InvitationLanding("john", "john@acme.com", "REQUEST", "weekly-sync@google.com", null, 2,
+                                                       InvitationAnswer.DECLINED, "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n");
+    when(first.land(declined)).thenReturn(new LandedInvitation(77L, "/portal/dw/agenda?eventId=77", false, false));
+    CalendarInvitation held = new CalendarInvitation();
+    new InvitationLandingService(applicationContext).land(declined, held);
+    assertEquals(CalendarLanding.DECLINED, held.getLanding());
+
     when(first.land(LANDING)).thenReturn(new LandedInvitation(79L, "/portal/dw/agenda?eventId=79", false, true));
     invitation = land(new InvitationLandingService(applicationContext));
     assertEquals(CalendarLanding.ALREADY_HELD, invitation.getLanding());
