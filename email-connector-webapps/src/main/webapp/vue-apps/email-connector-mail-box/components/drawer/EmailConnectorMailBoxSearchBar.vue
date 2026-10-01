@@ -18,9 +18,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <!-- The row above the list (EXO-90838), in the drawer, in full screen and in a shared
        mailbox alike. At rest: the Important, Favorites and Unread chips, and on the right
        the search (the platform's filter funnel) and the advanced search buttons.
-       Searching: a back arrow, the search field across the column, and the advanced search button still on the right; the
-       arrow closes the field and empties it. "/" opens the field from anywhere on the
-       page that is not itself a field. -->
+       Searching: a back arrow, the search field across the column, then the Favorites
+       and Unread chips -- they narrow the search, so they stay in view and in reach --
+       and the advanced search button. The arrow closes the field and empties it. "/"
+       opens the field from anywhere on the page that is not itself a field. -->
   <div
     :aria-label="$t('emailConnector.mailBox.search.bar')"
     role="toolbar"
@@ -57,12 +58,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         @keydown.esc="$emit('close-search')" />
     </template>
     <email-connector-mail-box-drawer-filter-chips
-      v-else
       :important-category="importantCategory"
       :category-view-id="categoryViewId"
       :favorite-only="favoriteOnly"
       :unread-only="unreadOnly"
-      class="flex-grow-1"
+      :class="searchOpen ? 'flex-shrink-0' : 'flex-grow-1'"
       style="min-width: 0;"
       @toggle-important="$emit('toggle-important')"
       @toggle-favorite="$emit('toggle-favorite')"
