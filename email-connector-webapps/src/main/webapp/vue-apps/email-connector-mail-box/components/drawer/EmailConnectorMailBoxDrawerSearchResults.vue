@@ -34,13 +34,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <!-- The server arm of an advanced search, asked by the user (EXO-90838). -->
       <template v-if="localStatus && localStatus.offerServer">
         ·
-        <a
-          class="primary--text"
-          href="#"
-          role="button"
-          @click.prevent="$emit('search-server')">
+        <v-btn
+          class="px-1 text-none"
+          color="primary"
+          x-small
+          text
+          @click="$emit('search-server')">
           {{ $t('emailConnector.mailBox.search.local.server') }}
-        </a>
+        </v-btn>
       </template>
     </div>
     <template v-if="hasResults">
