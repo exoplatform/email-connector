@@ -10939,7 +10939,7 @@ public class EmailBoxService {
    * @return the sent mail's subject and what became of the owner's copy
    * @throws ScheduledSendFailure classified: TRANSIENT (nothing reached the server, or
    *           the connector's credentials provider is not registered:
-   *           {@link ScheduledSendError#AUTHENTICATION}), PERMANENT (refused before
+   *           {@link ScheduledSendError#PROVIDER_UNAVAILABLE}), PERMANENT (refused before
    *           anything was accepted, a mailbox no longer shared or a name no longer
    *           allowed included), AMBIGUOUS (may have been accepted)
    * @throws ObjectNotFoundException if the draft is gone
@@ -10963,7 +10963,7 @@ public class EmailBoxService {
       // is an add-on's that is not installed or has not started yet, and a send that
       // failed for good on it would be lost for a state that may last a minute. A
       // registered provider that refuses this account still fails it for good.
-      throw new ScheduledSendFailure(ScheduledSendFailure.Kind.TRANSIENT, ScheduledSendError.AUTHENTICATION, null);
+      throw new ScheduledSendFailure(ScheduledSendFailure.Kind.TRANSIENT, ScheduledSendError.PROVIDER_UNAVAILABLE, null);
     }
     String lockKey = draftLockKey(username, draftLocalId);
     ReentrantLock lock = draftLocks.computeIfAbsent(lockKey, key -> new ReentrantLock());
