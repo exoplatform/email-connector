@@ -20,10 +20,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        chips (small, primary), on one line that scrolls sideways; "Clear all" once there
        are two. The search box's own text is in the box, not a chip, and the advanced
        search's button is on the row above. -->
-  <div v-if="chips.length" class="d-flex align-center px-3 pt-2">
+  <div v-if="chips.length" class="d-flex align-center px-1 pt-2">
     <!-- One line: the chips scroll sideways instead of wrapping, so the results never move
-         down when a criterion is added; "Clear all" stays in view at the end. -->
-    <div class="d-flex align-center flex-nowrap overflow-x-auto flex-grow-1">
+         down when a criterion is added; "Clear all" stays in view at the end. The
+         scrollbar is hidden (the platform's scrollbar-width-none) and the line still
+         scrolls with a trackpad, Shift and the wheel, or a finger; its two edges fade
+         out, so a chip cut by an edge reads as more to scroll to, and the chips start
+         inside the fade's width, so none is faded while nothing overflows. -->
+    <div
+      :style="EDGE_FADE"
+      class="d-flex align-center flex-nowrap overflow-x-auto scrollbar-width-none flex-grow-1 px-3">
       <v-chip
         v-for="chip in chips"
         :key="chip.key"
@@ -50,7 +56,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+// The fade of the chips line's two edges: inline, as the add-on has no CSS loader.
+const EDGE_FADE_MASK = 'linear-gradient(to right, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%)';
+const EDGE_FADE = {
+  maskImage: EDGE_FADE_MASK,
+  WebkitMaskImage: EDGE_FADE_MASK,
+};
+
 export default {
+  data: () => ({
+    EDGE_FADE,
+  }),
   props: {
     // The criteria, as the drawer labels them: [{key, label}].
     chips: {
