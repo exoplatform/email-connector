@@ -404,8 +404,8 @@ public class EmailServerRuleServiceTest {
 
   /**
    * Nothing is asked of the server when the user never let eXo manage rules there, and a
-   * script edited outside eXo is never overwritten to follow a folder: it is the user's
-   * to re-publish.
+   * script edited outside eXo, or one the server does not run, is never written to
+   * follow a folder: it is the user's to re-publish or re-activate.
    *
    * @throws Exception on failure
    */
@@ -421,6 +421,12 @@ public class EmailServerRuleServiceTest {
     // Resolvable, so only the state keeps the rule from being written.
     lenient().when(emailFolderService.getFolderByKey(USERNAME, "CUSTOM:6")).thenReturn(folder(6L, "Clients/Acme", true, null));
     lenient().when(engine.saveRule(eq(session), any(), any())).thenReturn(written("h"));
+
+    service.followRelocatedFolders(USERNAME, List.of("CUSTOM:6"));
+
+    // Nor a script the server does not run (another client's is the active one): a save
+    // would publish and activate it.
+    when(engine.listRules(session)).thenReturn(new ServerRuleSet(List.of(intoMoved), ServerRulesState.INACTIVE, null, null));
 
     service.followRelocatedFolders(USERNAME, List.of("CUSTOM:6"));
 
