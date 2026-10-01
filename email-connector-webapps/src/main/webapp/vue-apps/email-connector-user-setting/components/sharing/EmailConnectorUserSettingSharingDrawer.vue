@@ -159,6 +159,15 @@ export default {
       return this.supported ? (this.capabilities?.sendModes || []) : [];
     },
     /**
+     * Whether an Editor of the owner's Trash can delete mail there for good on this mail
+     * server (EXO-90816): the server says so, and the wording follows.
+     *
+     * @returns {Boolean} true when an Editor's access holds that in the Trash
+     */
+    trashExpunge() {
+      return this.supported && !!this.capabilities?.editorExpungesTrash;
+    },
+    /**
      * @returns {Boolean} whether a new share may be offered
      */
     canShare() {
@@ -212,6 +221,16 @@ export default {
      */
     sendModes(value) {
       this.$emit('send-modes', value);
+    },
+    /**
+     * Tells the drawer what an Editor can do in the owner's Trash, for the invitation's
+     * wording (EXO-90816).
+     *
+     * @param {Boolean} value whether an Editor can delete mail there for good
+     * @returns {void}
+     */
+    trashExpunge(value) {
+      this.$emit('trash-expunge', value);
     },
   },
   created() {
@@ -439,7 +458,7 @@ export default {
      * @returns {void}
      */
     openFolders(grantee) {
-      this.$root.$emit('open-email-sharing-folders-drawer', grantee);
+      this.$root.$emit('open-email-sharing-folders-drawer', grantee, { trashExpunge: this.trashExpunge });
     },
     /**
      * A row's "Share ... too": asked first, with what it gives.

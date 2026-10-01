@@ -48,6 +48,7 @@ import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
+import org.exoplatform.emailConnector.model.AclScope;
 import org.exoplatform.emailConnector.model.DelegationFolder;
 import org.exoplatform.emailConnector.model.DelegationFolders;
 import org.exoplatform.emailConnector.model.DelegationGrantee;
@@ -223,6 +224,9 @@ public class EmailDelegationService {
 
   /** Per-folder access asked of a server that grants a whole mailbox at once (EXO-90556). */
   public static final String      PER_FOLDER_UNSUPPORTED_MESSAGE = "emailConnector.delegation.perFolderUnsupported";
+
+  /** A share of the owner's whole mailbox, whose folders cannot be chosen one by one (EXO-90816). */
+  public static final String      WHOLE_MAILBOX_MESSAGE      = "emailConnector.delegation.wholeMailbox";
 
   /** No accepted share of the caller's has the name an agent gave (EXO-90555). */
   public static final String      SHARED_MAILBOX_NOT_FOUND_MESSAGE = "emailConnector.delegation.sharedMailboxNotFound";
@@ -413,7 +417,10 @@ public class EmailDelegationService {
    * PO decisions Q-1, Q-2). INBOX is read back with GETACL: a server that accepted it
    * and does not name the grantee afterwards shared nothing and is said so. A folder
    * refused beside INBOX does not undo the share; the row records what was shared. On a
-   * per-mailbox server (BlueMind) the grant is one call that covers every folder.
+   * per-mailbox server the grant is one call that covers every folder. On a server that
+   * keeps whole-mailbox entries beside per-folder ones (BlueMind, EXO-90816), a grantee
+   * who already holds the whole mailbox has that entry replaced where it stands, in one
+   * call, and the share is recorded as the whole mailbox.
    *
    * @param ownerUsername the caller
    * @param granteeUsername the eXo user to share with
@@ -495,16 +502,23 @@ public class EmailDelegationService {
                   ownerUsername,
                   ownerRights.letters());
       }
-      if (!exceptions.isEmpty() && capabilities.grantGranularity() != GrantGranularity.FOLDER) {
+      // A grantee who already holds the owner's whole mailbox, on a server that keeps
+      // whole-mailbox entries beside per-folder ones (EXO-90816): the invitation replaces
+      // that entry where it stands, as it replaces any entry -- a folder entry beside it
+      // would only add to it.
+      boolean replacesWholeMailbox = capabilities.mailboxScope() && holdsWholeMailbox(engine, session, granteeIdentifier);
+      if (!exceptions.isEmpty() && (capabilities.grantGranularity() != GrantGranularity.FOLDER || replacesWholeMailbox)) {
         // Before anything is written: the owner asked for a folder to be left out, and
         // this server would share it anyway.
         throw new IllegalArgumentException(PER_FOLDER_UNSUPPORTED_MESSAGE);
       }
-      written = recorded(engine, session, granteeIdentifier, engine.grant(session, OWNER_INBOX, granteeIdentifier, preset, ownerRights));
+      MailboxAce grant = replacesWholeMailbox ? engine.grantWholeMailbox(session, granteeIdentifier, preset, ownerRights)
+                                              : engine.grant(session, OWNER_INBOX, granteeIdentifier, preset, ownerRights);
+      written = recorded(engine, session, granteeIdentifier, grant);
       // Beside INBOX, the owner's Sent, Archive, Trash and Spam (EXO-90548, PO decision
       // Q-2), each with its role's letters and the owner's choice for it (EXO-90556);
-      // one call on a per-mailbox server.
-      if (capabilities.grantGranularity() == GrantGranularity.MAILBOX) {
+      // one call on a per-mailbox server, and for a whole-mailbox entry.
+      if (capabilities.grantGranularity() == GrantGranularity.MAILBOX || replacesWholeMailbox) {
         grantedRoles = EmailDelegation.GRANTED_WHOLE_MAILBOX;
       } else {
         roleFolders = roleFoldersOf(engine, session);
@@ -564,7 +578,9 @@ public class EmailDelegationService {
    * other folder of the caller whose ACL names that identifier, including an entry made
    * in another mail application, and on the folders the grant recorded (EXO-90548). The
    * row goes {@code REVOKED} and the grantee's registered folders of this mailbox are
-   * dropped, the mail mirrored under them with them ({@link #dropDelegatedFolders}). The
+   * dropped, the mail mirrored under them with them ({@link #dropDelegatedFolders}). On a
+   * server that keeps whole-mailbox entries beside per-folder ones, the grantee's
+   * whole-mailbox entry goes first (EXO-90816). The
    * owner's consent to the grantee writing in her name goes with the share (EXO-90582):
    * inviting them again starts with none.
    *
@@ -593,7 +609,13 @@ public class EmailDelegationService {
     if (identifier != null && delegation.getStatus() != DelegationStatus.REVOKED) {
       MailboxAclEngine engine = aclEngineRegistry.engineFor(connector);
       try (MailboxAclSession session = session(connector, ownerUsername, mailboxIdentifier(ownerSetting))) {
-        requireSupported(engine.probe(session));
+        MailboxAclCapabilities capabilities = engine.probe(session);
+        requireSupported(capabilities);
+        if (capabilities.mailboxScope()) {
+          // The widest access first (EXO-90816): no folder write reaches a whole-mailbox
+          // entry, and while it stands every folder stays readable.
+          engine.revokeWholeMailbox(session, identifier);
+        }
         engine.revoke(session, OWNER_INBOX, identifier);
         revokeOtherFolders(engine, session, identifier, delegation);
       }
@@ -628,6 +650,10 @@ public class EmailDelegationService {
    * pending invitation stays pending with its new rights, and a leave made while the
    * server was asked stays a leave. A share revoked or gone meanwhile is refused as
    * not changeable.
+   * <p>
+   * A share that stands on the owner's whole mailbox, on a server that keeps such entries
+   * beside per-folder ones, is changed at that scope (EXO-90816): a write on INBOX alone
+   * would only add to it, never narrow it.
    * <p>
    * The owner's other shared folders follow (EXO-90548), each with its role's letters.
    * When the change narrows the access (to Reader), a folder that refuses the narrower
@@ -703,8 +729,20 @@ public class EmailDelegationService {
       }
     });
     try (MailboxAclSession session = session(connector, ownerUsername, ownerMailbox)) {
-      requireSupported(engine.probe(session));
-      written = engine.grant(session, OWNER_INBOX, identifier, preset, engine.myRights(session, OWNER_INBOX));
+      MailboxAclCapabilities capabilities = engine.probe(session);
+      requireSupported(capabilities);
+      MailboxRights inboxRights = engine.myRights(session, OWNER_INBOX);
+      if (capabilities.mailboxScope() && (delegation.grantsWholeMailbox() || holdsWholeMailbox(engine, session, identifier))) {
+        // The access stands on the whole mailbox (EXO-90816): changed there, or a
+        // narrowing written on INBOX alone would leave the wider entry in place.
+        written = engine.grantWholeMailbox(session, identifier, preset, inboxRights);
+        if (!delegation.grantsWholeMailbox()) {
+          // eXo's own entry on INBOX follows as well: the two add up.
+          engine.grant(session, OWNER_INBOX, identifier, preset, inboxRights);
+        }
+      } else {
+        written = engine.grant(session, OWNER_INBOX, identifier, preset, inboxRights);
+      }
       if (!kept.isEmpty()) {
         // The owner's folders as they are named NOW: a Trash renamed since the grant
         // would otherwise be written at a name that no longer exists, every retry.
@@ -1264,7 +1302,8 @@ public class EmailDelegationService {
    * @throws IllegalAccessException when the caller has no connected mailbox
    * @throws IllegalArgumentException {@code notChangeable} for a share no longer on the
    *           server or of another mailbox, {@code perFolderUnsupported} on a server that
-   *           grants a whole mailbox at once
+   *           grants a whole mailbox at once, {@code wholeMailbox} for a share of the
+   *           owner's whole mailbox (EXO-90816)
    * @throws MailboxAclException when the server does not support ACLs or cannot be asked
    */
   public DelegationFolders getFolderAccess(String ownerUsername, long id) throws ObjectNotFoundException, IllegalAccessException {
@@ -1277,7 +1316,9 @@ public class EmailDelegationService {
     String identifier = identifierOf(delegation, connector);
     MailboxAclEngine engine = aclEngineRegistry.engineFor(connector);
     try (MailboxAclSession session = session(connector, ownerUsername, ownerMailbox)) {
-      requirePerFolder(engine.probe(session));
+      MailboxAclCapabilities capabilities = engine.probe(session);
+      requirePerFolder(capabilities);
+      requireFolderScoped(engine, session, capabilities, delegation, identifier);
       List<OwnFolder> listed = engine.listOwnFolders(session);
       List<OwnFolder> shareable = shareableFolders(listed);
       List<DelegationFolder> folders = new ArrayList<>();
@@ -1333,7 +1374,8 @@ public class EmailDelegationService {
    *           not one of the owner's shareable folders, {@code folderNotEditable} for
    *           INBOX or Drafts, {@code notChangeable} for a share no longer on the server,
    *           of another mailbox, or ended while the server was asked,
-   *           {@code perFolderUnsupported} on a per-mailbox server
+   *           {@code perFolderUnsupported} on a per-mailbox server, {@code wholeMailbox}
+   *           for a share of the owner's whole mailbox (EXO-90816)
    * @throws MailboxAclException when the server does not support ACLs or cannot be asked
    *           before the first folder, or no longer records the share on INBOX
    */
@@ -1368,7 +1410,9 @@ public class EmailDelegationService {
     Set<String> ownerNames = new HashSet<>();
     MailboxAce inbox = null;
     try (MailboxAclSession session = session(connector, ownerUsername, ownerMailbox)) {
-      requirePerFolder(engine.probe(session));
+      MailboxAclCapabilities capabilities = engine.probe(session);
+      requirePerFolder(capabilities);
+      requireFolderScoped(engine, session, capabilities, delegation, identifier);
       List<OwnFolder> listed = engine.listOwnFolders(session);
       listed.forEach(folder -> ownerNames.add(folder.fullName()));
       Map<String, OwnFolder> byName = new HashMap<>();
@@ -2172,6 +2216,47 @@ public class EmailDelegationService {
     if (capabilities.grantGranularity() != GrantGranularity.FOLDER) {
       throw new IllegalArgumentException(PER_FOLDER_UNSUPPORTED_MESSAGE);
     }
+  }
+
+  /**
+   * Refuses folder-by-folder access for a share of the owner's whole mailbox
+   * (EXO-90816): recorded so, or, on a server that keeps whole-mailbox entries beside
+   * per-folder ones, held so on the server. A folder entry adds to a whole-mailbox entry
+   * and never narrows it, so a folder set to Reader or "not shared" there would be
+   * reported done while the person still reads and changes it.
+   *
+   * @param engine the engine
+   * @param session the owner's session
+   * @param capabilities the server's
+   * @param delegation the owner's row
+   * @param identifier the grantee as the server names them
+   * @throws IllegalArgumentException {@code wholeMailbox} for such a share
+   * @throws MailboxAclException when the server cannot be asked
+   */
+  private void requireFolderScoped(MailboxAclEngine engine,
+                                   MailboxAclSession session,
+                                   MailboxAclCapabilities capabilities,
+                                   EmailDelegation delegation,
+                                   String identifier) {
+    if (delegation.grantsWholeMailbox() || capabilities.mailboxScope() && holdsWholeMailbox(engine, session, identifier)) {
+      throw new IllegalArgumentException(WHOLE_MAILBOX_MESSAGE);
+    }
+  }
+
+  /**
+   * Whether the server holds the grantee's access on the owner's whole mailbox: the
+   * entry INBOX's list gives them stands at {@link AclScope#MAILBOX} (EXO-90816). Read,
+   * never guessed: a list that cannot be read fails the caller.
+   *
+   * @param engine the engine
+   * @param session the owner's session
+   * @param identifier the grantee as the server names them
+   * @return true when their entry stands on the whole mailbox
+   * @throws MailboxAclException when the list cannot be read
+   */
+  private static boolean holdsWholeMailbox(MailboxAclEngine engine, MailboxAclSession session, String identifier) {
+    MailboxAce ace = aceOf(engine.listAcl(session, OWNER_INBOX), identifier);
+    return ace != null && ace.scope() == AclScope.MAILBOX;
   }
 
   /**
@@ -4170,6 +4255,11 @@ public class EmailDelegationService {
         row.setStatus(DelegationStatus.AVAILABLE);
         row.setOrigin(DelegationOrigin.SERVER);
         row.setLastRightsCheckDate(new Date());
+        if (ace.scope() == AclScope.MAILBOX) {
+          // Made on the server for the whole mailbox (EXO-90816): no folder is chosen
+          // one by one in it.
+          row.setGrantedRoles(EmailDelegation.GRANTED_WHOLE_MAILBOX);
+        }
         row = createOrReread(row);
       } else if (row != null && (row.getStatus() == DelegationStatus.REVOKED || row.getStatus() == DelegationStatus.GONE)) {
         // The owner's own ACL names the grantee again (#443-2): the share stands on the
@@ -4235,7 +4325,8 @@ public class EmailDelegationService {
                                          row.getMailboxRights().affordances(),
                                          List.of(),
                                          null,
-                                         false));
+                                         false,
+                                         row.grantsWholeMailbox() ? AclScope.MAILBOX : AclScope.FOLDER));
     }
     return grantees;
   }
