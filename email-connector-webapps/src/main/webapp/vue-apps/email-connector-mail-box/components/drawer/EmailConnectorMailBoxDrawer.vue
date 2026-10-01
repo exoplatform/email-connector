@@ -100,7 +100,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :select-mode="selectMode"
           :current-folder="currentFolder"
           :available-folders="availableFolders"
-          :namespace-folders="folders"
+          :namespace-folders="namespaceFolders"
           :categories="emailCategories"
           :category-view-id="categoryViewId"
           :sync-in-progress="syncInProgress"
@@ -126,7 +126,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :select-mode="selectMode"
         :current-folder="currentFolder"
         :available-folders="availableFolders"
-        :namespace-folders="folders"
+        :namespace-folders="namespaceFolders"
         :categories="emailCategories"
         :category-view-id="categoryViewId"
         :sync-in-progress="syncInProgress" />
@@ -144,7 +144,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div class="d-flex flex-row fill-height">
         <email-connector-mail-box-drawer-navigation
           :folders="availableFolders"
-          :namespace-folders="folders"
+          :namespace-folders="namespaceFolders"
           :current-folder="currentFolder"
           :categories="emailCategories"
           :category-view-id="categoryViewId"
@@ -428,6 +428,25 @@ const NAVIGATION_BACKGROUND = 'var(--allPagesGreyColorLighten1Opacity2, rgba(112
 
 // Where the user's own choice of column or rail is kept, in this browser only.
 const NAVIGATION_RAIL_STORAGE_KEY = 'emailConnector.mailBox.navigationRail';
+
+/**
+ * A folder of a shared mailbox as the folder lists read it: its key, role and name, and
+ * its place in the owner's tree -- the owner's full name and delimiter (EXO-90839).
+ *
+ * @param {Object} folder the folder as the switcher entry lists it
+ * @returns {Object} the folder descriptor
+ */
+function sharedFolderView(folder) {
+  return {
+    key: folder.key,
+    type: SHARED_FOLDER_TYPE,
+    role: folder.role,
+    displayName: folder.displayName,
+    path: folder.path,
+    delimiter: folder.delimiter,
+    syncEnabled: true,
+  };
+}
 
 /**
  * Whether the folder column starts as a rail: the user's last choice in this browser,
@@ -1012,15 +1031,22 @@ export default {
           unreadCount: this.currentSharedMailbox.unreadCount || 0,
         }].concat((this.currentSharedMailbox.folders || [])
           .filter(folder => folder.readable)
-          .map(folder => ({
-            key: folder.key,
-            type: SHARED_FOLDER_TYPE,
-            role: folder.role,
-            displayName: folder.displayName,
-            syncEnabled: true,
-          })));
+          .map(sharedFolderView));
       }
       return this.emailBox?.folders || [{ key: 'INBOX', type: 'BUILT_IN', syncEnabled: true }];
+    },
+    /**
+     * Every folder of the mailbox listed, offered or not: the user's own, or in a shared
+     * mailbox all of its owner's -- what decides whether INBOX is the namespace they live
+     * under, so a path reads the same on every screen (EXO-90839).
+     *
+     * @returns {Array} the folder descriptors
+     */
+    namespaceFolders() {
+      if (this.currentSharedMailbox) {
+        return (this.currentSharedMailbox.folders || []).map(sharedFolderView);
+      }
+      return this.folders;
     },
     /**
      * The shared mailbox the drawer is in, or null in the user's own (plan 7.3).
