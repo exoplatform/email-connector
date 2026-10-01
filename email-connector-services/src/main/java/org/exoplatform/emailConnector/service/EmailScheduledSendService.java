@@ -203,6 +203,12 @@ public class EmailScheduledSendService {
   // provider filing its own copy has had the time to.
   static final long                  CHECK_DELAY_SECONDS          = 60;
 
+  // How far ahead a held mail's row is due while its draft is being frozen: beyond the
+  // freeze's worst case (the IMAP connect and read timeouts, 15 s and 30 s), so no
+  // dispatcher claims it before the freeze ends; a node stopping meanwhile leaves it to
+  // a tick past this margin.
+  static final long                  HELD_FREEZE_MARGIN_MS        = 120_000L;
+
   // How long after the end of its wait a held mail's timer fires: the claim compares the
   // due instant with a clock truncated to the second, so a timer firing on the instant
   // could find the mail not yet due.
@@ -455,16 +461,18 @@ public class EmailScheduledSendService {
       throw new IllegalArgumentException(RECIPIENTS_MANDATORY);
     }
     Date now = now();
-    Date due = new Date(now.getTime() + delay * 1000L);
+    // Not due while the draft is frozen (see HELD_FREEZE_MARGIN_MS); the wait starts once
+    // it is.
+    Date frozenDue = new Date(now.getTime() + delay * 1000L + HELD_FREEZE_MARGIN_MS);
     EmailScheduledSend created = emailBoxService.scheduleDraft(draft, username, saved -> {
       EmailScheduledSend row = new EmailScheduledSend(null,
                                                       saved.getId(),
                                                       username,
                                                       saved.getDraftLocalId(),
-                                                      due,
+                                                      frozenDue,
                                                       null,
                                                       ScheduledSendStatus.HELD,
-                                                      due,
+                                                      frozenDue,
                                                       0,
                                                       null,
                                                       null,
@@ -477,10 +485,17 @@ public class EmailScheduledSendService {
         throw new ScheduledSendConflictException(ScheduledSendConflictException.LOCKED);
       }
     });
-    // From the clock read now, not the one read before the draft was frozen: removing
-    // its server copy is a round trip, and the timer counts from here.
-    armHeld(created.getId(), Math.max(0, due.getTime() - now().getTime()) + HELD_TIMER_SLACK_MS, 0);
-    LOG.info("A mail of user {} is held {} s for its Undo", username, delay);
+    // The wait starts now that the draft is frozen, so the sender gets all of it.
+    Date started = now();
+    Date due = new Date(started.getTime() + delay * 1000L);
+    if (emailScheduledSendStorage.startHeldWait(created.getId(), due, started)) {
+      armHeld(created.getId(), delay * 1000L + HELD_TIMER_SLACK_MS, 0);
+      LOG.info("A mail of user {} is held {} s for its Undo", username, delay);
+    } else {
+      // Claimed meanwhile, which only a freeze longer than its margin allows: the mail is
+      // on its way, and an Undo answers so.
+      LOG.warn("A held mail of user {} was claimed before its Undo wait started", username);
+    }
     return new UndoableSend(created.getDraftLocalId(), due.getTime(), delay);
   }
 
