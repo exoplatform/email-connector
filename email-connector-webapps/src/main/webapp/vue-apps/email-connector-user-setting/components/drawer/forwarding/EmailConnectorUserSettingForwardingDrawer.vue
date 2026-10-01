@@ -27,23 +27,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     id="userSettingForwardingDrawer"
     ref="forwardingDrawer"
     v-model="drawer"
+    :loading="loading || saving || removing"
     right>
     <template #title>
       <span>{{ $t('UserSettings.emailConnector.forwarding.title') }}</span>
     </template>
     <template #content>
       <div class="pa-4">
-        <v-progress-linear
-          v-if="loading && !absence"
-          indeterminate
-          color="primary"
-          class="mb-4" />
-        <div
-          v-else-if="!absence"
-          class="error--text"
-          role="alert">
-          {{ error || $t('UserSettings.emailConnector.forwarding.error') }}
-        </div>
+        <!-- While the server is read, the drawer's own bar under its title says so. -->
+        <template v-if="!absence">
+          <div
+            v-if="!loading"
+            class="error--text"
+            role="alert">
+            {{ error || $t('UserSettings.emailConnector.forwarding.error') }}
+          </div>
+        </template>
         <template v-else>
           <v-alert
             v-if="currentMessage"
