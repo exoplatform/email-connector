@@ -163,13 +163,14 @@ public interface EmailScheduledSendDAO extends JpaRepository<EmailScheduledSendE
   Date before, Pageable pageable);
 
   /**
-   * The dispatcher's claim: a due SCHEDULED row becomes SENDING, stamped with this
-   * node, this instant and the next attempt number.
+   * The dispatcher's claim: a due row in a waiting state -- SCHEDULED, or HELD for a
+   * mail sent with an Undo (EXO-90837) -- becomes SENDING, stamped with this node, this
+   * instant and the next attempt number.
    *
    * @param id the row id
    * @param node the claiming node
    * @param now the claim instant
-   * @param scheduled the SCHEDULED status
+   * @param from the waiting state the row must be in: SCHEDULED or HELD
    * @param sending the SENDING status
    * @return one when the caller now holds the claim, zero otherwise
    */
@@ -177,13 +178,50 @@ public interface EmailScheduledSendDAO extends JpaRepository<EmailScheduledSendE
   @Modifying(clearAutomatically = true, flushAutomatically = true)
   @Query("UPDATE EmailScheduledSendEntity s SET s.status = :sending, s.claimedBy = :node, s.claimedDate = :now,"
       + " s.attempts = s.attempts + 1, s.updatedDate = :now"
-      + " WHERE s.id = :id AND s.status = :scheduled AND s.nextAttemptDate <= :now")
+      + " WHERE s.id = :id AND s.status = :from AND s.nextAttemptDate <= :now")
   int claim(@Param("id")
   long id, @Param("node")
   String node, @Param("now")
-  Date now, @Param("scheduled")
-  ScheduledSendStatus scheduled, @Param("sending")
+  Date now, @Param("from")
+  ScheduledSendStatus from, @Param("sending")
   ScheduledSendStatus sending);
+
+  /**
+   * Starts the Undo wait of a held mail (EXO-90837) once its draft is frozen: the row,
+   * created due far enough ahead that no dispatcher claims it while the freeze runs,
+   * becomes due at the end of the wait -- only while it is still HELD.
+   *
+   * @param id the row id
+   * @param due the end of the wait
+   * @param now the write instant
+   * @param held the HELD status
+   * @return one when the wait started, zero when the row is gone or no longer held
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailScheduledSendEntity s SET s.scheduledDate = :due, s.nextAttemptDate = :due, s.updatedDate = :now"
+      + " WHERE s.id = :id AND s.status = :held")
+  int startHeldWait(@Param("id")
+  long id, @Param("due")
+  Date due, @Param("now")
+  Date now, @Param("held")
+  ScheduledSendStatus held);
+
+  /**
+   * Removes a row only while it waits in one of the given states: the compensation of a
+   * scheduling that could not complete, which must never remove a row a dispatcher has
+   * claimed meanwhile.
+   *
+   * @param id the row id
+   * @param waiting the states it may be removed from
+   * @return one when removed, zero otherwise
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("DELETE FROM EmailScheduledSendEntity s WHERE s.id = :id AND s.status IN :waiting")
+  int deleteWaiting(@Param("id")
+  long id, @Param("waiting")
+  Collection<ScheduledSendStatus> waiting);
 
   /**
    * The owner's "send now" (and "retry"): the same claim, from any state the owner may
