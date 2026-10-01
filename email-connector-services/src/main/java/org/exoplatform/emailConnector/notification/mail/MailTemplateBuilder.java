@@ -19,6 +19,8 @@ package org.exoplatform.emailConnector.notification.mail;
 import java.util.Calendar;
 import java.util.Locale;
 
+import org.apache.commons.lang3.StringUtils;
+
 import org.exoplatform.commons.api.notification.NotificationContext;
 import org.exoplatform.commons.api.notification.channel.template.AbstractTemplateBuilder;
 import org.exoplatform.commons.api.notification.channel.template.TemplateProvider;
@@ -26,6 +28,7 @@ import org.exoplatform.commons.api.notification.model.MessageInfo;
 import org.exoplatform.commons.api.notification.model.NotificationInfo;
 import org.exoplatform.commons.api.notification.service.template.TemplateContext;
 import org.exoplatform.commons.notification.template.TemplateUtils;
+import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.commons.utils.TimeConvertUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
 import org.exoplatform.social.notification.plugin.SocialNotificationUtils;
@@ -69,9 +72,7 @@ public class MailTemplateBuilder extends AbstractTemplateBuilder {
                                                                      "EE, dd yyyy",
                                                                      Locale.of(language),
                                                                      TimeConvertUtils.YEAR));
-    templateContext.put("SUBJECT", notification.getValueOwnerParameter(NotificationConstants.TITLE));
-    templateContext.put("EMAILS_CONTENT", notification.getValueOwnerParameter(NotificationConstants.CONTENT));
-    templateContext.put("EMAILS_LINK", notification.getValueOwnerParameter(NotificationConstants.LINK));
+    putContent(templateContext, notification);
 
     MessageInfo messageInfo = new MessageInfo();
     // The subject is what processSubject RETURNS: it renders the
@@ -84,5 +85,35 @@ public class MailTemplateBuilder extends AbstractTemplateBuilder {
     messageInfo.body(TemplateUtils.processGroovy(templateContext));
     notificationContext.setException(templateContext.getException());
     return messageInfo.end();
+  }
+
+  /**
+   * Puts what the notification says into the template's context: its subject, its
+   * sentence, and the link its button follows -- absolute, since a mail is read outside
+   * the platform (EXO-90830).
+   *
+   * @param templateContext the template's context
+   * @param notification the notification the plugin built
+   */
+  static void putContent(TemplateContext templateContext, NotificationInfo notification) {
+    templateContext.put("SUBJECT", notification.getValueOwnerParameter(NotificationConstants.TITLE));
+    templateContext.put("EMAILS_CONTENT", notification.getValueOwnerParameter(NotificationConstants.CONTENT));
+    templateContext.put("EMAILS_LINK", absoluteLink(notification.getValueOwnerParameter(NotificationConstants.LINK)));
+  }
+
+  /**
+   * The link a mail's button follows, made absolute (EXO-90830). The plugins store a
+   * path, which is what the web and push channels need on the platform's own origin, but
+   * a mail is read outside it: a relative {@code href} there leads nowhere. A link that
+   * already names its origin, or names none at all, is left as it is.
+   *
+   * @param link the link the plugin stored, possibly null
+   * @return the link prefixed with the platform's domain when it is a path
+   */
+  static String absoluteLink(String link) {
+    if (StringUtils.startsWith(link, "/") && !StringUtils.startsWith(link, "//")) {
+      return StringUtils.removeEnd(CommonsUtils.getCurrentDomain(), "/") + link;
+    }
+    return link;
   }
 }
