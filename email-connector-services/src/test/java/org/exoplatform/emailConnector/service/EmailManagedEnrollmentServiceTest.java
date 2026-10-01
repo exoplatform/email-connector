@@ -34,6 +34,8 @@ import static org.mockito.Mockito.when;
 
 import java.util.concurrent.RejectedExecutionException;
 
+import ch.qos.logback.classic.Level;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -48,6 +50,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.container.ExoContainer;
 import org.exoplatform.container.ExoContainerContext;
+import org.exoplatform.emailConnector.LogCapture;
+import org.exoplatform.emailConnector.exception.CredentialsProviderMissingException;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.EmailManagedEnrollmentService.Outcome;
 
@@ -219,6 +223,28 @@ class EmailManagedEnrollmentServiceTest {
     doThrow(refusal).when(userEmailSettingService).connectThroughProvider(7L, USER, true);
 
     assertEquals(Outcome.REFUSED, service.enrollOnLogin(USER));
+  }
+
+  /**
+   * A designated connector whose credentials provider is not registered - an add-on's,
+   * not installed or not started yet - leaves the user unattached as a refusal does, but
+   * says nothing at INFO or above and carries no stack: it is met at every login of every
+   * governed user, and the resolver has said it once for the provider's name.
+   */
+  @Test
+  void leavesUnattachedQuietlyAUserWhoseConnectorsProviderIsNotRegistered() throws Exception {
+    when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(7L);
+    configured(false);
+    doThrow(new CredentialsProviderMissingException("bluemind-sudo")).when(userEmailSettingService)
+                                                                    .connectThroughProvider(7L, USER, true);
+
+    try (LogCapture log = new LogCapture(EmailManagedEnrollmentService.class)) {
+      assertEquals(Outcome.REFUSED, service.enrollOnLogin(USER));
+
+      assertTrue(log.events().stream().noneMatch(event -> event.getLevel().isGreaterOrEqual(Level.INFO)),
+                 log.events().toString());
+      assertFalse(log.anyStack(), log.events().toString());
+    }
   }
 
   /** The three refusals the connect throws, one per type the catch names. */
