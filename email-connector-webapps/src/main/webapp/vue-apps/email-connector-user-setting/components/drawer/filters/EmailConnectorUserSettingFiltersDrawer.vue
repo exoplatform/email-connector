@@ -29,6 +29,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       id="userSettingFiltersDrawer"
       ref="filtersDrawer"
       v-model="drawer"
+      :loading="loading || saving || applying || listLoading"
       right>
       <template #title>
         <span>{{ title }}</span>
@@ -90,20 +91,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 </v-btn>
               </div>
             </v-alert>
-            <v-progress-linear
-              v-if="loading && !group"
-              indeterminate
-              color="primary"
-              class="mb-4" />
-            <div
-              v-else-if="groupError"
-              class="error--text mb-4"
-              role="alert">
-              {{ groupError }}
-            </div>
-            <div v-else-if="!serverFilters && !exoDisabled" class="text-subtitle mb-4">
-              {{ exoOnlyMessage }}
-            </div>
+            <!-- While the server is read, the drawer's own bar under its title says so. -->
+            <template v-if="!loading || group">
+              <div
+                v-if="groupError"
+                class="error--text mb-4"
+                role="alert">
+                {{ groupError }}
+              </div>
+              <div v-else-if="!serverFilters && !exoDisabled" class="text-subtitle mb-4">
+                {{ exoOnlyMessage }}
+              </div>
+            </template>
             <v-alert
               v-if="stateMessage"
               type="warning"
@@ -142,6 +141,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :server-filters="serverFilters"
               @edit="edit"
               @changed="read"
+              @loading="listLoading = $event"
               @exo-disabled="exoDisabled = true" />
           </template>
           <template v-else>
@@ -222,6 +222,8 @@ export default {
     // Whether the deployment switched eXo's filters off: only server filters remain.
     exoDisabled: false,
     loading: false,
+    // Whether the list below reads eXo's filters, shown in the drawer's own bar.
+    listLoading: false,
     saving: false,
     error: null,
     folders: [],
@@ -380,6 +382,8 @@ export default {
      */
     open(options) {
       this.editing = null;
+      // A list closed while it read never says it stopped: the new one will.
+      this.listLoading = false;
       this.error = null;
       this.created = null;
       this.exoDisabled = false;
