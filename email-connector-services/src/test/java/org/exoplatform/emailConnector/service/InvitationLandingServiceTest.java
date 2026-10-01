@@ -23,7 +23,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -94,21 +96,28 @@ class InvitationLandingServiceTest {
   @Test
   void theFirstImplementerHoldingTheUsersCalendarLandsIt() {
     givenThePlugins();
-    when(first.land(LANDING)).thenReturn(null);
+    when(first.holdsCalendarFor("john")).thenReturn(false);
+    when(second.holdsCalendarFor("john")).thenReturn(true);
     when(second.land(LANDING)).thenReturn(new LandedInvitation(77L, "/portal/dw/agenda?eventId=77", false));
     CalendarInvitation invitation = land(new InvitationLandingService(applicationContext));
     assertEquals(CalendarLanding.LANDED, invitation.getLanding());
     assertEquals("/portal/dw/agenda?eventId=77", invitation.getLandingLink());
+    assertFalse(invitation.isLandable(), "the click was honoured");
+    verify(first, never()).land(any());
 
+    when(first.holdsCalendarFor("john")).thenReturn(true);
     when(first.land(LANDING)).thenReturn(new LandedInvitation(78L, null, true));
     invitation = land(new InvitationLandingService(applicationContext));
     assertEquals(CalendarLanding.REMOVED, invitation.getLanding());
     assertNull(invitation.getLandingLink());
-    verify(second).land(LANDING);
+    assertFalse(invitation.isRemovable(), "the click was honoured");
+    verify(second, times(1)).land(LANDING);
 
+    // The one holding the calendar answers nothing: nothing to do, and the
+    // next add-on is not asked.
     when(first.land(LANDING)).thenReturn(null);
-    when(second.land(LANDING)).thenReturn(null);
     assertNull(land(new InvitationLandingService(applicationContext)).getLanding());
+    verify(second, times(1)).land(LANDING);
 
     when(first.holdsCalendarFor("john")).thenReturn(false);
     when(second.holdsCalendarFor("john")).thenReturn(true);
@@ -127,6 +136,8 @@ class InvitationLandingServiceTest {
   @Test
   void anAttemptThatFailedIsToldAndAMissingLibraryIsNot() {
     givenThePlugins();
+    when(first.holdsCalendarFor("john")).thenReturn(true);
+    lenient().when(second.holdsCalendarFor("john")).thenReturn(true);
     when(first.land(LANDING)).thenThrow(new IllegalStateException("the server refused"));
     assertEquals(CalendarLanding.FAILED, land(new InvitationLandingService(applicationContext)).getLanding());
     verify(second, never()).land(any());
@@ -177,6 +188,8 @@ class InvitationLandingServiceTest {
    */
   private static CalendarInvitation land(InvitationLandingService service) {
     CalendarInvitation invitation = new CalendarInvitation();
+    invitation.setLandable(true);
+    invitation.setRemovable(true);
     service.land(LANDING, invitation);
     return invitation;
   }
