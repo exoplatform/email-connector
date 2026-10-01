@@ -224,9 +224,9 @@ public class EmailFolderService {
   public static final String      FOLDER_HAS_SUB_FOLDERS_MESSAGE     = "emailConnector.folder.hasSubFolders";
 
   /**
-   * The message code a delete carries when a folder inside the folder is one the mailbox
-   * uses as a built-in (its Sent, Archive, Drafts, Trash or Spam): never deleted as a
-   * sub-folder of the user's own.
+   * The message code a delete, a rename or a move carries when a folder inside the
+   * folder is one the mailbox uses as a built-in (its Sent, Archive, Drafts, Trash or
+   * Spam): never deleted, renamed or moved as a sub-folder of the user's own.
    */
   public static final String      FOLDER_SUB_FOLDER_BUILT_IN_MESSAGE = "emailConnector.folder.subFolderBuiltIn";
 
