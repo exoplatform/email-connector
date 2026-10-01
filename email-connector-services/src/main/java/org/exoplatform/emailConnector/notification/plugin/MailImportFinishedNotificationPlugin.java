@@ -137,7 +137,7 @@ public class MailImportFinishedNotificationPlugin extends BaseNotificationPlugin
     String title = bundles.getSharedString(KEY_PREFIX + "title", locale);
     String shownFolder = StringUtils.isNotBlank(folderName) ? HtmlUtils.htmlEscape(folderName)
                                                             : StringUtils.defaultIfBlank(bundles.getSharedString(KEY_PREFIX
-                                                                + "folder." + folder, locale), folder);
+                                                                + "folder." + folder, locale), HtmlUtils.htmlEscape(folder));
     String contentKey;
     if ("FAILURE".equals(status)) {
       contentKey = "contentFailed";
