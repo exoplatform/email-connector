@@ -147,6 +147,8 @@ public class UserEmailSettingService {
    * @param broadcast broadcast event
    * @throws IllegalAccessException if user is not allowed to connect email
    *           setting
+   * @throws IllegalArgumentException carrying {@link #PASSWORD_REQUIRED} when the
+   *           password is blank and no stored password applies
    */
   @Transactional
   public void connectUserEmailSetting(UserEmailSetting userEmailSetting,
@@ -551,6 +553,10 @@ public class UserEmailSettingService {
    * account that means "unchanged"; for another address or another connector the
    * stored password belongs to a different mailbox and must never be tried against
    * this one, so a password is required.
+   * <p>
+   * The connection drawer applies the same rule before it enables Save
+   * ({@code EmailConnectorUserSettingDrawer.vue}, {@code passwordKept}): a change
+   * here is a change there.
    *
    * @param userEmailSetting the setting as posted, completed in place
    * @param username the user connecting

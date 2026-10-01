@@ -157,7 +157,9 @@ export default {
     /**
      * Whether a blank password means "keep the stored one": the settings read never
      * sends the password back (EXO-90610), only whether one is stored, and the server
-     * keeps it for the same connector and the same address only.
+     * keeps it for the same connector and the same address only. The server's rule
+     * is UserEmailSettingService#keepStoredPasswordWhenLeftBlank: a change there is a
+     * change here.
      *
      * @returns {boolean} true when the field may be left empty
      */
