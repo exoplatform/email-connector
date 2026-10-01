@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.rest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.access.annotation.Secured;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -127,5 +128,82 @@ public class CalendarInvitationRest {
                                         CalendarInvitationService.UNCONFIRMED.equals(code) ? code
                                                                                          : CalendarInvitationService.SEND_FAILED);
     }
+  }
+
+  /**
+   * Adds the event a message describes to the caller's calendar, without answering.
+   *
+   * @param request the HTTP request, for the caller
+   * @param emailId the message's technical id
+   * @return the invitation, with what became of it in the calendar
+   */
+  @PostMapping("/{emailId}/invitation/calendar")
+  @Secured("users")
+  @Operation(summary = "Adds the event a message describes to the caller's calendar", method = "POST",
+             description = "Hands the message's iCalendar object to the add-on holding the caller's calendar, with no answer sent: the event is created there, or updated when the caller already holds it and the message is its organiser's newer revision. The caller's own mailbox only, never a cancelled event, and only when an add-on holds a calendar for the caller (the invitation's landable flag).")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The invitation, with landing LANDED, REFUSED or FAILED and the link to the event"),
+      @ApiResponse(responseCode = "400", description = "Nothing to add from here (emailConnector.invitation.notLandable), the event was cancelled (emailConnector.invitation.cancelled), or the invitation cannot be read (tooLarge, unreadable, unsupported)"),
+      @ApiResponse(responseCode = "403", description = "The caller's mailbox connector is not usable, or the message is a shared mailbox's (emailConnector.invitation.notLandable)"),
+      @ApiResponse(responseCode = "404", description = "No such message of the caller's, or it carries no invitation"),
+      @ApiResponse(responseCode = "500", description = "The mailbox could not be read"), })
+  public CalendarInvitation addToCalendar(HttpServletRequest request,
+                                          @Parameter(description = "Technical id of the message", required = true)
+                                          @PathVariable("emailId")
+                                          long emailId) {
+    try {
+      return calendarInvitationService.addToCalendar(emailId, request.getRemoteUser());
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, CalendarInvitationService.NOT_FOUND);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, landingRefusal(e));
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, null);
+    }
+  }
+
+  /**
+   * Removes from the caller's calendar the event a cancellation says is called off.
+   *
+   * @param request the HTTP request, for the caller
+   * @param emailId the message's technical id
+   * @return the invitation, with what became of it in the calendar
+   */
+  @DeleteMapping("/{emailId}/invitation/calendar")
+  @Secured("users")
+  @Operation(summary = "Removes from the caller's calendar the event a cancellation calls off", method = "DELETE",
+             description = "Hands the organiser's CANCEL to the add-on holding the caller's calendar, which removes the event when the caller holds it and the cancellation is its organiser's. The caller's own mailbox only, a CANCEL only, and only when an add-on holds a calendar for the caller (the invitation's removable flag).")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The invitation, with landing REMOVED, REFUSED or FAILED, or none when the caller did not hold the event"),
+      @ApiResponse(responseCode = "400", description = "Not a cancellation, or nothing to remove from here (emailConnector.invitation.notLandable), or the invitation cannot be read (tooLarge, unreadable, unsupported)"),
+      @ApiResponse(responseCode = "403", description = "The caller's mailbox connector is not usable, or the message is a shared mailbox's (emailConnector.invitation.notLandable)"),
+      @ApiResponse(responseCode = "404", description = "No such message of the caller's, or it carries no invitation"),
+      @ApiResponse(responseCode = "500", description = "The mailbox could not be read"), })
+  public CalendarInvitation removeFromCalendar(HttpServletRequest request,
+                                               @Parameter(description = "Technical id of the message", required = true)
+                                               @PathVariable("emailId")
+                                               long emailId) {
+    try {
+      return calendarInvitationService.removeFromCalendar(emailId, request.getRemoteUser());
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, CalendarInvitationService.NOT_FOUND);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, landingRefusal(e));
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, null);
+    }
+  }
+
+  /**
+   * The code of a landing refusal, when it is one the reader shows: the connector's own
+   * refusal carries a sentence naming the user, which is no response body.
+   *
+   * @param refusal the refusal
+   * @return the code, or null
+   */
+  private static String landingRefusal(IllegalAccessException refusal) {
+    return CalendarInvitationService.NOT_LANDABLE.equals(refusal.getMessage()) ? refusal.getMessage() : null;
   }
 }
