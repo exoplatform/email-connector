@@ -40,6 +40,7 @@ const COLLAPSED_STORAGE_KEY = 'emailConnector.folders.collapsed';
  */
 export function buildFolderTree(folders) {
   const list = (folders || []).filter(folder => !!folder);
+  const dropInbox = inboxIsNamespace(list);
   const own = list.filter(isTreeFolder);
   const byPath = new Map(own.map(folder => [folder.path, folder]));
   const children = new Map();
@@ -64,7 +65,7 @@ export function buildFolderTree(folders) {
     showPath: false,
     pathLabel: '',
   }));
-  appendRows(rows, roots, children, 0, []);
+  appendRows(rows, roots, children, 0, [], dropInbox);
   return rows;
 }
 
@@ -177,14 +178,15 @@ function nearestAncestor(folder, byPath) {
  * @param {Map} children the folders inside each folder, by its key
  * @param {Number} depth the level's depth
  * @param {Array} ancestorKeys the keys of the folders above this level
+ * @param {Boolean} dropInbox whether INBOX is the namespace every folder lives under
  * @returns {void}
  */
-function appendRows(rows, level, children, depth, ancestorKeys) {
+function appendRows(rows, level, children, depth, ancestorKeys, dropInbox) {
   level.slice()
-    .sort((first, second) => sortName(first, depth).localeCompare(sortName(second, depth), [], { sensitivity: 'base', numeric: true }))
+    .sort((first, second) => sortName(first, depth, dropInbox).localeCompare(sortName(second, depth, dropInbox), [], { sensitivity: 'base', numeric: true }))
     .forEach(folder => {
       const inside = children.get(folder.key) || [];
-      const segments = ownSegments(folder);
+      const segments = ownSegments(folder, dropInbox);
       rows.push({
         folder,
         depth,
@@ -194,22 +196,39 @@ function appendRows(rows, level, children, depth, ancestorKeys) {
         // A folder at the top whose full name is deeper than one level hangs from a
         // folder the list does not show: its path says where it lives.
         showPath: depth === 0 && segments.length > 1,
-        pathLabel: folderPathLabel(folder),
+        pathLabel: segments.join(' / '),
       });
-      appendRows(rows, inside, children, depth + 1, ancestorKeys.concat(folder.key));
+      appendRows(rows, inside, children, depth + 1, ancestorKeys.concat(folder.key), dropInbox);
     });
 }
 
 /**
- * A folder's full name as the user reads it: its segments, without a leading INBOX
- * (see ownSegments), joined by a spaced slash ("Customers / Acme"). The one spelling of
- * a folder's path on every screen.
+ * A folder's full name as the user reads it: its segments joined by a spaced slash
+ * ("Customers / Acme"), without a leading INBOX when the user's folders show INBOX is the
+ * namespace they all live under (see inboxIsNamespace). The one spelling of a folder's
+ * path on every screen.
  *
  * @param {Object} folder the folder as the server lists it ({path, delimiter})
+ * @param {Array} folders the user's folders it is listed with; without them INBOX is kept
  * @returns {String} the path, or nothing for a folder without one
  */
-export function folderPathLabel(folder) {
-  return folder?.path ? ownSegments(folder).join(' / ') : '';
+export function folderPathLabel(folder, folders) {
+  return folder?.path ? ownSegments(folder, inboxIsNamespace(folders)).join(' / ') : '';
+}
+
+/**
+ * Whether INBOX is the namespace the user's own folders live under ("INBOX.Customers" on
+ * Courier, Cyrus without the alternate namespace) rather than a folder some of them sit
+ * in (a sub-folder made inside the inbox on Dovecot's default layout): true when every
+ * one of the user's own folders is inside INBOX.
+ *
+ * @param {Array} folders the folders as the server lists them
+ * @returns {Boolean} true when INBOX is where every folder of the user's lives
+ */
+export function inboxIsNamespace(folders) {
+  const own = (folders || []).filter(isTreeFolder);
+  return own.length > 0 && own.every(folder => !!folder.delimiter
+    && folder.path.includes(folder.delimiter) && isInboxPath(folder.path.split(folder.delimiter)[0]));
 }
 
 /**
@@ -224,20 +243,19 @@ export function isInboxPath(path) {
 }
 
 /**
- * A folder's full name, segment by segment, without a leading INBOX: on a mail server
- * whose personal folders all live under the inbox ("INBOX.Customers" on Courier, Cyrus
- * without the alternate namespace), that prefix is where every folder lives, and saying
- * it would put "INBOX / " before every name.
+ * A folder's full name, segment by segment, without a leading INBOX when INBOX is the
+ * namespace every folder lives under: saying it would put "INBOX / " before every name.
  *
  * @param {Object} folder the folder
+ * @param {Boolean} dropInbox whether INBOX is that namespace (inboxIsNamespace)
  * @returns {Array} the segments, at least one
  */
-function ownSegments(folder) {
+function ownSegments(folder, dropInbox) {
   if (!folder.delimiter) {
     return [folder.path];
   }
   const segments = folder.path.split(folder.delimiter);
-  return segments.length > 1 && isInboxPath(segments[0]) ? segments.slice(1) : segments;
+  return dropInbox && segments.length > 1 && isInboxPath(segments[0]) ? segments.slice(1) : segments;
 }
 
 /**
@@ -246,12 +264,13 @@ function ownSegments(folder) {
  *
  * @param {Object} folder the folder
  * @param {Number} depth the folder's depth
+ * @param {Boolean} dropInbox whether INBOX is the namespace every folder lives under
  * @returns {String} the name
  */
-function sortName(folder, depth) {
-  const segments = ownSegments(folder);
+function sortName(folder, depth, dropInbox) {
+  const segments = ownSegments(folder, dropInbox);
   if (depth === 0 && segments.length > 1) {
-    return folderPathLabel(folder);
+    return segments.join(' / ');
   }
   return folder.displayName || folder.path || '';
 }

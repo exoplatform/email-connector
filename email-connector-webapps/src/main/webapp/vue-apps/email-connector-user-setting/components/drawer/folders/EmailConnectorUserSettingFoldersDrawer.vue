@@ -431,7 +431,7 @@ export default {
      * @returns {String} the path
      */
     pathOf(folder) {
-      return folderPathLabel(folder) || folder?.displayName || '';
+      return folderPathLabel(folder, this.customFolders) || folder?.displayName || '';
     },
     /**
      * Closes the drawer and tells the settings row to re-read its counter, since the
