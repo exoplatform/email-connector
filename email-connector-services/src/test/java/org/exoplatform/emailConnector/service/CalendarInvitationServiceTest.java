@@ -295,6 +295,8 @@ class CalendarInvitationServiceTest {
     assertEquals("Accepted: Weekly <b>sync</b>", reply.getSubject());
     assertEquals("<invite@partner.example>", reply.getHeader("In-Reply-To")[0]);
     assertEquals(ME, ((InternetAddress) reply.getFrom()[0]).getAddress());
+    reply.saveChanges();
+    assertTrue(reply.getMessageID().endsWith("@acme.com>"), "the domain it is from, not this server's host");
     Multipart alternative = (Multipart) reply.getContent();
     assertTrue(alternative.getContentType().startsWith("multipart/alternative"));
     assertTrue(((String) alternative.getBodyPart(0).getContent()).startsWith("Test User has accepted this invitation"));

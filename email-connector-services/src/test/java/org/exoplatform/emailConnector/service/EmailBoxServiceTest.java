@@ -17635,19 +17635,18 @@ public class EmailBoxServiceTest {
 
   /**
    * EXO-90840. A message sent from a shared mailbox is filed in its owner's Sent, as a
-   * composed mail is: her record of what was sent in her name.
+   * composed mail is: the very message that went out, with X-Exo-Sent-By naming the
+   * delegate -- her only record when it went out as her.
    *
    * @throws Exception when the mocked mail plumbing misbehaves
    */
   @Test
   void aMessageFromASharedMailboxIsFiledInItsOwnersSent() throws Exception {
-    givenAUsableMailbox();
-    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
-    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    givenASendRig();
+    when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(DELEGATE_ADDRESS);
     when(emailDelegationService.checkSendMode(TEST_USER, 100L, SendMode.AS)).thenReturn(ownersIdentity(SendMode.AS, "Alice"));
-    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:9");
-    IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    IMAPFolder ownerSent = givenTheOwnersSent();
+    ArgumentCaptor<MimeMessage> sent = ArgumentCaptor.forClass(MimeMessage.class);
 
     EmailBoxService.OwnerCopy copy = emailBoxService.transmitFromSharedMailbox(TEST_USER, 100L, SendMode.AS, (session, from) -> {
       MimeMessage reply = new MimeMessage(session);
@@ -17657,11 +17656,12 @@ public class EmailBoxServiceTest {
       return reply;
     });
 
-    verify(smtpTransmitter).transmit(any(MimeMessage.class));
-    verify(userEmailSettingService).connect(anyString(), eq(TEST_USER));
-    // The share's Sent is not in this test's folder registry: the filing is attempted
-    // and fails without failing the send, as for a composed mail.
-    assertEquals(EmailBoxService.OwnerCopy.FAILED, copy);
+    assertEquals(EmailBoxService.OwnerCopy.FILED, copy);
+    verify(smtpTransmitter).transmit(sent.capture());
+    ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
+    verify(ownerSent).appendMessages(filed.capture());
+    assertSame(sent.getValue(), filed.getValue()[0], "the very message that went out");
+    assertEquals(DELEGATE_ADDRESS, headerOf(filed.getValue()[0], "X-Exo-Sent-By"));
   }
 
   /**
