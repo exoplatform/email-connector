@@ -1104,10 +1104,13 @@ export function completeThreadByThreadId(threadId, folder) {
  *          it -- so the mailbox's Favorites chip narrows the search too
  * @param {Boolean} unread when true, only unread messages come back, for the same
  *          reason: the chip is lit, so it must still be filtering
+ * @param {Object} criteria the advanced search's criteria (EXO-90838), may be absent:
+ *          {from, to, words, after, before, attachment} -- the days as yyyy-MM-dd, the
+ *          first included and the last excluded; an empty one is not sent
  * @returns {Promise} resolves with { results, totalMatches }
  */
-export function searchEmails(query, folder, limit, favorites, unread) {
-  const params = new URLSearchParams({ query, limit });
+export function searchEmails(query, folder, limit, favorites, unread, criteria) {
+  const params = new URLSearchParams({ query: query || '', limit });
   if (folder && folder !== 'INBOX') {
     params.append('folder', folder);
   }
@@ -1118,6 +1121,15 @@ export function searchEmails(query, folder, limit, favorites, unread) {
   }
   if (unread) {
     params.append('unread', 'true');
+  }
+  ['from', 'to', 'words', 'after', 'before'].forEach(name => {
+    const value = (criteria?.[name] || '').trim();
+    if (value) {
+      params.append(name, value);
+    }
+  });
+  if (criteria?.attachment) {
+    params.append('attachment', 'true');
   }
   return fetch(`/email-connector/rest/email-box/search?${params}`, {
     headers: {
