@@ -33,7 +33,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template v-if="drawer" #content>
       <div class="pa-4">
         <!-- The consent, said before the list: what each choice lets this person do. -->
-        <div class="text-wrap text-color mb-2">{{ $t('UserSettings.emailConnector.sharing.folders.intro', { 0: personName }) }}</div>
+        <div class="text-wrap text-color mb-2">{{ $t(introKey, { 0: personName }) }}</div>
         <div class="caption text-sub-title text-wrap mb-3">{{ $t('UserSettings.emailConnector.sharing.folders.inherit') }}</div>
         <div v-if="loaded && !folders.length" class="text-sub-title">{{ $t('UserSettings.emailConnector.sharing.folders.empty') }}</div>
         <email-connector-user-setting-folder-access-list
@@ -99,6 +99,8 @@ export default {
     saving: false,
     // The owner's list entry this drawer is for: {identifier, granteeId, delegation, preset}.
     grantee: null,
+    // Whether an Editor of the owner's Trash can delete mail there for good (EXO-90816).
+    trashExpunge: false,
     folders: [],
     truncated: false,
     // The access the server said per folder, and the access chosen, by full name.
@@ -113,6 +115,17 @@ export default {
      */
     personName() {
       return this.grantee?.granteeId || this.grantee?.identifier || '';
+    },
+    /**
+     * The consent's wording, as this mail server holds an Editor's access (EXO-90816):
+     * where an Editor of the owner's Trash can delete mail there for good, it says so.
+     *
+     * @returns {String} the message key
+     */
+    introKey() {
+      return this.trashExpunge
+        ? 'UserSettings.emailConnector.sharing.folders.intro.trashExpunge'
+        : 'UserSettings.emailConnector.sharing.folders.intro';
     },
     /**
      * What INBOX's row says: the share's own access there, changed from the access menu.
@@ -164,10 +177,13 @@ export default {
      * Opens the drawer on one person's access, read from the mail server now.
      *
      * @param {Object} grantee the owner's list entry
+     * @param {Object} options {trashExpunge}: whether an Editor of the owner's Trash can
+     *   delete mail there for good on this mail server
      * @returns {void}
      */
-    open(grantee) {
+    open(grantee, options) {
       this.grantee = grantee;
+      this.trashExpunge = !!options?.trashExpunge;
       this.folders = [];
       this.initial = {};
       this.choices = {};

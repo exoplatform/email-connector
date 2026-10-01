@@ -37,6 +37,7 @@ import java.util.Date;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import javax.mail.Store;
 
@@ -52,6 +53,7 @@ import org.springframework.context.ApplicationEventPublisher;
 
 import org.exoplatform.emailConnector.event.DelegatedFoldersDroppedEvent;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
+import org.exoplatform.emailConnector.model.AclScope;
 import org.exoplatform.emailConnector.model.DelegationFolder;
 import org.exoplatform.emailConnector.model.DelegationFolders;
 import org.exoplatform.emailConnector.model.DelegationOrigin;
@@ -114,6 +116,19 @@ class EmailDelegationFolderAccessTest {
                                                                                            false,
                                                                                            false,
                                                                                            null);
+
+  /** A per-folder server that also keeps whole-mailbox entries (BlueMind, EXO-90816). */
+  private static final MailboxAclCapabilities BOTH_SCOPES     = new MailboxAclCapabilities(true,
+                                                                                           false,
+                                                                                           false,
+                                                                                           GrantGranularity.FOLDER,
+                                                                                           true,
+                                                                                           true,
+                                                                                           null,
+                                                                                           Set.of(),
+                                                                                           true,
+                                                                                           true,
+                                                                                           true);
 
   private static final MailboxRights          OWNER_RIGHTS    = MailboxRights.of("lrswipkxtea");
 
@@ -196,6 +211,55 @@ class EmailDelegationFolderAccessTest {
   @AfterEach
   void clearTheTunables() {
     System.clearProperty(EmailDelegationService.MAX_FOLDERS_PROPERTY);
+  }
+
+  // ---------------------------------------------------------------------------------
+  // A share of the whole mailbox (EXO-90816)
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * A share recorded as the owner's whole mailbox has no folder to choose one by one:
+   * reading and saving its folders are refused before any folder is read or written.
+   */
+  @Test
+  void aShareOfTheWholeMailboxHasNoFolderToChoose() throws Exception {
+    EmailDelegation whole = accepted();
+    whole.setGrantedRoles(EmailDelegation.GRANTED_WHOLE_MAILBOX);
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(whole);
+
+    IllegalArgumentException read = assertThrows(IllegalArgumentException.class, () -> service.getFolderAccess(OWNER, 100L));
+    IllegalArgumentException saved = assertThrows(IllegalArgumentException.class,
+                                                  () -> service.setFolderAccess(OWNER, 100L, List.of(change("Sent", FolderAccess.NONE))));
+
+    assertEquals(EmailDelegationService.WHOLE_MAILBOX_MESSAGE, read.getMessage());
+    assertEquals(EmailDelegationService.WHOLE_MAILBOX_MESSAGE, saved.getMessage());
+    verify(engine, never()).listOwnFolders(any());
+    verify(engine, never()).revoke(any(), anyString(), anyString());
+  }
+
+  /**
+   * On a server that keeps whole-mailbox entries beside per-folder ones, a share eXo
+   * wrote folder by folder whose grantee holds the whole mailbox on the server is
+   * refused too: a folder set to Reader or "not shared" would still be read through the
+   * whole mailbox. A grantee whose INBOX entry stands on INBOX alone is listed as usual.
+   */
+  @Test
+  void aGranteeHoldingTheWholeMailboxOnTheServerHasNoFolderToChoose() throws Exception {
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted());
+    when(engine.probe(any())).thenReturn(BOTH_SCOPES);
+    MailboxRights read = MailboxRights.of("lrp");
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(new MailboxAce(GRANTEE_MAILBOX, read, "Read", DelegationPreset.READER, AclScope.MAILBOX)));
+
+    IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class, () -> service.getFolderAccess(OWNER, 100L));
+    assertEquals(EmailDelegationService.WHOLE_MAILBOX_MESSAGE, thrown.getMessage());
+    thrown = assertThrows(IllegalArgumentException.class,
+                          () -> service.setFolderAccess(OWNER, 100L, List.of(change("Sent", FolderAccess.NONE))));
+    assertEquals(EmailDelegationService.WHOLE_MAILBOX_MESSAGE, thrown.getMessage());
+    verify(engine, never()).listOwnFolders(any());
+
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(new MailboxAce(GRANTEE_MAILBOX, read, "Read", DelegationPreset.READER)));
+    DelegationFolders list = service.getFolderAccess(OWNER, 100L);
+    assertEquals(INBOX, list.folders().get(0).folder());
   }
 
   // ---------------------------------------------------------------------------------
