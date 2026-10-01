@@ -125,12 +125,25 @@ export function invitationReplyOutcome(error, answer) {
   };
 }
 
-// What the reader says of each landing outcome the server tells.
+// What the reader says of each landing outcome the server tells, by the click it
+// followed: an answer, an addition, or a removal.
 const LANDING_MESSAGES = {
-  LANDED: { messageKey: 'emailConnector.mailBox.invitation.landed', alertType: 'success' },
-  REMOVED: { messageKey: 'emailConnector.mailBox.invitation.removed', alertType: 'success' },
-  REFUSED: { messageKey: 'emailConnector.mailBox.invitation.landingRefused', alertType: 'warning' },
-  FAILED: { messageKey: 'emailConnector.mailBox.invitation.landingFailed', alertType: 'warning' },
+  ANSWER: {
+    LANDED: { messageKey: 'emailConnector.mailBox.invitation.landed', alertType: 'success' },
+    REFUSED: { messageKey: 'emailConnector.mailBox.invitation.landingRefusedAfterAnswer', alertType: 'warning' },
+    FAILED: { messageKey: 'emailConnector.mailBox.invitation.landingFailedAfterAnswer', alertType: 'warning' },
+  },
+  ADD: {
+    LANDED: { messageKey: 'emailConnector.mailBox.invitation.landed', alertType: 'success' },
+    REFUSED: { messageKey: 'emailConnector.mailBox.invitation.landingRefused', alertType: 'warning' },
+    FAILED: { messageKey: 'emailConnector.mailBox.invitation.landingFailed', alertType: 'warning' },
+  },
+  REMOVE: {
+    REMOVED: { messageKey: 'emailConnector.mailBox.invitation.removed', alertType: 'success' },
+    REFUSED: { messageKey: 'emailConnector.mailBox.invitation.removalRefused', alertType: 'warning' },
+    FAILED: { messageKey: 'emailConnector.mailBox.invitation.landingFailed', alertType: 'warning' },
+    NONE: { messageKey: 'emailConnector.mailBox.invitation.notHeld', alertType: 'info' },
+  },
 };
 
 // The server's refusals of adding or removing, each with the sentence the reader shows.
@@ -140,16 +153,19 @@ const LANDING_ERRORS = {
 };
 
 /**
- * What the reader says of an invitation's landing in the user's calendar: that it is
- * there, that it was removed, that the add-on holding the calendar did not take this
- * invitation, or that it could not update the calendar -- an answer given left either
- * way. Nothing when no add-on holds a calendar for the user, or there was nothing to do.
+ * What the reader says of an invitation's landing in the user's calendar after a
+ * click: that it is there, that it was removed, that the add-on holding the calendar
+ * did not take this invitation, or that it could not update the calendar -- an answer
+ * given left either way. Nothing when no add-on holds a calendar for the user or there
+ * was nothing to do, except after a removal, where "not in your calendar" is the news.
  *
  * @param {String} landing LANDED, REMOVED, REFUSED, FAILED or nothing, as the server told it
+ * @param {String} click ANSWER, ADD or REMOVE
  * @returns {Object} {messageKey, alertType}, null when there is nothing to say
  */
-export function invitationLandingOutcome(landing) {
-  return LANDING_MESSAGES[landing] || null;
+export function invitationLandingOutcome(landing, click) {
+  const messages = LANDING_MESSAGES[click] || LANDING_MESSAGES.ANSWER;
+  return messages[landing || 'NONE'] || null;
 }
 
 /**
