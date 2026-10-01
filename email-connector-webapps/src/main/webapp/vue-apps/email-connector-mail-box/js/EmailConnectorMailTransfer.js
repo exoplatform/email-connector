@@ -15,8 +15,9 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 /*
- * Mail out of the mailbox as files: the selection as a .zip of .eml and a folder as an
- * .mbox (EXO-90845). The server decides who may read; what is decided here is only
+ * Mail in and out of the mailbox as files: the selection as a .zip of .eml and a folder
+ * as an .mbox (EXO-90845), and .eml, .zip or .mbox files imported into a folder
+ * (EXO-90846). The server decides who may read or write; what is decided here is only
  * where the actions are offered, by the same predicates the other folder actions use.
  *
  * An export is checked first (a small JSON answer carrying the count and the cap the
@@ -27,9 +28,23 @@
 
 import { isScheduledView, triggerDownload } from './EmailConnectorMailBoxService.js';
 import { parseSelectionKey } from './EmailConnectorMailBoxSelection.js';
-import { sharedMailboxAllows } from './EmailConnectorSharedMailboxes.js';
+import { isSharedMailboxFolder, sharedFolderRole, sharedMailboxAllows } from './EmailConnectorSharedMailboxes.js';
+
+/** Event any part of the mailbox emits to open the import drawer: {folder, files}. */
+export const OPEN_IMPORT_DRAWER_EVENT = 'open-email-import-drawer';
+
+/** Event the import drawer emits when an import ended: {folder}. */
+export const IMPORT_FINISHED_EVENT = 'email-import-finished';
 
 const BASE_URL = '/email-connector/rest/email-box';
+
+// The user's own folders mail is imported into: not Drafts (authored here), Trash and
+// Spam (their own meaning), the Scheduled view or All Mail (no folder) -- the server's
+// EmailBoxService#checkImportTarget.
+const OWN_IMPORT_FOLDERS = ['INBOX', 'SENT', 'ARCHIVE'];
+
+// The roles of a shared mailbox's folders mail is not imported into, for the same reasons.
+const SHARED_NO_IMPORT_ROLES = ['DRAFTS', 'TRASH', 'JUNK'];
 
 // The folder keys that are not folders an export can read whole.
 const NOT_EXPORTABLE_FOLDERS = ['SCHEDULED', 'ALL_MAIL'];
@@ -55,6 +70,22 @@ export function canDownloadSelection(keys) {
 export function canExportFolder(folder) {
   const key = folder || 'INBOX';
   return !NOT_EXPORTABLE_FOLDERS.includes(key) && !isScheduledView(key) && sharedMailboxAllows(key, 'read');
+}
+
+/**
+ * Whether mail can be imported into a folder: Inbox, Sent, Archive or a folder of the
+ * user's own; in a shared mailbox, a folder they may insert into ("moveTarget", the i
+ * right) that is not its Drafts, Trash or Spam.
+ *
+ * @param {String} folder the folder key
+ * @returns {Boolean} true when the import is offered
+ */
+export function canImportInto(folder) {
+  const key = folder || 'INBOX';
+  if (isSharedMailboxFolder(key)) {
+    return sharedMailboxAllows(key, 'moveTarget') && !SHARED_NO_IMPORT_ROLES.includes(sharedFolderRole(key));
+  }
+  return OWN_IMPORT_FOLDERS.includes(key) || String(key).startsWith('CUSTOM:');
 }
 
 /**
@@ -112,6 +143,39 @@ export function exportErrorKey(error) {
 }
 
 /**
+ * Starts an import of uploaded files into a folder.
+ *
+ * @param {String} folder the folder key
+ * @param {Array<String>} uploadIds the uploads holding the files
+ * @returns {Promise<Object>} the import state; rejected with the HTTP status and the
+ *   server's message code
+ */
+export async function startImport(folder, uploadIds) {
+  const resp = await fetch(`${BASE_URL}/import`, {
+    credentials: 'include',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ folder, uploadIds }),
+  });
+  if (resp?.ok) {
+    return resp.json();
+  }
+  const error = new Error('Error when starting the import');
+  error.status = resp?.status;
+  error.code = await messageCode(resp);
+  throw error;
+}
+
+/**
+ * How the user's import is going, or went, with the limits an import takes.
+ *
+ * @returns {Promise<Object>} the import state
+ */
+export function getImportStatus() {
+  return getJson(`${BASE_URL}/import/status`);
+}
+
+/**
  * Reads a JSON answer.
  *
  * @param {String} url the address
@@ -138,4 +202,27 @@ function tooMany(check) {
   error.tooMany = true;
   error.max = check.max;
   return error;
+}
+
+/**
+ * The message code a refused request answered with, when it answered one.
+ *
+ * @param {Response} resp the answer
+ * @returns {Promise<String>} the code, or null
+ */
+async function messageCode(resp) {
+  try {
+    const text = await resp.text();
+    if (!text) {
+      return null;
+    }
+    try {
+      const body = JSON.parse(text);
+      return body?.message || body?.detail || null;
+    } catch (e) {
+      return text;
+    }
+  } catch (e) {
+    return null;
+  }
 }
