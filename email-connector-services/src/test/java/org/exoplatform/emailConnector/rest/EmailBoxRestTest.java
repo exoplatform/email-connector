@@ -1277,7 +1277,7 @@ public class EmailBoxRestTest {
    */
   @Test
   void everyFolderEndpointAnswersItsCodeInTheBody() throws Exception {
-    when(emailBoxService.createCustomFolder(SIMPLE_USER, "Inbox")).thenThrow(new IllegalArgumentException("emailConnector.folder.name.reserved"));
+    when(emailBoxService.createCustomFolder(SIMPLE_USER, "Inbox", null)).thenThrow(new IllegalArgumentException("emailConnector.folder.name.reserved"));
     mockMvc.perform(post(EMAIL_BOX_PATH + "/folders").param("name", "Inbox").with(testSimpleUser()))
            .andExpect(status().isBadRequest())
            .andExpect(jsonPath("$.message").value("emailConnector.folder.name.reserved"));
@@ -1287,7 +1287,7 @@ public class EmailBoxRestTest {
            .andExpect(status().isBadRequest())
            .andExpect(jsonPath("$.message").value("emailConnector.folder.name.duplicate"));
 
-    doThrow(new IllegalArgumentException("emailConnector.folder.notEmpty")).when(emailBoxService).deleteCustomFolder(SIMPLE_USER, 5L);
+    doThrow(new IllegalArgumentException("emailConnector.folder.notEmpty")).when(emailBoxService).deleteCustomFolder(SIMPLE_USER, 5L, false);
     mockMvc.perform(delete(EMAIL_BOX_PATH + "/folders/5").with(testSimpleUser()))
            .andExpect(status().isBadRequest())
            .andExpect(jsonPath("$.message").value("emailConnector.folder.notEmpty"));
@@ -1967,7 +1967,7 @@ public class EmailBoxRestTest {
     when(emailBoxService.createCustomFolder(SIMPLE_USER, "Acme", 5L)).thenThrow(new IllegalArgumentException("emailConnector.folder.parent.invalid"));
     mockMvc.perform(post(EMAIL_BOX_PATH + "/folders").with(testSimpleUser()).param("name", "Acme").param("parentId", "5"))
            .andExpect(status().isBadRequest())
-           .andExpect(status().reason("emailConnector.folder.parent.invalid"));
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.parent.invalid"));
   }
 
   /**
@@ -1992,7 +1992,7 @@ public class EmailBoxRestTest {
     when(emailBoxService.moveCustomFolder(SIMPLE_USER, 7L, 9L, null)).thenThrow(new IllegalArgumentException("emailConnector.folder.parent.invalid"));
     mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/7/parent").with(testSimpleUser()).param("parentId", "9"))
            .andExpect(status().isBadRequest())
-           .andExpect(status().reason("emailConnector.folder.parent.invalid"));
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.parent.invalid"));
   }
 
   /**
@@ -2011,6 +2011,6 @@ public class EmailBoxRestTest {
                                                                               .deleteCustomFolder(SIMPLE_USER, 8L, false);
     mockMvc.perform(delete(EMAIL_BOX_PATH + "/folders/8").with(testSimpleUser()))
            .andExpect(status().isBadRequest())
-           .andExpect(status().reason("emailConnector.folder.hasSubFolders"));
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.hasSubFolders"));
   }
 }
