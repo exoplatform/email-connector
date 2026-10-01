@@ -366,6 +366,58 @@ class EmailExportServiceTest {
   }
 
   /**
+   * An interrupted mbox ends with a message saying so, and how far it got: a mail any
+   * application reads -- the import's own reader included -- after the messages that
+   * made it.
+   *
+   * @throws Exception when a mock cannot be stubbed
+   */
+  @Test
+  void anInterruptedMboxSaysSoInAMessageOfItsOwn() throws Exception {
+    when(emailBoxService.readFolderRawEmails(eq(USER), eq("INBOX"), eq(EmailExportService.MAX_MBOX_MAILS), any())).thenAnswer(invocation -> {
+      RawEmailVisitor visitor = invocation.getArgument(3);
+      visitor.begin(3);
+      visitor.message(null, mime(RAW));
+      visitor.interrupted(1, 3);
+      return true;
+    });
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+    assertTrue(emailExportService.writeMbox(USER, "INBOX", (name, size) -> out));
+
+    java.io.File file = dir.resolve("interrupted.mbox").toFile();
+    java.nio.file.Files.write(file.toPath(), out.toByteArray());
+    List<String> mails = new ArrayList<>();
+    new org.exoplatform.emailConnector.utils.MailArchiveReader(1 << 20, 1 << 16, 10, 100, 1L << 30)
+                                                              .read(file, new org.exoplatform.emailConnector.utils.MailArchiveSink() {
+                                                                /**
+                                                                 * Keeps a mail.
+                                                                 *
+                                                                 * @param message its bytes
+                                                                 * @return true
+                                                                 */
+                                                                @Override
+                                                                public boolean mail(byte[] message) {
+                                                                  mails.add(new String(message, StandardCharsets.UTF_8));
+                                                                  return true;
+                                                                }
+
+                                                                /**
+                                                                 * Fails on a refusal.
+                                                                 *
+                                                                 * @param reason why
+                                                                 * @return never
+                                                                 */
+                                                                @Override
+                                                                public boolean refused(org.exoplatform.emailConnector.model.MailImportRefusal reason) {
+                                                                  throw new AssertionError(reason);
+                                                                }
+                                                              });
+    assertEquals(2, mails.size());
+    assertTrue(mails.get(1).contains("Subject: Export incomplete: 1 of 3 emails"), mails.get(1));
+  }
+
+  /**
    * A cached row.
    *
    * @param subject its subject

@@ -6638,9 +6638,11 @@ public class EmailBoxService {
    * reopened for each window, because the mail library keeps every message a folder gave
    * until that folder closes: what stays in memory is one window's envelopes and the
    * UIDs. A message expunged meanwhile is not in its window, and is not part of the
-   * folder any more. A failure of the mail server once the export began is thrown as
-   * {@link ExportInterruptedException}: the file cannot say it is incomplete, so the
-   * download must fail rather than end as a complete-looking file.
+   * folder any more. A failure of the mail server once the export began -- or a message
+   * the visitor could not copy whole ({@link ExportInterruptedException}) -- ends the
+   * reading, and {@link RawEmailVisitor#interrupted} has the file say so: the answer is
+   * committed by then, and a failure thrown out of the request would not reach the
+   * browser as one (the WAR's error page filter ends a committed response normally).
    *
    * @param username the caller
    * @param folder the folder key
@@ -6653,7 +6655,6 @@ public class EmailBoxService {
    *           than {@code max} messages
    * @throws IllegalStateException when the mail server could not be read before the
    *           export began
-   * @throws ExportInterruptedException when it failed after
    */
   public boolean readFolderRawEmails(String username, String folder, int max, RawEmailVisitor visitor) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = requireConnectable(username, USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL);
@@ -6686,23 +6687,39 @@ public class EmailBoxService {
       LOG.warn("Could not read folder {} of user {} for an export", folderKey, username, e);
       throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
     }
+    int[] handed = new int[1];
     try {
       visitor.begin(uids.length);
       for (int start = 0; start < uids.length; start += EXPORT_FETCH_WINDOW) {
-        visitFolderWindow(remote, Arrays.copyOfRange(uids, start, Math.min(uids.length, start + EXPORT_FETCH_WINDOW)), visitor);
+        visitFolderWindow(remote, Arrays.copyOfRange(uids, start, Math.min(uids.length, start + EXPORT_FETCH_WINDOW)), visitor, handed);
       }
-      return true;
     } catch (ExportOutputClosedException e) {
       LOG.debug("Export of folder {} of user {} stopped: the output is closed", folderKey, username, e);
-      return true;
-    } catch (ExportInterruptedException e) {
-      LOG.warn("Export of folder {} of user {} was interrupted", folderKey, username, e);
-      throw e;
     } catch (IOException | MessagingException | RuntimeException e) {
-      LOG.warn("Export of folder {} of user {} was interrupted", folderKey, username, e);
-      throw new ExportInterruptedException("The mail server failed during the export of a folder", e);
+      LOG.warn("Export of folder {} of user {} was interrupted after {} of {} message(s)", folderKey, username, handed[0], uids.length, e);
+      tellInterrupted(visitor, handed[0], uids.length, folderKey, username);
     } finally {
       closeQuietly(remote, store, username);
+    }
+    return true;
+  }
+
+  /**
+   * Has the visitor say, in the file, that the mail server failed and how far the export
+   * got -- the file being the one place sure to reach the reader once the answer is under
+   * way. A reader who left meanwhile is not an incident.
+   *
+   * @param visitor the export's visitor
+   * @param handed how many messages it was handed
+   * @param count how many the folder held
+   * @param folderKey the folder key, for the log
+   * @param username the caller, for the log
+   */
+  private static void tellInterrupted(RawEmailVisitor visitor, int handed, int count, String folderKey, String username) {
+    try {
+      visitor.interrupted(handed, count);
+    } catch (IOException e) {
+      LOG.debug("The interruption of the export of folder {} of user {} could not be written", folderKey, username, e);
     }
   }
 
@@ -6732,10 +6749,14 @@ public class EmailBoxService {
    * @param folder the folder, closed
    * @param uids the window's UIDs
    * @param visitor where the messages go
+   * @param handed how many messages the visitor was handed so far, counted on
    * @throws IOException when the visitor's output fails
    * @throws MessagingException when the folder cannot be read
    */
-  private static void visitFolderWindow(Folder folder, long[] uids, RawEmailVisitor visitor) throws IOException, MessagingException {
+  private static void visitFolderWindow(Folder folder,
+                                        long[] uids,
+                                        RawEmailVisitor visitor,
+                                        int[] handed) throws IOException, MessagingException {
     folder.open(Folder.READ_ONLY);
     try {
       Message[] window = Arrays.stream(((UIDFolder) folder).getMessagesByUID(uids)).filter(Objects::nonNull).toArray(Message[]::new);
@@ -6748,6 +6769,7 @@ public class EmailBoxService {
             imapMessage.setPeek(true);
           }
           visitor.message(null, mimeMessage);
+          handed[0]++;
         }
       }
     } finally {
@@ -6800,8 +6822,9 @@ public class EmailBoxService {
    * Opens a folder for an import (EXO-90846): every check of {@link #checkImportTarget},
    * then the folder resolved through the caller's own registry on their own connection,
    * opened read-only for the run to ask whether a Message-ID is already there
-   * ({@link MailImportTarget#contains}: one IMAP search per mail, so the cost follows what
-   * is imported, never the folder's size). The target holds the connection until it is
+   * ({@link MailImportTarget#contains}: one IMAP search per mail, so what this server
+   * holds in memory and receives follows what is imported, not the folder's size; each
+   * search is still evaluated by the mail server over the folder). The target holds the connection until it is
    * closed; closing it queues a re-read of the folder when mail was added, so the new
    * rows appear in the list without waiting for the next check.
    *
