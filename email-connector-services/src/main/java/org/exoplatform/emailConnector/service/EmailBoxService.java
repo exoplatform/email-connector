@@ -281,6 +281,9 @@ public class EmailBoxService {
   // The message headers this service reads by name. Named once so the prefetch list below and
   // the call sites that read them cannot drift apart: a header missing from the prefetch costs
   // a server round-trip per message, and nothing fails loudly when that happens.
+  /** The MIME type pattern of a message or part made of other parts. */
+  private static final String    MULTIPART_ANY                           = "multipart/*";
+
   private static final String    BROADCAST_ERROR_MESSAGE                 = "Error broadcasting '{}' for user {}";
 
   private static final String     HEADER_REFERENCES                                           = "References";
@@ -15668,7 +15671,7 @@ public class EmailBoxService {
    */
   static boolean hasStoredAttachment(Part message, String username) {
     try {
-      return message.isMimeType("multipart/*") && message.getContent() instanceof Multipart multipart
+      return message.isMimeType(MULTIPART_ANY) && message.getContent() instanceof Multipart multipart
           && readStructure(multipart)[1];
     } catch (MessagingException | IOException e) {
       LOG.debug("Could not read the structure of a searched message of user {}", username, e);
@@ -15697,7 +15700,7 @@ public class EmailBoxService {
         html = true;
       } else if (part.isMimeType("text/plain") && !plain) {
         plain = true;
-      } else if (part.isMimeType("multipart/*")) {
+      } else if (part.isMimeType(MULTIPART_ANY)) {
         if (part.getContent() instanceof Multipart nested) {
           boolean[] level = readStructure(nested);
           nestedBody |= level[0];
@@ -17408,7 +17411,7 @@ public class EmailBoxService {
     Part current = root;
     int levelIndex = 0;
     for (String level : levels) {
-      if (!current.isMimeType("multipart/*")) {
+      if (!current.isMimeType(MULTIPART_ANY)) {
         throw new IllegalStateException("Trying to go deeper but part is not multipart at level " + levelIndex);
       }
       Multipart multipart = (Multipart) current.getContent();
