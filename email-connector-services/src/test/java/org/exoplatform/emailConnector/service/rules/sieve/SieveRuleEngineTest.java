@@ -63,6 +63,9 @@ public class SieveRuleEngineTest {
 
   private static final long     CONNECTOR_ID = 91L;
 
+  /** A loopback port nothing listens on: binding it needs privileges no test process has. */
+  private static final int      REFUSED_PORT = 1;
+
   private static final String   FOREIGN      = "roundcube";
 
   private FakeManageSieveServer server;
@@ -354,13 +357,17 @@ public class SieveRuleEngineTest {
   }
 
   /**
-   * A server that cannot be reached is "unreachable", never a certificate problem.
+   * A server that cannot be reached is "unreachable", never a certificate problem. The
+   * engine is pointed at loopback port 1, which no unprivileged process can listen on,
+   * rather than at the closed server's freed port, which another build on the same agent
+   * may take in between.
    *
    * @throws Exception on failure
    */
   @Test
   public void testAClosedServerIsUnreachable() throws Exception {
     server.close();
+    System.setProperty(ManageSieveEndpoint.PORT_PROPERTY + "." + CONNECTOR_ID, String.valueOf(REFUSED_PORT));
     ServerRuleUnavailableException e = assertThrows(ServerRuleUnavailableException.class, () -> engine.readVacation(session));
     assertEquals(ServerRuleUnavailableException.SERVER_UNREACHABLE, e.getMessage());
   }
