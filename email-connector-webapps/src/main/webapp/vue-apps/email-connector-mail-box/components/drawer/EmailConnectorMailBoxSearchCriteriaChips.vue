@@ -17,25 +17,30 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- The search's criteria above its results (EXO-90838): one chip each, closed to take
        that criterion off and search again, in the chip language of the list's own filter
-       chips (small, primary); "Clear all" once there are two; and the advanced search's
-       button, to add or change criteria. The search box's own text is in the box, not a
+       chips (small, primary), on one line that scrolls sideways; "Clear all" once there
+       are two; and the advanced search's button, to add or change criteria. The search box's own text is in the box, not a
        chip. -->
-  <div class="d-flex align-center flex-wrap px-3 pt-2">
-    <v-chip
-      v-for="chip in chips"
-      :key="chip.key"
-      :aria-label="chip.label"
-      class="me-2 mb-1 flex-shrink-0"
-      color="primary"
-      close
-      :close-label="$t('emailConnector.mailBox.search.chip.remove', { 0: chip.label })"
-      small
-      @click:close="$emit('remove', chip.key)">
-      <span class="text-truncate white--text" style="max-width: 220px;">{{ chip.label }}</span>
-    </v-chip>
+  <div class="d-flex align-center px-3 pt-2">
+    <!-- One line: the chips scroll sideways instead of wrapping, so the results never move
+         down when a criterion is added; "Clear all" and the advanced search's button stay
+         in view at the end. -->
+    <div class="d-flex align-center flex-nowrap overflow-x-auto flex-grow-1">
+      <v-chip
+        v-for="chip in chips"
+        :key="chip.key"
+        :aria-label="chip.label"
+        class="me-2 mb-1 flex-shrink-0"
+        color="primary"
+        close
+        :close-label="$t('emailConnector.mailBox.search.chip.remove', { 0: chip.label })"
+        small
+        @click:close="$emit('remove', chip.key)">
+        <span class="text-truncate white--text" style="max-width: 220px;">{{ chip.label }}</span>
+      </v-chip>
+    </div>
     <v-btn
       v-if="chips.length > 1"
-      class="mb-1 px-1"
+      class="mb-1 px-1 flex-shrink-0"
       color="primary"
       small
       text
@@ -45,7 +50,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <v-btn
       :title="$t('emailConnector.mailBox.search.advanced.open')"
       :aria-label="$t('emailConnector.mailBox.search.advanced.open')"
-      class="ms-auto mb-1 flex-shrink-0"
+      class="ms-1 mb-1 flex-shrink-0"
       icon
       small
       @click="$emit('advanced-search')">
