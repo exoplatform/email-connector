@@ -1110,6 +1110,66 @@ export function completeThreadByThreadId(threadId, folder) {
  * @returns {Promise} resolves with { results, totalMatches }
  */
 export function searchEmails(query, folder, limit, favorites, unread, criteria) {
+  const params = searchParams(query, folder, limit, favorites, unread, criteria);
+  return fetch(`/email-connector/rest/email-box/search?${params}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when searching the mailbox');
+    }
+  });
+}
+
+/**
+ * Searches one folder of the copy of the mailbox kept in eXo, with the advanced search's
+ * criteria (EXO-90838): what the advanced search reads first, without touching the mail
+ * server. Same parameters as searchEmails.
+ *
+ * @param {String} query free text matched against subject or sender, may be empty
+ * @param {String} folder INBOX, SENT or ARCHIVE, or CUSTOM:<id> for a folder of a mailbox
+ *          shared with the user
+ * @param {Number} limit how many hits to return (newest first)
+ * @param {Boolean} favorites when true, only starred messages
+ * @param {Boolean} unread when true, only unread messages
+ * @param {Object} criteria {from, to, words, after, before, attachment}
+ * @returns {Promise} resolves with { results, totalMatches, cachedSince }; rejects with
+ *          the response status on the error
+ */
+export function searchCachedFolder(query, folder, limit, favorites, unread, criteria) {
+  return fetch(`/email-connector/rest/email-box/search/local?${searchParams(query, folder, limit, favorites, unread, criteria)}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    const error = new Error('Error when searching the copy of the mailbox');
+    error.status = resp?.status;
+    throw error;
+  });
+}
+
+/**
+ * The query of a search, as /search and /search/local take it: only what is set is sent.
+ *
+ * @param {String} query free text matched against subject or sender
+ * @param {String} folder the folder to search
+ * @param {Number} limit how many hits to return
+ * @param {Boolean} favorites when true, only starred messages
+ * @param {Boolean} unread when true, only unread messages
+ * @param {Object} criteria the advanced search's criteria, may be absent
+ * @returns {URLSearchParams} the query
+ */
+function searchParams(query, folder, limit, favorites, unread, criteria) {
   const params = new URLSearchParams({ query: query || '', limit });
   if (folder && folder !== 'INBOX') {
     params.append('folder', folder);
@@ -1131,19 +1191,7 @@ export function searchEmails(query, folder, limit, favorites, unread, criteria) 
   if (criteria?.attachment) {
     params.append('attachment', 'true');
   }
-  return fetch(`/email-connector/rest/email-box/search?${params}`, {
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    credentials: 'include',
-    method: 'GET'
-  }).then((resp) => {
-    if (resp?.ok) {
-      return resp.json();
-    } else {
-      throw new Error('Error when searching the mailbox');
-    }
-  });
+  return params;
 }
 
 /**
