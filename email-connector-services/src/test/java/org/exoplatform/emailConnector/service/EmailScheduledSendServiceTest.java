@@ -408,6 +408,39 @@ public class EmailScheduledSendServiceTest {
   }
 
   /**
+   * A send whose connector's credentials provider is not installed is retried on the
+   * same back-off as a failure to connect, and once the budget is spent it fails with
+   * its own reason, which the owner is told: the provider is not available, not that
+   * the mail server refused the credentials.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aMissingCredentialsProviderIsRetriedThenFailsWithItsOwnReason() throws Exception {
+    givenTheSendFails(ScheduledSendFailure.Kind.TRANSIENT, ScheduledSendError.PROVIDER_UNAVAILABLE);
+    service.runClaimed(claimedRow(1));
+    verify(storage).endRun(eq(31L),
+                           eq("node-a"),
+                           eq(NOW),
+                           eq(ScheduledSendStatus.SCHEDULED),
+                           eq(ScheduledSendError.PROVIDER_UNAVAILABLE),
+                           any(Date.class),
+                           any(Date.class));
+    assertTrue(notified.isEmpty(), "nobody is told while it is retried");
+
+    service.runClaimed(claimedRow(4));
+    verify(storage).endRun(eq(31L),
+                           eq("node-a"),
+                           eq(NOW),
+                           eq(ScheduledSendStatus.FAILED),
+                           eq(ScheduledSendError.PROVIDER_UNAVAILABLE),
+                           isNull(),
+                           any(Date.class));
+    assertEquals(1, notified.size());
+    verify(notified.get(0)).append(ScheduledEmailFailedNotificationPlugin.REASON, "PROVIDER_UNAVAILABLE");
+  }
+
+  /**
    * A refusal fails at once and is notified with its reason code and the mail's subject;
    * a failure that may have reached the server is UNCERTAIN, its Sent-folder check due
    * shortly, never SCHEDULED, and not notified yet.
