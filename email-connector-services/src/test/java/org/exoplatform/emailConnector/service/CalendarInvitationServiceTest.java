@@ -282,6 +282,61 @@ class CalendarInvitationServiceTest {
   }
 
   /**
+   * A calendar server's answer about a CalDAV copy of this deployment's event -- a random
+   * UID, the event's link -- is the answer of an eXo meeting: linked to in Agenda, and
+   * never answered; the CalDAV copy itself, sent as a REQUEST, is never answered from the
+   * mail either. The same copy with a link on another deployment is ordinary.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aCopyOfThisDeploymentsEventIsAnEXoMeetingByItsLink() throws Exception {
+    try (MockedStatic<CommonsUtils> portal = mockStatic(CommonsUtils.class)) {
+      portal.when(CommonsUtils::getCurrentDomain).thenReturn("http://localhost:8080");
+      givenTheCalendarPart("bluemind-reply-accepted.ics");
+      CalendarInvitation reply = service.getInvitation(EMAIL_ID, USER);
+      assertTrue(reply.isExoMeeting());
+      assertEquals("http://localhost:8080/portal/dw/agenda?eventId=168", reply.getAgendaUrl());
+      assertEquals("ACCEPTED", reply.getRespondent().getPartStat());
+      assertFalse(reply.isAnswerable());
+
+      givenTheCalendarPart("caldav-copy-request.ics");
+      CalendarInvitation copy = service.getInvitation(EMAIL_ID, USER);
+      assertTrue(copy.isExoMeeting());
+      assertFalse(copy.isAnswerable());
+      assertEquals(CalendarInvitationService.NOT_ANSWERABLE,
+                   assertThrows(IllegalArgumentException.class,
+                                () -> service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED)).getMessage());
+
+      givenTheCalendarPart("caldav-foreign-request.ics");
+      CalendarInvitation foreign = service.getInvitation(EMAIL_ID, USER);
+      assertFalse(foreign.isExoMeeting());
+      assertNull(foreign.getAgendaUrl());
+      assertTrue(foreign.isAnswerable());
+      verifyNothingSent();
+    }
+  }
+
+  /**
+   * A REPLY, a COUNTER and a DECLINECOUNTER are answers, never answered back.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anAnswerIsNeverAnswered() throws Exception {
+    for (String fixture : List.of("reply-no-name.ics", "counter.ics", "declinecounter.ics")) {
+      givenTheCalendarPart(fixture);
+      CalendarInvitation answer = service.getInvitation(EMAIL_ID, USER);
+      assertFalse(answer.isAnswerable(), fixture);
+      assertEquals(CalendarInvitationService.NOT_ANSWERABLE,
+                   assertThrows(IllegalArgumentException.class,
+                                () -> service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED)).getMessage(),
+                   fixture);
+    }
+    verifyNothingSent();
+  }
+
+  /**
    * Another eXo's event, this deployment's UID with a link elsewhere, and an event with
    * no link are ordinary invitations: never linked to this portal's Agenda, answered by
    * mail as any other.
