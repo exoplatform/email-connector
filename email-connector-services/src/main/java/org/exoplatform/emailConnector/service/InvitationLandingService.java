@@ -35,8 +35,8 @@ import org.exoplatform.services.log.Log;
  * Hands an invitation to the add-on holding the user's calendar (EXO-90848): the
  * {@link InvitationCalendarPlugin} beans of the platform, found by type at the moment
  * of the click, in this WAR's Spring context -- into which the bridge publishes every
- * other WAR's exported beans -- and asked in turn until one holds a calendar for the
- * user.
+ * other WAR's exported beans -- and the first that holds a calendar for the user is
+ * the one asked to land, alone: what it answers, nothing included, is the outcome.
  * <p>
  * Tolerant by construction: no implementer, a context that cannot be listed, or an
  * implementer whose classes cannot be linked all read as "no calendar for this user",
@@ -94,6 +94,11 @@ public class InvitationLandingService {
   public void land(InvitationLanding landing, CalendarInvitation invitation) {
     for (InvitationCalendarPlugin plugin : plugins()) {
       try {
+        if (!plugin.holdsCalendarFor(landing.username())) {
+          continue;
+        }
+        // The one add-on holding the user's calendar: nothing from it means
+        // nothing to do, and no other add-on is asked.
         LandedInvitation landed = plugin.land(landing);
         if (landed != null) {
           LOG.debug("The invitation {} of user {} {} their calendar through {}",
@@ -103,8 +108,11 @@ public class InvitationLandingService {
                     plugin.getClass().getName());
           invitation.setLanding(landed.removed() ? CalendarLanding.REMOVED : CalendarLanding.LANDED);
           invitation.setLandingLink(landed.removed() ? null : landed.link());
-          return;
+          // The click was honoured: the card does not offer it again.
+          invitation.setLandable(invitation.isLandable() && landed.removed());
+          invitation.setRemovable(invitation.isRemovable() && !landed.removed());
         }
+        return;
       } catch (LinkageError e) {
         // The add-on's classes cannot be linked: as if it were not installed.
         LOG.debug("Add-on {} could not be asked to land the invitation of user {}; it is read as holding no calendar",
