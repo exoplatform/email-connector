@@ -928,14 +928,17 @@ public class UserEmailSettingRest {
   @Secured("users")
   @Operation(summary = "Reads the caller's automatic reply from their mail server", method = "GET",
       description = "A live read, as the caller, of the mail server their connector's rules engine manages "
-          + "(email.connector.rulesEngine[.<connectorId>]): what the engine can do (capabilities), the reply the server holds "
+          + "(chosen in the connector administration screen; email.connector.rulesEngine[.<connectorId>] overrides it when "
+          + "set): what the engine can do (capabilities), the reply the server holds "
           + "(vacation, without any copy kept in eXo), and its state -- OWN, ELSEWHERE (another client's active script may send "
           + "its own reply; foreignScriptName names it), MODIFIED (eXo's script changed outside eXo), INACTIVE (the server no "
-          + "longer runs eXo's script) or NONE. On BlueMind the server holds one reply per mailbox, whoever set it: it is "
-          + "answered OWN, its days in timeZone. forwarding says, read-only, whether the mailbox forwards mail: "
-          + "SERVER_FORWARD with its destinations and keepCopy (BlueMind), MAY_FORWARD_BY_SCRIPT naming another client's "
-          + "script that holds a redirect (Sieve; destinations are never read out of it), NONE, or UNKNOWN; manageUrl is the "
-          + "connector's webmail. eXo never writes a forward. forwarding is null, and nothing read, when "
+          + "longer runs eXo's script) or NONE. An engine whose server holds one reply per mailbox, whoever set it, answers "
+          + "that reply OWN, its days in timeZone when the server stores them as instants. forwarding says whether the mailbox "
+          + "forwards mail: SERVER_FORWARD with its destinations and keepCopy (from an engine whose server holds forwards as "
+          + "settings, or for the forward eXo set itself, which managedByExo marks), MAY_FORWARD_BY_SCRIPT naming another "
+          + "client's script that holds a redirect (Sieve; destinations are never read out of it), NONE, or UNKNOWN (the "
+          + "engine cannot read a forward, or the read failed); manageUrl is the connector's webmail. This read writes "
+          + "nothing to the server; PUT /absence/forwarding sets eXo's own forward. forwarding is null, and nothing read, when "
           + "email.connector.forwarding.display.enabled is false or the request says forwarding=false. Own mailbox only: with delegationId the answer is 403.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "403", description = "Asked from someone else's mailbox (emailConnector.absence.ownMailboxOnly), or the connector may not be used"),
@@ -946,7 +949,7 @@ public class UserEmailSettingRest {
                                     @RequestParam(name = "delegationId", required = false)
                                     Long delegationId,
                                     @Parameter(description = "The caller's IANA time zone; the days of a reply the mail server "
-                                        + "stores as instants (BlueMind) are answered in it")
+                                        + "stores as instants are answered in it")
                                     @RequestParam(name = "timeZone", required = false)
                                     String timeZone,
                                     @Parameter(description = "Whether to read the mailbox's forward; false answers forwarding "
@@ -1173,8 +1176,10 @@ public class UserEmailSettingRest {
   @PutMapping("/absence/forwarding")
   @Secured("users")
   @Operation(summary = "Sets the caller's mail forward", method = "PUT",
-      description = "Every mail a copy to one confirmed address, the mail always kept (Sieve redirect :copy, BlueMind "
-          + "localCopy). The destination must be confirmed, or confirmed by the code this request carries, be in an allowed "
+      description = "Every mail a copy to one confirmed address, the mail always kept (a Sieve redirect :copy, or a "
+          + "forward the server holds as a setting with its local copy on). On an engine whose server holds one forward per "
+          + "mailbox, it replaces a forward set elsewhere; removing eXo's forward never removes one eXo did not set. The "
+          + "destination must be confirmed, or confirmed by the code this request carries, be in an allowed "
           + "domain, and forwarding enabled for the connector. Refused when another client's script may forward too. The "
           + "owner is notified and a mail is dropped into the mailbox. Own mailbox only.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Set; the forward as the server holds it"),
