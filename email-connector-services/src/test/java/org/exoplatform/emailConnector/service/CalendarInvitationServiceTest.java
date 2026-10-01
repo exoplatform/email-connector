@@ -338,6 +338,29 @@ class CalendarInvitationServiceTest {
   }
 
   /**
+   * An answer is never read as the reader's own answer: a COUNTER that lists the reader
+   * -- its organiser -- as an accepting attendee, from a sender it does not name, says
+   * nothing of the reader having accepted, and an answer remembered for the event is not
+   * shown on it either.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anAnswerIsNeverTheReadersOwnAnswer() throws Exception {
+    givenTheCalendarPart("counter-organizer-listed.ics");
+    email.setSender(new EmailSender("Alias", "m.alias@acme.com", null, null));
+    lenient().when(settingService.get(any(), any(), anyString()))
+             .thenAnswer(invocation -> SettingValue.create("{\"answer\":\"ACCEPTED\",\"sequence\":9,\"answeredAt\":1}"));
+
+    CalendarInvitation counter = service.getInvitation(EMAIL_ID, USER);
+
+    assertEquals("COUNTER", counter.getMethod());
+    assertNull(counter.getRespondent(), "the sender is not among the attendees");
+    assertNull(counter.getAnswer());
+    assertFalse(counter.isAnswerable());
+  }
+
+  /**
    * A COUNTER listing every attendee is credited to the one who sent the mail, never to
    * whoever is listed first; to nobody when the sender is not among them.
    *
