@@ -113,6 +113,18 @@ class ZipExportVisitor implements RawEmailVisitor {
   }
 
   /**
+   * Nothing: a selection reports each message it could not export through
+   * {@link #missing}, and is never interrupted as a whole.
+   *
+   * @param handed unused
+   * @param count unused
+   */
+  @Override
+  public void interrupted(int handed, int count) {
+    // Never called for a selection.
+  }
+
+  /**
    * Writes the report entry when a message could not be exported, and ends the zip.
    *
    * @throws IllegalStateException never; an output failure here is a download the

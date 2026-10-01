@@ -376,6 +376,23 @@ class EmailImportServiceTest {
   }
 
   /**
+   * A run taken but never started -- the threads shut down under it -- leaves no
+   * directory behind.
+   *
+   * @throws Exception when a mock cannot be stubbed
+   */
+  @Test
+  void aRunNotStartedLeavesNoDirectory() throws Exception {
+    doThrow(new java.util.concurrent.RejectedExecutionException("shut down")).when(service).scheduleRun(any(Runnable.class));
+    upload("u1", "one.eml", MAIL_NEW.getBytes(StandardCharsets.US_ASCII));
+    long before = importDirs();
+
+    assertThrows(java.util.concurrent.RejectedExecutionException.class, () -> service.startImport(USER, FOLDER, List.of("u1")));
+
+    assertEquals(before, importDirs());
+  }
+
+  /**
    * A mail server that refuses mail after mail stops the run after a few in a row, each
    * counted as refused by the server.
    *
