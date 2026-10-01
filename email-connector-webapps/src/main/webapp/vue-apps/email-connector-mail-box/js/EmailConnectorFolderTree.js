@@ -36,7 +36,7 @@ const COLLAPSED_STORAGE_KEY = 'emailConnector.folders.collapsed';
  * nearest one that is, or sits at the top with its whole path as its name.
  *
  * @param {Array} folders the folders as the server lists them ({key, type, path, delimiter, displayName, ...})
- * @returns {Array} the rows, {folder, depth, parentKey, ancestorKeys, hasChildren, showPath}
+ * @returns {Array} the rows, {folder, depth, parentKey, ancestorKeys, hasChildren, showPath, pathLabel}
  */
 export function buildFolderTree(folders) {
   const list = (folders || []).filter(folder => !!folder);
@@ -62,6 +62,7 @@ export function buildFolderTree(folders) {
     ancestorKeys: [],
     hasChildren: false,
     showPath: false,
+    pathLabel: '',
   }));
   appendRows(rows, roots, children, 0, []);
   return rows;
@@ -180,9 +181,10 @@ function nearestAncestor(folder, byPath) {
  */
 function appendRows(rows, level, children, depth, ancestorKeys) {
   level.slice()
-    .sort((first, second) => sortName(first).localeCompare(sortName(second), [], { sensitivity: 'base', numeric: true }))
+    .sort((first, second) => sortName(first, depth).localeCompare(sortName(second, depth), [], { sensitivity: 'base', numeric: true }))
     .forEach(folder => {
       const inside = children.get(folder.key) || [];
+      const segments = ownSegments(folder);
       rows.push({
         folder,
         depth,
@@ -191,18 +193,42 @@ function appendRows(rows, level, children, depth, ancestorKeys) {
         hasChildren: inside.length > 0,
         // A folder at the top whose full name is deeper than one level hangs from a
         // folder the list does not show: its path says where it lives.
-        showPath: depth === 0 && !!folder.delimiter && folder.path.includes(folder.delimiter),
+        showPath: depth === 0 && segments.length > 1,
+        pathLabel: segments.join(' / '),
       });
       appendRows(rows, inside, children, depth + 1, ancestorKeys.concat(folder.key));
     });
 }
 
 /**
- * What siblings are sorted by: the name shown, else the full name.
+ * A folder's full name, segment by segment, without a leading INBOX: on a mail server
+ * whose personal folders all live under the inbox ("INBOX.Customers" on Courier, Cyrus
+ * without the alternate namespace), that prefix is where every folder lives, and saying
+ * it would put "INBOX / " before every name.
  *
  * @param {Object} folder the folder
+ * @returns {Array} the segments, at least one
+ */
+function ownSegments(folder) {
+  if (!folder.delimiter) {
+    return [folder.path];
+  }
+  const segments = folder.path.split(folder.delimiter);
+  return segments.length > 1 && segments[0].toUpperCase() === 'INBOX' ? segments.slice(1) : segments;
+}
+
+/**
+ * What siblings are sorted by: the name shown -- the path of a folder at the top that
+ * hangs from a folder not listed, else its own name, else its full name.
+ *
+ * @param {Object} folder the folder
+ * @param {Number} depth the folder's depth
  * @returns {String} the name
  */
-function sortName(folder) {
+function sortName(folder, depth) {
+  const segments = ownSegments(folder);
+  if (depth === 0 && segments.length > 1) {
+    return segments.join(' / ');
+  }
   return folder.displayName || folder.path || '';
 }

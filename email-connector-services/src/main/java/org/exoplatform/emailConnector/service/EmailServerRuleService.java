@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.service;
 
 import java.time.Clock;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -427,6 +428,93 @@ public class EmailServerRuleService {
                  report.removed());
       }
       return report;
+    }
+  }
+
+  /**
+   * After the user renamed or moved one of their folders from eXo (EXO-90839): every
+   * server rule eXo manages that files into it, or into a folder inside it, is written
+   * again with the folder's new full name. A rule names its target by the folder's eXo
+   * key, which a rename keeps, and by its full name, which is what the server's script
+   * runs ({@code fileinto}) and which the rename changed; without this the server would
+   * file into a folder that no longer exists.
+   * <p>
+   * Best effort, on the owner's own action: the rename has happened, and nothing here
+   * undoes it or fails it. Only a script eXo can read as its own, unchanged since eXo
+   * wrote it, is written -- a script edited outside eXo is the user's to re-publish, as
+   * any other write would ask. Nothing is asked of the server when the user never let
+   * eXo manage rules there. A rule that can no longer be resolved (a folder no longer
+   * mirrored) is left as it is.
+   *
+   * @param username the owner, who renamed or moved the folders
+   * @param folderKeys the eXo keys of the folders whose full names changed
+   */
+  public void followRelocatedFolders(String username, Collection<String> folderKeys) {
+    if (StringUtils.isBlank(username) || folderKeys == null || folderKeys.isEmpty() || !hasConsented(username)) {
+      return;
+    }
+    try {
+      ServerRuleEngine engine = engineOf(username, null);
+      try (MailboxAclSession session = emailDelegationService.openOwnSession(username)) {
+        ServerRuleSet read = compared(engine.listRules(session), storedHash(username));
+        if (read.state() != ServerRulesState.OWN && read.state() != ServerRulesState.INACTIVE) {
+          LOG.info("The server rules of user {} are not eXo's as written; their folders were left as they are", username);
+          return;
+        }
+        for (ServerRule rule : read.rules()) {
+          if (filesInto(rule, folderKeys)) {
+            rewriteFolders(username, engine, session, rule);
+          }
+        }
+      }
+    } catch (ObjectNotFoundException e) {
+      LOG.debug("No server rules to follow the folders of user {}: {}", username, e.getMessage());
+    } catch (Exception e) {
+      LOG.warn("The server rules of user {} could not follow their renamed folders", username, e);
+    }
+  }
+
+  /**
+   * Whether a rule files mail into one of the given folders.
+   *
+   * @param rule the rule as the server holds it
+   * @param folderKeys the folders' eXo keys
+   * @return true when one of its moves targets one of them
+   */
+  private static boolean filesInto(ServerRule rule, Collection<String> folderKeys) {
+    return rule.actions() != null
+        && rule.actions()
+               .stream()
+               .anyMatch(action -> action != null && ServerRule.MOVE_TO_FOLDER.equalsIgnoreCase(action.type())
+                   && folderKeys.contains(action.folderKey()));
+  }
+
+  /**
+   * One rule written again with its folders resolved anew, as a save would resolve them
+   * -- see {@link #followRelocatedFolders}. A rule that cannot be resolved or written is
+   * left as it is.
+   *
+   * @param username the owner
+   * @param engine the owner's engine
+   * @param session the owner's session
+   * @param rule the rule as the server holds it
+   */
+  private void rewriteFolders(String username, ServerRuleEngine engine, MailboxAclSession session, ServerRule rule) {
+    try {
+      ServerRule resolved = new ServerRule(rule.ref(),
+                                           rule.name(),
+                                           rule.enabled(),
+                                           rule.matchAll(),
+                                           rule.conditions(),
+                                           resolveActions(username, rule.actions()),
+                                           rule.stop()).validated();
+      if (resolved.enabled()) {
+        emailForwardingService.requireRuleForwardsAllowed(username, resolved.actions());
+      }
+      recordWrite(username, engine.saveRule(session, resolved, storedHash(username)));
+      LOG.info("Server rule '{}' of user {} follows its renamed folder", rule.ref(), username);
+    } catch (Exception e) {
+      LOG.info("Server rule '{}' of user {} could not follow its renamed folder", rule.ref(), username, e);
     }
   }
 
