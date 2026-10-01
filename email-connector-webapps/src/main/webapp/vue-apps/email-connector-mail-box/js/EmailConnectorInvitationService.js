@@ -136,7 +136,7 @@ export function invitationReplyOutcome(error, answer) {
 export function formatInvitationWhen(invitation) {
   const lang = (window.eXo?.env?.portal?.language || 'en').replace('_', '-');
   if (invitation?.allDay) {
-    const options = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' };
+    const options = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' };
     const start = localDay(invitation.startDate);
     const end = localDay(invitation.endDate) || start;
     return start ? formatRange(new Intl.DateTimeFormat(lang, options), start, end) : '';
@@ -145,7 +145,7 @@ export function formatInvitationWhen(invitation) {
     // The same wall-clock time wherever it is read: no zone to convert from or to name.
     const start = localDateTime(invitation.startLocal);
     const end = localDateTime(invitation.endLocal) || start;
-    const options = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' };
+    const options = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' };
     return start ? formatRange(new Intl.DateTimeFormat(lang, options), start, end) : '';
   }
   if (!invitation?.start) {
@@ -174,50 +174,52 @@ export function formatInvitationRecurrence(invitation, t) {
     return t('emailConnector.mailBox.invitation.recurring');
   }
   const lang = (window.eXo?.env?.portal?.language || 'en').replace('_', '-');
-  const parts = [rule.interval > 1
+  // The count and the end carry their own separator (", 10 times"): appended as they are.
+  let words = rule.interval > 1
     ? t(`emailConnector.mailBox.invitation.recurrence.everyN.${rule.frequency}`, { 0: rule.interval })
-    : t(`emailConnector.mailBox.invitation.recurrence.every.${rule.frequency}`)];
+    : t(`emailConnector.mailBox.invitation.recurrence.every.${rule.frequency}`);
   if (rule.days?.length) {
     const weekday = new Intl.DateTimeFormat(lang, { weekday: 'long' });
     const names = rule.days.filter(day => WEEKDAYS.includes(day)).map(day => weekday.format(new Date(2024, 0, 1 + WEEKDAYS.indexOf(day))));
-    parts.push(t('emailConnector.mailBox.invitation.recurrence.onDays', { 0: names.join(', ') }));
+    words += ` ${t('emailConnector.mailBox.invitation.recurrence.onDays', { 0: names.join(', ') })}`;
   }
   if (rule.monthDays?.length) {
-    parts.push(t('emailConnector.mailBox.invitation.recurrence.onMonthDays', { 0: rule.monthDays.join(', ') }));
+    words += ` ${t('emailConnector.mailBox.invitation.recurrence.onMonthDays', { 0: rule.monthDays.join(', ') })}`;
   }
   if (rule.count) {
-    parts.push(t('emailConnector.mailBox.invitation.recurrence.count', { 0: rule.count }));
+    words += t('emailConnector.mailBox.invitation.recurrence.count', { 0: rule.count });
   }
   if (rule.until) {
     const day = localDay(rule.until);
-    parts.push(t('emailConnector.mailBox.invitation.recurrence.until', {
-      0: day ? new Intl.DateTimeFormat(lang, { day: 'numeric', month: 'short', year: 'numeric' }).format(day) : rule.until,
-    }));
+    words += t('emailConnector.mailBox.invitation.recurrence.until', {
+      0: day ? new Intl.DateTimeFormat(lang, { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(day) : rule.until,
+    });
   }
-  return parts.join(' ');
+  return words;
 }
 
 /**
- * A day of the calendar as a local date at midnight, so it is shown as that very day in
- * every zone.
+ * A day of the calendar as midnight UTC, to be formatted in UTC: that very day whatever
+ * the viewer's zone, and never moved by a daylight-saving change.
  *
  * @param {String} isoDate YYYY-MM-DD
  * @returns {Date|null} the day, null when there is none
  */
 function localDay(isoDate) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate || '');
-  return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : null;
+  return match ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))) : null;
 }
 
 /**
- * A wall-clock date-time as a local date, so it is shown as that very time in every zone.
+ * A wall-clock date-time as that time in UTC, to be formatted in UTC: shown as written in
+ * every zone, even at an hour the viewer's daylight-saving change skips.
  *
  * @param {String} isoDateTime YYYY-MM-DDTHH:mm[:ss]
  * @returns {Date|null} the time, null when there is none
  */
 function localDateTime(isoDateTime) {
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(isoDateTime || '');
-  return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), Number(match[6] || 0)) : null;
+  return match ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), Number(match[6] || 0))) : null;
 }
 
 /**
