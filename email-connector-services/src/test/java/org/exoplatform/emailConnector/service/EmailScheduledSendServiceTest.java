@@ -872,6 +872,34 @@ public class EmailScheduledSendServiceTest {
   }
 
   /**
+   * A failure to start the wait once the draft is frozen is answered as a failure, and
+   * so the mail is taken back while it still waits: never "the send failed" about a mail
+   * that then goes out on its own.
+   *
+   * @throws Exception never
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void aWaitThatCannotStartTakesTheMailBackAndFails() throws Exception {
+    storeUndoDelay(10);
+    Email saved = draft();
+    saved.setId(9L);
+    when(emailBoxService.scheduleDraft(any(Email.class), eq(USER), any())).thenAnswer(invocation -> {
+      Function<Email, EmailScheduledSend> scheduler = invocation.getArgument(2);
+      return scheduler.apply(saved);
+    });
+    when(storage.create(any(EmailScheduledSend.class))).thenAnswer(invocation -> {
+      EmailScheduledSend row = invocation.getArgument(0);
+      row.setId(41L);
+      return row;
+    });
+    when(storage.startHeldWait(eq(41L), any(Date.class), any(Date.class))).thenThrow(new IllegalStateException("database"));
+    assertThrows(IllegalStateException.class, () -> service.sendUndoable(draft(), USER));
+    verify(storage).deleteWaiting(41L);
+    verifyNoInteractions(heldTimer);
+  }
+
+  /**
    * The timer sends a held mail whose wait is over through the dispatcher's claim, from
    * HELD, on this node, and the run records it sent under that claim.
    *
