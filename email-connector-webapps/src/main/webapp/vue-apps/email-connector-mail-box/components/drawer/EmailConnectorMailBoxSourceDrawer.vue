@@ -132,7 +132,7 @@ export default {
      */
     truncatedMessage() {
       return this.$t('emailConnector.mailBox.source.drawer.truncated', {
-        0: this.formatSize(this.source?.source?.length || 0),
+        0: this.formatSize(this.source?.shownBytes || 0),
         1: this.formatSize(this.source?.size || 0),
       });
     },
