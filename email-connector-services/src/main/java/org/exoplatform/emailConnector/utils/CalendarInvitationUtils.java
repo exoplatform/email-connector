@@ -25,8 +25,12 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -107,6 +111,9 @@ public final class CalendarInvitationUtils {
 
   /** An iCalendar DATE value, the date part of a DATE-TIME. */
   private static final DateTimeFormatter ICAL_DATE  = DateTimeFormatter.ofPattern("yyyyMMdd", Locale.ROOT);
+
+  /** An iCalendar floating DATE-TIME value. */
+  private static final DateTimeFormatter ICAL_LOCAL_DATE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss", Locale.ROOT);
 
   /** The length of {@link #ICAL_DATE}'s values. */
   private static final int           ICAL_DATE_LENGTH = 8;
@@ -220,7 +227,8 @@ public final class CalendarInvitationUtils {
     Property rrule = event.getProperty(Property.RRULE);
     invitation.setRecurring(rrule != null || event.getProperty(Property.RDATE) != null);
     if (rrule instanceof RRule rule) {
-      invitation.setRecurrence(describeRule(rule.getRecur()));
+      DateProperty start = event.getStartDate();
+      invitation.setRecurrence(describeRule(rule.getRecur(), start == null ? null : start.getTimeZone()));
     }
     Property organizer = event.getProperty(Property.ORGANIZER);
     if (organizer != null) {
@@ -370,6 +378,16 @@ public final class CalendarInvitationUtils {
     }
     DtEnd end = event.getEndDate(true);
     Date startDate = start.getDate();
+    if (startDate instanceof DateTime && start.getTimeZone() == null && !start.isUtc()) {
+      // A floating time (RFC 5545 §3.3.5) is the same wall-clock time wherever the reader
+      // is: handed over as such, never read as an instant in this server's zone.
+      invitation.setFloating(true);
+      invitation.setStartLocal(localDateTime(start.getValue()));
+      if (end != null && end.getDate() instanceof DateTime) {
+        invitation.setEndLocal(localDateTime(end.getValue()));
+      }
+      return;
+    }
     if (startDate instanceof DateTime) {
       invitation.setStart(startDate.getTime());
       if (end != null && end.getDate() != null) {
@@ -394,12 +412,28 @@ public final class CalendarInvitationUtils {
   }
 
   /**
+   * A floating DATE-TIME value as an ISO local date-time.
+   *
+   * @param value the value as written, {@code yyyyMMdd'T'HHmmss}
+   * @return the ISO form, or null when it is not one
+   */
+  private static String localDateTime(String value) {
+    try {
+      return LocalDateTime.parse(StringUtils.trimToEmpty(value), ICAL_LOCAL_DATE_TIME).toString();
+    } catch (DateTimeParseException e) {
+      return null;
+    }
+  }
+
+  /**
    * A recurrence rule in the parts the reader can say, or null when it has any other.
    *
    * @param recur the rule
+   * @param zone the time zone of the event's start, which its last day is said in; null
+   *          for a floating or all-day start
    * @return the rule's description, or null
    */
-  static CalendarInvitationRecurrence describeRule(Recur recur) {
+  static CalendarInvitationRecurrence describeRule(Recur recur, java.util.TimeZone zone) {
     if (recur == null || recur.getFrequency() == null) {
       return null;
     }
@@ -427,12 +461,29 @@ public final class CalendarInvitationUtils {
     recurrence.setInterval(Math.max(1, recur.getInterval()));
     recurrence.setCount(recur.getCount() > 0 ? recur.getCount() : null);
     if (recur.getUntil() != null) {
-      String until = recur.getUntil().toString();
-      recurrence.setUntil(LocalDate.parse(until.substring(0, Math.min(ICAL_DATE_LENGTH, until.length())), ICAL_DATE).toString());
+      recurrence.setUntil(lastDay(recur.getUntil(), zone).toString());
     }
     recurrence.setDays(days);
     recurrence.setMonthDays(new ArrayList<>(recur.getMonthDayList()));
     return recurrence;
+  }
+
+  /**
+   * The last day a rule may occur on. An UNTIL in UTC -- what RFC 5545 requires when the
+   * start has a time zone -- is that instant's day in the start's zone: 04:59:59Z is still
+   * the evening before in New York. A DATE, or a floating UNTIL, is the day it names.
+   *
+   * @param until the rule's UNTIL
+   * @param zone the start's time zone, null when it has none
+   * @return the day
+   */
+  private static LocalDate lastDay(Date until, java.util.TimeZone zone) {
+    if (until instanceof DateTime dateTime && dateTime.isUtc() && zone != null) {
+      long instant = dateTime.getTime();
+      return Instant.ofEpochMilli(instant + zone.getOffset(instant)).atZone(ZoneOffset.UTC).toLocalDate();
+    }
+    String value = until.toString();
+    return LocalDate.parse(value.substring(0, Math.min(ICAL_DATE_LENGTH, value.length())), ICAL_DATE);
   }
 
   /**
