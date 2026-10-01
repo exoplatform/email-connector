@@ -252,21 +252,23 @@ export default {
     },
     /**
      * Follows a folder switch: the running search moves to the folder chosen, as the
-     * search box's does, so the advanced search's folder is dropped. A search that only
+     * search box's does, so the advanced search's folder is dropped and the page address
+     * names the new folder. A search that only
      * stood for that other folder's unread or starred mail then ends -- the folder's list,
      * with its chips, shows the same thing -- and the page address follows.
      *
      * @returns {void}
      */
     followFolderSwitch() {
-      if (!this.searchCriteria.folder) {
-        return;
+      if (this.searchCriteria.folder) {
+        this.searchCriteria = { ...this.searchCriteria, folder: null };
       }
-      this.searchCriteria = { ...this.searchCriteria, folder: null };
-      if (!this.searchTerm && !this.advancedSearchActive) {
-        this.clearSearch();
-      } else {
+      if (this.searchActive) {
         this.syncSearchUrl();
+      } else {
+        // No search, or one that only stood for the other folder's unread or starred
+        // mail: ended, the page address with it.
+        this.clearSearch();
       }
     },
     /**
