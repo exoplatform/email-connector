@@ -517,8 +517,10 @@ class EmailBoxMailTransferTest {
   }
 
   /**
-   * A whole-folder export the server fails once begun is interrupted, never ended as a
-   * complete-looking file; one whose reader left ends quietly.
+   * A whole-folder export the server fails once begun is told so, with how far it got,
+   * for the file to say it is incomplete -- never ended as a complete-looking file, and
+   * never thrown out of a request whose answer is committed; one whose reader left ends
+   * quietly.
    *
    * @throws Exception when a mock cannot be stubbed
    */
@@ -535,9 +537,8 @@ class EmailBoxMailTransferTest {
     when(inbox.getMessagesByUID(new long[] { 7L })).thenThrow(new javax.mail.StoreClosedException(store, "dropped"));
     RecordingVisitor visitor = new RecordingVisitor();
 
-    assertThrows(org.exoplatform.emailConnector.exception.ExportInterruptedException.class,
-                 () -> emailBoxService.readFolderRawEmails(OWNER, MailFolder.INBOX, 10, visitor));
-    assertEquals(List.of("begin:1"), visitor.events);
+    assertTrue(emailBoxService.readFolderRawEmails(OWNER, MailFolder.INBOX, 10, visitor));
+    assertEquals(List.of("begin:1", "interrupted:0/1"), visitor.events);
 
     doReturn(new javax.mail.Message[] { a }).when(inbox).getMessagesByUID(new long[] { 7L });
     RawEmailVisitor gone = new RecordingVisitor() {
@@ -554,6 +555,51 @@ class EmailBoxMailTransferTest {
       }
     };
     assertTrue(emailBoxService.readFolderRawEmails(OWNER, MailFolder.INBOX, 10, gone));
+  }
+
+  /**
+   * A folder larger than one window is read window by window -- each window its own
+   * opening of the folder -- every message once, in order.
+   *
+   * @throws Exception when a mock cannot be stubbed
+   */
+  @Test
+  void aLargeFolderIsReadWindowByWindow() throws Exception {
+    connected(OWNER);
+    Store store = connectedStore(OWNER);
+    IMAPFolder inbox = uidFolder();
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.getMessageCount()).thenReturn(501);
+    IMAPMessage[] messages = new IMAPMessage[501];
+    for (int i = 0; i < messages.length; i++) {
+      messages[i] = mock(IMAPMessage.class);
+      when(inbox.getUID(messages[i])).thenReturn(i + 1L);
+    }
+    when(inbox.getMessages()).thenReturn(messages);
+    when(inbox.getMessagesByUID(any())).thenAnswer(invocation -> {
+      long[] uids = invocation.getArgument(0);
+      return java.util.Arrays.stream(uids).mapToObj(uid -> messages[(int) uid - 1]).toArray(javax.mail.Message[]::new);
+    });
+    List<IMAPMessage> handed = new ArrayList<>();
+    RecordingVisitor visitor = new RecordingVisitor() {
+      /**
+       * Keeps the message handed over.
+       *
+       * @param cached unused
+       * @param message the message
+       */
+      @Override
+      public void message(Email cached, MimeMessage message) {
+        handed.add((IMAPMessage) message);
+      }
+    };
+
+    assertTrue(emailBoxService.readFolderRawEmails(OWNER, MailFolder.INBOX, 1000, visitor));
+
+    assertEquals(List.of(messages), handed);
+    verify(inbox, times(3)).open(Folder.READ_ONLY);
+    verify(inbox).getMessagesByUID(org.mockito.ArgumentMatchers.argThat((long[] uids) -> uids.length == 500 && uids[0] == 1L));
+    verify(inbox).getMessagesByUID(new long[] { 501L });
   }
 
   /**
@@ -618,6 +664,17 @@ class EmailBoxMailTransferTest {
     @Override
     public void message(Email cached, MimeMessage message) throws java.io.IOException {
       events.add(cached == null ? "folder-message" : "message:" + cached.getSubject());
+    }
+
+    /**
+     * Records an interruption, with how far the export got.
+     *
+     * @param handed how many messages were handed over
+     * @param count how many the export was to hold
+     */
+    @Override
+    public void interrupted(int handed, int count) {
+      events.add("interrupted:" + handed + "/" + count);
     }
 
     /**
