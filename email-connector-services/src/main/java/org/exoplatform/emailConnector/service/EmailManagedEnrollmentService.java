@@ -39,7 +39,9 @@ import jakarta.annotation.PreDestroy;
 
 /**
  * Enrols a user on the mail connector managed mode designated, when they log in
- * (EXO-89653): the login-time attachment the board describes.
+ * and again each time the platform registers their session anew, about every
+ * hour while they stay logged in ({@link
+ * org.exoplatform.emailConnector.listener.EmailManagedLoginListener}, EXO-89653).
  * <p>
  * Three rules, in the order the board states them and with one reordering that
  * changes no outcome: the user already has a mail configuration - whatever connector
@@ -50,14 +52,15 @@ import jakarta.annotation.PreDestroy;
  * pays one setting read per login and never opens the user's own settings.
  * <p>
  * Having no configuration and having removed one are the same case: a user who
- * disconnects is attached again at their next login, and disconnecting stays useful
- * because whoever connects elsewhere has a configuration, which rule one leaves
- * alone. Nothing is stored about the outcome.
+ * disconnects is attached again within the hour, or at their next login, and
+ * disconnecting stays useful because whoever connects elsewhere has a
+ * configuration, which rule one leaves alone. Nothing is stored about the
+ * outcome.
  * <p>
  * The attachment is the one-click connect of EXO-90358: the mailbox is opened with
  * the material the provider produces and the connection is recorded only if that
  * passed, which also schedules the first synchronisation. A user the designated
- * server does not know is left unattached, and tried again at their next login.
+ * server does not know is left unattached, and tried again at the same pace.
  * <p>
  * <b>In the background.</b> The login never waits for the mail server: the listener
  * hands the user to a small bounded executor of this service and returns. A full
