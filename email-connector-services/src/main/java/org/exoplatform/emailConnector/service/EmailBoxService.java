@@ -152,6 +152,7 @@ import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
 import org.exoplatform.emailConnector.exception.SendModeMissingException;
 import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
+import org.exoplatform.emailConnector.event.CustomFoldersRelocatedEvent;
 import org.exoplatform.emailConnector.event.MailboxResetEvent;
 import org.exoplatform.emailConnector.event.NewInboxMailEvent;
 import org.exoplatform.emailConnector.entity.EmailThreadAiSummaryEntity;
@@ -5301,6 +5302,7 @@ public class EmailBoxService {
       String delimiter = parent == null ? defaultNamespaceDelimiter(defaultFolder) : parent.getDelimiter();
       emailFolderService.checkNotNested(trimmedName, delimiter);
       String remoteName = parent == null ? trimmedName : parent.getRemoteName() + delimiter + trimmedName;
+      emailFolderService.checkFullNameFits(username, null, remoteName);
       emailFolderService.checkNameAvailable(username, remoteName, null);
       Folder toCreate = parent == null ? defaultFolder.getFolder(trimmedName) : store.getFolder(remoteName);
       if (toCreate.exists()) {
@@ -5402,6 +5404,9 @@ public class EmailBoxService {
     String name = newName == null ? EmailFolderService.ownName(customFolder) : emailFolderService.validateFolderName(newName);
     String newRemoteName;
     if (parentId == null) {
+      // At the top level its own name is checked as a typed one would be: a folder kept
+      // as "Projects/Archive" must not become the mailbox's Archive by a move.
+      emailFolderService.validateFolderName(name);
       emailFolderService.checkNotNested(name, customFolder.getDelimiter());
       newRemoteName = name;
     } else {
@@ -5428,7 +5433,8 @@ public class EmailBoxService {
    * module) -- exactly where it was. The server takes the folders inside it along, and
    * so does the registry ({@link EmailFolderService#relocateFolder}). A folder the
    * owner shares one by one follows its new name for its delegates, the folders inside
-   * it with it ({@link EmailDelegationService#ownerFolderChanged}).
+   * it with it ({@link EmailDelegationService#ownerFolderChanged}), and so do the server
+   * rules that file into them ({@link CustomFoldersRelocatedEvent}).
    *
    * @param username the mailbox owner
    * @param userEmailSetting the owner's connector binding
@@ -5450,6 +5456,7 @@ public class EmailBoxService {
       // server for it.
       return customFolderView(customFolder, emailBoxStorage.getFolderMessageCounts(username));
     }
+    emailFolderService.checkFullNameFits(username, customFolder, newRemoteName);
     emailFolderService.checkNameAvailable(username, newRemoteName, customFolder.getId());
     Store store = null;
     try {
@@ -5474,9 +5481,14 @@ public class EmailBoxService {
     } finally {
       closeQuietly(null, store, username);
     }
+    List<String> relocatedKeys = new ArrayList<>();
+    relocatedKeys.add(customFolder.getKey());
+    emailFolderService.getOwnDescendants(username, customFolder).forEach(descendant -> relocatedKeys.add(descendant.getKey()));
     EmailFolder renamed = emailFolderService.relocateFolder(username, customFolder, newRemoteName, newDisplayName);
     // A folder shared one by one follows its new name for its delegates (EXO-90556).
     emailDelegationService.ownerFolderChanged(username, customFolder.getRemoteName(), newRemoteName);
+    // And so do the server rules that file into it or into a folder inside it.
+    eventPublisher.publishEvent(new CustomFoldersRelocatedEvent(username, relocatedKeys));
     return customFolderView(renamed, emailBoxStorage.getFolderMessageCounts(username));
   }
 
@@ -5542,6 +5554,12 @@ public class EmailBoxService {
         if (imapFolder.getMessageCount() != 0) {
           throw new IllegalArgumentException(EmailFolderService.FOLDER_NOT_EMPTY_MESSAGE);
         }
+        Set<String> builtInNames = builtInFolderNames(loadMailboxSyncState(username));
+        for (Folder subFolder : subFolders) {
+          if (builtInNames.contains(subFolder.getFullName())) {
+            throw new IllegalArgumentException(EmailFolderService.FOLDER_SUB_FOLDER_BUILT_IN_MESSAGE);
+          }
+        }
         for (Folder subFolder : subFolders) {
           if ((subFolder.getType() & Folder.HOLDS_MESSAGES) != 0 && subFolder.getMessageCount() != 0) {
             throw new IllegalArgumentException(EmailFolderService.FOLDER_SUB_FOLDER_NOT_EMPTY_MESSAGE);
@@ -5599,7 +5617,28 @@ public class EmailBoxService {
   }
 
   /**
-   * One non-recursive {@code DELETE}, its refusal translated.
+   * The full names of the folders the mailbox uses as its built-ins, as the last walk
+   * remembered them.
+   *
+   * @param syncState the mailbox's sync memory
+   * @return the names, possibly empty
+   */
+  private static Set<String> builtInFolderNames(MailboxSyncState syncState) {
+    Set<String> names = new HashSet<>();
+    for (String name : new String[] { syncState.getSentFolderName(), syncState.getArchiveFolderName(),
+        syncState.getDraftsFolderName(), syncState.getTrashFolderName(), syncState.getJunkFolderName() }) {
+      if (StringUtils.isNotBlank(name)) {
+        names.add(name);
+      }
+    }
+    return names;
+  }
+
+  /**
+   * One non-recursive {@code DELETE}, its refusal translated. A folder the server no
+   * longer has once the {@code DELETE} is refused counts as deleted: a container the
+   * server lists only while something is inside it ({@code \Noselect}) goes by itself
+   * with the last folder inside it, and its own {@code DELETE} then answers NO.
    *
    * @param folder the folder to delete
    * @throws MessagingException if the server cannot be asked
@@ -5610,7 +5649,7 @@ public class EmailBoxService {
     if (folder.isOpen()) {
       folder.close(false);
     }
-    if (!folder.delete(false)) {
+    if (!folder.delete(false) && folder.exists()) {
       throw new IllegalArgumentException(EmailFolderService.FOLDER_DELETE_FAILED_MESSAGE);
     }
   }
