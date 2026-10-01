@@ -18,6 +18,8 @@ package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -52,9 +54,11 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailFolder;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.RawEmailRef;
@@ -242,6 +246,7 @@ class EmailBoxMailTransferTest {
     assertThrows(IllegalAccessException.class,
                  () -> emailBoxService.readFolderRawEmails(OWNER, MailFolder.INBOX, 10, new RecordingVisitor()));
     assertThrows(IllegalAccessException.class, () -> emailBoxService.countFolderRawEmails(OWNER, MailFolder.INBOX));
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.checkImportTarget(OWNER, MailFolder.INBOX));
     verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
@@ -372,6 +377,97 @@ class EmailBoxMailTransferTest {
     assertTrue(emailBoxService.readFolderRawEmails(DELEGATE, "CUSTOM:12", 10, visitor));
     assertEquals(List.of("begin:1", "folder-message"), visitor.events);
     verify(emailDelegationService).checkRight(DELEGATE, "CUSTOM:12", MailboxRights.READ);
+  }
+
+  /**
+   * Mail is never imported into Drafts, Trash, Spam, the Scheduled view or All Mail, nor
+   * into a shared mailbox's folder of those roles.
+   *
+   * @throws Exception when a mock cannot be stubbed
+   */
+  @Test
+  void mailIsNotImportedIntoFoldersOfThoseRoles() throws Exception {
+    connected(OWNER);
+    for (String key : List.of(MailFolder.DRAFTS, MailFolder.TRASH, MailFolder.JUNK, MailFolder.SCHEDULED, MailFolder.ALL_MAIL)) {
+      IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                      () -> emailBoxService.checkImportTarget(OWNER, key));
+      assertEquals(EmailBoxService.IMPORT_FOLDER_REFUSED, refused.getMessage());
+    }
+    connected(DELEGATE);
+    when(emailDelegationService.roleOf(DELEGATE, "CUSTOM:13")).thenReturn(FolderRole.TRASH);
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.checkImportTarget(DELEGATE, "CUSTOM:13"));
+    emailBoxService.checkImportTarget(OWNER, MailFolder.INBOX);
+    emailBoxService.checkImportTarget(OWNER, "CUSTOM:3");
+  }
+
+  /**
+   * A delegate without the insert right on a shared folder cannot import into it: the
+   * refusal names the missing right, and the mail server is never contacted.
+   *
+   * @throws Exception when a mock cannot be stubbed
+   */
+  @Test
+  void aDelegateWithoutTheInsertRightCannotImport() throws Exception {
+    connected(DELEGATE);
+    doThrow(new MailboxRightMissingException(MailboxRights.INSERT)).when(emailDelegationService)
+                                                                  .checkRight(DELEGATE, "CUSTOM:12", MailboxRights.INSERT);
+
+    assertThrows(MailboxRightMissingException.class, () -> emailBoxService.checkImportTarget(DELEGATE, "CUSTOM:12"));
+    assertThrows(MailboxRightMissingException.class, () -> emailBoxService.openImportTarget(DELEGATE, "CUSTOM:12"));
+    doThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED)).when(emailDelegationService)
+                                                                              .checkRight(DELEGATE, "CUSTOM:14", MailboxRights.INSERT);
+    assertThrows(DelegationRevokedException.class, () -> emailBoxService.openImportTarget(DELEGATE, "CUSTOM:14"));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * Opening an import target reads the Message-IDs the folder holds, so a mail already
+   * there is recognised -- by the class's one rule of identity -- and an appended one is
+   * learnt; closing it closes the connection.
+   *
+   * @throws Exception when a mock cannot be stubbed
+   */
+  @Test
+  void anImportTargetKnowsTheFoldersMessageIds() throws Exception {
+    connected(OWNER);
+    Store store = connectedStore(OWNER);
+    IMAPFolder inbox = uidFolder();
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.getMessageCount()).thenReturn(1);
+    IMAPMessage existing = mock(IMAPMessage.class);
+    when(existing.getHeader("Message-ID")).thenReturn(new String[] { "<old@EXAMPLE.com>" });
+    when(inbox.getMessages(1, 1)).thenReturn(new javax.mail.Message[] { existing });
+    when(inbox.isOpen()).thenReturn(false);
+
+    MailImportTarget target = emailBoxService.openImportTarget(OWNER, MailFolder.INBOX);
+
+    assertNotNull(target);
+    assertTrue(target.contains("<old@example.com>"));
+    assertTrue(target.contains("old@example.com"));
+    assertFalse(target.contains("<new@example.com>"));
+    javax.mail.internet.MimeMessage added = new javax.mail.internet.MimeMessage(javax.mail.Session.getInstance(new java.util.Properties()),
+                                                                               new java.io.ByteArrayInputStream(("Message-ID: <new@example.com>\r\nFrom: a@b\r\nDate: Mon, 1 Jan 2024 10:00:00 +0000\r\n\r\nx").getBytes(StandardCharsets.US_ASCII)));
+    target.append(added);
+    assertTrue(target.contains("<new@example.com>"));
+    assertEquals(1, target.getAppended());
+    verify(inbox).appendMessages(new javax.mail.Message[] { added });
+    target.close();
+    target.close();
+    verify(store).close();
+  }
+
+  /**
+   * An import into a folder the caller's registry does not know opens nothing.
+   *
+   * @throws Exception when a mock cannot be stubbed
+   */
+  @Test
+  void anImportIntoAnUnknownFolderOpensNothing() throws Exception {
+    connected(OWNER);
+    Store store = connectedStore(OWNER);
+
+    assertNull(emailBoxService.openImportTarget(OWNER, "CUSTOM:404"));
+    verify(store).close();
   }
 
   /**
