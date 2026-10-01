@@ -15392,12 +15392,23 @@ public class EmailBoxServiceTest {
 
   /**
    * EXO-90838 -- in the user's own mailbox the advanced criteria are terms of the one
-   * IMAP SEARCH, and an unanswerable range is refused before the server is reached.
+   * IMAP SEARCH, and an unanswerable range or a malformed day is refused before the
+   * server is reached -- after the access check, which answers first.
    */
   @Test
   void theAdvancedSearchOfAnOwnFolderIsOneServerSearch() throws Exception {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    EmailSearchCriteria notADay = new EmailSearchCriteria();
+    notADay.setQuery("report");
+    notADay.setInvalidDay(true);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    assertThrows(IllegalAccessException.class,
+                 () -> emailBoxService.searchEmails(TEST_USER, notADay, "INBOX", 10),
+                 "the refusal answers before a malformed day");
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    assertEquals("emailConnector.search.invalidDate",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchEmails(TEST_USER, notADay, "INBOX", 10)).getMessage());
     EmailSearchCriteria reversed = new EmailSearchCriteria();
     reversed.setAfter(LocalDate.of(2026, 10, 2));
     reversed.setBefore(LocalDate.of(2026, 10, 1));
