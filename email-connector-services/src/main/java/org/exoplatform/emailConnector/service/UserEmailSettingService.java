@@ -51,6 +51,7 @@ import org.exoplatform.emailConnector.event.ContactBookReleaseEvent;
 import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
 import org.exoplatform.emailConnector.event.EmailBoxSyncEvent;
 import org.exoplatform.emailConnector.event.EmailNotificationPreferencesChangedEvent;
+import org.exoplatform.emailConnector.exception.CredentialsProviderMissingException;
 import org.exoplatform.emailConnector.model.ContactImportState;
 import org.exoplatform.emailConnector.model.ContactPublishQueue;
 import org.exoplatform.emailConnector.model.ContactSyncState;
@@ -250,6 +251,8 @@ public class UserEmailSettingService {
    * @throws IllegalArgumentException when the provider expects the user to supply
    *           something, or names no mailbox
    * @throws IllegalStateException when the mailbox refuses the service account
+   * @throws CredentialsProviderMissingException when no provider of the connector's
+   *           name is registered; nothing was asked of the mail server
    */
   @Transactional(rollbackFor = Exception.class)
   public boolean connectThroughProvider(long emailConnectorId,
@@ -260,6 +263,11 @@ public class UserEmailSettingService {
     }
     EmailConnector emailConnector = emailConnectorService.getEmailConnector(emailConnectorId);
     String providerName = emailConnector == null ? null : emailConnector.getAuthProviderName();
+    if (emailCredentialsResolver != null && emailCredentialsResolver.isProviderMissing(providerName)) {
+      // Nothing to ask, and nothing recorded: the resolver has said it once for the
+      // provider's name, and the next attempt after the provider appears connects.
+      throw new CredentialsProviderMissingException(providerName);
+    }
     Store store = null;
     try {
       // This path exists for the connectors that ask nothing. One that does ask is
