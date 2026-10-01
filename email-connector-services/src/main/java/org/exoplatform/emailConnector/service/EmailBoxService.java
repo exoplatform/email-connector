@@ -13852,7 +13852,9 @@ public class EmailBoxService {
    * themselves; many do not, and on those the client is expected to APPEND one or the
    * user simply has no record of what they sent. Doing it here covers both: on a
    * provider that files its own, the copy carries the same Message-ID and is the same
-   * message, not a second one.
+   * message, not a second one. The copy is filed read: it is the sender's record of
+   * what they sent, and a provider that keeps only what the client appends would
+   * otherwise show it as unread mail.
    * <p>
    * Failure is signalled by an {@link IllegalStateException} rather than swallowed,
    * because the caller has to decide what a filing failure means — and
@@ -13878,6 +13880,10 @@ public class EmailBoxService {
       sentFolder = resolveSentFolder(store, loadMailboxSyncState(username));
       if (sentFolder != null) {
         sentFolder.open(Folder.READ_WRITE);
+        // The sender's own copy of mail they just sent, not new mail to them: without
+        // the flag, a server that does not file its own copy (BlueMind, unlike Gmail)
+        // shows the sent message unread in Sent, in this product and in every client.
+        message.setFlag(Flags.Flag.SEEN, true);
         sentFolder.appendMessages(new Message[] { message });
       } else {
         LOG.warn("No Sent folder found via SPECIAL-USE or fallback names for user {}", username);
