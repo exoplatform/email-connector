@@ -16,6 +16,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <div>
+    <!-- The search's criteria as removable chips, and the way to the advanced search
+         (EXO-90838). -->
+    <email-connector-mail-box-search-criteria-chips
+      :chips="criteriaChips"
+      @remove="$emit('remove-criterion', $event)"
+      @clear="$emit('clear-criteria')"
+      @advanced-search="$emit('advanced-search')" />
     <!-- The whole-mailbox server search still running, while the instant local matches
          are already listed below, shows as the drawer's own header loading bar — the
          platform's indicator — rather than a thinner bar of this list's own. -->
@@ -80,6 +87,11 @@ export default {
     sharedMailbox: {
       type: Boolean,
       default: false,
+    },
+    // The search's criteria, as chips: [{key, label}] (EXO-90838).
+    criteriaChips: {
+      type: Array,
+      default: () => [],
     },
   },
   computed: {
