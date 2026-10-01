@@ -29,13 +29,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <div v-if="hasWarnings || remoteContentBlocked" class="mail-security-banners text-start">
     <div
       v-if="hasWarnings"
-      :style="frameStyle(warningColor)"
-      class="mail-security-warning border-color rounded d-flex align-start px-3 py-2 mb-3"
+      :style="frameStyle(WARNING_COLOR)"
+      class="mail-security-warning rounded d-flex align-start px-3 py-2 mb-3"
       role="alert">
       <v-icon
-        :color="warningColor"
         size="14"
-        class="me-2 mt-1 flex-shrink-0">
+        class="warning--text me-2 mt-1 flex-shrink-0">
         fas fa-exclamation-triangle
       </v-icon>
       <div class="text-caption text-color">
@@ -50,13 +49,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </div>
     <div
       v-if="remoteContentBlocked"
-      :style="frameStyle(primaryColor)"
-      class="mail-remote-content-banner border-color rounded d-flex align-start px-3 py-2 mb-3"
+      :style="frameStyle(PRIMARY_COLOR)"
+      class="mail-remote-content-banner rounded d-flex align-start px-3 py-2 mb-3"
       role="status">
       <v-icon
-        :color="primaryColor"
         size="14"
-        class="me-2 mt-1 flex-shrink-0">
+        class="primary--text me-2 mt-1 flex-shrink-0">
         fas fa-image
       </v-icon>
       <div :class="wide ? 'd-flex align-center flex-grow-1' : 'flex-grow-1'">
@@ -90,6 +88,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+/** The platform's primary colour, the accent of the images notice, as the assistant card reads it. */
+const PRIMARY_COLOR = 'var(--allPagesPrimaryColor, #3f8487)';
+
+/** The platform's warning colour (platform-ui's @warningColor), the accent of the reasons. */
+const WARNING_COLOR = '#ffb441';
+
+/** The platform's light border colour, as its border-color class reads it. */
+const BORDER_COLOR = 'var(--allPagesBtnBorder, var(--allPagesGreyColor, #e1e8ee))';
+
 export default {
   props: {
     // The content on screen: the body the reader shows, whether its remote content was
@@ -116,6 +123,8 @@ export default {
   },
   data: () => ({
     busy: false,
+    PRIMARY_COLOR,
+    WARNING_COLOR,
   }),
   computed: {
     /**
@@ -142,27 +151,13 @@ export default {
     remoteContentBlocked() {
       return !!this.content?.remoteContentBlocked;
     },
-    /**
-     * The platform's primary colour, the accent of the images notice.
-     *
-     * @returns {String} a CSS colour
-     */
-    primaryColor() {
-      return this.$vuetify?.theme?.currentTheme?.primary || 'var(--allPagesPrimaryColor, #3f8487)';
-    },
-    /**
-     * The platform's warning colour, the accent of the reasons.
-     *
-     * @returns {String} a CSS colour
-     */
-    warningColor() {
-      return this.$vuetify?.theme?.currentTheme?.warning || '#fb8c00';
-    },
   },
   methods: {
     /**
-     * The frame of a notice: one pixel in the border colour the class gives, and a
-     * three-pixel accent in the notice's colour on the reading-start side.
+     * The frame of a notice: one pixel in the platform's border colour, and a
+     * three-pixel accent in the notice's colour on the reading-start side, whose corners
+     * are square, as the assistant card's are. The frame is set here rather than by the
+     * platform's border-color class, whose important shorthand would hide the accent.
      *
      * @param {String} accent the accent colour
      * @returns {Object} the inline style
@@ -170,9 +165,10 @@ export default {
     frameStyle(accent) {
       const side = this.$vuetify?.rtl ? 'Right' : 'Left';
       return {
-        borderWidth: '1px',
-        borderStyle: 'solid',
+        border: `1px solid ${BORDER_COLOR}`,
         [`border${side}`]: `3px solid ${accent}`,
+        [`borderTop${side}Radius`]: 0,
+        [`borderBottom${side}Radius`]: 0,
       };
     },
     /**
