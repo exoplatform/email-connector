@@ -97,7 +97,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-import { buildFolderTree, descendantKeys, isInboxPath } from '../../../../email-connector-mail-box/js/EmailConnectorFolderTree.js';
+import { buildFolderTree, descendantKeys, inboxIsNamespace, isInboxPath } from '../../../../email-connector-mail-box/js/EmailConnectorFolderTree.js';
 import { folderPath } from '../../../../email-connector-mail-box/js/EmailConnectorMailBoxService.js';
 
 // The registry's own bound (EmailFolderService#MAX_FOLDER_NAME_LENGTH), mirrored here
@@ -175,10 +175,10 @@ export default {
       const choices = buildFolderTree(this.folders)
         .map(row => row.folder)
         .filter(folder => !folder.missing && folder.delimiter && !excluded.includes(folder.key))
-        .map(folder => ({ value: folder.key, label: folderPath(folder) }));
+        .map(folder => ({ value: folder.key, label: folderPath(folder, this.folders) }));
       const top = [{ value: TOP_LEVEL, label: this.$t('UserSettings.emailConnector.folders.parent.top') }];
       if (this.initialParentKey === CURRENT_PLACE) {
-        top.push({ value: CURRENT_PLACE, label: folderPath({ path: this.parentPathOf(this.target), delimiter: this.target.delimiter }) });
+        top.push({ value: CURRENT_PLACE, label: folderPath({ path: this.parentPathOf(this.target), delimiter: this.target.delimiter }, this.folders) });
       }
       return top.concat(choices);
     },
@@ -206,9 +206,12 @@ export default {
       // A parent the picker does not offer (no longer found on the server) is shown as
       // the folder's current place, never as a blank choice.
       const offered = parent && !parent.missing && parent.delimiter ? parent : null;
-      // A folder whose parent is the namespace's INBOX sits at the top as the user reads it.
+      // A folder whose parent is INBOX, when INBOX is the namespace every folder lives
+      // under, sits at the top as the user reads it; where INBOX is a folder like any
+      // other, it is the folder's current place.
       const parentPath = this.parentPathOf(this.target);
-      const nestedUnlisted = this.action === 'rename' && !offered && !!parentPath && !isInboxPath(parentPath);
+      const atNamespaceTop = isInboxPath(parentPath) && inboxIsNamespace(this.folders);
+      const nestedUnlisted = this.action === 'rename' && !offered && !!parentPath && !atNamespaceTop;
       this.parentKey = offered?.key || (nestedUnlisted ? CURRENT_PLACE : TOP_LEVEL);
       this.initialParentKey = this.parentKey;
       this.nameError = '';
