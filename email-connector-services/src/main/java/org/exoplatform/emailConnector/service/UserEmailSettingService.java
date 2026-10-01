@@ -207,18 +207,18 @@ public class UserEmailSettingService {
   }
 
   /**
-   * The one-click connect, for a caller that must not replace a configuration the
-   * user saved meanwhile: the managed login-time enrolment, whose mailbox probe can
-   * take as long as the server's connect and read timeouts. With
-   * {@code onlyIfUnconfigured}, the stored setting is read again after the probe and
-   * right before the write, and nothing is written when it names a connector by
-   * then. That narrows the window to the read and the write, without closing it:
+   * The one-click connect, also made by managed mode at login. The managed
+   * enrolment's mailbox probe can take as long as the server's connect and read
+   * timeouts, so with {@code byManagedMode} the stored setting is read again after
+   * the probe and right before the write, and nothing is written when it names a
+   * connector by then. That narrows the window to the read and the write, without closing it:
    * two writers of one user's setting on two threads still race there.
    *
    * @param emailConnectorId the connector preset to connect to
    * @param username the eXo login connecting
-   * @param onlyIfUnconfigured true to give up when the user has a configuration by
-   *          the time of the write
+   * @param byManagedMode true when managed mode makes the connection at login: the
+   *          stored setting is read again before the write, and nothing is written
+   *          when the user configured a mailbox meanwhile
    * @return true when the connection was recorded, false when it was given up
    * @throws IllegalAccessException when the user may not connect this connector
    * @throws IllegalArgumentException when the provider expects the user to supply
@@ -228,7 +228,7 @@ public class UserEmailSettingService {
   @Transactional(rollbackFor = Exception.class)
   public boolean connectThroughProvider(long emailConnectorId,
                                         String username,
-                                        boolean onlyIfUnconfigured) throws IllegalAccessException {
+                                        boolean byManagedMode) throws IllegalAccessException {
     if (!canConnect(emailConnectorId, username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE, username));
     }
@@ -246,7 +246,7 @@ public class UserEmailSettingService {
         throw new IllegalArgumentException("The provider of this connector names no mailbox for this user");
       }
       store = connect(emailConnector, authenticatorFor(emailConnector, username));
-      if (onlyIfUnconfigured && StringUtils.isNotBlank(getStoredUserEmailSetting(username).getEmailConnectorId())) {
+      if (byManagedMode && StringUtils.isNotBlank(getStoredUserEmailSetting(username).getEmailConnectorId())) {
         return false;
       }
       UserEmailSetting connected = new UserEmailSetting();
