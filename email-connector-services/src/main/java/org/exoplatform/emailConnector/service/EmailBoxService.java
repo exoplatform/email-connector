@@ -23,6 +23,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.io.UnsupportedEncodingException;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -62,6 +64,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.lang.ref.WeakReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -96,6 +99,8 @@ import javax.mail.internet.MimeMessage;
 import javax.mail.internet.MimeMultipart;
 import javax.mail.internet.MimeUtility;
 import javax.mail.search.AndTerm;
+import javax.mail.search.BodyTerm;
+import javax.mail.search.HeaderTerm;
 import javax.mail.util.ByteArrayDataSource;
 import javax.mail.search.ComparisonTerm;
 import javax.mail.search.FlagTerm;
@@ -189,6 +194,7 @@ import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailFolder;
 import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.model.EmailSearchCriteria;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
@@ -6621,7 +6627,12 @@ public class EmailBoxService {
     if (emailDelegationService.delegationOf(username, folderKey) == null) {
       throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
     }
-    return searchMirror(username, folderKey, query, from, unreadOnly, false, sinceDays, limit);
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setQuery(query);
+    criteria.setFrom(from);
+    criteria.setUnreadOnly(unreadOnly);
+    criteria.setSinceDays(sinceDays);
+    return searchMirror(username, folderKey, criteria, limit);
   }
 
   /**
@@ -6631,48 +6642,50 @@ public class EmailBoxService {
    * brought in, filtered here -- which the mirror's own size bounds -- newest first.
    * The Favorites narrowing is the drawer's chip: in a shared mailbox the star is its
    * owner's (EXO-90550), which is what that mailbox's Favorites list shows too.
+   * <p>
+   * Every criterion of the advanced search applies here as on the mail server
+   * (EXO-90838): the recipients are the To and Cc ones, the words are matched against
+   * the subject and the body as text, the days are those of the server's own zone, as
+   * IMAP {@code SINCE} and {@code BEFORE} count them, and a message has an attachment
+   * when eXo holds an attachment row for it -- what the reader lists.
    *
    * @param username the reader
    * @param folderKey the shared folder's key, already checked
-   * @param query free text matched against the subject or the sender, may be blank
-   * @param from text matched against the sender only, may be blank
-   * @param unreadOnly only unread messages
-   * @param favoritesOnly only starred messages
-   * @param sinceDays only messages received in the last N days, null for all
+   * @param criteria what to match
    * @param limit how many hits to return, newest first
    * @return the newest matching mirrored messages and how many matched
-   * @throws IllegalArgumentException {@code emailConnector.search.invalidSinceDays} for a
-   *           negative window, {@code emailConnector.search.criteriaRequired} when no
-   *           criterion at all was given
+   * @throws IllegalArgumentException the codes of {@link #validateSearchCriteria}
    */
-  private EmailSearchResultPage searchMirror(String username,
-                                             String folderKey,
-                                             String query,
-                                             String from,
-                                             boolean unreadOnly,
-                                             boolean favoritesOnly,
-                                             Integer sinceDays,
-                                             int limit) {
-    if (sinceDays != null && sinceDays < 0) {
-      throw new IllegalArgumentException("emailConnector.search.invalidSinceDays");
-    }
-    String term = StringUtils.trimToNull(query);
-    String sender = StringUtils.trimToNull(from);
-    if (term == null && sender == null && !unreadOnly && !favoritesOnly && sinceDays == null) {
-      throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
-    }
-    Date since = sinceDays == null ? null : new Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(sinceDays));
+  private EmailSearchResultPage searchMirror(String username, String folderKey, EmailSearchCriteria criteria, int limit) {
+    validateSearchCriteria(criteria);
+    String term = StringUtils.trimToNull(criteria.getQuery());
+    String sender = StringUtils.trimToNull(criteria.getFrom());
+    String recipient = StringUtils.trimToNull(criteria.getTo());
+    String words = StringUtils.trimToNull(criteria.getWords());
+    Date since = criteria.getSinceDays() == null ? null
+                                                 : new Date(System.currentTimeMillis()
+                                                     - TimeUnit.DAYS.toMillis(criteria.getSinceDays()));
+    Date after = startOfServerDay(criteria.getAfter());
+    Date before = startOfServerDay(criteria.getBefore());
+    // One more read only when the attachment criterion asks for it: the ids of the
+    // folder's rows that have one, never the attachments themselves.
+    Set<Long> withAttachments = criteria.isAttachmentsOnly() ? emailBoxStorage.getEmailIdsWithAttachmentsInFolders(username,
+                                                                                                                   List.of(folderKey))
+                                                             : Set.of();
     // The search's own read, not the listing's: no attachment, category or excerpt, which
     // a search discards -- this runs once per keystroke in the drawer's search box.
     List<Email> matches = emailBoxStorage.getEmailsForSearchInFolders(username, List.of(folderKey))
                                          .stream()
-                                         .filter(email -> !unreadOnly || !email.isRead())
-                                         .filter(email -> !favoritesOnly || email.isStarred())
-                                         .filter(email -> since == null
-                                             || email.getReceivedDate() != null && !email.getReceivedDate().before(since))
+                                         .filter(email -> !criteria.isUnreadOnly() || !email.isRead())
+                                         .filter(email -> !criteria.isFavoritesOnly() || email.isStarred())
+                                         .filter(email -> !criteria.isAttachmentsOnly() || withAttachments.contains(email.getId()))
+                                         .filter(email -> receivedWithin(email, since, after, before))
                                          .filter(email -> sender == null || senderMatches(email, sender))
+                                         .filter(email -> recipient == null || recipientMatches(email, recipient))
                                          .filter(email -> term == null || StringUtils.containsIgnoreCase(email.getSubject(), term)
                                              || senderMatches(email, term))
+                                         .filter(email -> words == null || StringUtils.containsIgnoreCase(email.getSubject(), words)
+                                             || bodyTextContains(email, words))
                                          .sorted(Comparator.comparing(Email::getReceivedDate,
                                                                       Comparator.nullsLast(Comparator.reverseOrder())))
                                          .toList();
@@ -6689,7 +6702,95 @@ public class EmailBoxService {
                                                                                  null,
                                                                                  email.getId()))
                                              .toList();
-    return new EmailSearchResultPage(results, matches.size(), favoritesOnly);
+    return new EmailSearchResultPage(results, matches.size(), criteria.isFavoritesOnly());
+  }
+
+  /**
+   * Refuses the criteria no search can answer (EXO-90838): a negative age window, a
+   * date range that ends before it starts, and no criterion at all.
+   *
+   * @param criteria the criteria
+   * @throws IllegalArgumentException {@code emailConnector.search.invalidSinceDays} for a
+   *           negative window -- a future-dated lower bound that would match nothing,
+   *           silently -- {@code emailConnector.search.invalidDateRange} when the day
+   *           before which messages are kept is not after the day from which they are,
+   *           {@code emailConnector.search.criteriaRequired} when nothing narrows the
+   *           search
+   */
+  static void validateSearchCriteria(EmailSearchCriteria criteria) {
+    if (criteria.getSinceDays() != null && criteria.getSinceDays() < 0) {
+      throw new IllegalArgumentException("emailConnector.search.invalidSinceDays");
+    }
+    if (criteria.getAfter() != null && criteria.getBefore() != null && !criteria.getAfter().isBefore(criteria.getBefore())) {
+      throw new IllegalArgumentException("emailConnector.search.invalidDateRange");
+    }
+    if (!criteria.hasCriterion()) {
+      throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
+    }
+  }
+
+  /**
+   * The first instant of a day in the server's zone: the zone JavaMail writes an IMAP
+   * {@code SINCE} or {@code BEFORE} day in, so that the search of eXo's copy draws the
+   * day where the mail server's search is asked to.
+   *
+   * @param day the day, may be null
+   * @return its first instant, or null
+   */
+  static Date startOfServerDay(LocalDate day) {
+    return day == null ? null : Date.from(day.atStartOfDay(ZoneId.systemDefault()).toInstant());
+  }
+
+  /**
+   * Whether a message was received inside the bounds a search sets: at or after
+   * {@code since} and {@code after}, strictly before {@code before}. A message with no
+   * date is outside any bound.
+   *
+   * @param email the message
+   * @param since the age window's lower bound, may be null
+   * @param after the first day's first instant, may be null
+   * @param before the first instant excluded, may be null
+   * @return true when no bound excludes it
+   */
+  private static boolean receivedWithin(Email email, Date since, Date after, Date before) {
+    if (since == null && after == null && before == null) {
+      return true;
+    }
+    Date received = email.getReceivedDate();
+    return received != null && (since == null || !received.before(since)) && (after == null || !received.before(after))
+        && (before == null || received.before(before));
+  }
+
+  /**
+   * Whether one of a message's To or Cc recipients -- name or address -- contains a
+   * text, ignoring case. Bcc is left out, as on the mail server: a person hidden from
+   * the recipients is not shown as one.
+   *
+   * @param email the message
+   * @param text the text
+   * @return true when one does
+   */
+  private static boolean recipientMatches(Email email, String text) {
+    return Stream.of(email.getTo(), email.getCc())
+                 .filter(Objects::nonNull)
+                 .flatMap(List::stream)
+                 .filter(Objects::nonNull)
+                 .anyMatch(recipient -> StringUtils.containsIgnoreCase(recipient.getName(), text)
+                     || StringUtils.containsIgnoreCase(recipient.getAddress(), text));
+  }
+
+  /**
+   * Whether a message's body, read as text, contains some words, ignoring case. The body
+   * is stored as HTML: matched as it is, a search for "div" would hit markup the user
+   * never sees.
+   *
+   * @param email the message
+   * @param text the words
+   * @return true when the body holds them
+   */
+  private static boolean bodyTextContains(Email email, String text) {
+    String body = email.getContent() == null ? null : email.getContent().getBody();
+    return StringUtils.isNotBlank(body) && StringUtils.containsIgnoreCase(Jsoup.parse(body).text(), text);
   }
 
   /**
@@ -14948,7 +15049,7 @@ public class EmailBoxService {
    * only a folder the unified search would read there too
    * ({@link EmailDelegationService#isSearchableSharedFolder}) -- the mirror holds that
    * folder's recent window, so its hits are what the mailbox's list shows, not the
-   * owner's whole history. No recipient filter there.
+   * owner's whole history.
    *
    * @param username the mailbox owner
    * @param query free text matched against the subject or the sender
@@ -14977,32 +15078,61 @@ public class EmailBoxService {
                                             Integer sinceDays,
                                             String folder,
                                             int limit) throws IllegalAccessException {
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setQuery(query);
+    criteria.setFrom(from);
+    criteria.setTo(to);
+    criteria.setUnreadOnly(unreadOnly);
+    criteria.setFavoritesOnly(favoritesOnly);
+    criteria.setSinceDays(sinceDays);
+    return searchEmails(username, criteria, folder, limit);
+  }
+
+  /**
+   * The same search, with every criterion of the mailbox's advanced search (EXO-90838):
+   * besides the text, the sender, the recipients, the unread and starred narrowings and
+   * the age window, the words of the subject or the body, a range of days and the
+   * messages carrying an attachment. All of them are terms of the one IMAP SEARCH for the
+   * user's own folders ({@link #buildEmailSearchTerm(EmailSearchCriteria, Date)}), and
+   * filters of the user's copy for a folder of a mailbox shared with them.
+   *
+   * @param username the mailbox owner
+   * @param criteria what to match, at least one criterion
+   * @param folder the folder to search: INBOX, SENT or ARCHIVE, or a searchable folder
+   *          of a mailbox shared with the user
+   * @param limit how many hits to return
+   * @return the newest matching messages plus the total match count
+   * @throws IllegalAccessException if the user is not allowed to search their mailbox
+   * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for any
+   *           other folder, and the codes of {@link #validateSearchCriteria}
+   * @throws DelegationRevokedException when the folder's share is no longer accepted
+   */
+  public EmailSearchResultPage searchEmails(String username,
+                                            EmailSearchCriteria criteria,
+                                            String folder,
+                                            int limit) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEARCH_EMAIL_MESSAGE, username));
     }
     if (!isSearchableFolder(folder)) {
-      if (StringUtils.isBlank(to) && emailDelegationService.isSearchableSharedFolder(username, folder)) {
+      if (emailDelegationService.isSearchableSharedFolder(username, folder)) {
         // A folder of a mailbox shared with the user, where the mail drawer's own search
         // box runs while it shows that mailbox (EXO-90590): answered from the user's
         // mirror of that folder -- what that mailbox's list shows -- and never from the
         // server, which the user's own session reaches only under the shared namespace.
         // The key is re-checked against the user's own accepted shares on every search.
-        return searchMirror(username, folder, query, from, unreadOnly, favoritesOnly, sinceDays, limit);
+        return searchMirror(username, folder, criteria, limit);
       }
       throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
     }
-    if (sinceDays != null && sinceDays < 0) {
-      // A negative window is a future-dated lower bound: it matches nothing, silently,
-      // and reads to the caller as "the search is broken" rather than "the input was".
-      throw new IllegalArgumentException("emailConnector.search.invalidSinceDays");
-    }
-    Date since = sinceDays == null ? null : new Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(sinceDays));
-    SearchTerm searchTerm = buildEmailSearchTerm(query, from, to, unreadOnly, favoritesOnly, since);
-    if (searchTerm == null) {
-      throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
-    }
+    validateSearchCriteria(criteria);
+    Date since = criteria.getSinceDays() == null ? null
+                                                 : new Date(System.currentTimeMillis()
+                                                     - TimeUnit.DAYS.toMillis(criteria.getSinceDays()));
+    SearchTerm searchTerm = buildEmailSearchTerm(criteria, since);
+    boolean favoritesOnly = criteria.isFavoritesOnly();
     int cappedLimit = Math.min(Math.max(limit, 1), SEARCH_MAX_RESULTS);
     Store store = null;
     Folder remoteFolder = null;
@@ -15072,7 +15202,7 @@ public class EmailBoxService {
       // Folder.search — a CLIENT-side scan that pulls the whole folder down to match
       // locally. That fallback is silent and, on the 161k-message mailboxes this
       // feature targets, is the linear scan the design avoids everywhere else (see
-      // buildEmailSearchTerm on why there is no BODY term); it reads as a hang, not an
+      // buildEmailSearchTerm on why the search box text has no BODY term); it reads as a hang, not an
       // error. Flipping that property is the real fix but it is not search's to make
       // alone — the same Session serves the sync and the archive thread-completion
       // search, which would start throwing where they now degrade. Mapped here so the
@@ -15291,25 +15421,73 @@ public class EmailBoxService {
                                          boolean unreadOnly,
                                          boolean favoritesOnly,
                                          Date since) {
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setQuery(query);
+    criteria.setFrom(from);
+    criteria.setTo(to);
+    criteria.setUnreadOnly(unreadOnly);
+    criteria.setFavoritesOnly(favoritesOnly);
+    return buildEmailSearchTerm(criteria, since);
+  }
+
+  /**
+   * The IMAP search term of every criterion of the mailbox's advanced search
+   * (EXO-90838), combined with AND.
+   * <ul>
+   * <li>The words are matched against the subject or the body ({@code BODY}). The body
+   * is searched only when the user asks for it in the advanced search: on a server
+   * without a full-text index it is a scan of the folder, which the search box's own
+   * text, searched at every pause in the typing, must not trigger.</li>
+   * <li>The days are IMAP {@code SINCE} (that day included) and {@code BEFORE} (that day
+   * excluded); JavaMail writes the day of the date it is given in the server's zone, so
+   * each bound is that day's first instant there ({@link #startOfServerDay}), which is
+   * also correct when JavaMail falls back to matching on the client.</li>
+   * <li>IMAP has no "has an attachment" key: a message carrying a file is a
+   * {@code multipart/mixed} one, which {@code HEADER Content-Type} finds. A message
+   * whose only parts are its text and its inline images is {@code multipart/related}
+   * or {@code multipart/alternative}, and does not match.</li>
+   * </ul>
+   *
+   * @param criteria the criteria; its {@code sinceDays} is read through {@code since}
+   * @param since only messages received at or after this date match, may be null
+   * @return the IMAP search term, or {@code null} when no criterion was given
+   */
+  static SearchTerm buildEmailSearchTerm(EmailSearchCriteria criteria, Date since) {
     List<SearchTerm> terms = new ArrayList<>();
-    if (StringUtils.isNotBlank(query)) {
-      terms.add(new OrTerm(new SubjectTerm(query.trim()), new FromStringTerm(query.trim())));
+    String query = StringUtils.trimToNull(criteria.getQuery());
+    if (query != null) {
+      terms.add(new OrTerm(new SubjectTerm(query), new FromStringTerm(query)));
     }
-    if (StringUtils.isNotBlank(from)) {
-      terms.add(new FromStringTerm(from.trim()));
+    String from = StringUtils.trimToNull(criteria.getFrom());
+    if (from != null) {
+      terms.add(new FromStringTerm(from));
     }
-    if (StringUtils.isNotBlank(to)) {
-      terms.add(new OrTerm(new RecipientStringTerm(Message.RecipientType.TO, to.trim()),
-                           new RecipientStringTerm(Message.RecipientType.CC, to.trim())));
+    String to = StringUtils.trimToNull(criteria.getTo());
+    if (to != null) {
+      terms.add(new OrTerm(new RecipientStringTerm(Message.RecipientType.TO, to),
+                           new RecipientStringTerm(Message.RecipientType.CC, to)));
     }
-    if (unreadOnly) {
+    String words = StringUtils.trimToNull(criteria.getWords());
+    if (words != null) {
+      terms.add(new OrTerm(new SubjectTerm(words), new BodyTerm(words)));
+    }
+    if (criteria.isUnreadOnly()) {
       terms.add(new FlagTerm(new Flags(Flags.Flag.SEEN), false));
     }
-    if (favoritesOnly) {
+    if (criteria.isFavoritesOnly()) {
       terms.add(new FlagTerm(new Flags(Flags.Flag.FLAGGED), true));
+    }
+    if (criteria.isAttachmentsOnly()) {
+      terms.add(new HeaderTerm("Content-Type", "multipart/mixed"));
     }
     if (since != null) {
       terms.add(new ReceivedDateTerm(ComparisonTerm.GE, since));
+    }
+    if (criteria.getAfter() != null) {
+      terms.add(new ReceivedDateTerm(ComparisonTerm.GE, startOfServerDay(criteria.getAfter())));
+    }
+    if (criteria.getBefore() != null) {
+      terms.add(new ReceivedDateTerm(ComparisonTerm.LT, startOfServerDay(criteria.getBefore())));
     }
     if (terms.isEmpty()) {
       return null;
