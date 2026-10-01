@@ -38,6 +38,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailSecurityWarning;
 import org.exoplatform.emailConnector.model.EmailSecurityWarningType;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.RemoteContentSettings;
 import org.exoplatform.emailConnector.model.SanitizedEmailBody;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
@@ -184,11 +185,12 @@ public class EmailSecurityService {
   /**
    * Prepares received messages for the reader. For each message that is not a draft:
    * <ul>
+   * <li>the phishing warnings are listed; for the mailbox's own sent mail (a row of its
+   * SENT folder), only an authentication failure;</li>
    * <li>an HTML body is cleaned, with remote content kept only when
-   * {@code showRemoteContent} is set, the user switched blocking off, the sender is
-   * trusted, or the message was sent from the mailbox itself; the content then says
-   * whether anything was held back;</li>
-   * <li>the phishing warnings are listed, unless the mailbox itself sent the message.</li>
+   * {@code showRemoteContent} is set or the user switched blocking off, or, for a
+   * message with no warning, when its sender is trusted or it is the mailbox's own sent
+   * mail; the content then says whether anything was held back.</li>
    * </ul>
    * A draft is the user's own text, read back by the composer, and is left alone.
    *
@@ -208,18 +210,29 @@ public class EmailSecurityService {
       }
       EmailContent content = email.getContent();
       String senderAddress = senderAddress(email);
-      boolean ownMessage = senderAddress != null && senderAddress.equals(normaliseOrNull(email.getUserEmail()));
-      SanitizedEmailBody sanitized = null;
-      if (content.isHtml() && content.getBody() != null) {
-        boolean allowRemote = showRemoteContent || ownMessage || !settings.isBlockRemoteContent()
-            || senderAddress != null && settings.getTrustedSenders().contains(senderAddress);
-        sanitized = EmailHtmlSanitizer.sanitize(content.getBody(), allowRemote);
-        content.setBody(sanitized.html());
-        content.setRemoteContentBlocked(sanitized.remoteContentBlocked());
-      } else {
-        content.setRemoteContentBlocked(false);
+      // The mailbox's own sent mail, decided by where the row lives, never by its From,
+      // which whoever wrote the message chose.
+      boolean ownMessage = MailFolder.SENT.equals(email.getFolder());
+      boolean html = content.isHtml() && content.getBody() != null;
+      // Cleaned with remote content held back first: its links are what the warnings
+      // judge, and the warnings decide whether an exemption may apply.
+      SanitizedEmailBody sanitized = html ? EmailHtmlSanitizer.sanitize(content.getBody(), false) : null;
+      List<EmailSecurityWarning> warnings = warnings(email, senderAddress, sanitized, ownMessage, namesSeen);
+      if (html && sanitized.remoteContentBlocked()) {
+        // The user's own choices hold whatever the message looks like; trusting a sender
+        // or one's own sent mail holds only for a message giving no reason for doubt, so
+        // a forged From does not borrow that trust.
+        boolean exempt = warnings.isEmpty()
+            && (ownMessage || senderAddress != null && settings.getTrustedSenders().contains(senderAddress));
+        if (showRemoteContent || !settings.isBlockRemoteContent() || exempt) {
+          sanitized = EmailHtmlSanitizer.sanitize(content.getBody(), true);
+        }
       }
-      content.setSecurityWarnings(ownMessage ? List.of() : warnings(email, senderAddress, sanitized, namesSeen));
+      if (html) {
+        content.setBody(sanitized.html());
+      }
+      content.setRemoteContentBlocked(html && sanitized.remoteContentBlocked());
+      content.setSecurityWarnings(warnings);
     }
   }
 
@@ -249,23 +262,30 @@ public class EmailSecurityService {
    * <li>{@code DECEPTIVE_LINK}: a link's text is a web address on another domain than
    * its target. Not judged on bulk or automated mail (List-Unsubscribe, List-Id without
    * List-Post, Auto-Submitted) nor on forwards, where click-tracking redirects make
-   * every such link "deceptive".</li>
+   * every such link "deceptive" -- unless the message failed its sender
+   * authentication, since those headers and the subject are the sender's to write.</li>
    * </ul>
    *
    * @param email the message
    * @param senderAddress its sender's address, normalised, or null
    * @param sanitized its cleaned HTML body, or null for a plain-text one
+   * @param ownMessage whether it is the mailbox's own sent mail, judged only on its
+   *          authentication then
    * @param namesSeen the directory answers already obtained for this request, by name
    * @return the warnings, possibly empty
    */
   private List<EmailSecurityWarning> warnings(Email email,
                                               String senderAddress,
                                               SanitizedEmailBody sanitized,
+                                              boolean ownMessage,
                                               Map<String, Optional<Profile>> namesSeen) {
     List<EmailSecurityWarning> warnings = new ArrayList<>();
     String authFailure = email.getContent().getAuthFailure();
     if (StringUtils.isNotBlank(authFailure)) {
       warnings.add(new EmailSecurityWarning(EmailSecurityWarningType.AUTHENTICATION_FAILED, authFailure, null));
+    }
+    if (ownMessage) {
+      return warnings;
     }
     EmailSecurityWarning impersonation = impersonation(email, senderAddress, namesSeen);
     if (impersonation != null) {
@@ -273,7 +293,10 @@ public class EmailSecurityService {
     }
     String mailType = EmailConnectorUtils.getMailType(email);
     boolean massMail = EmailConnectorUtils.MAIL_TYPE_BULK.equals(mailType) || EmailConnectorUtils.MAIL_TYPE_AUTOMATED.equals(mailType);
-    if (sanitized != null && !massMail && !EmailConnectorUtils.isForward(email)) {
+    // The exemption rests on headers the sender writes, so it holds only for a message
+    // the receiving server did not find failing its sender authentication.
+    boolean exempt = (massMail || EmailConnectorUtils.isForward(email)) && StringUtils.isBlank(authFailure);
+    if (sanitized != null && !exempt) {
       EmailSecurityWarning link = EmailSecurityUtils.deceptiveLink(sanitized.links());
       if (link != null) {
         warnings.add(link);
@@ -309,16 +332,18 @@ public class EmailSecurityService {
     if (name.indexOf(' ') < 0 || name.contains("@")) {
       return null;
     }
+    String senderDomain = EmailContactUtils.domainOf(senderAddress);
+    // Decided before the directory is asked: a sender on the organisation's own domains
+    // is never an outsider, whoever they are named after.
+    if (organisationDomains(email, null).contains(senderDomain)) {
+      return null;
+    }
     Profile user = namesSeen.computeIfAbsent(name, key -> findUserNamed(email.getSender().getName(), key)).orElse(null);
     if (user == null) {
       return null;
     }
     String userAddress = normaliseOrNull(user.getEmail());
-    if (senderAddress.equals(userAddress)) {
-      return null;
-    }
-    String senderDomain = EmailContactUtils.domainOf(senderAddress);
-    if (organisationDomains(email, userAddress).contains(senderDomain)) {
+    if (senderAddress.equals(userAddress) || organisationDomains(email, userAddress).contains(senderDomain)) {
       return null;
     }
     return new EmailSecurityWarning(EmailSecurityWarningType.IMPERSONATION, user.getFullName(), senderAddress);

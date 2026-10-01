@@ -57,6 +57,12 @@ public final class EmailSecurityUtils {
 
   private static final Pattern RESULT                        = Pattern.compile("^([a-z0-9-]+)\\s*=\\s*([a-z]+)");
 
+  /** The domain a DKIM result names: {@code header.d=}, or the part after {@code @} of {@code header.i=}. */
+  private static final Pattern DKIM_DOMAIN                   = Pattern.compile("\\bheader\\.(?:d=|i=[^@\\s;]*@)([a-z0-9.-]+)");
+
+  /** The mark of a DKIM result whose signing domain is not the {@code From} one. */
+  private static final String  UNALIGNED                     = "-unaligned";
+
   /**
    * A text that reads as a web address: an optional scheme, a host of at least two
    * labels ending in an alphabetic top-level domain, an optional port and path. No white
@@ -104,16 +110,22 @@ public final class EmailSecurityUtils {
    * <ul>
    * <li>{@code dmarc=fail}: {@link #AUTH_DMARC}, whatever else passed, since DMARC
    * already accounts for both.</li>
-   * <li>Otherwise, when DMARC said nothing conclusive and no DKIM signature passed:
-   * {@code spf=fail} (a hard fail, never {@code softfail}) gives {@link #AUTH_SPF}, and
-   * {@code dkim=fail} with SPF not passing gives {@link #AUTH_DKIM}.</li>
+   * <li>Otherwise, when DMARC said nothing conclusive and no DKIM signature aligned with
+   * the {@code From} domain passed: {@code spf=fail} (a hard fail, never
+   * {@code softfail}) gives {@link #AUTH_SPF}, and {@code dkim=fail} with SPF not passing
+   * gives {@link #AUTH_DKIM}. A signature is aligned when its {@code header.d} (or the
+   * domain of its {@code header.i}) has the same registrable domain as {@code From}, as
+   * DMARC's relaxed alignment reads it; one that names no domain, or a message whose
+   * {@code From} is unknown, counts as aligned, so a terse server raises no warning. A
+   * sender signing with their own domain cannot vouch for someone else's.</li>
    * </ul>
    *
    * @param headerValues the header's values, top first, as the message carries them
+   * @param fromAddress the message's {@code From} address, or null when it has none
    * @return {@link #AUTH_DMARC}, {@link #AUTH_SPF}, {@link #AUTH_DKIM}, or null when
    *         nothing failed or nothing was said
    */
-  public static String authenticationFailure(String[] headerValues) {
+  public static String authenticationFailure(String[] headerValues, String fromAddress) {
     if (headerValues == null || headerValues.length == 0 || StringUtils.isBlank(headerValues[0])) {
       return null;
     }
@@ -134,7 +146,7 @@ public final class EmailSecurityUtils {
         switch (result.group(1)) {
         case "dmarc" -> dmarc.add(result.group(2));
         case "spf" -> spf.add(result.group(2));
-        case "dkim" -> dkim.add(result.group(2));
+        case "dkim" -> dkim.add(result.group(2) + (aligned(parts[i], fromAddress) ? "" : UNALIGNED));
         default -> {
           // Other methods (arc, compauth, iprev...) are not part of the verdict.
         }
@@ -154,6 +166,23 @@ public final class EmailSecurityUtils {
       return AUTH_DKIM;
     }
     return null;
+  }
+
+  /**
+   * Whether a DKIM result's signing domain is aligned with the message's {@code From}:
+   * same registrable domain, or either unknown.
+   *
+   * @param result one {@code dkim=...} part of the header, lower-cased, comments removed
+   * @param fromAddress the message's {@code From} address, or null
+   * @return true when aligned or undecidable
+   */
+  private static boolean aligned(String result, String fromAddress) {
+    String fromDomain = StringUtils.isBlank(fromAddress) ? null : StringUtils.substringAfterLast(fromAddress.trim(), "@");
+    Matcher domain = DKIM_DOMAIN.matcher(result);
+    if (StringUtils.isBlank(fromDomain) || !domain.find()) {
+      return true;
+    }
+    return registrableDomain(asciiHost(domain.group(1))).equals(registrableDomain(asciiHost(fromDomain)));
   }
 
   /**
