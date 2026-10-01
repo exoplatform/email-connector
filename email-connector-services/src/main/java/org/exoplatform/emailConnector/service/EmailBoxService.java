@@ -14383,7 +14383,8 @@ public class EmailBoxService {
                                                                                                false);
           // The receiving server's sender-authentication verdict, which only the live
           // message carries (EXO-90841): read now, kept with the row for the reader's banner.
-          emailContent.setAuthFailure(EmailSecurityUtils.authenticationFailure(message.getHeader(EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS)));
+          emailContent.setAuthFailure(EmailSecurityUtils.authenticationFailure(message.getHeader(EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS),
+                                                                              emailSender != null ? emailSender.getAddress() : null));
           String mailHeaderId = ((MimeMessage) message).getMessageID();
           String inReplyTo = firstHeader(message, HEADER_IN_REPLY_TO);
           String references = firstHeader(message, HEADER_REFERENCES);
