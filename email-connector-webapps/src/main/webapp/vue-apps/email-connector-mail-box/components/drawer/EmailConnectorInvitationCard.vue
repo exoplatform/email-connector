@@ -207,7 +207,7 @@ export default {
     },
     /**
      * What a message that answers rather than invites says: "MEYER accepted", "MEYER
-     * proposed a new time"… -- from the person it speaks for, their name or else their
+     * proposed a change"… -- from the person it speaks for, their name or else their
      * address; empty for an invitation.
      *
      * @returns {String} the sentence, empty when there is none

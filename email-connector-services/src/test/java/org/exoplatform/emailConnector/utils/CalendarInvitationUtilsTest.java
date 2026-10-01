@@ -161,8 +161,8 @@ class CalendarInvitationUtilsTest {
 
   /**
    * A message that answers rather than invites speaks for someone: the attendee of a
-   * REPLY with the answer given, of a COUNTER, or the organiser of a DECLINECOUNTER. An
-   * invitation speaks for nobody.
+   * REPLY with the answer given, of a REFRESH, of a COUNTER naming one, or the organiser of
+   * a DECLINECOUNTER. An invitation speaks for nobody.
    *
    * @throws Exception when a fixture cannot be read
    */
@@ -183,6 +183,10 @@ class CalendarInvitationUtilsTest {
                  CalendarInvitationUtils.parseInvitation(fixture("counter.ics"), ME, 50).invitation().getRespondent().getAddress());
     assertEquals("root@acme.com",
                  CalendarInvitationUtils.parseInvitation(fixture("declinecounter.ics"), ME, 50).invitation().getRespondent().getAddress());
+    assertEquals("meyer@acme.com",
+                 CalendarInvitationUtils.parseInvitation(fixture("refresh.ics"), ME, 50).invitation().getRespondent().getAddress());
+    assertNull(CalendarInvitationUtils.parseInvitation(fixture("counter-two-attendees.ics"), ME, 50).invitation().getRespondent(),
+               "a COUNTER listing several attendees does not say which proposes");
     assertNull(CalendarInvitationUtils.parseInvitation(fixture("google-weekly-request.ics"), ME, 50).invitation().getRespondent());
   }
 
