@@ -384,7 +384,14 @@ export default {
      * @returns {String} the label
      */
     currentFolderLabel() {
-      return this.visibleFolders.find(folder => folder.key === this.currentFolder)?.label || this.currentFolder;
+      // From the whole tree, not the rows on show: the listed folder stays listed when its
+      // parent is collapsed (EXO-90839), and must keep its name in the import drawer.
+      const folders = this.namespaceFolders || this.availableFolders;
+      const row = visibleFolderRows(buildFolderTree(this.availableFolders, folders), {}).find(candidate => candidate.folder.key === this.currentFolder);
+      if (!row) {
+        return this.currentFolder;
+      }
+      return row.showPath ? row.pathLabel : this.$emailConnectorMailBoxService.folderLabel(row.folder, this.$t.bind(this));
     },
     /**
      * Whether the FOLDERS section scrolls in its own bounded pane -- Benjamin's
