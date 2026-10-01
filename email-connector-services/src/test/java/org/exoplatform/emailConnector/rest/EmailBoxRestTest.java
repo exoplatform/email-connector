@@ -548,7 +548,8 @@ public class EmailBoxRestTest {
     mockMvc.perform(delete(EMAIL_BOX_PATH + "/archive?folder=CUSTOM:8").with(testSimpleUser())
                                                                       .content(asJsonString(emailIds))
                                                                       .contentType(MediaType.APPLICATION_JSON))
-           .andExpect(status().isBadRequest());
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.message").value("emailConnector.folder.crossMailbox"));
   }
 
   /**
@@ -1839,7 +1840,7 @@ public class EmailBoxRestTest {
   void everySharedMailboxVerbAnswersTheDelegationRefusals() throws Exception {
     MailboxRightMissingException missing = new MailboxRightMissingException(MailboxRights.KEEP_SEEN);
     DelegationRevokedException revoked = new DelegationRevokedException(DelegationRevokedException.REVOKED);
-    IllegalArgumentException crossMailbox = new IllegalArgumentException("emailConnector.move.crossMailbox");
+    IllegalArgumentException crossMailbox = new IllegalArgumentException("emailConnector.folder.crossMailbox");
     String ids = "[1212]";
 
     when(emailBoxService.getEmailBox(anyString(), anyString(), anyBoolean())).thenThrow(missing, revoked);
@@ -1900,7 +1901,7 @@ public class EmailBoxRestTest {
                                                   .content(ids)
                                                   .with(testSimpleUser()))
            .andExpect(status().isBadRequest())
-           .andExpect(status().reason(crossMailbox.getMessage()));
+           .andExpect(jsonPath("$.message").value(crossMailbox.getMessage()));
 
     for (String restore : List.of(MailFolder.TRASH, MailFolder.JUNK)) {
       String path = EMAIL_BOX_PATH + (MailFolder.TRASH.equals(restore) ? "/trash/restore" : "/junk/restore");
@@ -1908,7 +1909,7 @@ public class EmailBoxRestTest {
       expectDelegationRefusals(() -> post(path).contentType(MediaType.APPLICATION_JSON).content(ids));
       mockMvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).content(ids).with(testSimpleUser()))
              .andExpect(status().isBadRequest())
-             .andExpect(status().reason(crossMailbox.getMessage()));
+             .andExpect(jsonPath("$.message").value(crossMailbox.getMessage()));
     }
   }
 
