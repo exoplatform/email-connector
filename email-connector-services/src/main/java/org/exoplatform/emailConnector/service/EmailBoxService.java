@@ -15620,9 +15620,9 @@ public class EmailBoxService {
    * (EXO-90838): read from its MIME structure as the sync's extractor
    * ({@code EmailConnectorUtils#getHtmlFromMimeMultipart}) reads its parts, one level at
    * a time. In a multipart, the first {@code text/html} and the first {@code text/plain}
-   * are the body, a nested multipart is walked, an image with an {@code inline}
-   * disposition belongs to the body, and any other part with no disposition or an
-   * {@code attachment} one is an attachment. A message that is not a multipart has none.
+   * are the body, a nested multipart is walked, and any other part with no disposition
+   * or an {@code attachment} one is an attachment -- a part marked {@code inline}, an
+   * image of the body or not, never is. A message that is not a multipart has none.
    * Only the structure is read: on a message fetched with
    * {@code FetchProfile.Item.CONTENT_INFO} no body is downloaded. A message whose
    * structure cannot be read counts as having none.
@@ -15663,8 +15663,6 @@ public class EmailBoxService {
         if (part.getContent() instanceof Multipart nested && multipartHasStoredAttachment(nested)) {
           return true;
         }
-      } else if (part.isMimeType("image/*") && Part.INLINE.equalsIgnoreCase(disposition)) {
-        continue;
       } else if (disposition == null || Part.ATTACHMENT.equalsIgnoreCase(disposition)) {
         return true;
       }
