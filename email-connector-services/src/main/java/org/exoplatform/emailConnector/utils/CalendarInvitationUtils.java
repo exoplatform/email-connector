@@ -111,6 +111,8 @@ public final class CalendarInvitationUtils {
 
   /** The methods of a message that answers rather than invites, whatever it names. */
   public static final List<String>   ANSWER_METHODS = List.of(METHOD_REPLY, METHOD_COUNTER, METHOD_REFRESH, METHOD_DECLINECOUNTER);
+  /** The iTIP method of an event published to its readers, with nobody to answer. */
+  public static final String         METHOD_PUBLISH = "PUBLISH";
 
   /** What the reply says wrote it. */
   static final String                PRODUCT_ID     = "-//eXo Platform//eXo Email Connector//EN";
