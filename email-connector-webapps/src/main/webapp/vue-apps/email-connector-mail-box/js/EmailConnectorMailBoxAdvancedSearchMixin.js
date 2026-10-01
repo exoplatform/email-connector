@@ -58,11 +58,8 @@ export default {
     // The search row: whether its field replaces the chips, and its text.
     searchFieldOpen: false,
     searchFieldText: '',
-    // The local arm: the copy's hits, how many matched, the copy's oldest message date in
-    // the folder searched, and whether it is on its way.
+    // The local arm: the copy's hits, and whether they are on their way.
     searchLocalResults: [],
-    searchLocalTotal: 0,
-    searchCachedSince: null,
     searchLocalRunning: false,
     // Whether the mail server was asked for this search (always, without criteria).
     searchServerAsked: false,
@@ -115,26 +112,15 @@ export default {
       return !this.currentSharedMailbox;
     },
     /**
-     * What the results' status line says of the local arm while the mail server was not
-     * asked: the folder searched, since when eXo holds its mail, how many matched, and
-     * whether the whole mailbox can be searched on the server.
+     * Whether the results offer to search the whole mailbox on the server: an advanced
+     * search that read eXo's copy only, in the user's own mailbox, once that copy has
+     * answered.
      *
-     * @returns {Object} {running, folder, since, shown, total, offerServer}, or null when
-     *          the server arm runs, the copy could not be read, or the search is the
-     *          search box's alone
+     * @returns {Boolean} true when the button follows the hits
      */
-    localSearchStatus() {
-      if (!this.advancedSearchActive || this.searchServerAsked || this.searchServerError) {
-        return null;
-      }
-      return {
-        running: this.searchLocalRunning,
-        folder: this.folderLabelOf(this.searchFolder),
-        since: this.searchCachedSince ? this.searchDayLabel(new Date(this.searchCachedSince)) : null,
-        shown: this.searchLocalResults.length,
-        total: this.searchLocalTotal,
-        offerServer: this.serverArmAvailable && !this.searchLocalRunning,
-      };
+    offerServerSearch() {
+      return this.advancedSearchActive && this.serverArmAvailable && !this.searchServerAsked
+        && !this.searchServerError && !this.searchLocalRunning;
     },
     /**
      * The search row's state, the same wherever the row is drawn.
@@ -394,8 +380,6 @@ export default {
       window.clearTimeout(this.serverArmTimer);
       this.searchCriteria = emptySearchCriteria();
       this.searchLocalResults = [];
-      this.searchLocalTotal = 0;
-      this.searchCachedSince = null;
       this.searchLocalRunning = false;
       this.searchServerAsked = false;
       this.searchScanned = 0;
@@ -413,8 +397,6 @@ export default {
       if (!this.advancedSearchActive) {
         // The criteria may just have been taken off: their copy's hits go with them.
         this.searchLocalResults = [];
-        this.searchLocalTotal = 0;
-        this.searchCachedSince = null;
         this.searchLocalRunning = false;
         this.searchServerAsked = true;
         this.runServerSearch();
@@ -445,8 +427,6 @@ export default {
             return;
           }
           this.searchLocalResults = this.withLocalFavorites(page?.results || [], requestId);
-          this.searchLocalTotal = page?.totalMatches || 0;
-          this.searchCachedSince = page?.cachedSince || null;
           if (!this.searchLocalResults.length && this.serverArmAvailable) {
             const pause = this.searchPause(0);
             this.serverArmTimer = window.setTimeout(() => {
@@ -465,7 +445,6 @@ export default {
             return;
           }
           this.searchLocalResults = [];
-          this.searchLocalTotal = 0;
           this.searchServerError = true;
         })
         .finally(() => {

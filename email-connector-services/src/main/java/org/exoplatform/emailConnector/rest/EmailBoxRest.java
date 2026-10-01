@@ -802,12 +802,12 @@ public class EmailBoxRest {
    * @param folder folder to search: INBOX, SENT or ARCHIVE, or CUSTOM:&lt;id&gt; for a
    * folder of a mailbox shared with the caller
    * @param limit maximum number of hits to return (newest first)
-   * @return the email search result page, with the date of the copy's oldest message
+   * @return the email search result page
    */
   @GetMapping("/search/local")
   @Secured("users")
   @Operation(summary = "Searches one folder in the copy of the mailbox kept in eXo", method = "GET",
-             description = "Filters the messages of one folder that this add-on holds locally -- the newest of each folder, as the synchronization keeps them -- with the same criteria as /search, never touching the mail server. Returns the newest hits, the total match count and cachedSince, the date of the oldest message of that folder kept in eXo. At least one criterion is required; all of them are combined. The folder is INBOX, SENT or ARCHIVE, or a folder of a mailbox shared with the caller while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read. The attachment criterion is the attachments eXo holds for a message.")
+             description = "Filters the messages of one folder that this add-on holds locally -- the newest of each folder, as the synchronization keeps them -- with the same criteria as /search, never touching the mail server. Returns the newest hits and the total match count. At least one criterion is required; all of them are combined. The folder is INBOX, SENT or ARCHIVE, or a folder of a mailbox shared with the caller while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read. The attachment criterion is the attachments eXo holds for a message.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request: a folder that cannot be searched (emailConnector.folder.notBrowsable), no search criterion (emailConnector.search.criteriaRequired), a day that is not yyyy-MM-dd (emailConnector.search.invalidDate) or a before day not after the after day (emailConnector.search.invalidDateRange)"),
       @ApiResponse(responseCode = "403", description = "Forbidden operation"),
