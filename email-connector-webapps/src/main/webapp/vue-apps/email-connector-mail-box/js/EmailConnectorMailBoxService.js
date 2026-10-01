@@ -969,6 +969,8 @@ export function unlinkEmailsFromCategory(mailRemoteIds, categoryId, folder) {
  * @param {Object} options {broadcast}: false when the read must not count as the user
  *   opening the message -- a message the reader opened on its own, whose opening is
  *   signalled later by broadcastOpenEmail (EXO-90414). Counts when omitted.
+ *   {remoteContent}: true when the user asked to load the images and other resources
+ *   the message fetches from the internet (EXO-90841); held back when omitted.
  * @returns {Promise<Object>} the message
  */
 export function getEmailByRemoteId(mailRemoteId, folder, options = {}) {
@@ -978,6 +980,9 @@ export function getEmailByRemoteId(mailRemoteId, folder, options = {}) {
   }
   if (options.broadcast === false) {
     params.set('broadcast', 'false');
+  }
+  if (options.remoteContent) {
+    params.set('remoteContent', 'true');
   }
   const query = params.toString() ? `?${params.toString()}` : '';
   return fetch(`/email-connector/rest/email-box/${mailRemoteId}${query}`, {
