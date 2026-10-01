@@ -6147,6 +6147,7 @@ public class EmailBoxService {
     rawEmailSource.setSource(source);
     rawEmailSource.setHeaders(headerBlock(source));
     rawEmailSource.setTruncated(captured.isCapped());
+    rawEmailSource.setShownBytes(bytes.length);
     rawEmailSource.setSize(reportedSize.get() >= 0 ? reportedSize.get() : bytes.length);
     return rawEmailSource;
   }
@@ -6244,8 +6245,8 @@ public class EmailBoxService {
 
   /**
    * Whether the message the server holds under a UID is the one the reader's row was cached
-   * from: the same Message-ID, angle brackets and surrounding blanks aside. A row or a
-   * message without one cannot be compared and is taken as the same, which is all a UID
+   * from, by the class's one rule of Message-ID identity ({@link #sameMessageId}). A row or
+   * a message without one cannot be compared and is taken as the same, which is all a UID
    * read could ever say about it.
    *
    * @param cached the reader's cached row
@@ -6254,9 +6255,9 @@ public class EmailBoxService {
    * @throws MessagingException when the header cannot be read
    */
   private boolean isCachedMessage(Email cached, MimeMessage message) throws MessagingException {
-    String cachedId = StringUtils.strip(cached.getMailHeaderId(), "<> \t");
-    String remoteId = StringUtils.strip(message.getMessageID(), "<> \t");
-    return StringUtils.isBlank(cachedId) || StringUtils.isBlank(remoteId) || cachedId.equals(remoteId);
+    String remoteId = message.getMessageID();
+    return StringUtils.isBlank(cached.getMailHeaderId()) || StringUtils.isBlank(remoteId)
+        || sameMessageId(remoteId, cached.getMailHeaderId());
   }
 
   /**

@@ -185,6 +185,7 @@ class EmailBoxRawEmailTest {
     assertEquals(RAW, source.getSource());
     assertEquals("From: Alice <alice@example.com>\r\nSubject: Hello\r\nMessage-ID: <m1@example.com>", source.getHeaders());
     assertEquals(RAW.length(), source.getSize());
+    assertEquals(RAW.length(), source.getShownBytes());
     assertFalse(source.isTruncated());
     verify(inbox).open(Folder.READ_ONLY);
     verify(message).setPeek(true);
@@ -217,6 +218,7 @@ class EmailBoxRawEmailTest {
     assertTrue(source.isTruncated());
     assertEquals(EmailBoxService.RAW_SOURCE_SHOWN_MAX_BYTES, source.getSource().length());
     assertEquals(big.length, source.getSize());
+    assertEquals(EmailBoxService.RAW_SOURCE_SHOWN_MAX_BYTES, source.getShownBytes());
   }
 
   /**
@@ -399,8 +401,9 @@ class EmailBoxRawEmailTest {
   }
 
   /**
-   * The Message-ID comparison ignores the angle brackets, and a row cached without one is
-   * read: there is nothing to compare it with.
+   * The Message-ID comparison is the class's own ({@code sameMessageId}): angle brackets
+   * and the domain's case aside; and a row cached without one is read, there being nothing
+   * to compare it with.
    *
    * @throws Exception when a mock cannot be stubbed
    */
@@ -416,6 +419,9 @@ class EmailBoxRawEmailTest {
     cachedRow(OWNER, MailFolder.INBOX, "m1@example.com", "Hello");
     assertNotNull(emailBoxService.getRawEmailSource(UID, OWNER, MailFolder.INBOX));
     cachedRow(OWNER, MailFolder.INBOX, null, "Hello");
+    assertNotNull(emailBoxService.getRawEmailSource(UID, OWNER, MailFolder.INBOX));
+    // The domain's case is not part of the identity: the class's one rule (EXO-90437).
+    cachedRow(OWNER, MailFolder.INBOX, "<m1@EXAMPLE.COM>", "Hello");
     assertNotNull(emailBoxService.getRawEmailSource(UID, OWNER, MailFolder.INBOX));
   }
 
