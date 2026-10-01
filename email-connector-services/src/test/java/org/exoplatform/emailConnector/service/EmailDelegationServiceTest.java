@@ -42,6 +42,7 @@ import java.util.Date;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -1597,6 +1598,38 @@ class EmailDelegationServiceTest {
     assertEquals(List.of(FolderRole.JUNK), bobs.extendableRoles(), "the Spam her mailbox has and the share lacks, never Drafts");
     assertEquals(List.of(), erins.extendableRoles(), "a share made on the server is never extended from eXo");
     verify(engine, times(1)).findRoleFolders(any());
+  }
+
+  /**
+   * EXO-90839 -- the switcher entry gives each shared folder its full name in the owner's
+   * mailbox, below the share's root, and the owner's delimiter, so the delegate's folder
+   * lists nest the owner's folders as the owner does; a folder not under the root is given
+   * by its name.
+   */
+  @Test
+  void theSwitcherGivesEachSharedFolderItsPlaceInTheOwnersTree() throws Exception {
+    EmailDelegation share = aDovecotShare();
+    EmailFolder inbox = sharedInbox(share);
+    EmailFolder projects = delegated(21L, ROOT + "/Projects", true);
+    projects.setDelimiter("/");
+    projects.setDisplayName("Projects");
+    EmailFolder acme = delegated(22L, ROOT + "/Projects/Acme", true);
+    acme.setDelimiter("/");
+    acme.setDisplayName("Acme");
+    EmailFolder elsewhere = delegated(23L, "Other/Place", true);
+    elsewhere.setDelimiter("/");
+    elsewhere.setDisplayName("Place");
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(inbox, projects, acme, elsewhere));
+    when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(share));
+
+    List<SharedMailboxFolder> folders = service.getSharedMailboxes(GRANTEE).get(0).folders();
+
+    Map<String, String> paths = new HashMap<>();
+    folders.forEach(folder -> paths.put(folder.key(), folder.path()));
+    assertEquals("Projects", paths.get(projects.getKey()));
+    assertEquals("Projects/Acme", paths.get(acme.getKey()));
+    assertEquals("Place", paths.get(elsewhere.getKey()), "not under the share's root: its name");
+    assertTrue(folders.stream().allMatch(folder -> "/".equals(folder.delimiter())));
   }
 
   /**
