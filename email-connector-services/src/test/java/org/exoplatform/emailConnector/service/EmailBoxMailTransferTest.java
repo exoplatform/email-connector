@@ -574,6 +574,42 @@ class EmailBoxMailTransferTest {
   }
 
   /**
+   * The notice counts every message in the file: those copied whole, and the one cut
+   * mid-copy.
+   *
+   * @throws Exception when a mock cannot be stubbed
+   */
+  @Test
+  void theInterruptionCountsTheMessagesInTheFile() throws Exception {
+    connected(OWNER);
+    Store store = connectedStore(OWNER);
+    IMAPFolder inbox = uidFolder();
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.getMessageCount()).thenReturn(2);
+    IMAPMessage a = message("<a@x>", "A".getBytes(StandardCharsets.UTF_8));
+    IMAPMessage b = message("<b@x>", "B".getBytes(StandardCharsets.UTF_8));
+    folderOf(inbox, a, b);
+    RecordingVisitor visitor = new RecordingVisitor() {
+      /**
+       * Copies the first message whole, cuts the second.
+       *
+       * @param cached unused
+       * @param message the message
+       */
+      @Override
+      public void message(Email cached, MimeMessage message) {
+        if (message == b) {
+          throw new org.exoplatform.emailConnector.exception.ExportInterruptedException("cut", null);
+        }
+        events.add("whole");
+      }
+    };
+
+    assertTrue(emailBoxService.readFolderRawEmails(OWNER, MailFolder.INBOX, 10, visitor));
+    assertEquals(List.of("begin:2", "whole", "interrupted:2/2"), visitor.events);
+  }
+
+  /**
    * A folder larger than one window is read window by window -- each window its own
    * opening of the folder -- every message once, in order.
    *
@@ -658,7 +694,7 @@ class EmailBoxMailTransferTest {
    */
   private static class RecordingVisitor implements RawEmailVisitor {
 
-    private final List<String> events = new ArrayList<>();
+    final List<String>         events = new ArrayList<>();
 
     /**
      * Records the start.
