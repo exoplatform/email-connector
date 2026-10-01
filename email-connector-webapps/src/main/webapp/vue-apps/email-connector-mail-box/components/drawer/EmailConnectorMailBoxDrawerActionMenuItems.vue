@@ -38,6 +38,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-list-item
           v-for="folder in visibleFolders"
           :key="folder.key"
+          :disabled="folder.labelOnly"
           :style="folder.depth ? { paddingInlineStart: `${16 + Math.min(folder.depth, 6) * 16}px` } : null"
           :title="folder.path || null"
           class="height-auto"
@@ -287,13 +288,17 @@ export default {
     visibleFolders() {
       // A mailbox's folders (the user's own, or a shared mailbox's) as a tree (EXO-90839),
       // a collapsed one's folders left out.
-      return visibleFolderRows(buildFolderTree(this.availableFolders, this.namespaceFolders || this.availableFolders), this.collapsed).map(row => {
+      // A folder the user may only see is a label: never listed, never collapsed.
+      const collapsed = Object.assign({}, this.collapsed);
+      this.availableFolders.filter(folder => folder.readable === false).forEach(folder => delete collapsed[folder.key]);
+      return visibleFolderRows(buildFolderTree(this.availableFolders, this.namespaceFolders || this.availableFolders), collapsed).map(row => {
         const folder = row.folder;
         const scheduled = this.$emailConnectorMailBoxService.isScheduledView(folder.key);
         return {
           key: folder.key,
           depth: row.depth,
-          hasChildren: row.hasChildren,
+          hasChildren: row.hasChildren && folder.readable !== false,
+          labelOnly: folder.readable === false,
           path: this.$emailConnectorMailBoxService.folderPath(folder, this.namespaceFolders || this.availableFolders),
           icon: this.$emailConnectorMailBoxService.folderIcon(folder),
           label: row.showPath ? row.pathLabel : this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)),
