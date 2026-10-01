@@ -140,15 +140,24 @@ public class EmailFolderService {
   public static final String      UNKNOWN_FOLDER_MESSAGE             = "emailConnector.folder.unknown";
 
   /**
-   * The longest name a user may type for a folder they create or rename to. Bound by
-   * {@code DISPLAY_NAME VARCHAR(255)} rather than {@code REMOTE_NAME VARCHAR(500)}:
-   * for a folder this add-on writes (create) or moves within its own parent (rename),
-   * the remote name IS the display name -- there is no server-supplied path to make
-   * the two diverge the way discovery's {@code StringUtils.abbreviate(255)} allows --
-   * so the tighter of the two columns is the real limit, and typing past it is refused
-   * rather than silently shortened the way a discovered name is.
+   * The longest name a user may type for a folder they create or rename to: the
+   * folder's own name, which the registry keeps as its {@code DISPLAY_NAME VARCHAR(255)}.
+   * Typing past it is refused rather than silently shortened the way a discovered name
+   * is. The full name a folder gets inside its parents has its own bound,
+   * {@link #MAX_FOLDER_FULL_NAME_LENGTH}.
    */
   public static final int         MAX_FOLDER_NAME_LENGTH             = 255;
+
+  /**
+   * The longest full name a folder this add-on creates, renames or moves may get -- its
+   * parents' names, the delimiters and its own name -- and so may any folder inside it:
+   * the registry keeps it as {@code REMOTE_NAME VARCHAR(500)}. Checked before the
+   * server is asked, so the server never holds a folder the registry cannot.
+   */
+  public static final int         MAX_FOLDER_FULL_NAME_LENGTH        = 500;
+
+  /** The message code a full name past {@link #MAX_FOLDER_FULL_NAME_LENGTH} carries. */
+  public static final String      FOLDER_FULL_NAME_TOO_LONG_MESSAGE  = "emailConnector.folder.path.tooLong";
 
   /** The message code a blank or whitespace-only typed name carries. */
   public static final String      FOLDER_NAME_BLANK_MESSAGE          = "emailConnector.folder.name.blank";
@@ -213,6 +222,13 @@ public class EmailFolderService {
    * confirmation saying so never destroys more than the folder it named.
    */
   public static final String      FOLDER_HAS_SUB_FOLDERS_MESSAGE     = "emailConnector.folder.hasSubFolders";
+
+  /**
+   * The message code a delete carries when a folder inside the folder is one the mailbox
+   * uses as a built-in (its Sent, Archive, Drafts, Trash or Spam): never deleted as a
+   * sub-folder of the user's own.
+   */
+  public static final String      FOLDER_SUB_FOLDER_BUILT_IN_MESSAGE = "emailConnector.folder.subFolderBuiltIn";
 
   /** The message code a delete carries when a sub-folder of the folder still holds mail. */
   public static final String      FOLDER_SUB_FOLDER_NOT_EMPTY_MESSAGE = "emailConnector.folder.subFolderNotEmpty";
@@ -866,7 +882,12 @@ public class EmailFolderService {
    */
   public EmailFolder relocateFolder(String username, EmailFolder folder, String remoteName, String displayName) {
     List<EmailFolder> descendants = getOwnDescendants(username, folder);
-    EmailFolder relocated = emailFolderStorage.renameFolder(username, folder.getId(), remoteName, displayName);
+    // A name kept from the server on a move may be longer than the column, as a
+    // discovered one may: shortened the way discovery shortens it.
+    EmailFolder relocated = emailFolderStorage.renameFolder(username,
+                                                            folder.getId(),
+                                                            remoteName,
+                                                            StringUtils.abbreviate(displayName, MAX_FOLDER_NAME_LENGTH));
     String oldName = folder.getRemoteName();
     for (EmailFolder descendant : descendants) {
       String descendantName = remoteName + descendant.getRemoteName().substring(oldName.length());
@@ -881,6 +902,29 @@ public class EmailFolderService {
       }
     }
     return relocated;
+  }
+
+  /**
+   * Refuses a new full name the registry could not keep: the name itself, or -- for a
+   * folder that is renamed or moved -- the longest name one of the registered folders
+   * inside it would get. See {@link #MAX_FOLDER_FULL_NAME_LENGTH}.
+   *
+   * @param username the mailbox owner
+   * @param folder the folder renamed or moved, or null for a folder being created
+   * @param newRemoteName its new full name
+   * @throws IllegalArgumentException {@link #FOLDER_FULL_NAME_TOO_LONG_MESSAGE} past the bound
+   */
+  public void checkFullNameFits(String username, EmailFolder folder, String newRemoteName) {
+    int longest = newRemoteName.length();
+    if (folder != null) {
+      int growth = newRemoteName.length() - folder.getRemoteName().length();
+      for (EmailFolder descendant : getOwnDescendants(username, folder)) {
+        longest = Math.max(longest, descendant.getRemoteName().length() + growth);
+      }
+    }
+    if (longest > MAX_FOLDER_FULL_NAME_LENGTH) {
+      throw new IllegalArgumentException(FOLDER_FULL_NAME_TOO_LONG_MESSAGE);
+    }
   }
 
   /**
