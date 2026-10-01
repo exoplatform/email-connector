@@ -81,7 +81,7 @@ public class EmailDelegationInvitationPlugin extends BaseEmailDelegationNotifica
 
   /**
    * Builds the invitation in the receiver's language: who shared, with which preset,
-   * and the link to the mailbox where the settings screen answers it.
+   * and the link to the mailbox sharing settings where it is answered.
    *
    * @param ctx the notification context
    * @return the notification
@@ -103,8 +103,22 @@ public class EmailDelegationInvitationPlugin extends BaseEmailDelegationNotifica
                            .with(NotificationConstants.DELEGATION_ACTOR, StringUtils.defaultString(owner))
                            .with(NotificationConstants.DELEGATION_PRESET, preset)
                            .with(NotificationConstants.DELEGATION_ID, delegationId)
-                           .with(NotificationConstants.LINK, EmailConnectorUtils.getEmailsLink(receiver))
+                           .with(NotificationConstants.LINK, link(receiver))
                            .key(getKey())
                            .end();
+  }
+
+  /**
+   * The link a click follows by mail or push (EXO-90830): the mailbox's deep link opening
+   * the "Mailbox sharing" drawer on its "Shared with me" tab, where the waiting share is
+   * listed first with its Accept and Refuse -- not the mailbox's list, where a share not
+   * yet accepted does not appear. Opening it changes nothing: a mail link can be followed
+   * by a link scanner or a prefetch, so the answer is always the user's click on the page.
+   *
+   * @param receiver the grantee
+   * @return the link
+   */
+  static String link(String receiver) {
+    return EmailConnectorUtils.getEmailsLink(receiver) + "&sharedWithMe=true";
   }
 }
