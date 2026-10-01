@@ -232,7 +232,7 @@
       </init-params>
     </component-plugin>
     <!-- A mail import into a folder ended (EXO-90846): the folder, the added, skipped
-         and refused counts, and a message code -- nothing read from the imported files. -->
+         and refused counts, and a message code; nothing read from the imported files. -->
     <component-plugin>
       <name>notification.plugins</name>
       <set-method>addPlugin</set-method>
