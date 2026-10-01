@@ -288,8 +288,7 @@ export default {
           hasChildren: row.hasChildren,
           path: this.$emailConnectorMailBoxService.folderPath(folder),
           icon: this.$emailConnectorMailBoxService.folderIcon(folder),
-          label: row.showPath ? this.$emailConnectorMailBoxService.folderPath(folder)
-            : this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)),
+          label: row.showPath ? row.pathLabel : this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)),
           // Counted in the menu only for the Scheduled view, which is listed only when it
           // holds something and says when one of its mails needs the user (EXO-90434).
           count: scheduled ? folder.count || 0 : 0,
