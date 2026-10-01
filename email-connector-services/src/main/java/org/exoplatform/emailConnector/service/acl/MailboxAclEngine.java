@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.service.acl;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -107,6 +108,32 @@ public interface MailboxAclEngine {
    * @throws MailboxAclException when the server refuses or cannot be asked
    */
   List<MailboxAce> listAcl(MailboxAclSession session, String mailbox);
+
+  /**
+   * {@link #listAcl} of several folders at once, for a list that shows them all (the
+   * owner's "Folders and access", EXO-90816): an engine whose server answers them in a
+   * few calls overrides it, so that the list does not cost a round of requests per folder.
+   * A folder whose list could not be read is absent from the answer; a lost connection
+   * fails the whole read. The default asks {@link #listAcl} folder by folder.
+   *
+   * @param session the owner's session
+   * @param folders the folders' full names
+   * @return each readable folder's entries, by full name, in the order asked; never null
+   * @throws MailboxAclException {@code UNREACHABLE} when the server can no longer be asked
+   */
+  default Map<String, List<MailboxAce>> listAcls(MailboxAclSession session, List<String> folders) {
+    Map<String, List<MailboxAce>> acls = new LinkedHashMap<>();
+    for (String folder : folders) {
+      try {
+        acls.put(folder, listAcl(session, folder));
+      } catch (MailboxAclException e) {
+        if (MailboxAclException.UNREACHABLE.equals(e.getCode())) {
+          throw e;
+        }
+      }
+    }
+    return acls;
+  }
 
   /**
    * Grants one preset to one identifier on one mailbox, as this server expresses it,
