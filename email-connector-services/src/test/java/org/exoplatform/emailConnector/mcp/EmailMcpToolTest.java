@@ -955,8 +955,8 @@ class EmailMcpToolTest {
                                                       Map.of(),
                                                       SHARED_INBOX,
                                                       3,
-                                                      List.of(new SharedMailboxFolder("CUSTOM:6", FolderRole.SENT, "Sent", "lrs", Map.of(), true),
-                                                              new SharedMailboxFolder("CUSTOM:7", FolderRole.TRASH, "Trash", "lrs", Map.of(), true)),
+                                                      List.of(new SharedMailboxFolder("CUSTOM:6", FolderRole.SENT, "Sent", "lrs", Map.of(), true, "Sent", "/"),
+                                                              new SharedMailboxFolder("CUSTOM:7", FolderRole.TRASH, "Trash", "lrs", Map.of(), true, "Trash", "/")),
                                                       false,
                                                       true);
     when(emailDelegationService.getSharedMailbox(USERNAME, OWNER_MAILBOX)).thenReturn(share);
