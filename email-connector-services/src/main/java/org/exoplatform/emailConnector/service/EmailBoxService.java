@@ -6645,9 +6645,10 @@ public class EmailBoxService {
    * <p>
    * Every criterion of the advanced search applies here as on the mail server
    * (EXO-90838): the recipients are the To and Cc ones, the words are matched against
-   * the subject and the body as text, the days are those of the server's own zone, as
-   * IMAP {@code SINCE} and {@code BEFORE} count them, and a message has an attachment
-   * when eXo holds an attachment row for it -- what the reader lists.
+   * the subject and the body as text, the days are drawn in eXo's JVM zone -- the zone
+   * JavaMail writes the IMAP {@code SINCE} and {@code BEFORE} days in, which the mail
+   * server then matches against its own internal dates -- and a message has an
+   * attachment when eXo holds an attachment row for it: what the reader lists.
    *
    * @param username the reader
    * @param folderKey the shared folder's key, already checked
@@ -6674,7 +6675,7 @@ public class EmailBoxService {
                                                              : Set.of();
     // The search's own read, not the listing's: no attachment, category or excerpt, which
     // a search discards -- this runs once per keystroke in the drawer's search box.
-    List<Email> matches = emailBoxStorage.getEmailsForSearchInFolders(username, List.of(folderKey))
+    List<Email> matches = emailBoxStorage.getEmailsForSearchInFolders(username, List.of(folderKey), recipient != null)
                                          .stream()
                                          .filter(email -> !criteria.isUnreadOnly() || !email.isRead())
                                          .filter(email -> !criteria.isFavoritesOnly() || email.isStarred())
@@ -6730,9 +6731,11 @@ public class EmailBoxService {
   }
 
   /**
-   * The first instant of a day in the server's zone: the zone JavaMail writes an IMAP
+   * The first instant of a day in eXo's JVM zone: the zone JavaMail writes an IMAP
    * {@code SINCE} or {@code BEFORE} day in, so that the search of eXo's copy draws the
-   * day where the mail server's search is asked to.
+   * day as the mail server's search is asked for it. The mail server matches that day
+   * against its own internal dates, so near midnight the two can differ when its zone
+   * is not eXo's.
    *
    * @param day the day, may be null
    * @return its first instant, or null
@@ -15434,12 +15437,13 @@ public class EmailBoxService {
    * The IMAP search term of every criterion of the mailbox's advanced search
    * (EXO-90838), combined with AND.
    * <ul>
-   * <li>The words are matched against the subject or the body ({@code BODY}). The body
-   * is searched only when the user asks for it in the advanced search: on a server
-   * without a full-text index it is a scan of the folder, which the search box's own
-   * text, searched at every pause in the typing, must not trigger.</li>
+   * <li>The words are matched against the subject or the body ({@code BODY}); the search
+   * box's own text never is. On a server without a full-text index a body search is a
+   * scan of the folder, so the body is searched only while the user has set words in the
+   * advanced search -- and every search sent meanwhile, the search box's included,
+   * searches it again.</li>
    * <li>The days are IMAP {@code SINCE} (that day included) and {@code BEFORE} (that day
-   * excluded); JavaMail writes the day of the date it is given in the server's zone, so
+   * excluded); JavaMail writes the day of the date it is given in eXo's JVM zone, so
    * each bound is that day's first instant there ({@link #startOfServerDay}), which is
    * also correct when JavaMail falls back to matching on the client.</li>
    * <li>IMAP has no "has an attachment" key: a message carrying a file is a

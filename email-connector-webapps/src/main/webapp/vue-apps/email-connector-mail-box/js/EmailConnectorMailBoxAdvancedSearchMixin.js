@@ -37,6 +37,11 @@ export const APPLY_ADVANCED_SEARCH_EVENT = 'email-advanced-search-apply';
 // The user's own folders the mail server searches.
 const OWN_SEARCH_FOLDERS = ['INBOX', 'SENT', 'ARCHIVE'];
 
+// How long typing in the search box must pause before a new search while the advanced
+// search's words are set: each such search reads the messages' bodies, which a server
+// without a full-text index does by scanning the folder.
+const BODY_SEARCH_DEBOUNCE_MS = 1200;
+
 export default {
   data: () => ({
     // The advanced criteria, beside the search box's text: {from, to, words, after,
@@ -50,7 +55,11 @@ export default {
      * @returns {Boolean} true when one is set
      */
     advancedSearchActive() {
-      return hasSearchCriteria(this.searchCriteria);
+      const criteria = this.searchCriteria;
+      // Another folder with Unread or Favorites lit is a search too: the list cannot
+      // show that folder's unread or starred mail, the server can.
+      return hasSearchCriteria(criteria)
+        || !!criteria.folder && criteria.folder !== this.currentFolder && (this.unreadOnly || this.favoriteOnly);
     },
     /**
      * The folder the search reads: the one the advanced search names, else the one shown.
@@ -104,6 +113,28 @@ export default {
         chips.push({ key: 'favorites', label: this.$t('emailConnector.mailBox.search.chip.favorites') });
       }
       return chips;
+    },
+  },
+  watch: {
+    /**
+     * Keeps the page address's Unread in step while a search shows.
+     *
+     * @returns {void}
+     */
+    unreadOnly() {
+      if (this.searchActive) {
+        this.syncSearchUrl();
+      }
+    },
+    /**
+     * Keeps the page address's Favorites in step while a search shows.
+     *
+     * @returns {void}
+     */
+    favoriteOnly() {
+      if (this.searchActive) {
+        this.syncSearchUrl();
+      }
     },
   },
   created() {
@@ -180,7 +211,7 @@ export default {
      * @returns {void}
      */
     applyOpeningSearch(opening) {
-      if (!opening?.searchTerm && !hasSearchCriteria(opening?.searchCriteria)) {
+      if (!opening?.searchTerm && !opening?.searchCriteria) {
         return;
       }
       this.searchCriteria = { ...emptySearchCriteria(), ...(opening.searchCriteria || {}) };
@@ -188,7 +219,7 @@ export default {
       if (opening.searchTerm) {
         this.openSearchFromOutside(opening.searchTerm);
       } else {
-        this.runSearch('');
+        this.rerunSearch();
       }
     },
     /**
@@ -251,18 +282,28 @@ export default {
       clearSearchFromUrl();
     },
     /**
-     * A day of the search, as the user's language writes it.
+     * How long typing in the search box must pause before a search: longer while the
+     * advanced search's words are set, since each search then reads the bodies.
+     *
+     * @param {Number} defaultPause the search box's usual pause, in milliseconds
+     * @returns {Number} the pause, in milliseconds
+     */
+    searchPause(defaultPause) {
+      return (this.searchCriteria.words || '').trim() ? Math.max(defaultPause, BODY_SEARCH_DEBOUNCE_MS) : defaultPause;
+    },
+    /**
+     * A day of the search, as the platform writes a day in the user's language.
      *
      * @param {String} day yyyy-MM-dd
      * @returns {String} the day, written out
      */
     searchDayLabel(day) {
       const [year, month, date] = day.split('-').map(Number);
-      return new Date(year, month - 1, date).toLocaleDateString(eXo.env.portal.language, {
+      return this.$dateUtil.formatDateObjectToDisplay(new Date(year, month - 1, date), {
         year: 'numeric',
         month: 'short',
         day: 'numeric',
-      });
+      }, eXo.env.portal.language);
     },
   },
 };

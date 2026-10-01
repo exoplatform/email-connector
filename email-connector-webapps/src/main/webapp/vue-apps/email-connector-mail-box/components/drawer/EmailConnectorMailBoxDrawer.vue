@@ -221,6 +221,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               @toggle-important="toggleImportantView"
               @toggle-favorite="onToggleFavoriteFilter"
               @toggle-unread="toggleUnreadFilter"
+              :searchable="canSearch"
               @advanced-search="openAdvancedSearch" />
             <email-connector-mail-box-drawer-content
               v-if="hasEmails"
@@ -348,6 +349,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             @toggle-important="toggleImportantView"
             @toggle-favorite="onToggleFavoriteFilter"
             @toggle-unread="toggleUnreadFilter"
+            :searchable="canSearch"
             @advanced-search="openAdvancedSearch" />
           <template v-if="hasEmails">
             <email-connector-mail-box-drawer-content
@@ -1292,16 +1294,26 @@ export default {
       const view = this.folders.find(folder => isScheduledView(folder.key));
       return view ? `${view.count || 0}|${!!view.attention}` : '0|false';
     },
+    /**
+     * Whether a search is shown in place of the folder's list: the search box's text, or
+     * the advanced search's criteria (EXO-90838).
+     *
+     * @returns {Boolean} true while a search is shown
+     */
     searchActive() {
       return !!this.searchTerm || this.advancedSearchActive;
     },
-    // Instant matches from the emails the app already holds (the whole cached
-    // window of the current folder), on the same fields the server searches —
-    // subject and sender — so the instant list and the final one agree.
+    /**
+     * Instant matches from the emails the app already holds (the whole cached window of
+     * the current folder), on the same fields the server searches -- subject and sender
+     * -- so the instant list and the final one agree. None under advanced criteria or for
+     * another folder (EXO-90838): the listed window cannot tell a body's words, a
+     * recipient or an attachment, nor read another folder; the server answers alone.
+     *
+     * @returns {Array} the instant hits
+     */
     localSearchMatches() {
       const term = this.searchTerm.toLowerCase();
-      // Not under advanced criteria (EXO-90838): the listed window cannot tell a body's
-      // words, a recipient or an attachment, nor read another folder; the server answers.
       if (!term || this.advancedSearchActive || this.searchFolder !== this.currentFolder) {
         return [];
       }
@@ -1954,9 +1966,15 @@ export default {
     canDisplaySelectEmailPlaceHolder(emails) {
       return this.expanded && (!this.email || emails.includes(this.email.mailRemoteId));
     },
-    // The drawer's header filter field emitted a new value: instant local matches
-    // apply as soon as the debounce elapses, and the server search runs alongside.
-    // Clearing the field returns to the normal folder view at once.
+    /**
+     * The drawer's header filter field emitted a new value: instant local matches apply
+     * as soon as the debounce elapses, and the server search runs alongside. Clearing the
+     * field returns to the normal folder view at once -- unless advanced criteria still
+     * make a search (EXO-90838), which then runs without the text.
+     *
+     * @param {String} text the field's text
+     * @returns {void}
+     */
     onFilterUpdated(text) {
       window.clearTimeout(this.searchDebounceTimer);
       const term = (text || '').trim();
@@ -1964,8 +1982,15 @@ export default {
         this.clearSearch();
         return;
       }
-      this.searchDebounceTimer = window.setTimeout(() => this.runSearch(term), SEARCH_DEBOUNCE_MS);
+      this.searchDebounceTimer = window.setTimeout(() => this.runSearch(term), this.searchPause(SEARCH_DEBOUNCE_MS));
     },
+    /**
+     * Runs the search for a text, with the advanced criteria that stand, and writes it
+     * into the page address (EXO-90838).
+     *
+     * @param {String} term the search box's text, may be empty under advanced criteria
+     * @returns {void}
+     */
     runSearch(term) {
       this.searchTerm = term;
       this.cancelSelectMode();
@@ -2091,6 +2116,12 @@ export default {
       }
       return true;
     },
+    /**
+     * Ends the search: its text, its results, any answer still on its way, and its
+     * advanced criteria and page address (EXO-90838).
+     *
+     * @returns {void}
+     */
     clearSearch() {
       window.clearTimeout(this.searchDebounceTimer);
       // Invalidate any in-flight server answer.
