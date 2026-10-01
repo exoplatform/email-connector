@@ -104,6 +104,10 @@ export default {
           // The forwarding drawer alone, as the band's Manage opens it: a forwarding
           // notification's click (EXO-90656).
           this.$root.$emit(OPEN_FORWARDING_DRAWER_EVENT);
+        } else if (this.userEmailSetting.connected && event?.detail?.sharedWithMe) {
+          // The sharing drawer alone, on "Shared with me", as the switcher's "Manage
+          // shared mailboxes" opens it: a shared-mailbox invitation's click (EXO-90830).
+          this.$root.$emit('open-email-shared-with-me-drawer');
         } else if (this.userEmailSetting.connected) {
           this.$root.$emit('open-mail-box-drawer', event?.detail);
         }
