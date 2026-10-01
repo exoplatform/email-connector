@@ -17,8 +17,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- The row above the list (EXO-90838), in the drawer, in full screen and in a shared
        mailbox alike. At rest: the Important, Favorites and Unread chips, and on the right
-       the search and the advanced search buttons. Searching: a back arrow, the search
-       field across the column, and the advanced search button still on the right; the
+       the search (the platform's filter funnel) and the advanced search buttons.
+       Searching: a back arrow, the search field across the column, and the advanced search button still on the right; the
        arrow closes the field and empties it. "/" opens the field from anywhere on the
        page that is not itself a field. -->
   <div
@@ -37,13 +37,20 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ $vuetify.rtl && 'fa-arrow-right' || 'fa-arrow-left' }}
         </v-icon>
       </v-btn>
+      <!-- Flat and transparent on the row's grey, with the funnel inside, as the
+           platform's application toolbar draws its filter field. -->
       <v-text-field
         ref="field"
         :value="searchText"
         :placeholder="$t('emailConnector.mailBox.search.placeholder')"
         :aria-label="$t('emailConnector.mailBox.search.placeholder')"
+        :prepend-inner-icon="searchText && 'fa-filter primary--text' || 'fa-filter icon-default-color'"
         class="flex-grow-1 mx-2 mt-0 pt-0"
+        background-color="transparent"
         type="search"
+        autocomplete="off"
+        solo
+        flat
         dense
         hide-details
         @input="$emit('search-input', $event)"
@@ -69,7 +76,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       icon
       small
       @click="openSearch">
-      <v-icon size="16" class="icon-default-color">fa-search</v-icon>
+      <v-icon size="16" class="icon-default-color">fa-filter</v-icon>
     </v-btn>
     <v-btn
       v-if="searchable"
