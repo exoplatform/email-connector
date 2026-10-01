@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 
 import javax.mail.MessagingException;
 import javax.mail.internet.MimeMessage;
@@ -39,6 +40,9 @@ class MboxExportVisitor implements RawEmailVisitor {
   private static final Log     LOG           = ExoLogger.getLogger(MboxExportVisitor.class);
 
   private static final int     OUTPUT_BUFFER = 64 * 1024;
+
+  // The From_ line of the notice that ends an interrupted export.
+  private static final byte[]  INTERRUPTED_FROM_LINE = "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n".getBytes(StandardCharsets.US_ASCII);
 
   private final RawEmailSink   sink;
 
@@ -76,8 +80,8 @@ class MboxExportVisitor implements RawEmailVisitor {
    * @param message the message as the server holds it
    * @throws IOException when the output fails ({@link ExportOutputClosedException})
    * @throws MessagingException never
-   * @throws ExportInterruptedException when the server fails mid-copy: an mbox has no
-   *           place to say a message is cut short, so the download must fail instead
+   * @throws ExportInterruptedException when the server fails mid-copy: the message is
+   *           closed where the copy stopped, and the export stops to say so
    */
   @Override
   public void message(Email cached, MimeMessage message) throws IOException, MessagingException {
@@ -88,8 +92,26 @@ class MboxExportVisitor implements RawEmailVisitor {
     } catch (ExportOutputClosedException e) {
       throw e;
     } catch (MessagingException | IOException e) {
+      mbox.endMessage();
       throw new ExportInterruptedException("A message stopped mid-copy into an mbox export", e);
     }
+    mbox.endMessage();
+  }
+
+  /**
+   * Ends the file with one more message, from {@code MAILER-DAEMON}, saying the export is
+   * incomplete and how far it got: a mail application shows it in the imported folder,
+   * where the missing mail is looked for.
+   *
+   * @param handed how many messages were handed over (the last possibly cut short)
+   * @param count how many the folder held
+   * @throws IOException when the output fails
+   */
+  @Override
+  public void interrupted(int handed, int count) throws IOException {
+    out.write(INTERRUPTED_FROM_LINE);
+    mbox.startMessage();
+    mbox.write(EmailExportService.interruptedNotice(handed, count));
     mbox.endMessage();
   }
 
