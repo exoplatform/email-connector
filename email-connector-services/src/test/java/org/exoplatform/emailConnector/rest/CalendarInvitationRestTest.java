@@ -21,6 +21,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -49,6 +50,7 @@ import org.springframework.web.context.WebApplicationContext;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.SendModeUnavailableException;
 import org.exoplatform.emailConnector.model.CalendarInvitation;
+import org.exoplatform.emailConnector.model.CalendarLanding;
 import org.exoplatform.emailConnector.model.InvitationAnswer;
 import org.exoplatform.emailConnector.service.CalendarInvitationService;
 
@@ -180,6 +182,54 @@ class CalendarInvitationRestTest {
    *
    * @throws Exception when a request cannot be performed
    */
+  /**
+   * Adding and removing map their outcomes: the invitation with what became of it, and
+   * each refusal to its status with the code the reader shows (EXO-90848).
+   *
+   * @throws Exception when a request cannot be performed
+   */
+  @Test
+  void addingAndRemovingMapEveryOutcome() throws Exception {
+    CalendarInvitation landed = new CalendarInvitation();
+    landed.setLanding(CalendarLanding.LANDED);
+    landed.setLandingLink("/portal/dw/agenda?eventId=77");
+    when(calendarInvitationService.addToCalendar(12L, USER)).thenReturn(landed);
+    mockMvc.perform(post(PATH + "/calendar").with(simpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.landing").value("LANDED"))
+           .andExpect(jsonPath("$.landingLink").value("/portal/dw/agenda?eventId=77"));
+
+    CalendarInvitation removed = new CalendarInvitation();
+    removed.setLanding(CalendarLanding.REMOVED);
+    when(calendarInvitationService.removeFromCalendar(12L, USER)).thenReturn(removed);
+    mockMvc.perform(delete(PATH + "/calendar").with(simpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.landing").value("REMOVED"));
+
+    when(calendarInvitationService.addToCalendar(13L, USER)).thenThrow(new IllegalArgumentException(CalendarInvitationService.NOT_LANDABLE));
+    mockMvc.perform(post("/email-box/13/invitation/calendar").with(simpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(CalendarInvitationService.NOT_LANDABLE));
+
+    when(calendarInvitationService.removeFromCalendar(14L, USER)).thenThrow(new IllegalAccessException(CalendarInvitationService.NOT_LANDABLE));
+    mockMvc.perform(delete("/email-box/14/invitation/calendar").with(simpleUser()))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason(CalendarInvitationService.NOT_LANDABLE));
+
+    when(calendarInvitationService.addToCalendar(15L, USER)).thenThrow(new IllegalAccessException("User simple not allowed"));
+    mockMvc.perform(post("/email-box/15/invitation/calendar").with(simpleUser()))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason((String) null));
+
+    when(calendarInvitationService.addToCalendar(16L, USER)).thenThrow(new ObjectNotFoundException("gone"));
+    mockMvc.perform(post("/email-box/16/invitation/calendar").with(simpleUser())).andExpect(status().isNotFound());
+
+    when(calendarInvitationService.removeFromCalendar(17L, USER)).thenThrow(new IllegalStateException("Error connecting simple"));
+    mockMvc.perform(delete("/email-box/17/invitation/calendar").with(simpleUser()))
+           .andExpect(status().isInternalServerError())
+           .andExpect(status().reason((String) null));
+  }
+
   @Test
   void anUnknownAnswerIsRefused() throws Exception {
     reply(PATH, "MAYBE").andExpect(status().isBadRequest());

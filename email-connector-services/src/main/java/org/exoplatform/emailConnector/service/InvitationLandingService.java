@@ -23,18 +23,20 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.emailConnector.model.CalendarInvitation;
 import org.exoplatform.emailConnector.model.CalendarLanding;
 import org.exoplatform.emailConnector.model.InvitationLanding;
+import org.exoplatform.emailConnector.model.LandedInvitation;
 import org.exoplatform.emailConnector.plugin.InvitationCalendarPlugin;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
 /**
- * Hands an answered invitation to the add-on holding the user's calendar
- * (EXO-90848): the {@link InvitationCalendarPlugin} beans of the platform, found by
- * type at the moment of the answer, in this WAR's Spring context -- into which the
- * bridge publishes every other WAR's exported beans -- and asked in turn until one
- * holds a calendar for the user.
+ * Hands an invitation to the add-on holding the user's calendar (EXO-90848): the
+ * {@link InvitationCalendarPlugin} beans of the platform, found by type at the moment
+ * of the click, in this WAR's Spring context -- into which the bridge publishes every
+ * other WAR's exported beans -- and asked in turn until one holds a calendar for the
+ * user.
  * <p>
  * Tolerant by construction: no implementer, a context that cannot be listed, or an
  * implementer whose classes cannot be linked all read as "no calendar for this user",
@@ -60,20 +62,48 @@ public class InvitationLandingService {
   }
 
   /**
-   * Lands the answered invitation in the user's calendar, when an add-on holds one.
+   * Whether an add-on holds a calendar for the user, which decides whether the reader
+   * offers to add an invitation to it. No round trip: the implementers promise none.
    *
-   * @param landing the invitation, the user and their answer
-   * @return what became of it, null when no add-on holds a calendar for the user
+   * @param username the user
+   * @return true when one does
    */
-  public CalendarLanding land(InvitationLanding landing) {
+  public boolean holdsCalendarFor(String username) {
     for (InvitationCalendarPlugin plugin : plugins()) {
       try {
-        if (plugin.land(landing)) {
-          LOG.debug("The invitation {} answered by user {} landed in their calendar through {}",
+        if (plugin.holdsCalendarFor(username)) {
+          return true;
+        }
+      } catch (RuntimeException | LinkageError e) {
+        LOG.debug("Add-on {} could not say whether it holds a calendar for user {}; it is read as holding none",
+                  plugin.getClass().getName(),
+                  username,
+                  e);
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Lands the invitation in the user's calendar, when an add-on holds one, and tells
+   * the reader what became of it.
+   *
+   * @param landing the invitation, the user and what they asked
+   * @param invitation the invitation the reader shows, told the outcome and the link
+   */
+  public void land(InvitationLanding landing, CalendarInvitation invitation) {
+    for (InvitationCalendarPlugin plugin : plugins()) {
+      try {
+        LandedInvitation landed = plugin.land(landing);
+        if (landed != null) {
+          LOG.debug("The invitation {} of user {} {} their calendar through {}",
                     landing.uid(),
                     landing.username(),
+                    landed.removed() ? "was removed from" : "landed in",
                     plugin.getClass().getName());
-          return CalendarLanding.LANDED;
+          invitation.setLanding(landed.removed() ? CalendarLanding.REMOVED : CalendarLanding.LANDED);
+          invitation.setLandingLink(landed.removed() ? null : landed.link());
+          return;
         }
       } catch (LinkageError e) {
         // The add-on's classes cannot be linked: as if it were not installed.
@@ -83,22 +113,23 @@ public class InvitationLandingService {
                   e);
       } catch (IllegalArgumentException e) {
         // The sender's content, or a shape not landed yet: the user's to know, not an incident.
-        LOG.debug("The invitation {} answered by user {} was not landed by {}: {}",
+        LOG.debug("The invitation {} of user {} was not landed by {}: {}",
                   landing.uid(),
                   landing.username(),
                   plugin.getClass().getName(),
                   e.getMessage());
-        return CalendarLanding.REFUSED;
+        invitation.setLanding(CalendarLanding.REFUSED);
+        return;
       } catch (RuntimeException e) {
-        LOG.warn("The invitation {} answered by user {} could not be landed in their calendar by {}",
+        LOG.warn("The invitation {} of user {} could not be landed in their calendar by {}",
                  landing.uid(),
                  landing.username(),
                  plugin.getClass().getName(),
                  e);
-        return CalendarLanding.FAILED;
+        invitation.setLanding(CalendarLanding.FAILED);
+        return;
       }
     }
-    return null;
   }
 
   /**
