@@ -136,8 +136,25 @@ public class CalendarInvitation {
   private String                         answerRefusal;
 
   /**
-   * What became of the answer just given in the user's calendar (EXO-90848); null when
-   * no add-on holds a calendar for the user, and on a read.
+   * Whether "Add to my calendar" may be offered (EXO-90848): an add-on holds a calendar
+   * for the user, the mail is in their own mailbox, and the event is not cancelled.
+   */
+  private boolean                        landable;
+
+  /**
+   * Whether "Remove from my calendar" may be offered (EXO-90848): the mail is the
+   * organiser's cancellation, in the user's own mailbox, and an add-on holds a
+   * calendar for them.
+   */
+  private boolean                        removable;
+
+  /**
+   * What became of the invitation in the user's calendar after the click just made
+   * (EXO-90848); null when no add-on holds a calendar for the user, when there was
+   * nothing to do, and on a read.
    */
   private CalendarLanding                landing;
+
+  /** Where the event landed is read in the platform; null unless it landed. */
+  private String                         landingLink;
 }
