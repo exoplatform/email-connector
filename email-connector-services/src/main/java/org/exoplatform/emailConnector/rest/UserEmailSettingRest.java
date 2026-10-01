@@ -134,7 +134,8 @@ public class UserEmailSettingRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Connected"),
       @ApiResponse(responseCode = "400", description = "The provider expects the user to supply something"),
       @ApiResponse(responseCode = "403", description = "Forbidden operation"),
-      @ApiResponse(responseCode = "500", description = "The mailbox refused the service account") })
+      @ApiResponse(responseCode = "500", description = "The mailbox refused the service account, or no credentials provider "
+          + "of the connector's name is registered") })
   public void connectThroughProvider(HttpServletRequest request,
                                      @Parameter(description = "Email connector to connect to", required = true)
                                      @RequestParam(name = "emailConnectorId")
