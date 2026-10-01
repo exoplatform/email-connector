@@ -38,8 +38,36 @@ package org.exoplatform.emailConnector.model;
  * @param preset the preset the engine recognises in this entry, CUSTOM when none --
  *          the engine decides, because the letters a preset pushes differ per server
  *          (BlueMind's read share is {@code lrp}, an IMAP Reader is {@code lrs})
+ * @param scope where the entry stands: {@link AclScope#FOLDER} on the folder it was read
+ *          on, {@link AclScope#MAILBOX} on the owner's whole mailbox, which only a server
+ *          whose capabilities say {@code mailboxScope} lists; never null
  */
-public record MailboxAce(String identifier, MailboxRights rights, String nativeRights, DelegationPreset preset) {
+public record MailboxAce(String identifier, MailboxRights rights, String nativeRights, DelegationPreset preset, AclScope scope) {
+
+  /**
+   * Normalises the scope: an entry that names none stands on its folder.
+   *
+   * @param identifier the identifier
+   * @param rights the letters
+   * @param nativeRights the server's own vocabulary
+   * @param preset the preset the engine recognises
+   * @param scope where the entry stands, null for its folder
+   */
+  public MailboxAce {
+    scope = scope == null ? AclScope.FOLDER : scope;
+  }
+
+  /**
+   * An entry on the folder it was read on -- every entry of an RFC 4314 server.
+   *
+   * @param identifier the identifier
+   * @param rights the letters
+   * @param nativeRights the server's own vocabulary
+   * @param preset the preset the engine recognises
+   */
+  public MailboxAce(String identifier, MailboxRights rights, String nativeRights, DelegationPreset preset) {
+    this(identifier, rights, nativeRights, preset, AclScope.FOLDER);
+  }
 
   /**
    * An entry of a server whose vocabulary is the letters themselves, its preset read
