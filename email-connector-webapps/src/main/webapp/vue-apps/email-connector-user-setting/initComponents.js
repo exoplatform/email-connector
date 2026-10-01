@@ -18,6 +18,7 @@ import EmailConnectorUserSettingApp from './components/EmailConnectorUserSetting
 import EmailConnectorUserSettingBody from './components/main/EmailConnectorUserSettingBody.vue';
 import EmailConnectorUserSettingFolders from './components/main/EmailConnectorUserSettingFolders.vue';
 import EmailConnectorUserSettingReadReceipts from './components/main/EmailConnectorUserSettingReadReceipts.vue';
+import EmailConnectorUserSettingUndoSend from './components/main/EmailConnectorUserSettingUndoSend.vue';
 import EmailConnectorUserSettingAddressBook from './components/main/EmailConnectorUserSettingAddressBook.vue';
 import EmailConnectorUserSettingSignature from './components/main/EmailConnectorUserSettingSignature.vue';
 import EmailConnectorUserSettingAdvanced from './components/main/EmailConnectorUserSettingAdvanced.vue';
@@ -52,6 +53,7 @@ const components = {
   'email-connector-user-setting-body': EmailConnectorUserSettingBody,
   'email-connector-user-setting-folders': EmailConnectorUserSettingFolders,
   'email-connector-user-setting-read-receipts': EmailConnectorUserSettingReadReceipts,
+  'email-connector-user-setting-undo-send': EmailConnectorUserSettingUndoSend,
   'email-connector-user-setting-address-book': EmailConnectorUserSettingAddressBook,
   'email-connector-user-setting-signature': EmailConnectorUserSettingSignature,
   'email-connector-user-setting-advanced': EmailConnectorUserSettingAdvanced,
