@@ -27,10 +27,12 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
@@ -312,12 +314,12 @@ class EmailBoxMailTransferTest {
     when(inbox.getMessageCount()).thenReturn(2);
     IMAPMessage a = message("<a@x>", "A".getBytes(StandardCharsets.UTF_8));
     IMAPMessage b = message("<b@x>", "B".getBytes(StandardCharsets.UTF_8));
-    when(inbox.getMessages(1, 2)).thenReturn(new javax.mail.Message[] { a, b });
+    folderOf(inbox, a, b);
     RecordingVisitor visitor = new RecordingVisitor();
 
     assertTrue(emailBoxService.readFolderRawEmails(OWNER, MailFolder.INBOX, 2, visitor));
     assertEquals(List.of("begin:2", "folder-message", "folder-message"), visitor.events);
-    verify(inbox).open(Folder.READ_ONLY);
+    verify(inbox, times(2)).open(Folder.READ_ONLY);
     verify(a).setPeek(true);
     verify(b).setPeek(true);
 
@@ -371,7 +373,7 @@ class EmailBoxMailTransferTest {
     when(store.getFolder("Other Users/owner/INBOX")).thenReturn(shared);
     when(shared.getMessageCount()).thenReturn(1);
     IMAPMessage a = message("<a@x>", "A".getBytes(StandardCharsets.UTF_8));
-    when(shared.getMessages(1, 1)).thenReturn(new javax.mail.Message[] { a });
+    folderOf(shared, a);
     RecordingVisitor visitor = new RecordingVisitor();
 
     assertTrue(emailBoxService.readFolderRawEmails(DELEGATE, "CUSTOM:12", 10, visitor));
@@ -433,15 +435,18 @@ class EmailBoxMailTransferTest {
     Store store = connectedStore(OWNER);
     IMAPFolder inbox = uidFolder();
     when(store.getFolder("INBOX")).thenReturn(inbox);
-    when(inbox.getMessageCount()).thenReturn(1);
     IMAPMessage existing = mock(IMAPMessage.class);
     when(existing.getHeader("Message-ID")).thenReturn(new String[] { "<old@EXAMPLE.com>" });
-    when(inbox.getMessages(1, 1)).thenReturn(new javax.mail.Message[] { existing });
-    when(inbox.isOpen()).thenReturn(false);
+    // The server's search, the term matched against what the folder holds.
+    when(inbox.search(any())).thenAnswer(invocation -> {
+      javax.mail.search.SearchTerm term = invocation.getArgument(0);
+      return term.match(existing) ? new javax.mail.Message[] { existing } : new javax.mail.Message[0];
+    });
 
     MailImportTarget target = emailBoxService.openImportTarget(OWNER, MailFolder.INBOX);
 
     assertNotNull(target);
+    verify(inbox).open(Folder.READ_ONLY);
     assertTrue(target.contains("<old@example.com>"));
     assertTrue(target.contains("old@example.com"));
     assertFalse(target.contains("<new@example.com>"));
@@ -471,6 +476,105 @@ class EmailBoxMailTransferTest {
   }
 
   /**
+   * Once the export began, a folder the server fails to open, and a message whose
+   * envelope it fails to give, are each handed over as missing -- every row not yet
+   * handed, never a silent end of the selection.
+   *
+   * @throws Exception when a mock cannot be stubbed
+   */
+  @Test
+  void aServerFailureAfterTheExportBeganReportsTheRest() throws Exception {
+    connected(OWNER);
+    row(OWNER, MailFolder.INBOX, 11L, "<a@x>", "A");
+    row(OWNER, MailFolder.INBOX, 12L, "<b@x>", "B");
+    row(OWNER, "CUSTOM:9", 21L, "<c@x>", "C");
+    row(OWNER, "CUSTOM:9", 22L, "<d@x>", "D");
+    EmailFolder registered = new EmailFolder();
+    registered.setId(9L);
+    registered.setRemoteName("Invoices");
+    when(emailFolderStorage.getFolder(OWNER, 9L)).thenReturn(registered);
+    Store store = connectedStore(OWNER);
+    IMAPFolder inbox = uidFolder();
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    IMAPFolder invoices = uidFolder();
+    when(invoices.exists()).thenReturn(true);
+    when(store.getFolder("Invoices")).thenReturn(invoices);
+    IMAPMessage a = message("<a@x>", "A".getBytes(StandardCharsets.UTF_8));
+    IMAPMessage b = mock(IMAPMessage.class);
+    when(b.getMessageID()).thenThrow(new javax.mail.FolderClosedException(inbox, "dropped"));
+    when(inbox.getMessagesByUID(new long[] { 11L, 12L })).thenReturn(new javax.mail.Message[] { a, b });
+    doThrow(new javax.mail.MessagingException("renamed")).when(invoices).open(Folder.READ_ONLY);
+    RecordingVisitor visitor = new RecordingVisitor();
+
+    assertTrue(emailBoxService.readRawEmails(OWNER,
+                                             List.of(new RawEmailRef(MailFolder.INBOX, 11L),
+                                                     new RawEmailRef(MailFolder.INBOX, 12L),
+                                                     new RawEmailRef("CUSTOM:9", 21L),
+                                                     new RawEmailRef("CUSTOM:9", 22L)),
+                                             visitor));
+
+    assertEquals(List.of("begin:4", "message:A", "missing:B", "missing:C", "missing:D"), visitor.events);
+  }
+
+  /**
+   * A whole-folder export the server fails once begun is interrupted, never ended as a
+   * complete-looking file; one whose reader left ends quietly.
+   *
+   * @throws Exception when a mock cannot be stubbed
+   */
+  @Test
+  void aFolderExportTheServerFailsIsInterrupted() throws Exception {
+    connected(OWNER);
+    Store store = connectedStore(OWNER);
+    IMAPFolder inbox = uidFolder();
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.getMessageCount()).thenReturn(1);
+    IMAPMessage a = message("<a@x>", "A".getBytes(StandardCharsets.UTF_8));
+    when(inbox.getMessages()).thenReturn(new javax.mail.Message[] { a });
+    when(inbox.getUID(a)).thenReturn(7L);
+    when(inbox.getMessagesByUID(new long[] { 7L })).thenThrow(new javax.mail.StoreClosedException(store, "dropped"));
+    RecordingVisitor visitor = new RecordingVisitor();
+
+    assertThrows(org.exoplatform.emailConnector.exception.ExportInterruptedException.class,
+                 () -> emailBoxService.readFolderRawEmails(OWNER, MailFolder.INBOX, 10, visitor));
+    assertEquals(List.of("begin:1"), visitor.events);
+
+    doReturn(new javax.mail.Message[] { a }).when(inbox).getMessagesByUID(new long[] { 7L });
+    RawEmailVisitor gone = new RecordingVisitor() {
+      /**
+       * The reader left.
+       *
+       * @param cached unused
+       * @param message unused
+       * @throws java.io.IOException always
+       */
+      @Override
+      public void message(Email cached, MimeMessage message) throws java.io.IOException {
+        throw new org.exoplatform.emailConnector.exception.ExportOutputClosedException(new java.io.IOException("reset"));
+      }
+    };
+    assertTrue(emailBoxService.readFolderRawEmails(OWNER, MailFolder.INBOX, 10, gone));
+  }
+
+  /**
+   * Stubs a folder's messages for a whole-folder export: their UIDs, and the messages by
+   * UID.
+   *
+   * @param folder the folder
+   * @param messages its messages, oldest first
+   * @throws Exception when the mock cannot be stubbed
+   */
+  private void folderOf(IMAPFolder folder, IMAPMessage... messages) throws Exception {
+    when(folder.getMessages()).thenReturn(messages);
+    long[] uids = new long[messages.length];
+    for (int i = 0; i < messages.length; i++) {
+      uids[i] = i + 1L;
+      when(folder.getUID(messages[i])).thenReturn(uids[i]);
+    }
+    when(folder.getMessagesByUID(uids)).thenReturn(messages);
+  }
+
+  /**
    * Stubs one cached row of the caller.
    *
    * @param username the caller
@@ -490,7 +594,7 @@ class EmailBoxMailTransferTest {
   /**
    * Records what an export hands its visitor.
    */
-  private static final class RecordingVisitor implements RawEmailVisitor {
+  private static class RecordingVisitor implements RawEmailVisitor {
 
     private final List<String> events = new ArrayList<>();
 
@@ -509,9 +613,10 @@ class EmailBoxMailTransferTest {
      *
      * @param cached the cached row, null for a folder export
      * @param message the message
+     * @throws java.io.IOException never here; a subclass's output may fail
      */
     @Override
-    public void message(Email cached, MimeMessage message) {
+    public void message(Email cached, MimeMessage message) throws java.io.IOException {
       events.add(cached == null ? "folder-message" : "message:" + cached.getSubject());
     }
 

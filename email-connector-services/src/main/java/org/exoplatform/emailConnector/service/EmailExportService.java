@@ -61,9 +61,11 @@ public class EmailExportService {
 
   /**
    * The most messages one {@code .zip} holds. The selection travels in the query string
-   * of a plain download link, so the cap is the request line's: two hundred references
-   * stay well inside every proxy's limit, and a larger set is a folder's, which the
-   * {@code .mbox} export serves.
+   * of a plain download link, one {@code mails} parameter per folder carrying that
+   * folder's UIDs comma-separated, colons and commas left unescaped: at most 11 bytes per
+   * UID (ten digits and a comma) plus about 30 per folder, so 200 UIDs in a handful of
+   * folders take under 2.5 KB of a request line Tomcat bounds at 8 KB together with the
+   * headers. A larger set is a folder's, which the {@code .mbox} export serves.
    */
   public static final int                MAX_ZIP_MAILS            = 200;
 
@@ -226,10 +228,10 @@ public class EmailExportService {
   }
 
   /**
-   * Reads the selection keys the mailbox list makes -- {@code <folder>:<uid>}, the folder
-   * key itself possibly holding a colon ({@code CUSTOM:12:4242}) -- into references.
-   * A draft key, or anything that is not one, refuses the whole selection: the list
-   * never offers a draft for export.
+   * Reads the selection the mailbox list sends -- {@code <folder>:<uid>[,<uid>...]}, the
+   * folder key itself possibly holding a colon ({@code CUSTOM:12:4242,4243}) -- into
+   * references, one per UID. A draft key, or anything that is not one, refuses the whole
+   * selection: the list never offers a draft for export.
    *
    * @param selection the keys
    * @return the references, in the order given
@@ -245,16 +247,19 @@ public class EmailExportService {
       if (separator <= 0 || separator == key.length() - 1) {
         throw new IllegalArgumentException(EXPORT_INVALID_SELECTION);
       }
-      long uid;
-      try {
-        uid = Long.parseLong(key.substring(separator + 1));
-      } catch (NumberFormatException e) {
-        throw new IllegalArgumentException(EXPORT_INVALID_SELECTION);
+      String folder = key.substring(0, separator);
+      for (String id : key.substring(separator + 1).split(",", -1)) {
+        long uid;
+        try {
+          uid = Long.parseLong(id);
+        } catch (NumberFormatException e) {
+          throw new IllegalArgumentException(EXPORT_INVALID_SELECTION);
+        }
+        if (uid <= 0) {
+          throw new IllegalArgumentException(EXPORT_INVALID_SELECTION);
+        }
+        refs.add(new RawEmailRef(folder, uid));
       }
-      if (uid <= 0) {
-        throw new IllegalArgumentException(EXPORT_INVALID_SELECTION);
-      }
-      refs.add(new RawEmailRef(key.substring(0, separator), uid));
     }
     return refs;
   }

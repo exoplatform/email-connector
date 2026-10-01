@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
@@ -41,10 +42,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -54,6 +53,7 @@ import javax.mail.Folder;
 import javax.mail.Message;
 import javax.mail.MessagingException;
 import javax.mail.StoreClosedException;
+import javax.mail.search.SearchTerm;
 import javax.mail.internet.MimeMessage;
 
 import org.junit.jupiter.api.AfterEach;
@@ -134,6 +134,8 @@ class EmailImportServiceTest {
 
   private Folder                        folder;
 
+  private final List<MimeMessage>       inFolder  = new ArrayList<>();
+
   private MockedStatic<RequestLifeCycle> requestLifeCycle;
 
   private MockedStatic<ExoContainerContext> containerContext;
@@ -173,8 +175,18 @@ class EmailImportServiceTest {
     lenient().when(settingService.get(any(), any(), eq(EmailImportService.MAIL_IMPORT_STATE_KEY)))
              .thenAnswer(invocation -> settings.containsKey(USER) ? SettingValue.create(settings.get(USER)) : null);
     folder = mock(Folder.class);
-    Set<String> known = new HashSet<>(Set.of("old@example.com"));
-    lenient().when(emailBoxService.openImportTarget(USER, FOLDER)).thenAnswer(invocation -> new MailImportTarget(folder, known, closedWith::set));
+    inFolder.add(parse(MAIL_OLD));
+    // The folder's search, as a server runs it: the term matched against what it holds.
+    lenient().when(folder.search(any())).thenAnswer(invocation -> {
+      SearchTerm term = invocation.getArgument(0);
+      return inFolder.stream().filter(term::match).toArray(Message[]::new);
+    });
+    // What is appended is then in the folder, for the next run's search.
+    lenient().doAnswer(invocation -> {
+      inFolder.add((MimeMessage) ((Message[]) invocation.getArgument(0))[0]);
+      return null;
+    }).when(folder).appendMessages(any());
+    lenient().when(emailBoxService.openImportTarget(USER, FOLDER)).thenAnswer(invocation -> new MailImportTarget(folder, closedWith::set));
   }
 
   /**
@@ -206,11 +218,7 @@ class EmailImportServiceTest {
     upload("u1", "one.eml", MAIL_NEW.replace("<new@", "<eml@").getBytes(StandardCharsets.US_ASCII));
     upload("u2", "box.mbox", mbox.getBytes(StandardCharsets.US_ASCII));
     upload("u3", "mails.zip", zip(Map.of("a.pdf", "%PDF-1.7".getBytes(StandardCharsets.US_ASCII))));
-    List<Message> appended = new ArrayList<>();
-    doAnswer(invocation -> {
-      appended.add(((Message[]) invocation.getArgument(0))[0]);
-      return null;
-    }).when(folder).appendMessages(any());
+    long importDirsBefore = importDirs();
 
     MailImportState started = service.startImport(USER, FOLDER, List.of("u1", "u2", "u3"));
 
@@ -223,6 +231,7 @@ class EmailImportServiceTest {
     assertEquals(Map.of(MailImportRefusal.NOT_A_MAIL.name(), 1L), state.getRefusals());
     assertNull(state.getMessageCode());
     assertEquals(state.getTotalBytes(), state.getProcessedBytes());
+    List<MimeMessage> appended = inFolder.subList(1, inFolder.size());
     assertEquals(3, appended.size());
     assertTrue(appended.get(0).isSet(Flags.Flag.SEEN), "a source that says nothing is imported read");
     assertFalse(appended.get(1).isSet(Flags.Flag.SEEN), "Thunderbird's unread bit is kept");
@@ -233,6 +242,7 @@ class EmailImportServiceTest {
     verify(uploadService).removeUploadResource("u1");
     verify(uploadService).removeUploadResource("u2");
     verify(uploadService).removeUploadResource("u3");
+    assertEquals(importDirsBefore, importDirs(), "the run's directory is deleted when it ends");
     assertEquals(1, notified.size());
     verify(notified.get(0)).append(MailImportFinishedNotificationPlugin.ADDED, "3");
     verify(notified.get(0)).append(MailImportFinishedNotificationPlugin.SKIPPED, "2");
@@ -251,8 +261,6 @@ class EmailImportServiceTest {
     service.startImport(USER, FOLDER, List.of("u1"));
     assertEquals(1, service.getImportState(USER).getAdded());
     upload("u2", "one.eml", MAIL_NEW.getBytes(StandardCharsets.US_ASCII));
-    Set<String> known = new HashSet<>(Set.of("old@example.com", "new@example.com"));
-    when(emailBoxService.openImportTarget(USER, FOLDER)).thenAnswer(invocation -> new MailImportTarget(folder, known, closedWith::set));
 
     service.startImport(USER, FOLDER, List.of("u2"));
 
@@ -279,11 +287,11 @@ class EmailImportServiceTest {
     }
     assertEquals(EmailImportService.IMPORT_TOO_MANY_FILES,
                  assertThrows(IllegalArgumentException.class, () -> service.startImport(USER, FOLDER, tooMany)).getMessage());
-    verify(uploadService).removeUploadResource("u" + EmailImportService.MAX_IMPORT_FILES);
+
 
     assertEquals(EmailImportService.IMPORT_UPLOAD_MISSING,
                  assertThrows(IllegalArgumentException.class, () -> service.startImport(USER, FOLDER, List.of("gone"))).getMessage());
-    verify(uploadService).removeUploadResource("gone");
+
 
     File big = dir.resolve("big.mbox").toFile();
     try (RandomAccessFile file = new RandomAccessFile(big, "rw")) {
@@ -294,12 +302,13 @@ class EmailImportServiceTest {
     when(uploadService.getUploadResource("big")).thenReturn(bigUpload);
     assertEquals(EmailImportService.IMPORT_TOO_LARGE,
                  assertThrows(IllegalArgumentException.class, () -> service.startImport(USER, FOLDER, List.of("big"))).getMessage());
-    verify(uploadService).removeUploadResource("big");
+
 
     doThrow(new MailboxRightMissingException(MailboxRights.INSERT)).when(emailBoxService).checkImportTarget(USER, "CUSTOM:9");
     assertThrows(MailboxRightMissingException.class, () -> service.startImport(USER, "CUSTOM:9", List.of("w9")));
-    verify(uploadService).removeUploadResource("w9");
 
+    // An upload id is not bound to its user: a refused request deletes none it named.
+    verify(uploadService, never()).removeUploadResource(anyString());
     verify(service, never()).scheduleRun(any());
     assertTrue(notified.isEmpty());
   }
@@ -321,7 +330,7 @@ class EmailImportServiceTest {
 
     IllegalStateException conflict = assertThrows(IllegalStateException.class, () -> service.startImport(USER, FOLDER, List.of("u1")));
     assertEquals(EmailImportService.IMPORT_ALREADY_RUNNING, conflict.getMessage());
-    verify(uploadService).removeUploadResource("u1");
+    verify(uploadService, never()).removeUploadResource("u1");
     assertEquals(SyncStatus.IN_PROGRESS, service.getImportState(USER).getStatus());
 
     running.setUpdatedDate(System.currentTimeMillis() - EmailImportService.STALE_AFTER_MS - 1);
@@ -334,6 +343,36 @@ class EmailImportServiceTest {
     upload("u2", "one.eml", MAIL_NEW.getBytes(StandardCharsets.US_ASCII));
     service.startImport(USER, FOLDER, List.of("u2"));
     assertEquals(SyncStatus.SUCCESS, service.getImportState(USER).getStatus());
+  }
+
+  /**
+   * A run that starts long after its request -- its thread late, its node busy -- first
+   * writes its state, so no node reads it as dead while it goes; and it reads the files
+   * it took out of the upload service even when the uploads are gone meanwhile (the
+   * session that made them ended).
+   *
+   * @throws Exception when a mock cannot be stubbed
+   */
+  @Test
+  void aLateRunWritesItsStateFirstAndOwnsItsFiles() throws Exception {
+    List<Runnable> runs = new ArrayList<>();
+    doAnswer(invocation -> runs.add(invocation.getArgument(0))).when(service).scheduleRun(any(Runnable.class));
+    Path uploaded = upload("u1", "one.eml", MAIL_NEW.getBytes(StandardCharsets.US_ASCII));
+    service.startImport(USER, FOLDER, List.of("u1"));
+    assertFalse(Files.exists(uploaded), "the run took the file out of the upload service");
+    MailImportState stale = JsonUtils.fromJsonString(settings.get(USER), MailImportState.class);
+    stale.setUpdatedDate(System.currentTimeMillis() - EmailImportService.STALE_AFTER_MS - 1);
+    settings.put(USER, JsonUtils.toJsonString(stale));
+    long[] updatedWhenOpened = new long[1];
+    when(emailBoxService.openImportTarget(USER, FOLDER)).thenAnswer(invocation -> {
+      updatedWhenOpened[0] = JsonUtils.fromJsonString(settings.get(USER), MailImportState.class).getUpdatedDate();
+      return new MailImportTarget(folder, closedWith::set);
+    });
+
+    runs.get(0).run();
+
+    assertTrue(System.currentTimeMillis() - updatedWhenOpened[0] < EmailImportService.STALE_AFTER_MS);
+    assertEquals(1, service.getImportState(USER).getAdded());
   }
 
   /**
@@ -441,14 +480,40 @@ class EmailImportServiceTest {
    * @param uploadId the upload id
    * @param name the file's name
    * @param content its bytes
+   * @return the file the upload holds
    * @throws IOException when it cannot be written
    */
-  private void upload(String uploadId, String name, byte[] content) throws IOException {
+  private Path upload(String uploadId, String name, byte[] content) throws IOException {
     Path path = dir.resolve(uploadId + "-" + name);
     Files.write(path, content);
     UploadResource resource = mock(UploadResource.class);
     lenient().when(resource.getStoreLocation()).thenReturn(path.toString());
     lenient().when(uploadService.getUploadResource(uploadId)).thenReturn(resource);
+    return path;
+  }
+
+  /**
+   * How many import directories the temporary directory holds.
+   *
+   * @return the count
+   * @throws IOException when it cannot be listed
+   */
+  private static long importDirs() throws IOException {
+    try (java.util.stream.Stream<Path> paths = Files.list(Path.of(System.getProperty("java.io.tmpdir")))) {
+      return paths.filter(path -> path.getFileName().toString().startsWith("email-import-")).count();
+    }
+  }
+
+  /**
+   * A mail parsed from its source.
+   *
+   * @param raw the source
+   * @return the message
+   * @throws Exception when it cannot be parsed
+   */
+  private static MimeMessage parse(String raw) throws Exception {
+    return new MimeMessage(javax.mail.Session.getInstance(new java.util.Properties()),
+                           new java.io.ByteArrayInputStream(raw.getBytes(StandardCharsets.US_ASCII)));
   }
 
   /**
