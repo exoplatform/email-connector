@@ -45,12 +45,27 @@ class EmailSecurityUtilsTest {
     assertNull(verdict("mx.example.com; spf=fail smtp.mailfrom=list.example; dkim=pass header.d=news.example"));
     assertEquals(EmailSecurityUtils.AUTH_SPF, verdict("mx.example.com; spf=fail smtp.mailfrom=bank.example; dkim=none"));
     assertNull(verdict("mx.example.com; spf=softfail smtp.mailfrom=bank.example; dkim=none"));
-    assertEquals(EmailSecurityUtils.AUTH_DKIM, verdict("mx.example.com; dkim=fail (bad signature) header.d=bank.example; spf=neutral"));
+    assertEquals(EmailSecurityUtils.AUTH_DKIM, verdict("mx.example.com; dkim=fail (bad signature) header.d=news.example; spf=neutral"));
     assertNull(verdict("mx.example.com; dkim=fail header.d=x.example; spf=pass smtp.mailfrom=x.example"));
-    assertNull(verdict("mx.example.com; dkim=fail header.d=x.example; dkim=pass header.d=y.example"));
+    assertNull(verdict("mx.example.com; dkim=fail header.d=x.example; dkim=pass header.d=mail.news.example"));
     assertNull(verdict("mx.example.com; none"));
     assertNull(verdict("mx.example.com; dmarc=none; spf=neutral"));
     assertEquals(EmailSecurityUtils.AUTH_DMARC, verdict("MX.EXAMPLE.COM;\r\n\tDMARC=FAIL action=none header.from=bank.example"));
+  }
+
+  /**
+   * Only a DKIM signature aligned with the {@code From} domain vouches for a message: a
+   * sender signing with their own domain cannot cover an SPF failure of someone else's.
+   * A signature naming no domain, or a message with no known {@code From}, counts as
+   * aligned.
+   */
+  @Test
+  void onlyAnAlignedSignatureVouches() {
+    assertEquals(EmailSecurityUtils.AUTH_SPF, verdict("mx.example.com; spf=fail; dkim=pass header.d=evil.example"));
+    assertNull(verdict("mx.example.com; spf=fail; dkim=pass header.i=@Mail.News.Example"));
+    assertNull(verdict("mx.example.com; spf=fail; dkim=pass header.s=s1"));
+    assertNull(EmailSecurityUtils.authenticationFailure(new String[] { "mx.example.com; spf=fail; dkim=pass header.d=evil.example" }, null));
+    assertNull(verdict("mx.example.com; spf=neutral; dkim=fail header.d=evil.example"));
   }
 
   /**
@@ -70,12 +85,12 @@ class EmailSecurityUtilsTest {
   @Test
   void onlyTheReceivingServersHeaderCounts() {
     assertNull(EmailSecurityUtils.authenticationFailure(new String[] { "mx.example.com; dmarc=pass",
-        "forged.example; dmarc=fail" }));
+        "forged.example; dmarc=fail" }, null));
     assertEquals(EmailSecurityUtils.AUTH_DMARC,
-                 EmailSecurityUtils.authenticationFailure(new String[] { "mx.example.com; dmarc=fail", "other; dmarc=pass" }));
-    assertNull(EmailSecurityUtils.authenticationFailure(null));
-    assertNull(EmailSecurityUtils.authenticationFailure(new String[0]));
-    assertNull(EmailSecurityUtils.authenticationFailure(new String[] { " " }));
+                 EmailSecurityUtils.authenticationFailure(new String[] { "mx.example.com; dmarc=fail", "other; dmarc=pass" }, null));
+    assertNull(EmailSecurityUtils.authenticationFailure(null, null));
+    assertNull(EmailSecurityUtils.authenticationFailure(new String[0], null));
+    assertNull(EmailSecurityUtils.authenticationFailure(new String[] { " " }, null));
   }
 
   /**
@@ -156,12 +171,12 @@ class EmailSecurityUtilsTest {
   }
 
   /**
-   * The verdict of one header.
+   * The verdict of one header, for a message from {@code news.example}.
    *
    * @param header the header's value
    * @return the failure named, or null
    */
   private static String verdict(String header) {
-    return EmailSecurityUtils.authenticationFailure(new String[] { header });
+    return EmailSecurityUtils.authenticationFailure(new String[] { header }, "letters@news.example");
   }
 }
