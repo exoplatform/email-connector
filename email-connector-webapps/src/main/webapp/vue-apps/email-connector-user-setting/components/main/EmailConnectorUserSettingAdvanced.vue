@@ -56,6 +56,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
            not an action taken on mail. -->
       <email-connector-user-setting-folders />
       <email-connector-user-setting-read-receipts />
+      <!-- Undo send (EXO-90837): beside the read receipts, the other choice about how a
+           mail the user sends goes out. -->
+      <email-connector-user-setting-undo-send />
       <!-- The automatic reply (EXO-90642): a setting of the user's own mailbox, run by
            the mail server. Each of these two rows is self-contained -- it reads its own
            summary and opens a drawer mounted at the app's root -- so it can move in this
