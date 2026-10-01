@@ -779,8 +779,9 @@ public class EmailScheduledSendServiceTest {
 
   /**
    * A send with an Undo freezes the draft through the scheduling's own path into a HELD
-   * row due at the end of the sender's stored wait -- no zone, not counted against the
-   * limit -- and arms this node's timer for just after that instant.
+   * row -- no zone, not counted against the limit -- that is not due while the freeze
+   * runs (no dispatcher may claim it then), and whose wait of the sender's stored length
+   * starts once the freeze is over, with this node's timer armed for just after it.
    *
    * @throws Exception never
    */
@@ -799,6 +800,7 @@ public class EmailScheduledSendServiceTest {
       row.setId(41L);
       return row;
     });
+    when(storage.startHeldWait(eq(41L), any(Date.class), any(Date.class))).thenReturn(true);
     long before = service.now().getTime();
 
     UndoableSend held = service.sendUndoable(draft(), USER);
@@ -808,17 +810,47 @@ public class EmailScheduledSendServiceTest {
     assertEquals(ScheduledSendStatus.HELD, row.getValue().getStatus());
     assertEquals(9L, row.getValue().getEmailId());
     assertNull(row.getValue().getTimeZone());
-    long due = row.getValue().getNextAttemptDate().getTime();
-    assertEquals(row.getValue().getScheduledDate().getTime(), due);
-    assertTrue(due >= before + 20_000 && due <= before + 21_000, "due at the end of the stored wait");
+    assertTrue(row.getValue().getNextAttemptDate().getTime() >= before + 20_000 + EmailScheduledSendService.HELD_FREEZE_MARGIN_MS,
+               "not due while the draft is frozen");
+    ArgumentCaptor<Date> due = ArgumentCaptor.forClass(Date.class);
+    ArgumentCaptor<Date> started = ArgumentCaptor.forClass(Date.class);
+    org.mockito.InOrder order = org.mockito.Mockito.inOrder(emailBoxService, storage, heldTimer);
+    order.verify(emailBoxService).scheduleDraft(any(Email.class), eq(USER), any());
+    order.verify(storage).startHeldWait(eq(41L), due.capture(), started.capture());
+    assertEquals(started.getValue().getTime() + 20_000, due.getValue().getTime(), "the wait starts once the draft is frozen");
     assertEquals(LOCAL_ID, held.getDraftLocalId());
-    assertEquals(due, held.getSendDate());
+    assertEquals(due.getValue().getTime(), held.getSendDate());
     assertEquals(20, held.getDelaySeconds());
     verify(storage, never()).countListed(anyString());
-    ArgumentCaptor<Long> delay = ArgumentCaptor.forClass(Long.class);
-    verify(heldTimer).schedule(any(Runnable.class), delay.capture(), eq(TimeUnit.MILLISECONDS));
-    assertTrue(delay.getValue() > 19_000 && delay.getValue() <= 21_000 + EmailScheduledSendService.HELD_TIMER_SLACK_MS,
-               "armed for just after the end of the wait, not the dispatcher's next minute: " + delay.getValue());
+    order.verify(heldTimer).schedule(any(Runnable.class), eq(20_000L + EmailScheduledSendService.HELD_TIMER_SLACK_MS),
+                                     eq(TimeUnit.MILLISECONDS));
+  }
+
+  /**
+   * A held mail claimed before its wait could start -- only a freeze longer than its
+   * margin allows it -- is on its way: no timer is armed for it, and the send is answered
+   * as held all the same, its Undo then saying it is too late.
+   *
+   * @throws Exception never
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void aHeldMailClaimedBeforeItsWaitStartedArmsNoTimer() throws Exception {
+    storeUndoDelay(5);
+    Email saved = draft();
+    saved.setId(9L);
+    when(emailBoxService.scheduleDraft(any(Email.class), eq(USER), any())).thenAnswer(invocation -> {
+      Function<Email, EmailScheduledSend> scheduler = invocation.getArgument(2);
+      return scheduler.apply(saved);
+    });
+    when(storage.create(any(EmailScheduledSend.class))).thenAnswer(invocation -> {
+      EmailScheduledSend row = invocation.getArgument(0);
+      row.setId(41L);
+      return row;
+    });
+    when(storage.startHeldWait(eq(41L), any(Date.class), any(Date.class))).thenReturn(false);
+    assertEquals(5, service.sendUndoable(draft(), USER).getDelaySeconds());
+    verifyNoInteractions(heldTimer);
   }
 
   /**
@@ -930,6 +962,7 @@ public class EmailScheduledSendServiceTest {
       row.setId(41L);
       return row;
     });
+    when(storage.startHeldWait(eq(41L), any(Date.class), any(Date.class))).thenReturn(true);
     when(heldTimer.schedule(any(Runnable.class), anyLong(), any(TimeUnit.class))).thenThrow(new RejectedExecutionException());
     assertEquals(10, service.sendUndoable(draft(), USER).getDelaySeconds());
   }
