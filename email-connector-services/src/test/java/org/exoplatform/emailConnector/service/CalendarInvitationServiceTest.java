@@ -480,13 +480,15 @@ class CalendarInvitationServiceTest {
   void anAnswerFromTheUsersOwnMailboxLandsInTheirCalendar() throws Exception {
     captureTransmissions();
     ArgumentCaptor<InvitationLanding> landing = ArgumentCaptor.forClass(InvitationLanding.class);
-    when(invitationLandingService.land(landing.capture())).thenReturn(CalendarLanding.LANDED);
+    givenTheLanding(landing, CalendarLanding.LANDED, "/portal/dw/agenda?eventId=77");
 
     CalendarInvitation invitation = service.respond(EMAIL_ID, USER, InvitationAnswer.TENTATIVE);
 
     assertEquals(CalendarLanding.LANDED, invitation.getLanding());
+    assertEquals("/portal/dw/agenda?eventId=77", invitation.getLandingLink());
     assertEquals(USER, landing.getValue().username());
     assertEquals(ME, landing.getValue().attendeeAddress());
+    assertEquals("REQUEST", landing.getValue().method());
     assertEquals("weekly-sync@google.com", landing.getValue().uid());
     assertNull(landing.getValue().recurrenceId());
     assertEquals(2, landing.getValue().sequence());
@@ -494,8 +496,107 @@ class CalendarInvitationServiceTest {
     assertTrue(landing.getValue().icalendar().startsWith("BEGIN:VCALENDAR"), "the part as received");
     assertTrue(landing.getValue().icalendar().contains("UID:weekly-sync@google.com"));
 
-    when(invitationLandingService.land(any())).thenReturn(CalendarLanding.FAILED);
+    givenTheLanding(landing, CalendarLanding.FAILED, null);
     assertEquals(CalendarLanding.FAILED, service.respond(EMAIL_ID, USER, InvitationAnswer.TENTATIVE).getLanding());
+  }
+
+  /**
+   * The reader offers the calendar when an add-on holds one for the user -- adding an
+   * invitation, removing a cancelled event -- from the user's own mailbox only.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theCalendarIsOfferedWhenAnAddonHoldsOneForTheUser() throws Exception {
+    CalendarInvitation invitation = service.getInvitation(EMAIL_ID, USER);
+    assertFalse(invitation.isLandable(), "nobody holds a calendar");
+    assertFalse(invitation.isRemovable());
+
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    invitation = service.getInvitation(EMAIL_ID, USER);
+    assertTrue(invitation.isLandable());
+    assertFalse(invitation.isRemovable());
+
+    givenTheCalendarPart("allday-cancel.ics");
+    invitation = service.getInvitation(EMAIL_ID, USER);
+    assertFalse(invitation.isLandable(), "a cancelled event is not added");
+    assertTrue(invitation.isRemovable());
+
+    givenTheCalendarPart("google-weekly-request.ics");
+    givenASharedMailbox();
+    invitation = service.getInvitation(EMAIL_ID, USER);
+    assertFalse(invitation.isLandable(), "the owner's event");
+    assertFalse(invitation.isRemovable());
+  }
+
+  /**
+   * "Add to my calendar" lands the invitation without an answer: nothing is sent,
+   * nothing is remembered, and the add-on is handed the message with no answer.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void addingWithoutAnsweringSendsNothing() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    ArgumentCaptor<InvitationLanding> landing = ArgumentCaptor.forClass(InvitationLanding.class);
+    givenTheLanding(landing, CalendarLanding.LANDED, "/portal/dw/agenda?eventId=77");
+
+    CalendarInvitation invitation = service.addToCalendar(EMAIL_ID, USER);
+
+    assertEquals(CalendarLanding.LANDED, invitation.getLanding());
+    assertNull(landing.getValue().answer());
+    assertEquals("REQUEST", landing.getValue().method());
+    assertEquals("weekly-sync@google.com", landing.getValue().uid());
+    assertNull(invitation.getAnswer());
+    verifyNothingSent();
+    verify(settingService, never()).set(any(), any(), anyString(), any());
+  }
+
+  /**
+   * "Remove from my calendar" hands the organiser's cancellation to the add-on; a
+   * cancellation is never added, and an invitation is never removed.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aCancellationIsRemovedOnRequestAndNeverAdded() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    givenTheCalendarPart("allday-cancel.ics");
+    ArgumentCaptor<InvitationLanding> landing = ArgumentCaptor.forClass(InvitationLanding.class);
+    givenTheLanding(landing, CalendarLanding.REMOVED, null);
+
+    CalendarInvitation invitation = service.removeFromCalendar(EMAIL_ID, USER);
+
+    assertEquals(CalendarLanding.REMOVED, invitation.getLanding());
+    assertEquals("CANCEL", landing.getValue().method());
+    assertNull(landing.getValue().answer());
+    assertEquals(CalendarInvitationService.CANCELLED,
+                 assertThrows(IllegalArgumentException.class, () -> service.addToCalendar(EMAIL_ID, USER)).getMessage());
+
+    givenTheCalendarPart("google-weekly-request.ics");
+    assertEquals(CalendarInvitationService.NOT_LANDABLE,
+                 assertThrows(IllegalArgumentException.class, () -> service.removeFromCalendar(EMAIL_ID, USER)).getMessage());
+    verifyNothingSent();
+  }
+
+  /**
+   * Nothing lands where it cannot: no add-on holding a calendar for the user, or a
+   * shared mailbox's message.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void whatCannotLandIsRefused() throws Exception {
+    assertEquals(CalendarInvitationService.NOT_LANDABLE,
+                 assertThrows(IllegalArgumentException.class, () -> service.addToCalendar(EMAIL_ID, USER)).getMessage());
+
+    // A shared mailbox's message is refused before any calendar is asked about.
+    givenASharedMailbox();
+    assertEquals(CalendarInvitationService.NOT_LANDABLE,
+                 assertThrows(IllegalAccessException.class, () -> service.addToCalendar(EMAIL_ID, USER)).getMessage());
+    assertEquals(CalendarInvitationService.NOT_LANDABLE,
+                 assertThrows(IllegalAccessException.class, () -> service.removeFromCalendar(EMAIL_ID, USER)).getMessage());
+    verify(invitationLandingService, never()).land(any(), any());
   }
 
   /**
@@ -510,7 +611,7 @@ class CalendarInvitationServiceTest {
                                                                                                         .when(emailBoxService)
                                                                                                         .transmitAsUser(eq(USER), any());
     assertThrows(IllegalStateException.class, () -> service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED));
-    verify(invitationLandingService, never()).land(any());
+    verify(invitationLandingService, never()).land(any(), any());
   }
 
   /**
@@ -589,7 +690,7 @@ class CalendarInvitationServiceTest {
     assertTrue(ics.contains("mailto:" + OWNER));
     assertTrue(ics.contains("SENT-BY=\"mailto:resolved@acme.com\""), "the Sender header's own address: " + ics);
     verify(settingService).set(any(), any(), eq(CalendarInvitationService.answerKey(OWNER, "weekly-sync@google.com", null)), any());
-    verify(invitationLandingService, never()).land(any());
+    verify(invitationLandingService, never()).land(any(), any());
     assertNull(invitation.getLanding(), "the owner's event lands in nobody's calendar from here");
 
     SendIdentity as = new SendIdentity(SendMode.AS, 100L, OWNER, "Alice", new Date());
@@ -727,6 +828,22 @@ class CalendarInvitationServiceTest {
     assertEquals("2", CalendarInvitationService.calendarPart(mail).getAttachmentRemoteId());
     mail.getContent().setAttachments(new ArrayList<>());
     assertNull(CalendarInvitationService.calendarPart(mail));
+  }
+
+  /**
+   * The add-on's answer to the next landing: it tells the invitation the outcome.
+   *
+   * @param landing captures what the add-on is handed
+   * @param outcome what it tells
+   * @param link the link it gives, or null
+   */
+  private void givenTheLanding(ArgumentCaptor<InvitationLanding> landing, CalendarLanding outcome, String link) {
+    doAnswer(call -> {
+      CalendarInvitation invitation = call.getArgument(1, CalendarInvitation.class);
+      invitation.setLanding(outcome);
+      invitation.setLandingLink(link);
+      return null;
+    }).when(invitationLandingService).land(landing.capture(), any());
   }
 
   /**

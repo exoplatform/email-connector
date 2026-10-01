@@ -17,8 +17,10 @@
 package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
@@ -34,21 +36,24 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationContext;
 
+import org.exoplatform.emailConnector.model.CalendarInvitation;
 import org.exoplatform.emailConnector.model.CalendarLanding;
 import org.exoplatform.emailConnector.model.InvitationAnswer;
 import org.exoplatform.emailConnector.model.InvitationLanding;
+import org.exoplatform.emailConnector.model.LandedInvitation;
 import org.exoplatform.emailConnector.plugin.InvitationCalendarPlugin;
 
 /**
- * The add-ons that land an answered invitation in the user's calendar are found by
- * type at the moment of the answer, asked in turn, and read as "no calendar" on
- * everything but a landing or an attempt that failed (EXO-90848).
+ * The add-ons that land an invitation in the user's calendar are found by type at the
+ * moment of the click, asked in turn, and read as "no calendar" on everything but a
+ * landing, a refusal or an attempt that failed (EXO-90848).
  */
 @ExtendWith(MockitoExtension.class)
 class InvitationLandingServiceTest {
 
   private static final InvitationLanding LANDING = new InvitationLanding("john",
                                                                          "john@acme.com",
+                                                                         "request",
                                                                          "weekly-sync@google.com",
                                                                          null,
                                                                          2,
@@ -65,38 +70,53 @@ class InvitationLandingServiceTest {
   private InvitationCalendarPlugin       second;
 
   /**
-   * No implementer, or none that can be listed: the answer lands nowhere and the reader
-   * says nothing of it.
+   * No implementer, or none that can be listed: the answer lands nowhere, no calendar is
+   * offered, and the reader says nothing of it.
    */
   @Test
   void withoutAnImplementerNothingLands() {
-    assertNull(new InvitationLandingService(null).land(LANDING));
+    assertNull(land(new InvitationLandingService(null)).getLanding());
+    assertFalse(new InvitationLandingService(null).holdsCalendarFor("john"));
 
     when(applicationContext.getBeansOfType(InvitationCalendarPlugin.class)).thenReturn(Map.of());
-    assertNull(new InvitationLandingService(applicationContext).land(LANDING));
+    assertNull(land(new InvitationLandingService(applicationContext)).getLanding());
 
     when(applicationContext.getBeansOfType(InvitationCalendarPlugin.class)).thenThrow(new NoClassDefFoundError("gone"));
-    assertNull(new InvitationLandingService(applicationContext).land(LANDING));
+    assertNull(land(new InvitationLandingService(applicationContext)).getLanding());
+    assertFalse(new InvitationLandingService(applicationContext).holdsCalendarFor("john"));
   }
 
   /**
    * The implementers are asked in turn until one holds the user's calendar: the one
-   * after it is not asked, and none landing it reads as no calendar.
+   * after it is not asked, and none landing it reads as nothing done. The one holding a
+   * calendar is also what makes the reader offer it.
    */
   @Test
   void theFirstImplementerHoldingTheUsersCalendarLandsIt() {
     givenThePlugins();
-    when(first.land(LANDING)).thenReturn(false);
-    when(second.land(LANDING)).thenReturn(true);
-    assertEquals(CalendarLanding.LANDED, new InvitationLandingService(applicationContext).land(LANDING));
+    when(first.land(LANDING)).thenReturn(null);
+    when(second.land(LANDING)).thenReturn(new LandedInvitation(77L, "/portal/dw/agenda?eventId=77", false));
+    CalendarInvitation invitation = land(new InvitationLandingService(applicationContext));
+    assertEquals(CalendarLanding.LANDED, invitation.getLanding());
+    assertEquals("/portal/dw/agenda?eventId=77", invitation.getLandingLink());
 
-    when(first.land(LANDING)).thenReturn(true);
-    assertEquals(CalendarLanding.LANDED, new InvitationLandingService(applicationContext).land(LANDING));
+    when(first.land(LANDING)).thenReturn(new LandedInvitation(78L, null, true));
+    invitation = land(new InvitationLandingService(applicationContext));
+    assertEquals(CalendarLanding.REMOVED, invitation.getLanding());
+    assertNull(invitation.getLandingLink());
     verify(second).land(LANDING);
 
-    when(first.land(LANDING)).thenReturn(false);
-    when(second.land(LANDING)).thenReturn(false);
-    assertNull(new InvitationLandingService(applicationContext).land(LANDING));
+    when(first.land(LANDING)).thenReturn(null);
+    when(second.land(LANDING)).thenReturn(null);
+    assertNull(land(new InvitationLandingService(applicationContext)).getLanding());
+
+    when(first.holdsCalendarFor("john")).thenReturn(false);
+    when(second.holdsCalendarFor("john")).thenReturn(true);
+    assertTrue(new InvitationLandingService(applicationContext).holdsCalendarFor("john"));
+    when(second.holdsCalendarFor("john")).thenReturn(false);
+    assertFalse(new InvitationLandingService(applicationContext).holdsCalendarFor("john"));
+    doThrow(new IllegalStateException("down")).when(first).holdsCalendarFor("john");
+    assertFalse(new InvitationLandingService(applicationContext).holdsCalendarFor("john"));
   }
 
   /**
@@ -108,33 +128,35 @@ class InvitationLandingServiceTest {
   void anAttemptThatFailedIsToldAndAMissingLibraryIsNot() {
     givenThePlugins();
     when(first.land(LANDING)).thenThrow(new IllegalStateException("the server refused"));
-    assertEquals(CalendarLanding.FAILED, new InvitationLandingService(applicationContext).land(LANDING));
+    assertEquals(CalendarLanding.FAILED, land(new InvitationLandingService(applicationContext)).getLanding());
     verify(second, never()).land(any());
 
     doThrow(new IllegalArgumentException("one occurrence only")).when(first).land(LANDING);
-    assertEquals(CalendarLanding.REFUSED, new InvitationLandingService(applicationContext).land(LANDING));
+    assertEquals(CalendarLanding.REFUSED, land(new InvitationLandingService(applicationContext)).getLanding());
     verify(second, never()).land(any());
 
     doThrow(new NoClassDefFoundError("net/fortuna/ical4j/model/Calendar")).when(first).land(LANDING);
-    when(second.land(LANDING)).thenReturn(true);
-    assertEquals(CalendarLanding.LANDED, new InvitationLandingService(applicationContext).land(LANDING));
+    when(second.land(LANDING)).thenReturn(new LandedInvitation(77L, null, false));
+    assertEquals(CalendarLanding.LANDED, land(new InvitationLandingService(applicationContext)).getLanding());
   }
 
   /**
-   * A landing names the user, the UID, the answer and the object, or it is no landing.
+   * A landing names the user, the UID and the object; the answer is optional, and the
+   * method is read as written, upper-cased.
    */
   @Test
   void aLandingIsComplete() {
     assertThrows(IllegalArgumentException.class,
-                 () -> new InvitationLanding(" ", "john@acme.com", "uid", null, 0, InvitationAnswer.ACCEPTED, "BEGIN:VCALENDAR"));
+                 () -> new InvitationLanding(" ", "john@acme.com", null, "uid", null, 0, InvitationAnswer.ACCEPTED, "BEGIN:VCALENDAR"));
     assertThrows(IllegalArgumentException.class,
-                 () -> new InvitationLanding("john", "john@acme.com", "", null, 0, InvitationAnswer.ACCEPTED, "BEGIN:VCALENDAR"));
+                 () -> new InvitationLanding("john", "john@acme.com", null, "", null, 0, InvitationAnswer.ACCEPTED, "BEGIN:VCALENDAR"));
     assertThrows(IllegalArgumentException.class,
-                 () -> new InvitationLanding("john", "john@acme.com", "uid", null, 0, null, "BEGIN:VCALENDAR"));
-    assertThrows(IllegalArgumentException.class,
-                 () -> new InvitationLanding("john", "john@acme.com", "uid", null, 0, InvitationAnswer.ACCEPTED, null));
-    assertNull(new InvitationLanding("john", null, "uid", null, 0, InvitationAnswer.ACCEPTED, "BEGIN:VCALENDAR").attendeeAddress(),
-               "the address is the implementer's to check");
+                 () -> new InvitationLanding("john", "john@acme.com", null, "uid", null, 0, InvitationAnswer.ACCEPTED, null));
+    InvitationLanding added = new InvitationLanding("john", null, " cancel ", "uid", null, 0, null, "BEGIN:VCALENDAR");
+    assertNull(added.answer(), "added or removed without an answer");
+    assertNull(added.attendeeAddress(), "the address is the implementer's to check");
+    assertEquals("CANCEL", added.method());
+    assertEquals("REQUEST", LANDING.method());
   }
 
   /**
@@ -145,5 +167,17 @@ class InvitationLandingServiceTest {
     plugins.put("first", first);
     plugins.put("second", second);
     when(applicationContext.getBeansOfType(InvitationCalendarPlugin.class)).thenReturn(plugins);
+  }
+
+  /**
+   * The landing of the test's invitation, told to a fresh invitation.
+   *
+   * @param service the service under test
+   * @return the invitation, told the outcome
+   */
+  private static CalendarInvitation land(InvitationLandingService service) {
+    CalendarInvitation invitation = new CalendarInvitation();
+    service.land(LANDING, invitation);
+    return invitation;
   }
 }
