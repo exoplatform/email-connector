@@ -522,6 +522,14 @@ class CalendarInvitationServiceTest {
     assertFalse(invitation.isLandable(), "a cancelled event is not added");
     assertTrue(invitation.isRemovable());
 
+    // An attendee's REPLY, a COUNTER: they speak to an organiser, not to a calendar.
+    givenTheCalendarPartText(fixtureText("google-weekly-request.ics").replace("METHOD:REQUEST", "METHOD:REPLY"));
+    invitation = service.getInvitation(EMAIL_ID, USER);
+    assertFalse(invitation.isLandable(), "a REPLY is not added");
+    assertFalse(invitation.isRemovable());
+    givenTheCalendarPartText(fixtureText("google-weekly-request.ics").replace("METHOD:REQUEST", "METHOD:PUBLISH"));
+    assertTrue(service.getInvitation(EMAIL_ID, USER).isLandable(), "a published event is");
+
     givenTheCalendarPart("google-weekly-request.ics");
     givenASharedMailbox();
     invitation = service.getInvitation(EMAIL_ID, USER);
@@ -904,11 +912,31 @@ class CalendarInvitationServiceTest {
    * @throws Exception never
    */
   private void givenTheCalendarPart(String fixture) throws Exception {
-    byte[] content;
+    givenTheCalendarPartText(fixtureText(fixture));
+  }
+
+  /**
+   * Serves an iCalendar text as the message's calendar part.
+   *
+   * @param icalendar the text
+   * @throws Exception never
+   */
+  private void givenTheCalendarPartText(String icalendar) throws Exception {
+    lenient().when(emailBoxService.readMessagePart(eq(USER), any(), eq("1.3"), anyLong()))
+             .thenReturn(icalendar.getBytes(StandardCharsets.UTF_8));
+  }
+
+  /**
+   * A fixture's text.
+   *
+   * @param fixture the file under invitations/
+   * @return its text
+   * @throws Exception when it cannot be read
+   */
+  private String fixtureText(String fixture) throws Exception {
     try (java.io.InputStream input = getClass().getResourceAsStream("/invitations/" + fixture)) {
-      content = input.readAllBytes();
+      return new String(input.readAllBytes(), StandardCharsets.UTF_8);
     }
-    lenient().when(emailBoxService.readMessagePart(eq(USER), any(), eq("1.3"), anyLong())).thenReturn(content);
   }
 
   /**
