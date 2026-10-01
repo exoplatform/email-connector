@@ -36,11 +36,13 @@ const COLLAPSED_STORAGE_KEY = 'emailConnector.folders.collapsed';
  * nearest one that is, or sits at the top with its whole path as its name.
  *
  * @param {Array} folders the folders as the server lists them ({key, type, path, delimiter, displayName, ...})
+ * @param {Array} namespaceFolders every folder of the user's, mirrored or not, which
+ *        decides whether INBOX is their namespace (inboxIsNamespace); the folders when omitted
  * @returns {Array} the rows, {folder, depth, parentKey, ancestorKeys, hasChildren, showPath, pathLabel}
  */
-export function buildFolderTree(folders) {
+export function buildFolderTree(folders, namespaceFolders) {
   const list = (folders || []).filter(folder => !!folder);
-  const dropInbox = inboxIsNamespace(list);
+  const dropInbox = inboxIsNamespace(namespaceFolders || list);
   const own = list.filter(isTreeFolder);
   const byPath = new Map(own.map(folder => [folder.path, folder]));
   const children = new Map();

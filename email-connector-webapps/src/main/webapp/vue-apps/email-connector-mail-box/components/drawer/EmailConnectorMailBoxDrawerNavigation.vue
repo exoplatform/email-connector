@@ -139,6 +139,9 @@ export default {
     folderCounts: { type: Object, default: () => ({}) },
     categoryUnreadCounts: { type: Object, default: () => ({}) },
     rail: { type: Boolean, default: false },
+    // Every folder of the user's, mirrored or not: what decides whether INBOX is the
+    // namespace their folders live under (EXO-90839). The listed folders when not given.
+    namespaceFolders: { type: Array, default: null },
   },
   computed: {
     /**
@@ -156,7 +159,7 @@ export default {
      */
     folderEntries() {
       // The user's own folders as a tree (EXO-90839), a collapsed one's folders left out.
-      return visibleFolderRows(buildFolderTree(this.folders), this.collapsed).map(row => {
+      return visibleFolderRows(buildFolderTree(this.folders, this.namespaceFolders || this.folders), this.collapsed).map(row => {
         const folder = row.folder;
         const counted = this.folderCounts[folder.key];
         const count = counted?.count > 0 ? counted.count : 0;
