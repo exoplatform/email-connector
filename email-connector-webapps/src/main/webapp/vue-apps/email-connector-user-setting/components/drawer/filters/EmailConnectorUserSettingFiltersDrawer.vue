@@ -206,6 +206,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { CLOSE_FILTERS_DRAWER_EVENT, OPEN_FILTERS_DRAWER_EVENT, filtersMessage, holdsFilters, notifyFiltersUpdated } from '../../../js/EmailConnectorFilters.js';
+import { buildFolderTree } from '../../../../email-connector-mail-box/js/EmailConnectorFolderTree.js';
+import { folderPath } from '../../../../email-connector-mail-box/js/EmailConnectorMailBoxService.js';
 
 /** The refusal of a deployment that switched server rules off: not an error, eXo runs every filter. */
 const RULES_DISABLED = 'emailConnector.rules.disabled';
@@ -397,11 +399,14 @@ export default {
       });
       this.$emailConnectorUserSettingService.getMailFolders(false)
         .then(list => {
-          this.folders = (list?.folders || [])
-            .filter(folder => folder.key === 'ARCHIVE' || (folder.type === 'CUSTOM' && folder.syncEnabled && !folder.missing))
+          // A nested folder by its path (EXO-90839): two "2024" folders under two parents
+          // are two different targets. In tree order, a folder before those inside it.
+          this.folders = buildFolderTree((list?.folders || [])
+            .filter(folder => folder.key === 'ARCHIVE' || (folder.type === 'CUSTOM' && folder.syncEnabled && !folder.missing)))
+            .map(row => row.folder)
             .map(folder => ({
               key: folder.key,
-              label: folder.key === 'ARCHIVE' ? this.$t('UserSettings.emailConnector.filters.form.moveTo.archive') : folder.displayName || folder.path,
+              label: folder.key === 'ARCHIVE' ? this.$t('UserSettings.emailConnector.filters.form.moveTo.archive') : folderPath(folder) || folder.displayName,
             }));
         })
         .catch(() => this.folders = []);
