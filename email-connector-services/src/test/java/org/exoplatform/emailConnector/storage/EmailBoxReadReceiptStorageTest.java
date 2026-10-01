@@ -49,6 +49,7 @@ import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
+import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
 import org.exoplatform.upload.UploadService;
 
 import io.meeds.social.category.service.CategoryLinkService;
@@ -105,6 +106,21 @@ class EmailBoxReadReceiptStorageTest {
     assertEquals("bob@partner.example", read.getReadReceiptTo());
     assertTrue(read.isReadReceiptReturnPathMatch());
     assertNull(read.getReadReceiptState());
+  }
+
+  /**
+   * EXO-90841: the sync's authentication verdict is stored with the row and read back
+   * on the message the reader opens; a message with none reads back none.
+   */
+  @Test
+  void theAuthenticationVerdictIsStoredAndReadBack() {
+    Email failing = incoming("<spoof@partner.example>", MailFolder.INBOX, 11L);
+    failing.getContent().setAuthFailure(EmailSecurityUtils.AUTH_DMARC);
+    Email created = emailBoxStorage.createEmail(failing);
+    assertEquals(EmailSecurityUtils.AUTH_DMARC, read(created.getId(), USER, "alice@corp.example").getContent().getAuthFailure());
+
+    Email passing = emailBoxStorage.createEmail(incoming("<honest@partner.example>", MailFolder.INBOX, 12L));
+    assertNull(read(passing.getId(), USER, "alice@corp.example").getContent().getAuthFailure());
   }
 
   /**
