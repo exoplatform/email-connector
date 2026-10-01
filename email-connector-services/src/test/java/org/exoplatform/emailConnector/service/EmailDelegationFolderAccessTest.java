@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -182,6 +183,8 @@ class EmailDelegationFolderAccessTest {
     lenient().when(engine.myRights(any(), anyString())).thenReturn(OWNER_RIGHTS);
     lenient().when(engine.presetOf(any())).thenAnswer(invocation -> DelegationPreset.fromRights(invocation.getArgument(0)));
     lenient().when(engine.listOwnFolders(any())).thenReturn(ownFolders());
+    // The engine's bulk read, as an engine that does not override it answers.
+    lenient().when(engine.listAcls(any(), any())).thenCallRealMethod();
     // The IMAP engine's letters: an Editor holds e where mail leaves, never on Trash.
     lenient().when(engine.lettersFor(any(), any())).thenAnswer(invocation -> {
       DelegationPreset preset = invocation.getArgument(0);
@@ -260,6 +263,45 @@ class EmailDelegationFolderAccessTest {
     when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(new MailboxAce(GRANTEE_MAILBOX, read, "Read", DelegationPreset.READER)));
     DelegationFolders list = service.getFolderAccess(OWNER, 100L);
     assertEquals(INBOX, list.folders().get(0).folder());
+  }
+
+  /**
+   * The owner's list is read in one bulk read of every folder's entries (EXO-90816), so
+   * an engine that answers them in a few calls is asked once, never folder by folder; a
+   * folder the answer leaves out is said unreadable.
+   */
+  @Test
+  void theOwnersListIsReadInOneBulkRead() throws Exception {
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted());
+    doReturn(Map.of(INBOX, List.of(ace(GRANTEE_MAILBOX, "lrs")), "Sent", List.of())).when(engine).listAcls(any(), any());
+
+    DelegationFolders list = service.getFolderAccess(OWNER, 100L);
+
+    verify(engine, never()).listAcl(any(), anyString());
+    assertEquals(FolderAccess.READER, byName(list, INBOX).access());
+    assertEquals(FolderAccess.NONE, byName(list, "Sent").access());
+    assertFalse(byName(list, "Archive").readable(), "left out of the answer: could not be read");
+  }
+
+  /**
+   * On a server that keeps whole-mailbox entries beside per-folder ones, a renamed folder
+   * whose entry for the delegate stands on the whole mailbox is not written again: the
+   * access rides the mailbox, and a folder entry there would be one eXo never shared.
+   */
+  @Test
+  void aRenameNeverWritesAWholeMailboxEntryOnTheFolder() throws Exception {
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(accepted()));
+    when(engine.listOwnFolders(any())).thenReturn(List.of(own("Clients", null)));
+    when(engine.listAcl(any(), eq("Clients"))).thenReturn(List.of(new MailboxAce(GRANTEE_MAILBOX,
+                                                                                  MailboxRights.of("lrs"),
+                                                                                  "Read",
+                                                                                  DelegationPreset.READER,
+                                                                                  AclScope.MAILBOX)));
+
+    service.ownerFolderChanged(OWNER, "Projects", "Clients");
+
+    verify(engine).listAcl(any(), eq("Clients"));
+    verify(engine, never()).grant(any(), eq("Clients"), anyString(), any(), any(), any());
   }
 
   // ---------------------------------------------------------------------------------
