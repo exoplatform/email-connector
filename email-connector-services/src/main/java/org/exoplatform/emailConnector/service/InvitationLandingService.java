@@ -38,9 +38,10 @@ import org.exoplatform.services.log.Log;
  * <p>
  * Tolerant by construction: no implementer, a context that cannot be listed, or an
  * implementer whose classes cannot be linked all read as "no calendar for this user",
- * and the reader says nothing about a calendar. Only an implementer that holds the
- * user's calendar and fails to update it is reported, so the user knows their answer
- * left and their calendar did not follow.
+ * and the reader says nothing about a calendar. An implementer that holds the user's
+ * calendar and refuses the invitation as it is ({@link IllegalArgumentException}) is
+ * told to the user and not an incident; one that fails to update the calendar is
+ * both, so the user knows their answer left and their calendar did not follow.
  */
 @Service
 public class InvitationLandingService {
@@ -80,6 +81,14 @@ public class InvitationLandingService {
                   plugin.getClass().getName(),
                   landing.username(),
                   e);
+      } catch (IllegalArgumentException e) {
+        // The sender's content, or a shape not landed yet: the user's to know, not an incident.
+        LOG.debug("The invitation {} answered by user {} was not landed by {}: {}",
+                  landing.uid(),
+                  landing.username(),
+                  plugin.getClass().getName(),
+                  e.getMessage());
+        return CalendarLanding.REFUSED;
       } catch (RuntimeException e) {
         LOG.warn("The invitation {} answered by user {} could not be landed in their calendar by {}",
                  landing.uid(),
