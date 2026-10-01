@@ -94,8 +94,9 @@ export default {
      * which the mail server searches, or, in a mailbox shared with the user, the folders
      * of it a search may read (isFolderSearchable) -- never one the share lets the user
      * see only as the label its folders nest under (readable false), as no other list
-     * offers it either. A shared folder is named by its path, as the move-to picker
-     * names it, so two folders of one name under different parents differ.
+     * offers it either. A shared folder with no role is named by its path, so two
+     * folders of one name under different parents differ; a role folder (the shared
+     * Inbox, Sent...) keeps its translated name, as the folder chip names it.
      *
      * @returns {Array} [{key, label}]
      */
@@ -105,8 +106,11 @@ export default {
           .filter(folder => folder.key?.startsWith('CUSTOM:') && folder.readable !== false && this.isFolderSearchable(folder.key))
           .map(folder => ({
             key: folder.key,
-            // The namespace the move-to picker spells paths in, the mailbox's folders else.
-            label: this.$emailConnectorMailBoxService.folderPath(folder, this.$root.mailNamespaceFolders || this.folders),
+            // A role folder (the shared Inbox, Sent...) by its translated name; any other
+            // by its path in the mailbox's namespace, as the folder column spells it.
+            label: !this.$emailConnectorMailBoxService.sharedFolderRole(folder.key) && folder.path
+              ? this.$emailConnectorMailBoxService.folderPath(folder, this.namespaceFolders)
+              : this.folderLabelOf(folder.key),
           }));
       }
       return OWN_SEARCH_FOLDERS.filter(key => !this.folders?.length || this.folders.some(folder => folder.key === key))
