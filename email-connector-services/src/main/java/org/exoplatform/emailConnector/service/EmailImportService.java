@@ -237,6 +237,7 @@ public class EmailImportService {
     if (!importingUsers.add(username)) {
       throw new IllegalStateException(IMPORT_ALREADY_RUNNING);
     }
+    Path workDir = null;
     try {
       if (isRunningElsewhere(getStoredState(username))) {
         throw new IllegalStateException(IMPORT_ALREADY_RUNNING);
@@ -255,7 +256,7 @@ public class EmailImportService {
       if (totalBytes > MAX_IMPORT_TOTAL_BYTES) {
         throw new IllegalArgumentException(IMPORT_TOO_LARGE);
       }
-      Path workDir = takeUploads(uploads, files);
+      workDir = takeUploads(uploads, files);
       MailImportState state = newState(folderKey);
       state.setStatus(SyncStatus.IN_PROGRESS);
       state.setTotalBytes(totalBytes);
@@ -265,10 +266,14 @@ public class EmailImportService {
       // The answer is a copy: the run mutates its state on another thread while this
       // one is being serialised.
       MailImportState answer = JsonUtils.fromJsonString(JsonUtils.toJsonString(state), MailImportState.class);
-      scheduleRun(() -> runImport(username, folderKey, workDir, state));
+      Path runDir = workDir;
+      scheduleRun(() -> runImport(username, folderKey, runDir, state));
       return answer;
     } catch (RuntimeException e) {
       importingUsers.remove(username);
+      // Taken, then not run (the state not stored, the threads shut down): the files go
+      // with the run that will not happen.
+      deleteQuietly(workDir);
       throw e;
     }
   }
