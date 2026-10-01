@@ -16,13 +16,20 @@
  */
 package org.exoplatform.emailConnector.listener;
 
+import java.util.List;
+import java.util.Map;
+
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 
 import org.exoplatform.commons.api.notification.NotificationContext;
+import org.exoplatform.commons.api.notification.model.NotificationInfo;
 import org.exoplatform.commons.api.notification.model.PluginKey;
+import org.exoplatform.commons.api.notification.model.WebNotificationFilter;
+import org.exoplatform.commons.api.notification.service.WebNotificationService;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
 import org.exoplatform.emailConnector.model.DelegationStatus;
@@ -64,6 +71,10 @@ import org.exoplatform.services.log.Log;
  * The grantee-facing ones are never gated: the server notifies the <i>owner</i>, and
  * on the servers observed the grantee is told nothing by anybody but eXo.
  * <p>
+ * The grantee's invitation is also kept up to date (EXO-90830): once the share no
+ * longer waits, its stored web notification says how it stands, and stops offering
+ * Accept and Refuse.
+ * <p>
  * AFTER_COMMIT with a fallback, like this package's other outward-facing listener: a
  * notification about a state change that then rolled back is a message about something
  * that never happened, and it cannot be taken back. The fallback covers the ordinary
@@ -80,6 +91,15 @@ public class EmailDelegationNotificationListener {
    * mode's name: {@code SEND_MODE_ON_BEHALF}, {@code SEND_MODE_AS}, {@code SEND_MODE_NONE}.
    */
   static final String            SEND_MODE_RESPONSE_PREFIX = "SEND_MODE_";
+
+  /**
+   * How many stored invitations of one share are brought up to date at most: one per
+   * invite, and a share is invited again only after its owner revoked it.
+   */
+  static final int               INVITATIONS_LIMIT         = 10;
+
+  @Autowired
+  private WebNotificationService webNotificationService;
 
   /**
    * Routes one delegation transition to the person it concerns.
@@ -108,6 +128,64 @@ public class EmailDelegationNotificationListener {
       // A notification is never worth failing the act it reports: the share is granted,
       // accepted or revoked on the server whatever the notification service answers.
       LOG.warn("The mailbox delegation {} of {} could not be notified", event.type(), delegation.getId(), e);
+    }
+    try {
+      markInvitations(delegation, invitationStatus(event.type(), delegation));
+    } catch (RuntimeException | LinkageError e) {
+      // The invitation then keeps offering Accept and Refuse, and the server's answer
+      // to either says the share is no longer waiting: worse, never wrong.
+      LOG.warn("The invitation to mailbox delegation {} could not be marked {}", delegation.getId(), event.type(), e);
+    }
+  }
+
+  /**
+   * Where the share an invitation is about now stands, as its stored web notification
+   * says it once it no longer waits (EXO-90830) -- the space invitation's pattern, whose
+   * stored notification is marked once the invitation is answered so that it stops
+   * offering its buttons, wherever the answer was given.
+   * <p>
+   * The transition names the outcome rather than the row's status, because a left share
+   * goes back to DECLINED or AVAILABLE and the reader is owed "you stopped using it",
+   * not "you refused it". A rights change says something only when it found the share
+   * gone; the other transitions leave the invitation where it was.
+   *
+   * @param type the transition
+   * @param delegation the row as it now stands
+   * @return the status to write, or null when the invitation is not concerned
+   */
+  static String invitationStatus(EmailDelegationEvent.Type type, EmailDelegation delegation) {
+    return switch (type) {
+    case ACCEPTED, DECLINED, LEFT, REVOKED -> type.name();
+    case RIGHTS_CHANGED -> delegation.getStatus() == DelegationStatus.REVOKED
+                           || delegation.getStatus() == DelegationStatus.GONE ? EmailDelegationEvent.Type.REVOKED.name() : null;
+    default -> null;
+    };
+  }
+
+  /**
+   * Writes where the share now stands onto the grantee's stored invitations to it, so
+   * that each one shows the outcome instead of Accept and Refuse -- on every device, and
+   * whichever screen the answer was given on. Only the parameter is written: the
+   * notification keeps its place and its read state: an answer is the grantee's own act,
+   * and a revocation reaches them through a notification of its own.
+   *
+   * @param delegation the row
+   * @param status the status to write, or null to leave the invitations alone
+   */
+  private void markInvitations(EmailDelegation delegation, String status) {
+    if (status == null || webNotificationService == null || StringUtils.isBlank(delegation.getGranteeId())
+        || delegation.getId() == null) {
+      return;
+    }
+    WebNotificationFilter filter = new WebNotificationFilter(delegation.getGranteeId());
+    filter.setPluginKey(PluginKey.key(NotificationConstants.EMAIL_DELEGATION_INVITATION_NOTIFICATION_PLUGIN));
+    filter.setParameter(NotificationConstants.DELEGATION_ID, String.valueOf(delegation.getId()));
+    List<NotificationInfo> invitations = webNotificationService.getNotificationInfos(filter, 0, INVITATIONS_LIMIT);
+    for (NotificationInfo invitation : invitations) {
+      if (!status.equals(invitation.getValueOwnerParameter(NotificationConstants.DELEGATION_STATUS))) {
+        webNotificationService.updateNotificationParameters(invitation.getId(),
+                                                            Map.of(NotificationConstants.DELEGATION_STATUS, status));
+      }
     }
   }
 
