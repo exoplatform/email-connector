@@ -273,6 +273,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <email-connector-forwarding-band />
       </div>
       <template v-if="!loading">
+        <!-- The search row (EXO-90838): one row for the list and for the search results,
+             so the field keeps the focus when the first character turns the list into
+             results. -->
+        <email-connector-mail-box-search-bar
+          v-if="!syncBlocked && !expanded && !scheduledView"
+          v-bind="searchBarProps"
+          class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
+          v-on="searchBarListeners" />
         <v-list-item v-if="syncBlocked" class="full-height align-center">
           <v-list-item-content>
             <v-icon
@@ -293,10 +301,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-list-item-content>
         </v-list-item>
         <template v-else-if="searchActive && !expanded">
-          <email-connector-mail-box-search-bar
-            v-bind="searchBarProps"
-            class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
-            v-on="searchBarListeners" />
           <email-connector-mail-box-drawer-search-results
             ref="searchResults"
             :results="mergedSearchResults"
@@ -342,10 +346,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :signal="scheduledViewSignal"
           @loading="scheduledLoading = $event" />
         <template v-else>
-          <email-connector-mail-box-search-bar
-            v-bind="searchBarProps"
-            class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
-            v-on="searchBarListeners" />
           <template v-if="hasEmails">
             <email-connector-mail-box-drawer-content
               ref="listContent"
@@ -1331,11 +1331,15 @@ export default {
           categoryIds: e.categoryIds || [],
         }));
     },
-    // Local matches shown instantly, the copy's and the server's hits MERGED in when
-    // they land — never replacing: the server returns only the newest matches, so with
-    // many hits a result the user is already reading could vanish under a replacement.
-    // Keyed on (folder, uid), the copy's fields over the listed row's (EXO-90838), the
-    // server's over both.
+    /**
+     * Local matches shown instantly, the copy's and the server's hits MERGED in when they
+     * land -- never replacing: the server returns only the newest matches, so with many
+     * hits a result the user is already reading could vanish under a replacement. Keyed
+     * on (folder, uid), the copy's fields over the listed row's (EXO-90838), the server's
+     * over both.
+     *
+     * @returns {Array} the search's hits, newest first
+     */
     mergedSearchResults() {
       const merged = new Map();
       this.localSearchMatches.forEach(result => merged.set(`${result.folder}:${result.mailRemoteId}`, result));

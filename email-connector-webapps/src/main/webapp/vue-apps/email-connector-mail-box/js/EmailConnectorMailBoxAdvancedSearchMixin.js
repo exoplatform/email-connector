@@ -143,7 +143,8 @@ export default {
      */
     searchBarProps() {
       return {
-        importantCategory: this.importantCategory,
+        // No Important chip while a search shows: a category view does not narrow it.
+        importantCategory: this.searchActive ? null : this.importantCategory,
         categoryViewId: this.categoryViewId,
         favoriteOnly: this.favoriteOnly,
         unreadOnly: this.unreadOnly,
@@ -160,8 +161,8 @@ export default {
     searchBarListeners() {
       return {
         'toggle-important': this.toggleImportantView,
-        'toggle-favorite': this.onToggleFavoriteFilter,
-        'toggle-unread': this.toggleUnreadFilter,
+        'toggle-favorite': this.toggleSearchFavorites,
+        'toggle-unread': this.toggleSearchUnread,
         'open-search': this.openSearchField,
         'close-search': this.closeSearchField,
         'search-input': this.onSearchFieldInput,
@@ -501,6 +502,34 @@ export default {
       }
       this.searchServerAsked = true;
       this.runServerSearch(this.searchRequestId);
+    },
+    /**
+     * The search row's Favorites chip: the list's toggle, and while a search shows, the
+     * search's Favorites criterion too -- the search runs again, as when its chip is
+     * closed, and the page address follows.
+     *
+     * @returns {void}
+     */
+    toggleSearchFavorites() {
+      if (!this.searchActive) {
+        this.onToggleFavoriteFilter();
+        return;
+      }
+      this.setSearchChips(this.unreadOnly, !this.favoriteOnly);
+      this.rerunSearch();
+    },
+    /**
+     * The search row's Unread chip, as toggleSearchFavorites.
+     *
+     * @returns {void}
+     */
+    toggleSearchUnread() {
+      if (!this.searchActive) {
+        this.toggleUnreadFilter();
+        return;
+      }
+      this.setSearchChips(!this.unreadOnly, this.favoriteOnly);
+      this.rerunSearch();
     },
     /**
      * Opens the search row's field.

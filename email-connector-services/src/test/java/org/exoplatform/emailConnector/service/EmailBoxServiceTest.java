@@ -15573,6 +15573,38 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90838 -- the cached search of a folder of a mailbox shared with the user reads
+   * the user's copy of it, only while the delegation service finds it searchable for
+   * this user -- re-checked on every search -- and a share withdrawn meanwhile says so.
+   */
+  @Test
+  void theCachedSearchOfASharedFolderIsCheckedOnEverySearch() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    Email budget = mirrored(1L, "Budget", "carol@acme.com", false, 3);
+    budget.setFolder("CUSTOM:9");
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:9"), false)).thenReturn(List.of(budget));
+    EmailSearchCriteria words = new EmailSearchCriteria();
+    words.setWords("budget");
+    when(emailDelegationService.isSearchableSharedFolder(TEST_USER, "CUSTOM:9")).thenReturn(true);
+
+    EmailSearchResultPage page = emailBoxService.searchCachedFolder(TEST_USER, words, "CUSTOM:9", 10);
+
+    assertEquals(List.of(1L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList());
+    assertEquals("CUSTOM:9", page.getResults().get(0).getFolder());
+    assertEquals(budget.getReceivedDate(), page.getCachedSince());
+
+    when(emailDelegationService.isSearchableSharedFolder(TEST_USER, "CUSTOM:9")).thenReturn(false);
+    assertEquals("emailConnector.folder.notBrowsable",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchCachedFolder(TEST_USER, words, "CUSTOM:9", 10)).getMessage());
+    when(emailDelegationService.isSearchableSharedFolder(TEST_USER, "CUSTOM:9")).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    assertThrows(DelegationRevokedException.class, () -> emailBoxService.searchCachedFolder(TEST_USER, words, "CUSTOM:9", 10));
+    verify(emailBoxStorage, times(1)).getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:9"), false);
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
    * The UIDs a cached search of the user's own Inbox returns, newest first.
    *
    * @param criteria the criteria
