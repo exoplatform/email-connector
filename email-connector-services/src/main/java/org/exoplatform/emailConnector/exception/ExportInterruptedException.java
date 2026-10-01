@@ -17,10 +17,11 @@
 package org.exoplatform.emailConnector.exception;
 
 /**
- * The mail server failed once an export had begun, and the file has no place to say so
- * (EXO-90845: an {@code .mbox}). Thrown out of the request on purpose: the response is
- * already committed, so the container aborts it, and the browser reports a failed
- * download rather than a complete file that silently lacks the rest of the folder.
+ * The mail server failed while a message was copied into an {@code .mbox} export
+ * (EXO-90845): thrown by the visitor once it closed the message where the copy stopped,
+ * so the export stops there and the file says it is incomplete
+ * ({@code RawEmailVisitor#interrupted}). Never thrown out of a request: a committed
+ * response would end normally anyway.
  */
 public class ExportInterruptedException extends RuntimeException {
 
