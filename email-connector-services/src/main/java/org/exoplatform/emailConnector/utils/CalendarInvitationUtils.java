@@ -177,6 +177,7 @@ public final class CalendarInvitationUtils {
     Property recurrenceId = event.getProperty(Property.RECURRENCE_ID);
     return new ParsedInvitation(invitation,
                                 recurrenceId == null ? null : StringUtils.trimToNull(recurrenceId.getValue()),
+                                value(event.getProperty(Property.URL)),
                                 (address, name, answer, sentBy) -> buildReply(calendar, event, address, name, answer, sentBy));
   }
 
