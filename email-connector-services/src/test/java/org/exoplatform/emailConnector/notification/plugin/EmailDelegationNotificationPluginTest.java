@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.notification.plugin;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -129,7 +130,10 @@ public class EmailDelegationNotificationPluginTest {
     assertEquals("anne", info.getValueOwnerParameter(NotificationConstants.DELEGATION_ACTOR));
     assertEquals("READER", info.getValueOwnerParameter(NotificationConstants.DELEGATION_PRESET));
     assertEquals("7", info.getValueOwnerParameter(NotificationConstants.DELEGATION_ID));
-    assertEquals("/portal/dw?openEmailBox=true", info.getValueOwnerParameter(NotificationConstants.LINK));
+    assertEquals("/portal/dw?openEmailBox=true&sharedWithMe=true", info.getValueOwnerParameter(NotificationConstants.LINK),
+                 "a click by mail or push opens the sharing settings where the invitation waits, not the mailbox's list");
+    assertNull(info.getValueOwnerParameter(NotificationConstants.DELEGATION_STATUS),
+               "a new invitation waits for an answer, which is what offers Accept and Refuse");
   }
 
   /**
