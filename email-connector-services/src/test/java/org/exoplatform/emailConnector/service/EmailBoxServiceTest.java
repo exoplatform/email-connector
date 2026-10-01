@@ -3036,13 +3036,24 @@ public class EmailBoxServiceTest {
     lenient().when(sentFolder.exists()).thenReturn(true);
     when(sentFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
     when(sentFolder.isOpen()).thenReturn(true);
+    // EXO-90209 -- filed read: a server that keeps only what the client appends
+    // (BlueMind) would otherwise show it unread in Sent. The flag is read inside the
+    // APPEND, as the server does: the library sends the flags the message holds at
+    // that moment, and one set afterwards never reaches it.
+    List<Boolean> seenAtAppend = new ArrayList<>();
+    doAnswer(invocation -> seenAtAppend.add(((Message[]) invocation.getArgument(0))[0].isSet(Flags.Flag.SEEN)))
+        .when(sentFolder).appendMessages(any(Message[].class));
     try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
         MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
       sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
       emailBoxService.sendEmail(email, TEST_USER);
-      transportMock.verify(() -> Transport.send(any(Message.class)));
+      ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sent.capture()));
       verify(sentFolder).open(Folder.READ_WRITE);
-      verify(sentFolder).appendMessages(any(Message[].class));
+      ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
+      verify(sentFolder).appendMessages(filed.capture());
+      assertSame(sent.getValue(), filed.getValue()[0], "the very message that went out");
+      assertEquals(List.of(true), seenAtAppend, "filed read at the APPEND: it is sent mail, not new mail");
       verify(sentFolder).close(false);
       verify(store).close();
     }
