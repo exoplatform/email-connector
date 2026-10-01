@@ -2665,7 +2665,8 @@ export default {
     },
     /**
      * The snackbar of a mail sent with an Undo (EXO-90837): "Sending..." with Undo, for
-     * the wait the server answered. The Undo is single-shot and closes the snackbar on
+     * the wait the server answered, which it starts once the draft is frozen, just
+     * before it answers. The Undo is single-shot and closes the snackbar on
      * its click, as the move's does. Once the wait is over and nobody took the mail
      * back, the mailbox is told it went, so it watches Sent for its copy.
      *
@@ -2716,6 +2717,13 @@ export default {
         this.$root.$emit('refresh-email-box');
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.undoSend.undone'), 'info');
       } catch (error) {
+        if (error?.code === 'emailConnector.scheduled.uncertain') {
+          // Its send was interrupted: it may have gone, and Scheduled lists it for the
+          // user to decide.
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.undoSend.uncertain'), 'warning');
+          this.$root.$emit('scheduled-emails-changed');
+          return;
+        }
         const tooLate = error?.status === 409 || error?.status === 404;
         this.$root.$emit('alert-message', this.$t(tooLate ? 'emailConnector.mailBox.newEmail.drawer.undoSend.tooLate'
           : 'emailConnector.mailBox.newEmail.drawer.undoSend.error'), tooLate ? 'info' : 'error');
