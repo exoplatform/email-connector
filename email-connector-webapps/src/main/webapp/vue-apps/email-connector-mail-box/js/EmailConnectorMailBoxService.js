@@ -1137,7 +1137,7 @@ export function searchEmails(query, folder, limit, favorites, unread, criteria) 
  * @param {Boolean} favorites when true, only starred messages
  * @param {Boolean} unread when true, only unread messages
  * @param {Object} criteria {from, to, words, after, before, attachment}
- * @returns {Promise} resolves with { results, totalMatches, cachedSince }; rejects with
+ * @returns {Promise} resolves with { results, totalMatches }; rejects with
  *          the response status on the error
  */
 export function searchCachedFolder(query, folder, limit, favorites, unread, criteria) {
