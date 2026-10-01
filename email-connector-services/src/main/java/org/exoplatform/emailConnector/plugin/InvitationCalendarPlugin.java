@@ -62,11 +62,12 @@ public interface InvitationCalendarPlugin {
    * event is created in the calendar, or updated when the user already holds it and
    * the message is its organiser's newer revision; an answer given is set on it, and
    * a decline sets it on an event the user holds and creates nothing; a cancellation
-   * removes the event the user holds. An implementer that holds a calendar for the
-   * user returns what it did, or null when there was nothing to do for this message
-   * (a decline or a cancellation of an event the user never added); it returns null
-   * too when it holds no calendar for this user, which lets the next implementer
-   * answer. Two things it says by throwing, told apart by the exception: an
+   * removes the event the user holds. Asked only of the implementer that answered true
+   * to {@link #holdsCalendarFor}, and of that one alone: it returns what it did, or
+   * null when there was nothing to do for this message (a decline or a cancellation of
+   * an event the user never added, an event of the platform's own that is in the
+   * calendar already) -- and null when, asked anyway, it holds no calendar for the
+   * user. Two things it says by throwing, told apart by the exception: an
    * invitation it refuses to land as it is -- unreadable, about another event, about
    * one occurrence only, or one it must not trust -- is an
    * {@link IllegalArgumentException}, and the user is told the event was not added; a
