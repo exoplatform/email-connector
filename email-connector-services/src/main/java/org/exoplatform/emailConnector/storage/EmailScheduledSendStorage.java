@@ -77,6 +77,10 @@ public class EmailScheduledSendStorage {
                                                                           ScheduledSendStatus.SENT,
                                                                           ScheduledSendStatus.UNCERTAIN);
 
+  /** The states a row waits in before any run claims it. */
+  public static final Set<ScheduledSendStatus> WAITING           = Set.of(ScheduledSendStatus.SCHEDULED,
+                                                                          ScheduledSendStatus.HELD);
+
   // An id no row has: the NOT IN of the recovery statements must never be given an
   // empty list, which some vendors reject as SQL.
   private static final List<Long>              NO_ROW            = List.of(-1L);
@@ -156,12 +160,27 @@ public class EmailScheduledSendStorage {
   }
 
   /**
-   * Removes one row by id: the compensation of a scheduling that could not complete.
+   * Removes one row by id while it still waits, SCHEDULED or HELD: the compensation of
+   * a scheduling that could not complete, which never takes a claimed row away from the
+   * run sending it.
    *
    * @param id the row id
+   * @return true when removed; false when it was claimed meanwhile, or is gone
    */
-  public void delete(long id) {
-    emailScheduledSendDAO.deleteById(id);
+  public boolean deleteWaiting(long id) {
+    return emailScheduledSendDAO.deleteWaiting(id, WAITING) == 1;
+  }
+
+  /**
+   * Starts the Undo wait of a held mail once its draft is frozen (EXO-90837).
+   *
+   * @param id the row id
+   * @param due the end of the wait
+   * @param now the write instant
+   * @return true when started; false when the row is gone or no longer held
+   */
+  public boolean startHeldWait(long id, Date due, Date now) {
+    return emailScheduledSendDAO.startHeldWait(id, due, now, ScheduledSendStatus.HELD) == 1;
   }
 
   /**
