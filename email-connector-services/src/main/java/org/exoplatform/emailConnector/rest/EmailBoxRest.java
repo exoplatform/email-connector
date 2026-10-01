@@ -765,21 +765,11 @@ public class EmailBoxRest {
                                             @RequestParam(value = "limit", required = false, defaultValue = "20")
                                             int limit) {
     try {
-      EmailSearchCriteria criteria = new EmailSearchCriteria();
-      criteria.setQuery(query);
-      criteria.setFrom(from);
-      criteria.setTo(to);
-      criteria.setWords(words);
+      EmailSearchCriteria criteria = searchCriteria(query, from, to, words, after, before);
       criteria.setUnreadOnly(unread);
       criteria.setFavoritesOnly(favorites);
       criteria.setAttachmentsOnly(attachment);
       criteria.setSinceDays(sinceDays);
-      criteria.setAfter(parseSearchDay(after));
-      criteria.setBefore(parseSearchDay(before));
-      // Refused by the service once the caller's access is checked: a refusal answers
-      // before a malformed parameter does.
-      criteria.setInvalidDay(StringUtils.isNotBlank(after) && criteria.getAfter() == null
-          || StringUtils.isNotBlank(before) && criteria.getBefore() == null);
       return emailBoxService.searchEmails(request.getRemoteUser(), criteria, folder, limit);
     } catch (DelegationRevokedException e) {
       // The shared mailbox searched is gone, which the drawer answers by leaving it.
@@ -791,6 +781,114 @@ public class EmailBoxRest {
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
+  }
+
+  /**
+   * Searches one folder in the caller's copy kept in eXo, with every criterion of the
+   * advanced search (EXO-90838): what the mail drawer's advanced search reads first,
+   * before -- and unless -- the user asks the mail server.
+   *
+   * @param request the caller's request, for the acting user
+   * @param query free text matched against subject or sender
+   * @param from text matched against the sender only
+   * @param to text matched against the To or Cc recipients only
+   * @param unread restrict to unread messages
+   * @param favorites restrict to starred messages
+   * @param sinceDays restrict to messages received in the last N days
+   * @param words text matched against the subject or the body
+   * @param after restrict to messages received on that day or later, as yyyy-MM-dd
+   * @param before restrict to messages received before that day, as yyyy-MM-dd
+   * @param attachment restrict to messages eXo holds an attachment for
+   * @param folder folder to search: INBOX, SENT or ARCHIVE, or CUSTOM:&lt;id&gt; for a
+   * folder of a mailbox shared with the caller
+   * @param limit maximum number of hits to return (newest first)
+   * @return the email search result page, with the date of the copy's oldest message
+   */
+  @GetMapping("/search/local")
+  @Secured("users")
+  @Operation(summary = "Searches one folder in the copy of the mailbox kept in eXo", method = "GET",
+             description = "Filters the messages of one folder that this add-on holds locally -- the newest of each folder, as the synchronization keeps them -- with the same criteria as /search, never touching the mail server. Returns the newest hits, the total match count and cachedSince, the date of the oldest message of that folder kept in eXo. At least one criterion is required; all of them are combined. The folder is INBOX, SENT or ARCHIVE, or a folder of a mailbox shared with the caller while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read. The attachment criterion is the attachments eXo holds for a message.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request: a folder that cannot be searched (emailConnector.folder.notBrowsable), no search criterion (emailConnector.search.criteriaRequired), a day that is not yyyy-MM-dd (emailConnector.search.invalidDate) or a before day not after the after day (emailConnector.search.invalidDateRange)"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
+      @ApiResponse(responseCode = "410", description = "The folder belongs to a share of the caller's that is no longer accepted (emailConnector.delegation.revoked)"), })
+  public EmailSearchResultPage searchCachedFolder(HttpServletRequest request,
+                                                  @Parameter(description = "Free text matched against subject or sender")
+                                                  @RequestParam(value = "query", required = false)
+                                                  String query,
+                                                  @Parameter(description = "Text matched against the sender only")
+                                                  @RequestParam(value = "from", required = false)
+                                                  String from,
+                                                  @Parameter(description = "Text matched against the To or Cc recipients only")
+                                                  @RequestParam(value = "to", required = false)
+                                                  String to,
+                                                  @Parameter(description = "Restrict to unread messages")
+                                                  @RequestParam(value = "unread", required = false, defaultValue = "false")
+                                                  boolean unread,
+                                                  @Parameter(description = "Restrict to starred messages")
+                                                  @RequestParam(value = "favorites", required = false, defaultValue = "false")
+                                                  boolean favorites,
+                                                  @Parameter(description = "Restrict to messages received in the last N days")
+                                                  @RequestParam(value = "sinceDays", required = false)
+                                                  Integer sinceDays,
+                                                  @Parameter(description = "Text matched against the subject or the body")
+                                                  @RequestParam(value = "words", required = false)
+                                                  String words,
+                                                  @Parameter(description = "Restrict to messages received on that day or later, as yyyy-MM-dd")
+                                                  @RequestParam(value = "after", required = false)
+                                                  String after,
+                                                  @Parameter(description = "Restrict to messages received before that day, that day excluded, as yyyy-MM-dd")
+                                                  @RequestParam(value = "before", required = false)
+                                                  String before,
+                                                  @Parameter(description = "Restrict to messages eXo holds an attachment for")
+                                                  @RequestParam(value = "attachment", required = false, defaultValue = "false")
+                                                  boolean attachment,
+                                                  @Parameter(description = "Folder to search: INBOX, SENT or ARCHIVE, or CUSTOM:<id> for a folder of a mailbox shared with the caller")
+                                                  @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                                  String folder,
+                                                  @Parameter(description = "Maximum number of hits to return (newest first)")
+                                                  @RequestParam(value = "limit", required = false, defaultValue = "20")
+                                                  int limit) {
+    try {
+      EmailSearchCriteria criteria = searchCriteria(query, from, to, words, after, before);
+      criteria.setUnreadOnly(unread);
+      criteria.setFavoritesOnly(favorites);
+      criteria.setAttachmentsOnly(attachment);
+      criteria.setSinceDays(sinceDays);
+      return emailBoxService.searchCachedFolder(request.getRemoteUser(), criteria, folder, limit);
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * The text criteria and days of a search as the advanced search sends them (EXO-90838).
+   * A day that is not yyyy-MM-dd is marked, not refused here: the service refuses it once
+   * the caller's access is checked, so a refusal answers before a malformed parameter.
+   *
+   * @param query free text matched against subject or sender
+   * @param from text matched against the sender only
+   * @param to text matched against the To or Cc recipients only
+   * @param words text matched against the subject or the body
+   * @param after the first day, as sent
+   * @param before the day excluded, as sent
+   * @return the criteria, the flags and the age window left to the caller
+   */
+  private static EmailSearchCriteria searchCriteria(String query, String from, String to, String words, String after, String before) {
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setQuery(query);
+    criteria.setFrom(from);
+    criteria.setTo(to);
+    criteria.setWords(words);
+    criteria.setAfter(parseSearchDay(after));
+    criteria.setBefore(parseSearchDay(before));
+    criteria.setInvalidDay(StringUtils.isNotBlank(after) && criteria.getAfter() == null
+        || StringUtils.isNotBlank(before) && criteria.getBefore() == null);
+    return criteria;
   }
 
   /**

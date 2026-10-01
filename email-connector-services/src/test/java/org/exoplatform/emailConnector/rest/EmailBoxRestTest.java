@@ -310,6 +310,68 @@ public class EmailBoxRestTest {
   }
 
   /**
+   * EXO-90838 -- the search of eXo's copy of one folder takes every criterion the server
+   * search takes and hands them to the service as sent, the cached-search route of the
+   * platform's unified search untouched; a refusal answers 403, a withdrawn share 410, a
+   * folder that cannot be searched 400 with its code.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void theCachedFolderSearchTakesEveryCriterion() throws Exception {
+    EmailSearchResultPage answer = new EmailSearchResultPage(List.of(), 0);
+    answer.setCachedSince(new Date(1_000L));
+    when(emailBoxService.searchCachedFolder(anyString(), any(EmailSearchCriteria.class), anyString(), anyInt())).thenReturn(answer);
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search/local").param("query", "report")
+                                                         .param("from", "carol")
+                                                         .param("to", "dave")
+                                                         .param("words", "budget")
+                                                         .param("after", "2026-10-01")
+                                                         .param("before", "nope")
+                                                         .param("attachment", "true")
+                                                         .param("unread", "true")
+                                                         .param("favorites", "true")
+                                                         .param("sinceDays", "30")
+                                                         .param("folder", "SENT")
+                                                         .param("limit", "7")
+                                                         .with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.cachedSince").exists());
+
+    ArgumentCaptor<EmailSearchCriteria> sent = ArgumentCaptor.forClass(EmailSearchCriteria.class);
+    verify(emailBoxService).searchCachedFolder(eq(SIMPLE_USER), sent.capture(), eq("SENT"), eq(7));
+    EmailSearchCriteria criteria = sent.getValue();
+    assertEquals("report", criteria.getQuery());
+    assertEquals("carol", criteria.getFrom());
+    assertEquals("dave", criteria.getTo());
+    assertEquals("budget", criteria.getWords());
+    assertEquals(LocalDate.of(2026, 10, 1), criteria.getAfter());
+    assertNull(criteria.getBefore());
+    assertTrue(criteria.isInvalidDay(), "a malformed day is left to the service to refuse, after the access check");
+    assertTrue(criteria.isAttachmentsOnly());
+    assertTrue(criteria.isUnreadOnly());
+    assertTrue(criteria.isFavoritesOnly());
+    assertEquals(30, criteria.getSinceDays());
+    verify(emailBoxService, never()).searchEmails(anyString(), any(EmailSearchCriteria.class), anyString(), anyInt());
+    verify(emailBoxService, never()).searchCachedEmails(anyString(), any(), anyBoolean(), anyInt());
+
+    when(emailBoxService.searchCachedFolder(anyString(), any(EmailSearchCriteria.class), eq("CUSTOM:9"), anyInt()))
+                                                                                                          .thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search/local").param("words", "x").param("folder", "CUSTOM:9").with(testSimpleUser()))
+           .andExpect(status().isGone());
+    when(emailBoxService.searchCachedFolder(anyString(), any(EmailSearchCriteria.class), eq("TRASH"), anyInt()))
+                                                                                                       .thenThrow(new IllegalArgumentException("emailConnector.folder.notBrowsable"));
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search/local").param("words", "x").param("folder", "TRASH").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.folder.notBrowsable"));
+    when(emailBoxService.searchCachedFolder(anyString(), any(EmailSearchCriteria.class), eq("ARCHIVE"), anyInt()))
+                                                                                                         .thenThrow(new IllegalAccessException("no"));
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search/local").param("words", "x").param("folder", "ARCHIVE").with(testSimpleUser()))
+           .andExpect(status().isForbidden());
+  }
+
+  /**
    * EXO-90838 -- the search the unified search and the drawer's search box already send
    * carries no advanced criterion: none of them is set by default.
    *
