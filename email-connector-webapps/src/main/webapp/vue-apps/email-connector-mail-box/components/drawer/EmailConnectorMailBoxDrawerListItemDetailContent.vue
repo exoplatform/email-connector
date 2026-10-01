@@ -385,7 +385,22 @@ export default {
       }
     },
     recipientsClass() {
-      return this.expandedHeader && 'px-0 pb-3' || 'px-0 pb-8';
+      if (this.expandedHeader) {
+        return 'px-0 pb-3';
+      }
+      // A security notice under the header sits close to it, half the gap the body
+      // keeps from the header otherwise (EXO-90841).
+      return this.securityNoticeShown ? 'px-0 pb-4' : 'px-0 pb-8';
+    },
+    /**
+     * Whether a security notice shows under the header: the message looks suspicious or
+     * has images held back, and is neither scheduled nor unavailable.
+     *
+     * @returns {Boolean} true when the notice shows
+     */
+    securityNoticeShown() {
+      return !this.scheduled && !this.unavailable
+        && (!!this.content?.remoteContentBlocked || !!this.content?.securityWarnings?.length);
     },
     recipientsToggleTooltip() {
       return this.expandedHeader ? this.$t('emailConnector.mailBox.list.drawer.detail.hideRecipients') : this.$t('emailConnector.mailBox.list.drawer.detail.displayRecipients');
