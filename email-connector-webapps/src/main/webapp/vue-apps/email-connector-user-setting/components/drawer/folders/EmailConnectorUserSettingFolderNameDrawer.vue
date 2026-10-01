@@ -116,6 +116,7 @@ const NAME_ERROR_KEYS = {
   'emailConnector.folder.createFailed': 'UserSettings.emailConnector.folders.create.error',
   'emailConnector.folder.renameFailed': 'UserSettings.emailConnector.folders.rename.error',
   'emailConnector.folder.parent.invalid': 'UserSettings.emailConnector.folders.parent.error.invalid',
+  'emailConnector.folder.path.tooLong': 'UserSettings.emailConnector.folders.name.error.pathTooLong',
 };
 
 // The choice that stands for the top level in the parent picker: a folder key never
@@ -201,9 +202,12 @@ export default {
       this.folders = opening?.folders || [];
       this.name = this.target?.displayName || '';
       const parent = this.action === 'rename' ? this.parentOf(this.target) : opening?.parent;
-      const nestedUnlisted = this.action === 'rename' && !parent && !!this.target?.delimiter
+      // A parent the picker does not offer (no longer found on the server) is shown as
+      // the folder's current place, never as a blank choice.
+      const offered = parent && !parent.missing && parent.delimiter ? parent : null;
+      const nestedUnlisted = this.action === 'rename' && !offered && !!this.target?.delimiter
         && this.target.path?.lastIndexOf(this.target.delimiter) > 0;
-      this.parentKey = parent?.key || (nestedUnlisted ? CURRENT_PLACE : TOP_LEVEL);
+      this.parentKey = offered?.key || (nestedUnlisted ? CURRENT_PLACE : TOP_LEVEL);
       this.initialParentKey = this.parentKey;
       this.nameError = '';
       this.drawer = true;
