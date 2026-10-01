@@ -17,14 +17,17 @@
 package org.exoplatform.emailConnector.model;
 
 /**
- * What became of an answered invitation in the user's calendar (EXO-90848), as the
- * reader tells it after the answer; absent when no add-on holds a calendar for the
- * user, which the reader says nothing about.
+ * What became of an invitation in the user's calendar (EXO-90848), as the reader tells
+ * it after an answer, an addition or a removal; absent when no add-on holds a calendar
+ * for the user or there was nothing to do, which the reader says nothing about.
  */
 public enum CalendarLanding {
 
-  /** The user's calendar holds the event with the answer given. */
+  /** The user's calendar holds the event, with the answer given when one was. */
   LANDED,
+
+  /** The event was removed from the user's calendar: its organiser cancelled it. */
+  REMOVED,
 
   /**
    * An add-on holds the user's calendar and refused the invitation as it is -- about

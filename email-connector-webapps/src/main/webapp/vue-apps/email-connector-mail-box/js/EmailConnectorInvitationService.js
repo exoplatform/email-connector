@@ -128,21 +128,76 @@ export function invitationReplyOutcome(error, answer) {
 // What the reader says of each landing outcome the server tells.
 const LANDING_MESSAGES = {
   LANDED: { messageKey: 'emailConnector.mailBox.invitation.landed', alertType: 'success' },
+  REMOVED: { messageKey: 'emailConnector.mailBox.invitation.removed', alertType: 'success' },
   REFUSED: { messageKey: 'emailConnector.mailBox.invitation.landingRefused', alertType: 'warning' },
   FAILED: { messageKey: 'emailConnector.mailBox.invitation.landingFailed', alertType: 'warning' },
 };
 
+// The server's refusals of adding or removing, each with the sentence the reader shows.
+const LANDING_ERRORS = {
+  'emailConnector.invitation.notLandable': 'emailConnector.mailBox.invitation.notLandable',
+  'emailConnector.invitation.cancelled': 'emailConnector.mailBox.invitation.cancelled',
+};
+
 /**
- * What the reader says of the answer's landing in the user's calendar: that it is
- * there, that the add-on holding the calendar did not take this invitation, or that it
- * could not update the calendar -- the answer left either way. Nothing when no add-on
- * holds a calendar for the user.
+ * What the reader says of an invitation's landing in the user's calendar: that it is
+ * there, that it was removed, that the add-on holding the calendar did not take this
+ * invitation, or that it could not update the calendar -- an answer given left either
+ * way. Nothing when no add-on holds a calendar for the user, or there was nothing to do.
  *
- * @param {String} landing LANDED, REFUSED, FAILED or nothing, as the server told it
+ * @param {String} landing LANDED, REMOVED, REFUSED, FAILED or nothing, as the server told it
  * @returns {Object} {messageKey, alertType}, null when there is nothing to say
  */
 export function invitationLandingOutcome(landing) {
   return LANDING_MESSAGES[landing] || null;
+}
+
+/**
+ * Adds the event a message describes to the user's calendar, without answering.
+ *
+ * @param {Number} emailId the message's technical id
+ * @returns {Promise<Object>} the invitation, with what became of it in the calendar
+ */
+export function addInvitationToCalendar(emailId) {
+  return landInvitation(emailId, 'POST');
+}
+
+/**
+ * Removes from the user's calendar the event a cancellation calls off.
+ *
+ * @param {Number} emailId the message's technical id
+ * @returns {Promise<Object>} the invitation, with what became of it in the calendar
+ */
+export function removeInvitationFromCalendar(emailId) {
+  return landInvitation(emailId, 'DELETE');
+}
+
+/**
+ * One call of the calendar endpoint, its refusal carried as {code, status}.
+ *
+ * @param {Number} emailId the message's technical id
+ * @param {String} method POST to add, DELETE to remove
+ * @returns {Promise<Object>} the invitation
+ */
+function landInvitation(emailId, method) {
+  return fetch(`/email-connector/rest/email-box/${encodeURIComponent(emailId)}/invitation/calendar`, {
+    credentials: 'include',
+    method,
+  }).then(resp => (resp?.ok ? resp.json() : refusal(resp, 'Error when landing the invitation in the calendar')))
+    .then(invitation => {
+      invitations.set(emailId, Promise.resolve(invitation));
+      return invitation;
+    });
+}
+
+/**
+ * What the reader says when adding or removing was refused.
+ *
+ * @param {Error} error the refusal, {code, status}
+ * @returns {String} the key of the sentence
+ */
+export function invitationLandingError(error) {
+  return LANDING_ERRORS[error?.code] || 'emailConnector.mailBox.invitation.landingFailed';
 }
 
 /**
