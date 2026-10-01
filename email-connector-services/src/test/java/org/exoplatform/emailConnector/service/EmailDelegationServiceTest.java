@@ -40,9 +40,9 @@ import static org.mockito.Mockito.when;
 
 import java.util.Date;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
