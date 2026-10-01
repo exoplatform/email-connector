@@ -205,11 +205,24 @@ public class EmailConnectorUtils {
 
   public static final String   EMAIL_FEATURE           = "email";
 
+  /** The name a message downloaded as {@code .eml} takes when its subject gives none. */
+  public static final String   EML_DEFAULT_NAME        = "message";
+
+  /** The longest subject part of an {@code .eml} file name, in code points. */
+  public static final int      EML_NAME_MAX_LENGTH     = 100;
+
   private static final int     DEFAULT_AVATAR_WIDTH    = 350;
 
   private static final int     DEFAULT_AVATAR_HEIGHT   = 350;
 
   private static final Pattern MOJIBAKE_PATTERN        = Pattern.compile("[ÃÂâ][\u0080-\u00BF]");
+
+  /**
+   * What a file name may not hold on any desktop system: control and invisible format
+   * characters (a bidirectional override would show "…eml.exe" reversed), and the
+   * path and wildcard characters Windows refuses.
+   */
+  private static final Pattern EML_NAME_UNSAFE         = Pattern.compile("[\\p{Cc}\\p{Cf}\\\\/:*?\"<>|]");
 
   private static final Log     LOG                     = ExoLogger.getLogger(EmailConnectorUtils.class);
 
@@ -317,6 +330,28 @@ public class EmailConnectorUtils {
       return MAIL_TYPE_BULK;
     }
     return MAIL_TYPE_PERSONAL;
+  }
+
+  /**
+   * The file name a message is downloaded under (EXO-90842): its subject, made safe for a
+   * {@code Content-Disposition} header and for any desktop file system, then
+   * {@code .eml}. The subject is the sender's text, so nothing in it is trusted: control
+   * and format characters and the characters a file system refuses become {@code _},
+   * runs of white space one space, leading and trailing dots and spaces go (a name
+   * starting with a dot is hidden, one ending with a dot is refused on Windows), and the
+   * whole is cut at {@link #EML_NAME_MAX_LENGTH} code points.
+   *
+   * @param subject the message's subject, possibly null
+   * @return a non-blank file name ending in {@code .eml}
+   */
+  public static String emlFileName(String subject) {
+    String name = subject == null ? "" : EML_NAME_UNSAFE.matcher(subject).replaceAll("_");
+    name = name.replaceAll("\\s+", " ");
+    name = StringUtils.strip(name, ". ");
+    if (name.codePointCount(0, name.length()) > EML_NAME_MAX_LENGTH) {
+      name = StringUtils.stripEnd(name.substring(0, name.offsetByCodePoints(0, EML_NAME_MAX_LENGTH)), ". ");
+    }
+    return (StringUtils.isBlank(name) ? EML_DEFAULT_NAME : name) + ".eml";
   }
 
   private static final Pattern FORWARD_SUBJECT = Pattern.compile("^\\s*(fw|fwd|tr|wg|rv)\\s*:", Pattern.CASE_INSENSITIVE);
