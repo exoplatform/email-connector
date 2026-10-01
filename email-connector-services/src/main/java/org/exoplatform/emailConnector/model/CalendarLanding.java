@@ -26,6 +26,12 @@ public enum CalendarLanding {
   /** The user's calendar holds the event with the answer given. */
   LANDED,
 
+  /**
+   * An add-on holds the user's calendar and refused the invitation as it is -- about
+   * one occurrence only, or not to be trusted; the answer left anyway.
+   */
+  REFUSED,
+
   /** An add-on holds the user's calendar and could not update it; the answer left anyway. */
   FAILED
 
