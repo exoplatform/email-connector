@@ -78,7 +78,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-btn>
           <v-list-item-content class="py-2">
             <v-list-item-title :class="{ 'text-sub-title': row.folder.missing }" :title="pathOf(row.folder)">
-              {{ row.showPath ? pathOf(row.folder) : row.folder.displayName }}
+              {{ row.showPath ? row.pathLabel : row.folder.displayName }}
             </v-list-item-title>
             <v-list-item-subtitle v-if="row.folder.missing" class="error--text">
               {{ $t('UserSettings.emailConnector.folders.missing') }}
@@ -161,7 +161,7 @@ import { buildFolderTree, descendantKeys, readCollapsedFolders, toggleCollapsedF
 const DELETE_ERROR_KEYS = {
   'emailConnector.folder.notEmpty': 'UserSettings.emailConnector.folders.delete.notEmpty',
   'emailConnector.folder.subFolderNotEmpty': 'UserSettings.emailConnector.folders.delete.subFolderNotEmpty',
-  'emailConnector.folder.hasSubFolders': 'UserSettings.emailConnector.folders.delete.hasSubFolders',
+  'emailConnector.folder.subFolderBuiltIn': 'UserSettings.emailConnector.folders.delete.subFolderBuiltIn',
 };
 
 export default {
@@ -177,6 +177,9 @@ export default {
     savingId: null,
     // The folder a delete confirmation is pending on.
     deleteTarget: null,
+    // Whether the pending confirmation is the second one, asked when the server found
+    // folders inside it that this list does not show (not listed as the user's own).
+    deleteUnlistedSubFolders: false,
   }),
   computed: {
     /**
@@ -195,6 +198,10 @@ export default {
      */
     deleteConfirmMessage() {
       // A folder with folders inside says that they go too, and how many (EXO-90839).
+      if (this.deleteUnlistedSubFolders) {
+        return this.$t('UserSettings.emailConnector.folders.delete.confirm.messageWithUnlistedSubFolders',
+          { 0: this.deleteTarget?.displayName || '' });
+      }
       return this.deleteTargetSubFolders
         ? this.$t('UserSettings.emailConnector.folders.delete.confirm.messageWithSubFolders',
           { 0: this.deleteTarget?.displayName || '', 1: this.deleteTargetSubFolders })
@@ -373,6 +380,7 @@ export default {
      */
     openDelete(folder) {
       this.deleteTarget = folder;
+      this.deleteUnlistedSubFolders = false;
       this.$refs.deleteConfirmDialog.open();
     },
     /**
@@ -389,16 +397,29 @@ export default {
       }
       this.savingId = folder.id;
       // The folders inside it go too only when the confirmation said so.
-      this.$emailConnectorUserSettingService.deleteMailFolder(folder.id, this.deleteTargetSubFolders > 0)
+      const withSubFolders = this.deleteUnlistedSubFolders || this.deleteTargetSubFolders > 0;
+      let askedAgain = false;
+      this.$emailConnectorUserSettingService.deleteMailFolder(folder.id, withSubFolders)
         .then(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.folders.delete.done'), 'success'))
         .catch(error => {
+          if (error?.message === 'emailConnector.folder.hasSubFolders' && !withSubFolders) {
+            // Folders inside it the list does not show: asked again, saying so.
+            askedAgain = true;
+            this.deleteUnlistedSubFolders = true;
+            this.$refs.deleteConfirmDialog.open();
+            return;
+          }
           const message = DELETE_ERROR_KEYS[error?.message] ? this.$t(DELETE_ERROR_KEYS[error.message])
             : this.$t('UserSettings.emailConnector.folders.error');
           this.$root.$emit('alert-message', message, 'error');
         })
         .finally(() => {
           this.savingId = null;
+          if (askedAgain) {
+            return;
+          }
           this.deleteTarget = null;
+          this.deleteUnlistedSubFolders = false;
           this.load(false);
           this.$root.$emit('email-folders-saved');
         });
