@@ -15434,7 +15434,146 @@ public class EmailBoxServiceTest {
     ArgumentCaptor<SearchTerm> searched = ArgumentCaptor.forClass(SearchTerm.class);
     verify(inbox).search(searched.capture());
     assertTrue(searched.getValue() instanceof AndTerm);
-    assertEquals(3, ((AndTerm) searched.getValue()).getTerms().length, "words, attachment and day: one search");
+    assertEquals(2, ((AndTerm) searched.getValue()).getTerms().length, "words and day: one search, the attachment never in it");
+  }
+
+  /**
+   * EXO-90838 -- the attachment criterion never reaches the mail server: alone, it
+   * examines the folder's newest messages without a SEARCH; with other criteria, the
+   * newest matches of their SEARCH. Either way the hits are the messages eXo would list
+   * an attachment for, read from their structure in one batched fetch, and the answer
+   * says how many were examined when there were more.
+   */
+  @Test
+  void theAttachmentCriterionIsReadFromTheMatchesStructureNeverSearched() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    MimeMessage withFile = EmailSearchCriteriaTermTest.message(EmailSearchCriteriaTermTest.multipart("mixed",
+                                                                                                    EmailSearchCriteriaTermTest.text("plain"),
+                                                                                                    EmailSearchCriteriaTermTest.file("application/pdf",
+                                                                                                                                     Part.ATTACHMENT)));
+    MimeMessage textOnly = EmailSearchCriteriaTermTest.message(EmailSearchCriteriaTermTest.multipart("alternative",
+                                                                                                    EmailSearchCriteriaTermTest.text("plain"),
+                                                                                                    EmailSearchCriteriaTermTest.text("html")));
+    when(((UIDFolder) inbox).getUID(withFile)).thenReturn(31L);
+    when(emailBoxStorage.getCachedEmailIds(TEST_USER, "INBOX", List.of(31L))).thenReturn(Map.of());
+    when(inbox.getMessageCount()).thenReturn(500);
+    when(inbox.getMessages(301, 500)).thenReturn(new Message[] { textOnly, withFile });
+    EmailSearchCriteria attachments = new EmailSearchCriteria();
+    attachments.setAttachmentsOnly(true);
+
+    EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, attachments, "INBOX", 10);
+
+    verify(inbox, never()).search(any(SearchTerm.class));
+    assertEquals(List.of(31L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList());
+    assertEquals(1, page.getTotalMatches());
+    verify(inbox).getMessages(500 - EmailBoxService.ATTACHMENT_SCAN_LIMIT + 1, 500);
+    assertEquals(2, page.getScanned(), "500 messages: the count covers the ones examined, and says how many");
+    ArgumentCaptor<FetchProfile> fetched = ArgumentCaptor.forClass(FetchProfile.class);
+    verify(inbox, times(1)).fetch(any(Message[].class), fetched.capture());
+    assertTrue(fetched.getValue().contains(FetchProfile.Item.CONTENT_INFO), "the structure, in the one batched fetch");
+
+    EmailSearchCriteria wordsAndAttachments = new EmailSearchCriteria();
+    wordsAndAttachments.setWords("budget");
+    wordsAndAttachments.setAttachmentsOnly(true);
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { textOnly, withFile });
+
+    page = emailBoxService.searchEmails(TEST_USER, wordsAndAttachments, "INBOX", 10);
+
+    ArgumentCaptor<SearchTerm> searched = ArgumentCaptor.forClass(SearchTerm.class);
+    verify(inbox).search(searched.capture());
+    assertTrue(searched.getValue() instanceof OrTerm, "the words alone: no term for the attachment");
+    assertEquals(List.of(31L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList());
+    assertEquals(0, page.getScanned(), "every match examined");
+  }
+
+  /**
+   * EXO-90838 -- the advanced search of the user's own folder reads eXo's copy of it,
+   * with every criterion as the shared folder's copy applies it, never the server; the
+   * answer carries the date of the copy's oldest message there. The access check answers
+   * first, and a folder the server search would not read is refused before any read.
+   */
+  @Test
+  void theCachedSearchOfAnOwnFolderAppliesEveryCriterionToItsCopy() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    EmailSearchCriteria recipient = new EmailSearchCriteria();
+    recipient.setTo("DAVE");
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.searchCachedFolder(TEST_USER, recipient, "TRASH", 10));
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    assertEquals("emailConnector.folder.notBrowsable",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchCachedFolder(TEST_USER, recipient, "TRASH", 10)).getMessage());
+    LocalDate today = LocalDate.now();
+    Email toDave = mirrored(1L, "Budget", "carol@acme.com", false, 0);
+    toDave.setId(101L);
+    toDave.setTo(List.of(new EmailRecipient("Dave Smith", "dave@acme.com", null, false)));
+    toDave.setContent(new EmailContent("<div class=\"quarterly\">See the attached figures</div>"));
+    toDave.setReceivedDate(EmailBoxService.startOfServerDay(today));
+    Email ccDave = mirrored(2L, "Lunch", "erin@acme.com", true, 0);
+    ccDave.setId(102L);
+    ccDave.setStarred(true);
+    ccDave.setCc(List.of(new EmailRecipient(null, "dave@acme.com", null, false)));
+    ccDave.setContent(new EmailContent("<p>quarterly figures inside</p>"));
+    ccDave.setReceivedDate(new Date(EmailBoxService.startOfServerDay(today).getTime() - 1));
+    Email bccDave = mirrored(3L, "Quarterly", "frank@acme.com", false, 0);
+    bccDave.setId(103L);
+    bccDave.setBcc(List.of(new EmailRecipient("Dave", "dave@acme.com", null, false)));
+    List<Email> rows = List.of(toDave, ccDave, bccDave);
+    rows.forEach(email -> email.setFolder(MailFolder.INBOX));
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of(MailFolder.INBOX), false)).thenReturn(rows);
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of(MailFolder.INBOX), true)).thenReturn(rows);
+    when(emailBoxStorage.getEmailIdsWithAttachmentsInFolders(TEST_USER, List.of(MailFolder.INBOX))).thenReturn(Set.of(101L, 103L));
+
+    assertEquals(List.of(1L, 2L), cachedUids(recipient), "To or Cc, never Bcc");
+    EmailSearchCriteria words = new EmailSearchCriteria();
+    words.setWords("quarterly");
+    assertEquals(List.of(3L, 2L), cachedUids(words), "the subject or the body's text, not its markup");
+    EmailSearchCriteria attachments = new EmailSearchCriteria();
+    attachments.setAttachmentsOnly(true);
+    assertEquals(List.of(3L, 1L), cachedUids(attachments), "the rows eXo holds an attachment for");
+    EmailSearchCriteria fromToday = new EmailSearchCriteria();
+    fromToday.setAfter(today);
+    assertEquals(List.of(3L, 1L), cachedUids(fromToday));
+    EmailSearchCriteria beforeToday = new EmailSearchCriteria();
+    beforeToday.setBefore(today);
+    assertEquals(List.of(2L), cachedUids(beforeToday));
+    EmailSearchCriteria unread = new EmailSearchCriteria();
+    unread.setUnreadOnly(true);
+    assertEquals(List.of(3L, 1L), cachedUids(unread));
+    EmailSearchCriteria starred = new EmailSearchCriteria();
+    starred.setFavoritesOnly(true);
+    assertEquals(List.of(2L), cachedUids(starred));
+    EmailSearchCriteria sender = new EmailSearchCriteria();
+    sender.setFrom("erin");
+    assertEquals(List.of(2L), cachedUids(sender));
+
+    EmailSearchResultPage page = emailBoxService.searchCachedFolder(TEST_USER, words, MailFolder.INBOX, 10);
+    assertEquals(ccDave.getReceivedDate(), page.getCachedSince(), "the copy's oldest message there");
+    assertEquals(MailFolder.INBOX, page.getResults().get(0).getFolder());
+    assertTrue(page.getResults().get(0).isCached());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * The UIDs a cached search of the user's own Inbox returns, newest first.
+   *
+   * @param criteria the criteria
+   * @return the UIDs
+   * @throws IllegalAccessException never, the user may read the mailbox
+   */
+  private List<Long> cachedUids(EmailSearchCriteria criteria) throws IllegalAccessException {
+    return emailBoxService.searchCachedFolder(TEST_USER, criteria, MailFolder.INBOX, 10)
+                          .getResults()
+                          .stream()
+                          .map(EmailSearchResult::getMailRemoteId)
+                          .toList();
   }
 
   /**

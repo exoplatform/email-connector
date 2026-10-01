@@ -100,7 +100,6 @@ import javax.mail.internet.MimeMultipart;
 import javax.mail.internet.MimeUtility;
 import javax.mail.search.AndTerm;
 import javax.mail.search.BodyTerm;
-import javax.mail.search.HeaderTerm;
 import javax.mail.util.ByteArrayDataSource;
 import javax.mail.search.ComparisonTerm;
 import javax.mail.search.FlagTerm;
@@ -535,6 +534,10 @@ public class EmailBoxService {
   // envelope fetched, so the result list's cost stays one bounded batched FETCH
   // whatever the match count. The full count is still reported to the caller.
   private static final int        SEARCH_MAX_RESULTS                                          = 50;
+
+  // How many of the newest matches a server search narrowed to the messages with an
+  // attachment examines (EXO-90838): their MIME structure comes in one batched FETCH.
+  static final int                ATTACHMENT_SCAN_LIMIT                                       = 200;
 
   /** How much of a message to quote when the search matched nothing in its body. */
   private static final int        EXCERPT_LENGTH                                              = 180;
@@ -6636,60 +6639,70 @@ public class EmailBoxService {
   }
 
   /**
-   * The search of one folder's mirror behind {@link #searchSharedMailboxMirror} and the
-   * mail drawer's own search box in a shared mailbox (EXO-90590), once the caller has
-   * checked that the user may read that folder: the rows the shared mailbox's sync
-   * brought in, filtered here -- which the mirror's own size bounds -- newest first.
-   * The Favorites narrowing is the drawer's chip: in a shared mailbox the star is its
-   * owner's (EXO-90550), which is what that mailbox's Favorites list shows too.
+   * Searches one folder in eXo's copy of it, with every criterion of the advanced search
+   * (EXO-90838): the mail drawer's advanced search reads here first, in the user's own
+   * folders as in a mailbox shared with them, and asks the mail server only when the
+   * user does, or when the copy holds no match. Answers without touching the server.
    * <p>
-   * Every criterion of the advanced search applies here as on the mail server
-   * (EXO-90838): the recipients are the To and Cc ones, the words are matched against
-   * the subject and the body as text, the days are drawn in eXo's JVM zone -- the zone
-   * JavaMail writes the IMAP {@code SINCE} and {@code BEFORE} days in, which the mail
-   * server then matches against its own internal dates -- and a message has an
-   * attachment when eXo holds an attachment row for it: what the reader lists.
+   * The folder is one the search of the mail server reads (INBOX, SENT, ARCHIVE), or a
+   * folder of a mailbox shared with the user that a search may read -- re-checked on
+   * every search, as the server search does. The answer also says since when the copy
+   * holds the folder's mail: the date of its oldest message, as the drawer states it.
    *
    * @param username the reader
-   * @param folderKey the shared folder's key, already checked
+   * @param criteria what to match, at least one criterion
+   * @param folder the folder key
+   * @param limit how many hits to return, newest first
+   * @return the newest matching messages of the copy, how many matched, and the date of
+   *         the copy's oldest message in that folder
+   * @throws IllegalAccessException if the user may not read their mailbox
+   * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for any
+   *           other folder, and the codes of {@link #validateSearchCriteria}
+   * @throws DelegationRevokedException when the folder's share is no longer accepted
+   */
+  public EmailSearchResultPage searchCachedFolder(String username,
+                                                  EmailSearchCriteria criteria,
+                                                  String folder,
+                                                  int limit) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEARCH_EMAIL_MESSAGE, username));
+    }
+    if (!isSearchableFolder(folder) && !emailDelegationService.isSearchableSharedFolder(username, folder)) {
+      throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
+    }
+    return searchMirror(username, folder, criteria, limit);
+  }
+
+  /**
+   * The search of one folder in eXo's copy, once the caller has checked that the user may
+   * read that folder: behind {@link #searchCachedFolder}, {@link #searchSharedMailboxMirror}
+   * and the server search of a folder of a mailbox shared with the user (EXO-90590), which
+   * never reaches the server. The rows the sync brought in, filtered by
+   * {@link #filterCached} -- which the copy's own size bounds -- newest first.
+   *
+   * @param username the reader
+   * @param folderKey the folder's key, already checked
    * @param criteria what to match
    * @param limit how many hits to return, newest first
-   * @return the newest matching mirrored messages and how many matched
+   * @return the newest matching messages, how many matched, and the date of the copy's
+   *         oldest message in that folder
    * @throws IllegalArgumentException the codes of {@link #validateSearchCriteria}
    */
   private EmailSearchResultPage searchMirror(String username, String folderKey, EmailSearchCriteria criteria, int limit) {
     validateSearchCriteria(criteria);
-    String term = StringUtils.trimToNull(criteria.getQuery());
-    String sender = StringUtils.trimToNull(criteria.getFrom());
-    String recipient = StringUtils.trimToNull(criteria.getTo());
-    String words = StringUtils.trimToNull(criteria.getWords());
-    Date since = criteria.getSinceDays() == null ? null
-                                                 : new Date(System.currentTimeMillis()
-                                                     - TimeUnit.DAYS.toMillis(criteria.getSinceDays()));
-    Date after = startOfServerDay(criteria.getAfter());
-    Date before = startOfServerDay(criteria.getBefore());
+    // The search's own read, not the listing's: no attachment, category or excerpt, which
+    // a search discards -- this runs once per keystroke in the drawer's search box.
+    List<Email> rows = emailBoxStorage.getEmailsForSearchInFolders(username,
+                                                                   List.of(folderKey),
+                                                                   StringUtils.isNotBlank(criteria.getTo()));
     // One more read only when the attachment criterion asks for it: the ids of the
     // folder's rows that have one, never the attachments themselves.
     Set<Long> withAttachments = criteria.isAttachmentsOnly() ? emailBoxStorage.getEmailIdsWithAttachmentsInFolders(username,
                                                                                                                    List.of(folderKey))
                                                              : Set.of();
-    // The search's own read, not the listing's: no attachment, category or excerpt, which
-    // a search discards -- this runs once per keystroke in the drawer's search box.
-    List<Email> matches = emailBoxStorage.getEmailsForSearchInFolders(username, List.of(folderKey), recipient != null)
-                                         .stream()
-                                         .filter(email -> !criteria.isUnreadOnly() || !email.isRead())
-                                         .filter(email -> !criteria.isFavoritesOnly() || email.isStarred())
-                                         .filter(email -> !criteria.isAttachmentsOnly() || withAttachments.contains(email.getId()))
-                                         .filter(email -> receivedWithin(email, since, after, before))
-                                         .filter(email -> sender == null || senderMatches(email, sender))
-                                         .filter(email -> recipient == null || recipientMatches(email, recipient))
-                                         .filter(email -> term == null || StringUtils.containsIgnoreCase(email.getSubject(), term)
-                                             || senderMatches(email, term))
-                                         .filter(email -> words == null || StringUtils.containsIgnoreCase(email.getSubject(), words)
-                                             || bodyTextContains(email, words))
-                                         .sorted(Comparator.comparing(Email::getReceivedDate,
-                                                                      Comparator.nullsLast(Comparator.reverseOrder())))
-                                         .toList();
+    List<Email> matches = filterCached(rows, criteria, withAttachments);
     List<EmailSearchResult> results = matches.stream()
                                              .limit(Math.min(Math.max(limit, 1), SEARCH_MAX_RESULTS))
                                              .map(email -> new EmailSearchResult(email.getMailRemoteId(),
@@ -6703,7 +6716,50 @@ public class EmailBoxService {
                                                                                  null,
                                                                                  email.getId()))
                                              .toList();
-    return new EmailSearchResultPage(results, matches.size(), criteria.isFavoritesOnly());
+    EmailSearchResultPage page = new EmailSearchResultPage(results, matches.size(), criteria.isFavoritesOnly());
+    page.setCachedSince(rows.stream().map(Email::getReceivedDate).filter(Objects::nonNull).min(Date::compareTo).orElse(null));
+    return page;
+  }
+
+  /**
+   * The messages of eXo's copy that match the criteria of a search, newest first
+   * (EXO-90838). Every criterion applies as on the mail server: the recipients are the
+   * To and Cc ones, the words are matched against the subject and the body as text, the
+   * days are drawn in eXo's JVM zone -- the zone JavaMail writes the IMAP {@code SINCE}
+   * and {@code BEFORE} days in, which the mail server then matches against its own
+   * internal dates -- and a message has an attachment when eXo holds an attachment row
+   * for it: the paperclip of the list. Package-visible for tests.
+   *
+   * @param rows the copy's messages, as the search read gives them -- with their To and
+   *          Cc recipients when the criteria name one
+   * @param criteria what to match
+   * @param withAttachments the ids of the rows that carry an attachment; read only when
+   *          the criteria ask for one
+   * @return the matching messages, newest first
+   */
+  static List<Email> filterCached(List<Email> rows, EmailSearchCriteria criteria, Set<Long> withAttachments) {
+    String term = StringUtils.trimToNull(criteria.getQuery());
+    String sender = StringUtils.trimToNull(criteria.getFrom());
+    String recipient = StringUtils.trimToNull(criteria.getTo());
+    String words = StringUtils.trimToNull(criteria.getWords());
+    Date since = criteria.getSinceDays() == null ? null
+                                                 : new Date(System.currentTimeMillis()
+                                                     - TimeUnit.DAYS.toMillis(criteria.getSinceDays()));
+    Date after = startOfServerDay(criteria.getAfter());
+    Date before = startOfServerDay(criteria.getBefore());
+    return rows.stream()
+               .filter(email -> !criteria.isUnreadOnly() || !email.isRead())
+               .filter(email -> !criteria.isFavoritesOnly() || email.isStarred())
+               .filter(email -> !criteria.isAttachmentsOnly() || withAttachments.contains(email.getId()))
+               .filter(email -> receivedWithin(email, since, after, before))
+               .filter(email -> sender == null || senderMatches(email, sender))
+               .filter(email -> recipient == null || recipientMatches(email, recipient))
+               .filter(email -> term == null || StringUtils.containsIgnoreCase(email.getSubject(), term)
+                   || senderMatches(email, term))
+               .filter(email -> words == null || StringUtils.containsIgnoreCase(email.getSubject(), words)
+                   || bodyTextContains(email, words))
+               .sorted(Comparator.comparing(Email::getReceivedDate, Comparator.nullsLast(Comparator.reverseOrder())))
+               .toList();
   }
 
   /**
@@ -15153,18 +15209,48 @@ public class EmailBoxService {
         return new EmailSearchResultPage(List.of(), 0);
       }
       remoteFolder.open(Folder.READ_ONLY);
-      Message[] found = remoteFolder.search(searchTerm);
+      // The attachment criterion alone leaves no term: the newest messages of the folder
+      // are examined instead (see below), never the whole folder.
+      Message[] found = searchTerm == null ? newestMessages(remoteFolder, ATTACHMENT_SCAN_LIMIT) : remoteFolder.search(searchTerm);
       if (found == null || found.length == 0) {
         return new EmailSearchResultPage(List.of(), 0);
       }
-      // The server lists matches in mailbox order (oldest first): the page is the
-      // TAIL — the newest hits — because "the mail I'm looking for" skews recent
-      // even when the query matches years of history.
-      Message[] page = found.length <= cappedLimit ? found : Arrays.copyOfRange(found, found.length - cappedLimit, found.length);
-      // One batched round-trip for the whole page: reading subject/from/date/flags
-      // below is then served from memory. Without this every getter is its own
-      // per-message FETCH — the regression that must never come back.
-      remoteFolder.fetch(page, buildSearchResultFetchProfile());
+      int totalMatches = searchTerm == null ? remoteFolder.getMessageCount() : found.length;
+      int scanned = 0;
+      Message[] page;
+      if (criteria.isAttachmentsOnly()) {
+        // The attachment criterion is eXo's (the paperclip of the list), never an IMAP
+        // term (EXO-90838): the newest matches are examined against the attachment rows
+        // eXo would write for them, from their MIME structure -- one batched FETCH with
+        // the page's own items, no body -- and the count covers those examined.
+        Message[] window = newest(found, ATTACHMENT_SCAN_LIMIT);
+        FetchProfile structureProfile = buildSearchResultFetchProfile();
+        structureProfile.add(FetchProfile.Item.CONTENT_INFO);
+        remoteFolder.fetch(window, structureProfile);
+        List<Message> withAttachment = new ArrayList<>();
+        for (Message message : window) {
+          if (hasStoredAttachment(message, username)) {
+            withAttachment.add(message);
+          }
+        }
+        scanned = totalMatches > window.length ? window.length : 0;
+        totalMatches = withAttachment.size();
+        page = newest(withAttachment.toArray(new Message[0]), cappedLimit);
+      } else {
+        // The server lists matches in mailbox order (oldest first): the page is the
+        // TAIL — the newest hits — because "the mail I'm looking for" skews recent
+        // even when the query matches years of history.
+        page = newest(found, cappedLimit);
+        // One batched round-trip for the whole page: reading subject/from/date/flags
+        // below is then served from memory. Without this every getter is its own
+        // per-message FETCH — the regression that must never come back.
+        remoteFolder.fetch(page, buildSearchResultFetchProfile());
+      }
+      if (page.length == 0) {
+        EmailSearchResultPage empty = new EmailSearchResultPage(List.of(), 0, favoritesOnly);
+        empty.setScanned(scanned);
+        return empty;
+      }
       UIDFolder uidFolder = (UIDFolder) remoteFolder;
       List<Long> pageUids = new ArrayList<>(page.length);
       for (Message message : page) {
@@ -15197,7 +15283,9 @@ public class EmailBoxService {
           LOG.debug("Skipping an unreadable search hit in folder {} for user {}", folder, username, e);
         }
       }
-      return new EmailSearchResultPage(results, found.length, favoritesOnly);
+      EmailSearchResultPage resultPage = new EmailSearchResultPage(results, totalMatches, favoritesOnly);
+      resultPage.setScanned(scanned);
+      return resultPage;
     } catch (SearchException e) {
       // The server refused the CRITERIA, not the mailbox — the CHARSET path: a query
       // carrying accents ("réunion") makes JavaMail issue SEARCH CHARSET UTF-8, and a
@@ -15452,10 +15540,10 @@ public class EmailBoxService {
    * excluded); JavaMail writes the day of the date it is given in eXo's JVM zone, so
    * each bound is that day's first instant there ({@link #startOfServerDay}), which is
    * also correct when JavaMail falls back to matching on the client.</li>
-   * <li>IMAP has no "has an attachment" key: a message carrying a file is a
-   * {@code multipart/mixed} one, which {@code HEADER Content-Type} finds. A message
-   * whose only parts are its text and its inline images is {@code multipart/related}
-   * or {@code multipart/alternative}, and does not match.</li>
+   * <li>The attachment criterion is never a term: IMAP has no key for it, and a
+   * {@code HEADER Content-Type} search is a scan of the folder some servers time out on.
+   * {@link #searchEmails(String, EmailSearchCriteria, String, int)} examines the newest
+   * matches' structure instead ({@link #hasStoredAttachment}).</li>
    * </ul>
    *
    * @param criteria the criteria; its {@code sinceDays} is read through {@code since}
@@ -15487,9 +15575,6 @@ public class EmailBoxService {
     if (criteria.isFavoritesOnly()) {
       terms.add(new FlagTerm(new Flags(Flags.Flag.FLAGGED), true));
     }
-    if (criteria.isAttachmentsOnly()) {
-      terms.add(new HeaderTerm("Content-Type", "multipart/mixed"));
-    }
     if (since != null) {
       terms.add(new ReceivedDateTerm(ComparisonTerm.GE, since));
     }
@@ -15503,6 +15588,88 @@ public class EmailBoxService {
       return null;
     }
     return terms.size() == 1 ? terms.get(0) : new AndTerm(terms.toArray(new SearchTerm[0]));
+  }
+
+  /**
+   * The newest messages of a list in mailbox order (oldest first): its tail.
+   *
+   * @param messages the messages, oldest first
+   * @param count how many at most
+   * @return the last {@code count} of them, oldest first
+   */
+  private static Message[] newest(Message[] messages, int count) {
+    return messages.length <= count ? messages : Arrays.copyOfRange(messages, messages.length - count, messages.length);
+  }
+
+  /**
+   * The newest messages of an open folder, by sequence number, without a SEARCH: what a
+   * search with the attachment criterion alone examines.
+   *
+   * @param folder the open folder
+   * @param count how many at most
+   * @return the last {@code count} messages, oldest first
+   * @throws MessagingException when the folder cannot be read
+   */
+  private static Message[] newestMessages(Folder folder, int count) throws MessagingException {
+    int total = folder.getMessageCount();
+    return total <= 0 ? new Message[0] : folder.getMessages(Math.max(1, total - count + 1), total);
+  }
+
+  /**
+   * Whether eXo would write an attachment row for a message -- the paperclip of the list
+   * (EXO-90838): read from its MIME structure as the sync's extractor
+   * ({@code EmailConnectorUtils#getHtmlFromMimeMultipart}) reads its parts, one level at
+   * a time. In a multipart, the first {@code text/html} and the first {@code text/plain}
+   * are the body, a nested multipart is walked, an image with an {@code inline}
+   * disposition belongs to the body, and any other part with no disposition or an
+   * {@code attachment} one is an attachment. A message that is not a multipart has none.
+   * Only the structure is read: on a message fetched with
+   * {@code FetchProfile.Item.CONTENT_INFO} no body is downloaded. A message whose
+   * structure cannot be read counts as having none.
+   *
+   * @param message the message
+   * @param username the mailbox owner, for the log
+   * @return true when eXo would list an attachment for it
+   */
+  static boolean hasStoredAttachment(Part message, String username) {
+    try {
+      return message.isMimeType("multipart/*") && message.getContent() instanceof Multipart multipart
+          && multipartHasStoredAttachment(multipart);
+    } catch (MessagingException | IOException e) {
+      LOG.debug("Could not read the structure of a searched message of user {}", username, e);
+      return false;
+    }
+  }
+
+  /**
+   * One level of {@link #hasStoredAttachment}.
+   *
+   * @param multipart the multipart
+   * @return true when one of its parts, or of its nested multiparts, is an attachment
+   * @throws MessagingException when a part cannot be read
+   * @throws IOException when a nested multipart cannot be read
+   */
+  private static boolean multipartHasStoredAttachment(Multipart multipart) throws MessagingException, IOException {
+    boolean html = false;
+    boolean plain = false;
+    for (int i = 0; i < multipart.getCount(); i++) {
+      BodyPart part = multipart.getBodyPart(i);
+      String disposition = part.getDisposition();
+      if (part.isMimeType("text/html") && !html) {
+        html = true;
+      } else if (part.isMimeType("text/plain") && !plain) {
+        plain = true;
+      } else if (part.isMimeType("multipart/*")) {
+        if (part.getContent() instanceof Multipart nested && multipartHasStoredAttachment(nested)) {
+          return true;
+        }
+      } else if (part.isMimeType("image/*") && Part.INLINE.equalsIgnoreCase(disposition)) {
+        continue;
+      } else if (disposition == null || Part.ATTACHMENT.equalsIgnoreCase(disposition)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
