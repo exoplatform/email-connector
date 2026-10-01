@@ -1862,6 +1862,64 @@ public class MasterChangelogTest {
   }
 
   /**
+   * EXO-90841 -- 1.0.0-98 adds EMAIL_BOX.AUTH_FAILURE, null on a message cached before
+   * it (its authentication verdict was never read); rolls back to a tag placed
+   * immediately before it, dropping that column and nothing else, the message kept; and
+   * applies again.
+   *
+   * @throws Exception when the changeset does not apply or roll back
+   */
+  @Test
+  void theAuthenticationFailureRollsBackAndReapplies() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback98" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-98"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-auth-failure");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "AUTH_FAILURE"), "not before 1.0.0-98");
+      try (Statement statement = connection.createStatement()) {
+        statement.executeUpdate("INSERT INTO EMAIL_BOX (ID, USER_ID, SUBJECT, SENDER, RECEIVED_DATE, FOLDER)"
+            + " VALUES (1, 'bob', 's', 'Bank,alerts@bank.example', CURRENT_TIMESTAMP, 'INBOX')");
+      }
+      liquibase.update("");
+      assertEquals(16, columnSize(connection, "EMAIL_BOX", "AUTH_FAILURE"), "1.0.0-98 adds EMAIL_BOX.AUTH_FAILURE");
+      try (Statement statement = connection.createStatement()) {
+        try (ResultSet row = statement.executeQuery("SELECT AUTH_FAILURE FROM EMAIL_BOX WHERE ID = 1")) {
+          assertTrue(row.next());
+          assertNull(row.getString(1), "a message cached before it carries no verdict");
+        }
+        statement.executeUpdate("UPDATE EMAIL_BOX SET AUTH_FAILURE = 'DMARC' WHERE ID = 1");
+      }
+      liquibase.rollback("before-auth-failure", "");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "AUTH_FAILURE"), "the rollback drops it");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "DRAFT_SEND_MODE"), "and nothing before it");
+      try (Statement statement = connection.createStatement();
+          ResultSet row = statement.executeQuery("SELECT SUBJECT FROM EMAIL_BOX WHERE ID = 1")) {
+        assertTrue(row.next(), "the message itself survives the rollback");
+      }
+      liquibase.update("");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "AUTH_FAILURE"), "the changeset applies again after its rollback");
+    }
+  }
+
+  /**
+   * EXO-90841 -- 1.0.0-98 as MySQL and PostgreSQL would run it, bounded to its own
+   * changeset: one nullable VARCHAR(16), unquoted, and a rollback that drops it.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theAuthenticationFailureOnMySqlAndPostgreSql() throws Exception {
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-98", "1.0.0-98").toUpperCase(Locale.ROOT);
+      assertTrue(update.contains("ALTER TABLE EMAIL_BOX ADD AUTH_FAILURE VARCHAR(16)"), vendor + ": " + update);
+      assertFalse(update.contains("NOT NULL"), vendor + " the column is nullable: " + update);
+      assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-98", "1.0.0-98").toUpperCase(Locale.ROOT).trim();
+      assertEquals("ALTER TABLE EMAIL_BOX DROP COLUMN AUTH_FAILURE;", rollback, vendor + " rollback drops that column only");
+    }
+  }
+
+  /**
    * 1.0.0-52 is burned and must never be reused: the index that is 1.0.0-24 today
    * carried that id on feature/ai-contribution between 20 and 23 August 2026, and the
    * databases that ran the branch then hold a 1.0.0-52 row for it. A changeset's
