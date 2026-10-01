@@ -3556,6 +3556,9 @@ export default {
       // does not cover, a folder opted in from the settings while a selection is held
       // open, resolves at the next click.
       this.$root.mailFolders = this.folders;
+      // And every folder of the mailbox, readable or not, which decides how the picker
+      // spells a path (the INBOX rule, EXO-90839).
+      this.$root.mailNamespaceFolders = this.namespaceFolders;
       // `emails` is a computed off `emailBox`, so it follows the line above on its own.
       // Assigning to it did nothing except log "computed property was assigned to but it
       // has no setter" on every load, and once per poll while a watch was running.
