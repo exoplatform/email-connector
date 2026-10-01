@@ -24,8 +24,11 @@ import org.springframework.http.CacheControl;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.annotation.Secured;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -35,7 +38,10 @@ import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.model.ExportCheck;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.MailImportState;
+import org.exoplatform.emailConnector.rest.model.MailImportRequest;
 import org.exoplatform.emailConnector.service.EmailExportService;
+import org.exoplatform.emailConnector.service.EmailImportService;
 import org.exoplatform.emailConnector.service.RawEmailSink;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 
@@ -48,14 +54,15 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 /**
- * Mail out of the mailbox as files: the selection as a {@code .zip} of {@code .eml}
- * and a folder as an {@code .mbox} (EXO-90845). Who may read is the services' to decide;
+ * Mail in and out of the mailbox as files: the selection as a {@code .zip} of
+ * {@code .eml} and a folder as an {@code .mbox} (EXO-90845), and mail imported from such
+ * files into a folder (EXO-90846). Who may read or write is the services' to decide;
  * this layer keeps each answer's status, and sends the files as downloads a browser
  * never renders.
  */
 @RestController
 @RequestMapping("/email-box")
-@Tag(name = "/email-connector/rest/email-box", description = "Exports mail as files")
+@Tag(name = "/email-connector/rest/email-box", description = "Exports and imports mail as files")
 public class EmailTransferRest {
 
   // What a zip export is served as.
@@ -72,6 +79,9 @@ public class EmailTransferRest {
 
   @Autowired
   private EmailExportService  emailExportService;
+
+  @Autowired
+  private EmailImportService  emailImportService;
 
   /**
    * Checks a zip export before its download starts: how many messages, and the most a
@@ -240,6 +250,60 @@ public class EmailTransferRest {
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
+  }
+
+  /**
+   * Starts importing uploaded files into a folder, and answers at once: the run happens
+   * in the background, and {@code /import/status} is where it reports.
+   *
+   * @param request the caller's request, for the acting user
+   * @param importRequest the folder and the uploads
+   * @return the initial state
+   */
+  @PostMapping("/import")
+  @Secured("users")
+  @Operation(summary = "Imports .eml, .zip of .eml or .mbox files into a folder", method = "POST",
+      description = "Starts adding the mails of files previously pushed to the upload service to the folder on the caller's mail "
+          + "server (IMAP APPEND), and answers immediately. A mail whose Message-ID the folder already holds is skipped. Only a folder "
+          + "of the caller's mailbox other than Drafts, Trash and Spam, or of a mailbox shared with them where they hold the insert "
+          + "right on that folder.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "A missing upload, too many files, files too large, or a folder mail is not imported into"),
+      @ApiResponse(responseCode = "403", description = "Forbidden: the caller may not use their mailbox, or lacks the insert right on that shared folder"),
+      @ApiResponse(responseCode = "409", description = "An import of this user is already running"),
+      @ApiResponse(responseCode = "410", description = "The mailbox share that folder belongs to has ended"), })
+  public MailImportState importMail(HttpServletRequest request, @RequestBody MailImportRequest importRequest) {
+    try {
+      return emailImportService.startImport(request.getRemoteUser(), importRequest.getFolder(), importRequest.getUploadIds());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    } catch (MailboxRightMissingException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    }
+  }
+
+  /**
+   * How the caller's mail import is going, or went, with the limits an import takes.
+   *
+   * @param request the caller's request, for the acting user
+   * @return the state
+   */
+  @GetMapping("/import/status")
+  @Secured("users")
+  @Operation(summary = "How the caller's mail import is going, or went", method = "GET",
+      description = "Answers the stored import state: status, progress, the added, skipped and refused counts, what cut the run short, "
+          + "and the limits one import takes. A null status says no import ever ran.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"), })
+  public ResponseEntity<MailImportState> getImportStatus(HttpServletRequest request) {
+    return ResponseEntity.ok()
+                         .cacheControl(CacheControl.noStore().cachePrivate())
+                         .body(emailImportService.getImportState(request.getRemoteUser()));
   }
 
   /**

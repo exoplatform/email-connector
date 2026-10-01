@@ -17,6 +17,7 @@
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
@@ -40,6 +41,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureWebMvc;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.test.context.ContextConfiguration;
@@ -53,9 +55,12 @@ import org.springframework.web.context.WebApplicationContext;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.model.ExportCheck;
+import org.exoplatform.emailConnector.model.MailImportState;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailExportService;
+import org.exoplatform.emailConnector.service.EmailImportService;
 import org.exoplatform.emailConnector.service.RawEmailSink;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
@@ -64,7 +69,7 @@ import io.meeds.spring.web.security.WebSecurityConfiguration;
 import jakarta.servlet.Filter;
 
 /**
- * The export endpoints (EXO-90845). Who may read is the
+ * The export and import endpoints (EXO-90845, EXO-90846). Who may read or write is the
  * services' to decide; what is pinned here is that the caller is the authenticated user,
  * that every answer of the services keeps its status, and that an export goes out as a
  * file under a safe name, never as content a browser would render.
@@ -83,6 +88,9 @@ class EmailTransferRestTest {
 
   @MockitoBean
   private EmailExportService    emailExportService;
+
+  @MockitoBean
+  private EmailImportService    emailImportService;
 
   @Autowired
   private SecurityFilterChain   filterChain;
@@ -191,6 +199,63 @@ class EmailTransferRestTest {
            .andExpect(status().isNotFound());
     when(emailExportService.checkMbox(SIMPLE_USER, "CUSTOM:2")).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
     mockMvc.perform(get("/email-box/export/mbox/check").param("folder", "CUSTOM:2").with(testSimpleUser())).andExpect(status().isGone());
+  }
+
+  /**
+   * The import starts for the caller with the folder and the uploads given, and keeps
+   * every refusal's status: a request that cannot run, a run already going, a missing
+   * right, an ended share.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void theImportKeepsEveryStatus() throws Exception {
+    MailImportState started = new MailImportState();
+    started.setStatus(SyncStatus.IN_PROGRESS);
+    when(emailImportService.startImport(SIMPLE_USER, "INBOX", List.of("u1", "u2"))).thenReturn(started);
+    mockMvc.perform(post("/email-box/import").contentType(MediaType.APPLICATION_JSON)
+                                             .content("{\"folder\":\"INBOX\",\"uploadIds\":[\"u1\",\"u2\"]}")
+                                             .with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.status").value("IN_PROGRESS"));
+
+    when(emailImportService.startImport(eq(SIMPLE_USER), eq("TRASH"), anyList())).thenThrow(new IllegalArgumentException(EmailBoxService.IMPORT_FOLDER_REFUSED));
+    perform("TRASH").andExpect(status().isBadRequest());
+    when(emailImportService.startImport(eq(SIMPLE_USER), eq("SENT"), anyList())).thenThrow(new IllegalStateException(EmailImportService.IMPORT_ALREADY_RUNNING));
+    perform("SENT").andExpect(status().isConflict());
+    when(emailImportService.startImport(eq(SIMPLE_USER), eq("CUSTOM:1"), anyList())).thenThrow(new MailboxRightMissingException(MailboxRights.INSERT));
+    perform("CUSTOM:1").andExpect(status().isForbidden());
+    when(emailImportService.startImport(eq(SIMPLE_USER), eq("CUSTOM:2"), anyList())).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    perform("CUSTOM:2").andExpect(status().isGone());
+  }
+
+  /**
+   * The import's state is the caller's, never cached.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void theImportStatusIsTheCallers() throws Exception {
+    MailImportState state = new MailImportState();
+    state.setAdded(4);
+    when(emailImportService.getImportState(SIMPLE_USER)).thenReturn(state);
+    mockMvc.perform(get("/email-box/import/status").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.added").value(4))
+           .andExpect(header().string(HttpHeaders.CACHE_CONTROL, org.hamcrest.Matchers.containsString("no-store")));
+  }
+
+  /**
+   * Posts an import into a folder.
+   *
+   * @param folder the folder key
+   * @return the result actions
+   * @throws Exception when the request cannot be performed
+   */
+  private org.springframework.test.web.servlet.ResultActions perform(String folder) throws Exception {
+    return mockMvc.perform(post("/email-box/import").contentType(MediaType.APPLICATION_JSON)
+                                                    .content("{\"folder\":\"" + folder + "\",\"uploadIds\":[\"u\"]}")
+                                                    .with(testSimpleUser()));
   }
 
   /**
