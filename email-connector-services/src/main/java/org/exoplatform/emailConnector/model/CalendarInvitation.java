@@ -58,11 +58,23 @@ public class CalendarInvitation {
   /** Whether the event lasts whole days. */
   private boolean                        allDay;
 
-  /** The start instant, null for an all-day event. */
+  /** The start instant, null for an all-day or floating event. */
   private Long                           start;
 
   /** The end instant, null for an all-day event or one with no end. */
   private Long                           end;
+
+  /**
+   * Whether the event's times are floating: the same wall-clock time wherever it is
+   * read, given as local date-times rather than instants.
+   */
+  private boolean                        floating;
+
+  /** The start of a floating event, ISO local date-time. */
+  private String                         startLocal;
+
+  /** The end of a floating event, ISO local date-time, null when it has none. */
+  private String                         endLocal;
 
   /** The first day of an all-day event, ISO local date. */
   private String                         startDate;

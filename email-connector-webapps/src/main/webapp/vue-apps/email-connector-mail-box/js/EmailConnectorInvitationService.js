@@ -127,7 +127,8 @@ export function invitationReplyOutcome(error, answer) {
 
 /**
  * When an event takes place, in the viewer's own time zone and language: a range of
- * instants for a timed event, of days for an all-day one, which belongs to no zone.
+ * instants for a timed event, of days for an all-day one and of wall-clock times for a
+ * floating one, which belong to no zone.
  *
  * @param {Object} invitation the invitation
  * @returns {String} the words, empty when the event says nothing of when
@@ -138,6 +139,13 @@ export function formatInvitationWhen(invitation) {
     const options = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' };
     const start = localDay(invitation.startDate);
     const end = localDay(invitation.endDate) || start;
+    return start ? formatRange(new Intl.DateTimeFormat(lang, options), start, end) : '';
+  }
+  if (invitation?.floating) {
+    // The same wall-clock time wherever it is read: no zone to convert from or to name.
+    const start = localDateTime(invitation.startLocal);
+    const end = localDateTime(invitation.endLocal) || start;
+    const options = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' };
     return start ? formatRange(new Intl.DateTimeFormat(lang, options), start, end) : '';
   }
   if (!invitation?.start) {
@@ -199,6 +207,17 @@ export function formatInvitationRecurrence(invitation, t) {
 function localDay(isoDate) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate || '');
   return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : null;
+}
+
+/**
+ * A wall-clock date-time as a local date, so it is shown as that very time in every zone.
+ *
+ * @param {String} isoDateTime YYYY-MM-DDTHH:mm[:ss]
+ * @returns {Date|null} the time, null when there is none
+ */
+function localDateTime(isoDateTime) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(isoDateTime || '');
+  return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), Number(match[6] || 0)) : null;
 }
 
 /**
