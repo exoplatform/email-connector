@@ -29,6 +29,7 @@ import java.util.Set;
 import javax.mail.Address;
 import javax.mail.MessagingException;
 import javax.mail.internet.InternetAddress;
+import javax.mail.internet.MailDateFormat;
 import javax.mail.internet.MimeMessage;
 
 import org.apache.commons.lang3.StringUtils;
@@ -329,6 +330,25 @@ public class EmailExportService {
     }
     String line = "From " + sender + " " + FROM_LINE_DATE.format((date == null ? new Date(0) : date).toInstant()) + "\n";
     return line.getBytes(StandardCharsets.US_ASCII);
+  }
+
+  /**
+   * The message that ends an interrupted {@code .mbox}: a plain-text mail from
+   * {@code MAILER-DAEMON}, dated now, saying the mail server failed and how many of the
+   * folder's messages the file holds.
+   *
+   * @param handed how many messages were handed over (the last possibly cut short)
+   * @param count how many the folder held
+   * @return the message's bytes, CRLF line endings
+   */
+  static byte[] interruptedNotice(int handed, int count) {
+    String date = new MailDateFormat().format(new Date());
+    String notice = "From: Mail export <MAILER-DAEMON>\r\n" + "Date: " + date + "\r\n"
+        + "Subject: Export incomplete: " + handed + " of " + count + " emails\r\n" + "MIME-Version: 1.0\r\n"
+        + "Content-Type: text/plain; charset=UTF-8\r\n" + "\r\n"
+        + "The mail server failed while this folder was exported. This file holds the first " + handed + " of its "
+        + count + " emails, the last of them possibly cut short. Export the folder again to get the rest.\r\n";
+    return notice.getBytes(StandardCharsets.UTF_8);
   }
 
   /**
