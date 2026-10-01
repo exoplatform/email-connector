@@ -30,7 +30,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <div
       v-if="hasWarnings"
       :style="frameStyle(WARNING_COLOR)"
-      class="mail-security-warning rounded d-flex align-start px-3 py-2 mb-3"
+      class="mail-security-warning d-flex align-start px-3 py-2 mb-3"
       role="alert">
       <v-icon
         size="14"
@@ -50,7 +50,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <div
       v-if="remoteContentBlocked"
       :style="frameStyle(PRIMARY_COLOR)"
-      class="mail-remote-content-banner rounded d-flex align-start px-3 py-2 mb-3"
+      class="mail-remote-content-banner d-flex align-start px-3 py-2 mb-3"
       role="status">
       <v-icon
         size="14"
@@ -167,6 +167,9 @@ export default {
       return {
         border: `1px solid ${BORDER_COLOR}`,
         [`border${side}`]: `3px solid ${accent}`,
+        // Set here rather than by the rounded class, whose important radius would round
+        // the accent's corners too.
+        borderRadius: '4px',
         [`borderTop${side}Radius`]: 0,
         [`borderBottom${side}Radius`]: 0,
       };
