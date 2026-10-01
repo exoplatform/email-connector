@@ -15243,7 +15243,7 @@ public class EmailBoxServiceTest {
     Email invoice = mirrored(2L, "Invoice", "budget-office@acme.com", true, 2);
     Email old = mirrored(3L, "Old budget", "dave@acme.com", false, 40);
     Email other = mirrored(4L, "Lunch", "erin@acme.com", false, 1);
-    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"))).thenReturn(List.of(old, other, invoice, budget));
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"), false)).thenReturn(List.of(old, other, invoice, budget));
 
     EmailSearchResultPage page = emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", "budget", null, false, null, 10);
     assertEquals(3, page.getTotalMatches(), "subject or sender");
@@ -15301,7 +15301,7 @@ public class EmailBoxServiceTest {
     Email invoice = mirrored(2L, "Invoice", "budget-office@acme.com", true, 2);
     invoice.setStarred(true);
     Email other = mirrored(4L, "Lunch", "erin@acme.com", false, 1);
-    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"))).thenReturn(List.of(other, invoice, budget));
+    when(emailBoxStorage.getEmailsForSearchInFolders(eq(TEST_USER), eq(List.of("CUSTOM:8")), anyBoolean())).thenReturn(List.of(other, invoice, budget));
 
     EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, "budget", null, null, false, false, null, "CUSTOM:8", 10);
     assertEquals(2, page.getTotalMatches());
@@ -15331,7 +15331,7 @@ public class EmailBoxServiceTest {
     assertThrows(DelegationRevokedException.class,
                  () -> emailBoxService.searchEmails(TEST_USER, "budget", null, null, false, false, null, "CUSTOM:8", 10),
                  "a share withdrawn meanwhile");
-    verify(emailBoxStorage, never()).getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:9"));
+    verify(emailBoxStorage, never()).getEmailsForSearchInFolders(eq(TEST_USER), eq(List.of("CUSTOM:9")), anyBoolean());
     verify(emailBoxStorage, never()).getEmails(anyString(), anyString());
   }
 
@@ -15363,7 +15363,8 @@ public class EmailBoxServiceTest {
     bccDave.setId(103L);
     bccDave.setTo(List.of(new EmailRecipient("Grace", "grace@acme.com", null, false)));
     bccDave.setBcc(List.of(new EmailRecipient("Dave", "dave@acme.com", null, false)));
-    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"))).thenReturn(List.of(toDave, ccDave, bccDave));
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"), false)).thenReturn(List.of(toDave, ccDave, bccDave));
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"), true)).thenReturn(List.of(toDave, ccDave, bccDave));
 
     EmailSearchCriteria recipient = new EmailSearchCriteria();
     recipient.setTo("DAVE");
@@ -15385,6 +15386,7 @@ public class EmailBoxServiceTest {
     EmailSearchCriteria beforeToday = new EmailSearchCriteria();
     beforeToday.setBefore(today);
     assertEquals(List.of(2L), searchedUids(beforeToday), "the day the range stops before is out");
+    verify(emailBoxStorage, times(1)).getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"), true);
     verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
