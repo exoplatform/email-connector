@@ -30,7 +30,9 @@ import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Date;
@@ -56,14 +58,17 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailFolder;
 import org.exoplatform.emailConnector.model.ExportCheck;
+import org.exoplatform.emailConnector.model.MailImportRefusal;
 import org.exoplatform.emailConnector.model.RawEmailRef;
+import org.exoplatform.emailConnector.utils.MailArchiveReader;
+import org.exoplatform.emailConnector.utils.MailArchiveSink;
 
 /**
  * The two export formats (EXO-90845): a selection as a .zip of .eml files, a folder as
  * an mboxrd file. Who may read is {@link EmailBoxService}'s and is mocked here; what is
  * pinned is the files: entry names safe and unique, a message the server lost named in
  * the zip rather than left out, the cap refused before anything is read, and an mbox
- * quoted so that no line of a message reads as a separator.
+ * that the import reads back to the very messages that went in.
  */
 @ExtendWith(MockitoExtension.class)
 class EmailExportServiceTest {
@@ -194,14 +199,15 @@ class EmailExportServiceTest {
   }
 
   /**
-   * An exported mbox holds each message behind its From_ line, its line endings LF, its
-   * lines starting with {@code From } and {@code >From } quoted once more, and an empty
-   * line after it.
+   * An exported mbox, read back by the import's reader, gives back the very messages
+   * that went in -- line endings aside, which mbox stores as LF -- including the lines
+   * that start with {@code From } and {@code >From }; each message is preceded by its
+   * From_ line.
    *
    * @throws Exception when a mock cannot be stubbed
    */
   @Test
-  void anExportedMboxQuotesEachMessage() throws Exception {
+  void anExportedMboxReadsBackToTheSameMessages() throws Exception {
     String second = RAW.replace("<m@x>", "<n@x>").replace("Hi", "Again");
     when(emailBoxService.readFolderRawEmails(eq(USER), eq("INBOX"), eq(EmailExportService.MAX_MBOX_MAILS), any())).thenAnswer(invocation -> {
       RawEmailVisitor visitor = invocation.getArgument(3);
@@ -222,7 +228,34 @@ class EmailExportServiceTest {
     String mbox = out.toString(StandardCharsets.US_ASCII);
     assertTrue(mbox.startsWith("From alice@example.com Mon Jan  1 10:00:00 2024\n"), mbox);
     assertTrue(mbox.contains("\n>From the start\n>>From quoted\n"), mbox);
-    assertTrue(mbox.endsWith("Subject: Again\n\n>From the start\n>>From quoted\nend\n\n"), mbox);
+    File file = dir.resolve("export.mbox").toFile();
+    Files.write(file.toPath(), out.toByteArray());
+    List<String> readBack = new ArrayList<>();
+    new MailArchiveReader(1 << 20, 1 << 16, 10, 100, 1L << 30).read(file, new MailArchiveSink() {
+      /**
+       * Keeps a mail.
+       *
+       * @param message its bytes
+       * @return true
+       */
+      @Override
+      public boolean mail(byte[] message) {
+        readBack.add(new String(message, StandardCharsets.US_ASCII));
+        return true;
+      }
+
+      /**
+       * Fails on any refusal.
+       *
+       * @param reason why
+       * @return never
+       */
+      @Override
+      public boolean refused(MailImportRefusal reason) {
+        throw new AssertionError(reason);
+      }
+    });
+    assertEquals(List.of(RAW.replace("\r\n", "\n"), second.replace("\r\n", "\n")), readBack);
   }
 
   /**
