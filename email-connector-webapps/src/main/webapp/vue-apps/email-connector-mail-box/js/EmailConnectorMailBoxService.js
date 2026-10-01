@@ -516,10 +516,11 @@ export function formatCount(count) {
  * the INBOX every folder lives under on some servers (EmailConnectorFolderTree).
  *
  * @param {Object} folder the folder as the server lists it
+ * @param {Array} folders the folders it is listed with, which tell whether INBOX is that namespace
  * @returns {String} the path, or nothing for a built-in
  */
-export function folderPath(folder) {
-  return folderPathLabel(folder);
+export function folderPath(folder, folders) {
+  return folderPathLabel(folder, folders);
 }
 
 // Folders the server keeps rows of but lists to nobody: All Mail is a thread-completion
