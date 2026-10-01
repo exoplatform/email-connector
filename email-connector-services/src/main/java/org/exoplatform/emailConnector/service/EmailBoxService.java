@@ -15620,12 +15620,13 @@ public class EmailBoxService {
    * (EXO-90838): read from its MIME structure as the sync's extractor
    * ({@code EmailConnectorUtils#getHtmlFromMimeMultipart}) reads its parts, one level at
    * a time. In a multipart, the first {@code text/html} and the first {@code text/plain}
-   * are the body, a nested multipart is walked, and any other part with no disposition
-   * or an {@code attachment} one is an attachment -- a part marked {@code inline}, an
-   * image of the body or not, never is. A message that is not a multipart has none.
-   * Only the structure is read: on a message fetched with
-   * {@code FetchProfile.Item.CONTENT_INFO} no body is downloaded. A message whose
-   * structure cannot be read counts as having none.
+   * are the body, any other part with no disposition or an {@code attachment} one is an
+   * attachment -- a part marked {@code inline}, an image of the body or not, never is --
+   * and a nested multipart is walked, its attachments kept only when it holds a body
+   * too, as the extractor keeps a nested level's only when that level gave it text. A
+   * message that is not a multipart has none. Only the structure is read: on a message
+   * fetched with {@code FetchProfile.Item.CONTENT_INFO} no body is downloaded. A message
+   * whose structure cannot be read counts as having none.
    *
    * @param message the message
    * @param username the mailbox owner, for the log
@@ -15634,7 +15635,7 @@ public class EmailBoxService {
   static boolean hasStoredAttachment(Part message, String username) {
     try {
       return message.isMimeType("multipart/*") && message.getContent() instanceof Multipart multipart
-          && multipartHasStoredAttachment(multipart);
+          && readStructure(multipart)[1];
     } catch (MessagingException | IOException e) {
       LOG.debug("Could not read the structure of a searched message of user {}", username, e);
       return false;
@@ -15642,16 +15643,19 @@ public class EmailBoxService {
   }
 
   /**
-   * One level of {@link #hasStoredAttachment}.
+   * One level of {@link #hasStoredAttachment}: whether it holds a body, and whether it
+   * holds an attachment eXo would keep.
    *
    * @param multipart the multipart
-   * @return true when one of its parts, or of its nested multiparts, is an attachment
+   * @return {@code [hasBody, hasAttachment]}
    * @throws MessagingException when a part cannot be read
    * @throws IOException when a nested multipart cannot be read
    */
-  private static boolean multipartHasStoredAttachment(Multipart multipart) throws MessagingException, IOException {
+  private static boolean[] readStructure(Multipart multipart) throws MessagingException, IOException {
     boolean html = false;
     boolean plain = false;
+    boolean nestedBody = false;
+    boolean attachment = false;
     for (int i = 0; i < multipart.getCount(); i++) {
       BodyPart part = multipart.getBodyPart(i);
       String disposition = part.getDisposition();
@@ -15660,14 +15664,16 @@ public class EmailBoxService {
       } else if (part.isMimeType("text/plain") && !plain) {
         plain = true;
       } else if (part.isMimeType("multipart/*")) {
-        if (part.getContent() instanceof Multipart nested && multipartHasStoredAttachment(nested)) {
-          return true;
+        if (part.getContent() instanceof Multipart nested) {
+          boolean[] level = readStructure(nested);
+          nestedBody |= level[0];
+          attachment |= level[0] && level[1];
         }
       } else if (disposition == null || Part.ATTACHMENT.equalsIgnoreCase(disposition)) {
-        return true;
+        attachment = true;
       }
     }
-    return false;
+    return new boolean[] { html || plain || nestedBody, attachment };
   }
 
   /**
