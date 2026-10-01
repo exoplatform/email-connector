@@ -114,12 +114,17 @@ class EmailTransferRestTest {
    */
   @Test
   void theZipCheckKeepsEveryStatus() throws Exception {
-    when(emailExportService.checkZip(SIMPLE_USER, List.of("INBOX:1", "CUSTOM:3:2"))).thenReturn(new ExportCheck(2, 200));
-    mockMvc.perform(get("/email-box/export/zip/check").param("mails", "INBOX:1", "CUSTOM:3:2").with(testSimpleUser()))
+    // One value per folder, its UIDs comma-separated, handed over as sent: never split.
+    when(emailExportService.checkZip(SIMPLE_USER, List.of("INBOX:1,4", "CUSTOM:3:2"))).thenReturn(new ExportCheck(3, 200));
+    mockMvc.perform(get("/email-box/export/zip/check").param("mails", "INBOX:1,4", "CUSTOM:3:2").with(testSimpleUser()))
            .andExpect(status().isOk())
-           .andExpect(jsonPath("$.count").value(2))
+           .andExpect(jsonPath("$.count").value(3))
            .andExpect(jsonPath("$.max").value(200));
-    mockMvc.perform(get("/email-box/export/zip/check").param("mails", "INBOX:9").with(testSimpleUser())).andExpect(status().isNotFound());
+    mockMvc.perform(get("/email-box/export/zip/check").param("mails", "INBOX:9,10").with(testSimpleUser())).andExpect(status().isNotFound());
+    when(emailExportService.checkZip(SIMPLE_USER, List.of("SENT:5,6"))).thenReturn(new ExportCheck(2, 200));
+    mockMvc.perform(get("/email-box/export/zip/check").param("mails", "SENT:5,6").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.count").value(2));
     when(emailExportService.checkZip(SIMPLE_USER, List.of("bad"))).thenThrow(new IllegalArgumentException(EmailExportService.EXPORT_INVALID_SELECTION));
     mockMvc.perform(get("/email-box/export/zip/check").param("mails", "bad").with(testSimpleUser())).andExpect(status().isBadRequest());
     when(emailExportService.checkZip(SIMPLE_USER, List.of("CUSTOM:1:1"))).thenThrow(new MailboxRightMissingException(MailboxRights.READ));

@@ -27,7 +27,7 @@
  */
 
 import { isScheduledView, triggerDownload } from './EmailConnectorMailBoxService.js';
-import { parseSelectionKey } from './EmailConnectorMailBoxSelection.js';
+import { parseSelectionKey, selectionByFolder } from './EmailConnectorMailBoxSelection.js';
 import { isSharedMailboxFolder, sharedFolderRole, sharedMailboxAllows } from './EmailConnectorSharedMailboxes.js';
 
 /** Event any part of the mailbox emits to open the import drawer: {folder, files}. */
@@ -97,7 +97,7 @@ export function canImportInto(folder) {
  *   refusal, or with `tooMany` set (and the cap in `max`) past the cap
  */
 export async function downloadSelectionZip(keys) {
-  const query = keys.map(key => `mails=${encodeURIComponent(key)}`).join('&');
+  const query = selectionQuery(keys);
   const check = await getJson(`${BASE_URL}/export/zip/check?${query}`);
   if (check.count > check.max) {
     throw tooMany(check);
@@ -173,6 +173,20 @@ export async function startImport(folder, uploadIds) {
  */
 export function getImportStatus() {
   return getJson(`${BASE_URL}/import/status`);
+}
+
+/**
+ * The query a selection travels in: one `mails` parameter per folder, `<folder>:<uid>,<uid>`,
+ * its colons and commas left as they are -- both are allowed in a query, and escaping them
+ * would triple the size of a request line the server bounds (EmailExportService#MAX_ZIP_MAILS).
+ *
+ * @param {Array<String>} keys the selection keys
+ * @returns {String} the query, without its `?`
+ */
+function selectionQuery(keys) {
+  return selectionByFolder(keys)
+    .map(([folder, ids]) => `mails=${encodeURIComponent(`${folder}:${ids.join(',')}`).replace(/%3A/gi, ':').replace(/%2C/gi, ',')}`)
+    .join('&');
 }
 
 /**

@@ -17,13 +17,19 @@
 package org.exoplatform.emailConnector.service;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 
 import org.apache.commons.lang3.StringUtils;
@@ -98,7 +104,7 @@ public class EmailImportService {
   /** Message code answered as a 400 for files weighing more than {@link #MAX_IMPORT_TOTAL_BYTES}. */
   public static final String       IMPORT_TOO_LARGE        = "emailConnector.import.tooLarge";
 
-  /** Message code answered as a 404, or reported, for a folder the user does not have. */
+  /** Message code reported for a folder the user does not have (any more). */
   public static final String       IMPORT_FOLDER_MISSING   = "emailConnector.import.folderMissing";
 
   /** Message code reported when the run stopped at {@link #MAX_IMPORT_MAILS}. */
@@ -149,8 +155,6 @@ public class EmailImportService {
   /** The settings key of the state, apart from every other document for the usual reason. */
   static final String              MAIL_IMPORT_STATE_KEY   = "emailMailImportState";
 
-  private static final Log         LOG                     = ExoLogger.getLogger(EmailImportService.class);
-
   // How many mails between two stored states: progress for the poll, a heartbeat for
   // the other nodes, and not one settings write per mail.
   static final int                 STATE_WRITE_EVERY       = 20;
@@ -159,11 +163,16 @@ public class EmailImportService {
   // withdrawn right refuses every mail after it, and trying them all reports nothing new.
   static final int                 SERVER_REFUSALS_TO_STOP = 20;
 
+  private static final Log         LOG                     = ExoLogger.getLogger(EmailImportService.class);
+
   private static final AtomicInteger THREADS             = new AtomicInteger();
 
   private final Set<String>        importingUsers          = ConcurrentHashMap.newKeySet();
 
-  private final ExecutorService    importExecutor          = Executors.newFixedThreadPool(2, runnable -> {
+  // A thread per run, as the contact import's runAsync gives it, never a queue: a run
+  // waiting in a queue writes no state, and would read as dead to the other nodes. The
+  // per-user guard bounds the threads to the users importing at once.
+  private final ExecutorService    importExecutor          = Executors.newCachedThreadPool(runnable -> {
                                                              Thread thread = new Thread(runnable,
                                                                                         "email-import-"
                                                                                             + THREADS.incrementAndGet());
@@ -196,7 +205,14 @@ public class EmailImportService {
    * the drawer then polls. Everything that can be refused on the request is refused
    * here, so the user hears it as the answer to their click: the folder and the caller's
    * right to write in it, a run already going, a missing upload, too many files, too
-   * many bytes. A refused request deletes its uploads.
+   * many bytes.
+   * <p>
+   * A refused request leaves the uploads alone: the platform does not bind an upload id
+   * to the user who made it, so a request naming somebody else's must not be able to
+   * delete it. The drawer deletes its own on a refusal, and the platform those of an
+   * ended session. An accepted one takes the files out of the upload service into a
+   * directory of the run's own, deleted when the run ends, so that a session ending
+   * meanwhile (the platform then deletes its uploads) does not cut the run short.
    *
    * @param username the mailbox owner, or the delegate importing into a shared folder
    * @param folder the folder key
@@ -211,20 +227,14 @@ public class EmailImportService {
   public MailImportState startImport(String username, String folder, List<String> uploadIds) throws IllegalAccessException {
     List<String> uploads = uploadIds == null ? List.of() : uploadIds.stream().filter(StringUtils::isNotBlank).distinct().toList();
     String folderKey = StringUtils.defaultIfBlank(folder, MailFolder.INBOX);
-    try {
-      if (StringUtils.isBlank(username) || uploads.isEmpty()) {
-        throw new IllegalArgumentException(IMPORT_UPLOAD_MISSING);
-      }
-      if (uploads.size() > MAX_IMPORT_FILES) {
-        throw new IllegalArgumentException(IMPORT_TOO_MANY_FILES);
-      }
-      emailBoxService.checkImportTarget(username, folderKey);
-    } catch (IllegalAccessException | RuntimeException e) {
-      removeUploads(uploads);
-      throw e;
+    if (StringUtils.isBlank(username) || uploads.isEmpty()) {
+      throw new IllegalArgumentException(IMPORT_UPLOAD_MISSING);
     }
+    if (uploads.size() > MAX_IMPORT_FILES) {
+      throw new IllegalArgumentException(IMPORT_TOO_MANY_FILES);
+    }
+    emailBoxService.checkImportTarget(username, folderKey);
     if (!importingUsers.add(username)) {
-      removeUploads(uploads);
       throw new IllegalStateException(IMPORT_ALREADY_RUNNING);
     }
     try {
@@ -245,6 +255,7 @@ public class EmailImportService {
       if (totalBytes > MAX_IMPORT_TOTAL_BYTES) {
         throw new IllegalArgumentException(IMPORT_TOO_LARGE);
       }
+      Path workDir = takeUploads(uploads, files);
       MailImportState state = newState(folderKey);
       state.setStatus(SyncStatus.IN_PROGRESS);
       state.setTotalBytes(totalBytes);
@@ -254,11 +265,10 @@ public class EmailImportService {
       // The answer is a copy: the run mutates its state on another thread while this
       // one is being serialised.
       MailImportState answer = JsonUtils.fromJsonString(JsonUtils.toJsonString(state), MailImportState.class);
-      scheduleRun(() -> runImport(username, folderKey, uploads, files, state));
+      scheduleRun(() -> runImport(username, folderKey, workDir, state));
       return answer;
     } catch (RuntimeException e) {
       importingUsers.remove(username);
-      removeUploads(uploads);
       throw e;
     }
   }
@@ -294,17 +304,19 @@ public class EmailImportService {
   /**
    * The run itself, off the request thread: opens the folder (re-checking the caller's
    * right to write there), reads each file into it mail by mail, and stores the state as
-   * it goes. However it ends, the uploads are deleted, the guard released, a final state
-   * stored and the user notified.
+   * it goes -- first as it starts, so the state is fresh whatever came before. However
+   * it ends, the run's files are deleted, the guard released, a final state stored and
+   * the user notified.
    *
    * @param username the user
    * @param folderKey the folder key
-   * @param uploadIds the uploads, deleted at the end
-   * @param files the uploaded files, in the order given
+   * @param workDir the run's directory, holding the files in the order given, deleted
+   *          at the end
    * @param state the state started by {@link #startImport}
    */
-  protected void runImport(String username, String folderKey, List<String> uploadIds, List<File> files, MailImportState state) {
+  protected void runImport(String username, String folderKey, Path workDir, MailImportState state) {
     RequestLifeCycle.begin(ExoContainerContext.getCurrentContainer());
+    storeQuietly(username, state);
     try (MailImportTarget target = emailBoxService.openImportTarget(username, folderKey)) {
       if (target == null) {
         state.setStatus(SyncStatus.FAILURE);
@@ -318,7 +330,7 @@ public class EmailImportService {
                                                        MAX_ZIP_RATIO,
                                                        MAX_ZIP_TOTAL_BYTES);
       long doneBytes = 0;
-      for (File file : files) {
+      for (File file : runFiles(workDir)) {
         if (run.isStopped()) {
           break;
         }
@@ -347,7 +359,7 @@ public class EmailImportService {
     } finally {
       state.setFinishedDate(System.currentTimeMillis());
       storeQuietly(username, state);
-      removeUploads(uploadIds);
+      deleteQuietly(workDir);
       RequestLifeCycle.end();
       importingUsers.remove(username);
       notifyFinished(username, state);
@@ -515,17 +527,63 @@ public class EmailImportService {
   }
 
   /**
-   * Deletes uploads, best-effort.
+   * Takes the files of accepted uploads out of the upload service, into a directory of
+   * the run's own, named by their order: the run reads them there whatever happens to
+   * the uploads, and deletes them when it ends.
    *
-   * @param uploadIds the upload ids
+   * @param uploadIds the upload ids, in the order given
+   * @param files their files, in the same order
+   * @return the run's directory
+   * @throws UncheckedIOException when the files cannot be moved; the directory is then
+   *           deleted again
    */
-  private void removeUploads(List<String> uploadIds) {
+  private Path takeUploads(List<String> uploadIds, List<File> files) {
+    Path workDir = null;
+    try {
+      workDir = Files.createTempDirectory("email-import-");
+      for (int i = 0; i < files.size(); i++) {
+        Files.move(files.get(i).toPath(), workDir.resolve(String.format("%03d", i)));
+      }
+    } catch (IOException e) {
+      deleteQuietly(workDir);
+      throw new UncheckedIOException("The uploaded files could not be taken for an import", e);
+    }
     for (String uploadId : uploadIds) {
       try {
         uploadService.removeUploadResource(uploadId);
       } catch (RuntimeException e) {
-        LOG.debug("Upload {} could not be removed", uploadId, e);
+        LOG.debug("Upload {} could not be released", uploadId, e);
       }
+    }
+    return workDir;
+  }
+
+  /**
+   * The files of a run, in the order they were given.
+   *
+   * @param workDir the run's directory
+   * @return the files
+   * @throws IOException when the directory cannot be listed
+   */
+  private static List<File> runFiles(Path workDir) throws IOException {
+    try (Stream<Path> paths = Files.list(workDir)) {
+      return paths.sorted().map(Path::toFile).toList();
+    }
+  }
+
+  /**
+   * Deletes a run's directory and its files, best-effort.
+   *
+   * @param workDir the directory, possibly null
+   */
+  private static void deleteQuietly(Path workDir) {
+    if (workDir == null) {
+      return;
+    }
+    try (Stream<Path> paths = Files.walk(workDir)) {
+      paths.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+    } catch (IOException | RuntimeException e) {
+      LOG.warn("The import directory {} could not be deleted", workDir, e);
     }
   }
 }
