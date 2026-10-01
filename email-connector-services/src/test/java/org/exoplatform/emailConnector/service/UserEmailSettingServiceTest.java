@@ -1048,6 +1048,39 @@ public class UserEmailSettingServiceTest {
   }
 
   /**
+   * The user's own one-click connect is not the managed attach: reconnecting to
+   * the connector their stored setting already names records the new connection.
+   * Kills the mutant that drops {@code byManagedMode &&} from the re-read guard.
+   */
+  @Test
+  @SneakyThrows
+  void aUserReconnectingThroughTheProviderReplacesTheirStoredConnection() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
+    when(emailCredentialsResolver.targetAccount(1L, "bluemind-sudo", TEST_USER)).thenReturn("eric@bm.example.org");
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any()))
+        .thenReturn(mock(Authenticator.class));
+    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY)))
+        .thenAnswer(invocation -> SettingValue.create("{\"emailConnectorId\":\"1\",\"emailAddress\":\"eric@old.example.org\"}"));
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+      when(store.isConnected()).thenReturn(true);
+
+      userEmailSettingService.connectThroughProvider(1L, TEST_USER);
+
+      ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
+      verify(settingService).set(any(Context.class), any(Scope.class), anyString(), stored.capture());
+      String document = String.valueOf(stored.getValue().getValue());
+      assertTrue(document, document.contains("eric@bm.example.org"));
+    }
+  }
+
+  /**
    * A connector that does expect typed credentials is refused here, and no mailbox
    * is opened: connecting it with no credentials at all would record an account
    * nobody proved anything about.

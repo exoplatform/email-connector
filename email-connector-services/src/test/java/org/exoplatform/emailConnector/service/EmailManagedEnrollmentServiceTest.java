@@ -93,7 +93,6 @@ class EmailManagedEnrollmentServiceTest {
     when(userEmailSettingService.getUserEmailSetting(USER)).thenReturn(setting);
   }
 
-  /** Managed mode does not apply: the user's own settings are not even opened. */
   /**
    * The enrolment runs on its own thread: without a container bound by the
    * annotation, the storage and the services it calls have none.
@@ -106,6 +105,7 @@ class EmailManagedEnrollmentServiceTest {
                                                   .isAnnotationPresent(ContainerTransactional.class));
   }
 
+  /** Managed mode does not apply: the user's own settings are not even opened. */
   @Test
   void doesNothingWhenManagedModeDoesNotApply() {
     when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(null);
