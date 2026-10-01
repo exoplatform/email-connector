@@ -320,7 +320,6 @@ public class EmailBoxRestTest {
   @Test
   void theCachedFolderSearchTakesEveryCriterion() throws Exception {
     EmailSearchResultPage answer = new EmailSearchResultPage(List.of(), 0);
-    answer.setCachedSince(new Date(1_000L));
     when(emailBoxService.searchCachedFolder(anyString(), any(EmailSearchCriteria.class), anyString(), anyInt())).thenReturn(answer);
 
     mockMvc.perform(get(EMAIL_BOX_PATH + "/search/local").param("query", "report")
@@ -336,8 +335,7 @@ public class EmailBoxRestTest {
                                                          .param("folder", "SENT")
                                                          .param("limit", "7")
                                                          .with(testSimpleUser()))
-           .andExpect(status().isOk())
-           .andExpect(jsonPath("$.cachedSince").exists());
+           .andExpect(status().isOk());
 
     ArgumentCaptor<EmailSearchCriteria> sent = ArgumentCaptor.forClass(EmailSearchCriteria.class);
     verify(emailBoxService).searchCachedFolder(eq(SIMPLE_USER), sent.capture(), eq("SENT"), eq(7));

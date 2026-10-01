@@ -6649,15 +6649,13 @@ public class EmailBoxService {
    * <p>
    * The folder is one the search of the mail server reads (INBOX, SENT, ARCHIVE), or a
    * folder of a mailbox shared with the user that a search may read -- re-checked on
-   * every search, as the server search does. The answer also says since when the copy
-   * holds the folder's mail: the date of its oldest message, as the drawer states it.
+   * every search, as the server search does.
    *
    * @param username the reader
    * @param criteria what to match, at least one criterion
    * @param folder the folder key
    * @param limit how many hits to return, newest first
-   * @return the newest matching messages of the copy, how many matched, and the date of
-   *         the copy's oldest message in that folder
+   * @return the newest matching messages of the copy and how many matched
    * @throws IllegalAccessException if the user may not read their mailbox
    * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for any
    *           other folder, and the codes of {@link #validateSearchCriteria}
@@ -6689,8 +6687,7 @@ public class EmailBoxService {
    * @param folderKey the folder's key, already checked
    * @param criteria what to match
    * @param limit how many hits to return, newest first
-   * @return the newest matching messages, how many matched, and the date of the copy's
-   *         oldest message in that folder
+   * @return the newest matching messages and how many matched
    * @throws IllegalArgumentException the codes of {@link #validateSearchCriteria}
    */
   private EmailSearchResultPage searchMirror(String username, String folderKey, EmailSearchCriteria criteria, int limit) {
@@ -6719,43 +6716,7 @@ public class EmailBoxService {
                                                                                  null,
                                                                                  email.getId()))
                                              .toList();
-    EmailSearchResultPage page = new EmailSearchResultPage(results, matches.size(), criteria.isFavoritesOnly());
-    page.setCachedSince(cachedSince(username, folderKey, rows));
-    return page;
-  }
-
-  /**
-   * Since when eXo's copy of a folder holds its mail, as the advanced search states it
-   * (EXO-90838): the date of the oldest message the synchronization keeps there -- the
-   * newest of the folder, up to the window the folder was last synchronized with. A
-   * message older than that window is in the copy only because the user opened it from
-   * a search of the mail server, and says nothing of what the copy covers; a built-in
-   * folder no synchronization visits (Gmail's archive, whose copy holds only such
-   * messages) has no date at all. A folder of a mailbox shared with the user is filled
-   * by its synchronization alone, so its oldest message is the date.
-   *
-   * @param username the reader
-   * @param folderKey the folder's key
-   * @param rows the copy's messages in that folder
-   * @return the date, or null when none can be stated
-   */
-  private Date cachedSince(String username, String folderKey, List<Email> rows) {
-    List<Date> dates = rows.stream()
-                           .map(Email::getReceivedDate)
-                           .filter(Objects::nonNull)
-                           .sorted(Comparator.reverseOrder())
-                           .toList();
-    if (dates.isEmpty()) {
-      return null;
-    }
-    if (MailFolder.isCustom(folderKey)) {
-      return dates.get(dates.size() - 1);
-    }
-    FolderSyncSnapshot snapshot = loadMailboxSyncState(username).getSnapshot(folderKey);
-    if (snapshot == null || snapshot.getWindowSize() <= 0) {
-      return null;
-    }
-    return dates.get(Math.min(dates.size(), snapshot.getWindowSize()) - 1);
+    return new EmailSearchResultPage(results, matches.size(), criteria.isFavoritesOnly());
   }
 
   /**
