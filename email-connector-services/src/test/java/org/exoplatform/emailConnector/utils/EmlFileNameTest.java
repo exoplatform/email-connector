@@ -70,4 +70,17 @@ class EmlFileNameTest {
     String name = EmailConnectorUtils.emlFileName(emoji.repeat(150));
     assertEquals(emoji.repeat(EmailConnectorUtils.EML_NAME_MAX_LENGTH) + ".eml", name);
   }
+
+  /**
+   * A name Windows reserves for a device cannot be created there, whatever its extension:
+   * it gets a leading {@code _} (EXO-90845); a name merely starting like one is kept.
+   */
+  @Test
+  void aWindowsDeviceNameIsPrefixed() {
+    assertEquals("_CON.eml", EmailConnectorUtils.emlFileName("CON"));
+    assertEquals("_nul.txt.mbox", EmailConnectorUtils.safeFileName("nul.txt", "mailbox", ".mbox"));
+    assertEquals("_com1.eml", EmailConnectorUtils.emlFileName("com1"));
+    assertEquals("Console.eml", EmailConnectorUtils.emlFileName("Console"));
+    assertEquals("mailbox.mbox", EmailConnectorUtils.safeFileName(" .. ", "mailbox", ".mbox"));
+  }
 }
