@@ -15,29 +15,32 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-// EXO-90839 -- the user's own folders, and a shared mailbox's folders, as a tree. The server lists every folder flat,
-// each with its full name (path) and the mail server's hierarchy delimiter; the tree is
-// read off those two, the way the mail server itself nests them, so a folder made as a
-// sub-folder in another mail client is nested here too. One spelling for every screen
-// that lists folders: the full-screen folder column, the 3-dots menu, the settings
-// Folders drawer, the "Move to..." picker.
+// EXO-90839 -- a mailbox's folders as a tree: the user's own, or the owner's folders of
+// a mailbox shared with the user. The server lists every folder flat, each with its full
+// name (path) and the mail server's hierarchy delimiter; the tree is read off those two,
+// the way the mail server itself nests them, so a folder made as a sub-folder in another
+// mail client is nested here too. One spelling for every screen that lists folders: the
+// full-screen folder column, the 3-dots menu, the settings Folders drawer, the
+// "Move to..." picker.
 
 // Where a viewer's collapsed folders are remembered, per browser: a convenience, so a
 // collapsed branch stays collapsed across the column, the menu and a reload.
 const COLLAPSED_STORAGE_KEY = 'emailConnector.folders.collapsed';
 
 /**
- * The folders in tree order, each as a row: the folders that are not the user's own
- * (the built-ins, a shared mailbox's) first and flat, in the order given; then the
- * user's own folders, each followed by the folders inside it, siblings by name. A
+ * The folders in tree order, each as a row: the folders the tree does not nest (the
+ * built-ins, a shared mailbox's INBOX) first and flat, in the order given; then the
+ * mailbox's own folders -- the user's, or a shared mailbox's -- each followed by the
+ * folders inside it, a shared mailbox's role folders first, then by name. A
  * folder's parent is the nearest folder of the list whose full name is a prefix of its
  * own up to a delimiter -- so when an intermediate folder is not in the list (not
  * mirrored, or a container the server says cannot hold mail), the folder hangs from the
  * nearest one that is, or sits at the top with its whole path as its name.
  *
  * @param {Array} folders the folders as the server lists them ({key, type, path, delimiter, displayName, ...})
- * @param {Array} namespaceFolders every folder of the user's, mirrored or not, which
- *        decides whether INBOX is their namespace (inboxIsNamespace); the folders when omitted
+ * @param {Array} namespaceFolders every folder of the mailbox, mirrored or readable or
+ *        not, which decides whether INBOX is their namespace (inboxIsNamespace); the
+ *        folders when omitted
  * @returns {Array} the rows, {folder, depth, parentKey, ancestorKeys, hasChildren, showPath, pathLabel}
  */
 export function buildFolderTree(folders, namespaceFolders) {
@@ -154,7 +157,7 @@ function isTreeFolder(folder) {
  * delimiter from the right.
  *
  * @param {Object} folder the folder
- * @param {Map} byPath the user's folders, by full name
+ * @param {Map} byPath the mailbox's folders the tree nests, by full name
  * @returns {Object} the parent, or null at the top
  */
 function nearestAncestor(folder, byPath) {
@@ -198,8 +201,9 @@ function appendRows(rows, level, children, depth, ancestorKeys, dropInbox) {
         ancestorKeys,
         hasChildren: inside.length > 0,
         // A folder at the top whose full name is deeper than one level hangs from a
-        // folder the list does not show: its path says where it lives.
-        showPath: depth === 0 && segments.length > 1,
+        // folder the list does not show: its path says where it lives. Never a shared
+        // mailbox's role folder, which keeps the name the user knows it by.
+        showPath: depth === 0 && segments.length > 1 && !folder.role,
         pathLabel: segments.join(' / '),
       });
       appendRows(rows, inside, children, depth + 1, ancestorKeys.concat(folder.key), dropInbox);
@@ -228,7 +232,7 @@ export function folderPathLabel(folder, folders) {
  * INBOX.
  *
  * @param {Array} folders the folders as the server lists them
- * @returns {Boolean} true when INBOX is where every folder of the user's lives
+ * @returns {Boolean} true when INBOX is where every folder of the mailbox lives
  */
 export function inboxIsNamespace(folders) {
   const own = (folders || []).filter(isTreeFolder);
@@ -294,7 +298,7 @@ function compareSiblings(first, second, depth, dropInbox) {
  */
 function sortName(folder, depth, dropInbox) {
   const segments = ownSegments(folder, dropInbox);
-  if (depth === 0 && segments.length > 1) {
+  if (depth === 0 && segments.length > 1 && !folder.role) {
     return segments.join(' / ');
   }
   return folder.displayName || folder.path || '';

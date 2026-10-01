@@ -2961,6 +2961,7 @@ public class EmailDelegationService {
                   })
                   .toList();
   }
+
   /**
    * A shared folder's full name in the owner's mailbox: its full name as the delegate
    * sees it, without the share's root ({@code Shared Folders/alice/}) the delegate's
@@ -2982,7 +2983,6 @@ public class EmailDelegationService {
     String rootPrefix = StringUtils.removeEnd(delegation.getRemoteRoot(), delimiter) + delimiter;
     return name.startsWith(rootPrefix) && name.length() > rootPrefix.length() ? name.substring(rootPrefix.length()) : fallback;
   }
-
 
   /**
    * The delegate's letters on one folder of a share: the folder's own, as discovery read
