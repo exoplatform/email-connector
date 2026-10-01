@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.rest;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -33,6 +34,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.annotation.Secured;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -89,6 +91,13 @@ import jakarta.servlet.http.HttpServletResponse;
 @RequestMapping("/email-box")
 @Tag(name = "/email-connector/rest/email-box", description = "Manages Email Box")
 public class EmailBoxRest {
+
+  /**
+   * The prefix every folder refusal code carries, {@code emailConnector.folder.tooMany}
+   * and {@code emailConnector.folder.name.duplicate} alike: each one is a constant of
+   * {@code EmailFolderService} or {@code EmailBoxService}, never an engine's text.
+   */
+  static final String               FOLDER_CODE_PREFIX = "emailConnector.folder.";
 
   // The largest page of the "Scheduled" view: the per-user limit's default.
   private static final int          MAX_SCHEDULED_PAGE = 100;
@@ -2546,5 +2555,38 @@ public class EmailBoxRest {
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
+  }
+
+  /**
+   * Puts a folder refusal's message code in the body the browser reads.
+   * <p>
+   * The folder endpoints refuse with {@code ResponseStatusException(BAD_REQUEST, code)},
+   * and Spring Boot's default error body does not carry the reason on this platform -- it
+   * holds {@code timestamp}, {@code status}, {@code error} and {@code path} only -- so
+   * without this the Folders drawer cannot tell the cap
+   * ({@code emailConnector.folder.tooMany}) from any other failure (EXO-90849). The body
+   * is the shape {@code EmailConnectorRest#onRefusal} answers with: the status, and the
+   * code under {@code message}, which is what the JS services read.
+   * <p>
+   * Only a 400 whose reason is a folder code ({@link #FOLDER_CODE_PREFIX}) is answered
+   * here. Every other refusal of this controller is rethrown untouched, and Spring's
+   * {@code ResponseStatusExceptionResolver} answers it as it answers a controller with no
+   * handler of its own: a 403, 404, 409, 410 or 500 carries exactly what it carried, and
+   * no reason that could hold an engine's text reaches a body.
+   *
+   * @param refusal the refusal a controller method threw
+   * @return the same status, with the folder code in the body
+   */
+  @ExceptionHandler(ResponseStatusException.class)
+  public ResponseEntity<Map<String, Object>> onFolderRefusal(ResponseStatusException refusal) {
+    String reason = refusal.getReason();
+    if (refusal.getStatusCode().value() != HttpStatus.BAD_REQUEST.value() || reason == null
+        || !reason.startsWith(FOLDER_CODE_PREFIX)) {
+      throw refusal;
+    }
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("status", refusal.getStatusCode().value());
+    body.put("message", reason);
+    return ResponseEntity.status(refusal.getStatusCode()).body(body);
   }
 }
