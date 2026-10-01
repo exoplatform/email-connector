@@ -125,7 +125,8 @@ public class EmailFilterRest {
   @Secured("users")
   @Operation(summary = "Reads what the caller's mail server can do with filters", method = "GET",
       description = "A live probe, as the caller, of the rules engine their connector is configured with "
-          + "(email.connector.rulesEngine[.<connectorId>], default none): supported, reasonCode, readsForeignRules, "
+          + "(chosen in the connector administration screen, default none; email.connector.rulesEngine[.<connectorId>] "
+          + "overrides it when set): supported, reasonCode, readsForeignRules, "
           + "publishConflict (another client's script is active), vocabularySource, and per form element "
           + "{supported, reasonKey}. On Sieve the elements follow the SIEVE capability line the server re-issues after "
           + "STARTTLS. Own mailbox only: with delegationId the answer is 403.")
