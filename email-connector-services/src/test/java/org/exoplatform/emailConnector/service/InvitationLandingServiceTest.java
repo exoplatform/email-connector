@@ -100,7 +100,8 @@ class InvitationLandingServiceTest {
   }
 
   /**
-   * An implementer that tried and failed is the one outcome the user is told of; one
+   * An implementer that tried and failed, and one that refused the invitation as it
+   * is, are the two outcomes the user is told of -- told apart by the exception; one
    * whose classes cannot be linked is as if it were not installed.
    */
   @Test
@@ -108,6 +109,10 @@ class InvitationLandingServiceTest {
     givenThePlugins();
     when(first.land(LANDING)).thenThrow(new IllegalStateException("the server refused"));
     assertEquals(CalendarLanding.FAILED, new InvitationLandingService(applicationContext).land(LANDING));
+    verify(second, never()).land(any());
+
+    doThrow(new IllegalArgumentException("one occurrence only")).when(first).land(LANDING);
+    assertEquals(CalendarLanding.REFUSED, new InvitationLandingService(applicationContext).land(LANDING));
     verify(second, never()).land(any());
 
     doThrow(new NoClassDefFoundError("net/fortuna/ical4j/model/Calendar")).when(first).land(LANDING);
