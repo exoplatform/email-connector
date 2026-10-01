@@ -162,6 +162,26 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.menu.selectSeveral') }}
       </span>
     </v-list-item>
+    <!-- The listed folder as one .mbox file (EXO-90845), offered where the server would
+         allow it. -->
+    <v-list-item
+      v-if="folderExportable"
+      class="height-auto"
+      @click="exportFolder()">
+      <v-sheet
+        class="d-flex me-2"
+        width="28"
+        height="36">
+        <v-icon
+          class="icon-default-color mx-auto"
+          size="16">
+          fa-file-download
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.export.folder') }}
+      </span>
+    </v-list-item>
     <!-- The AI entry is contributed by the enterprise AI addon, which renders a complete
          v-list-item of its own. Its alignment with the rows around it is therefore that
          addon's to set, not this menu's: padding applied here would sit OUTSIDE its row
@@ -198,6 +218,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { buildFolderTree, readCollapsedFolders, toggleCollapsedFolder, visibleFolderRows } from '../../js/EmailConnectorFolderTree.js';
+import { canExportFolder, downloadFolderMbox, exportErrorKey } from '../../js/EmailConnectorMailTransfer.js';
 
 // The folder list scrolls inside its own pane once it is longer than seven rows,
 // built-ins counted with the rest: what makes the menu a wall is its total length, not
@@ -324,6 +345,14 @@ export default {
       return this.$emailConnectorMailBoxService.isMailboxView(this.currentFolder);
     },
     /**
+     * Whether the listed folder can be exported whole (EXO-90845).
+     *
+     * @returns {Boolean} true when the export is offered
+     */
+    folderExportable() {
+      return !this.categoryViewId && canExportFolder(this.currentFolder);
+    },
+    /**
      * Whether the FOLDERS section scrolls in its own bounded pane -- Benjamin's
      * explicit threshold, more than 5 of the user's OWN folders. Built-ins are never
      * counted: their number is fixed by what the mailbox actually has (at most six),
@@ -399,6 +428,16 @@ export default {
      */
     enterSelectMode() {
       this.$root.$emit('enter-select-mode');
+    },
+    /**
+     * Downloads the listed folder as an .mbox, once the server checked it; a refusal or a
+     * folder past the cap is told rather than downloaded.
+     *
+     * @returns {void}
+     */
+    exportFolder() {
+      downloadFolderMbox(this.currentFolder)
+        .catch(error => this.$root.$emit('alert-message', this.$t(exportErrorKey(error), { 0: error?.max }), 'error'));
     },
     /**
      * Opens the user's webmail in a new tab.
