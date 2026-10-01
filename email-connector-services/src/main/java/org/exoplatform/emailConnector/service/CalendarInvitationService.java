@@ -296,9 +296,10 @@ public class CalendarInvitationService {
     }
     remember(username, parsed, answer);
     invitation.setAnswer(answer);
-    // The reader computed what it offers before this answer existed: after a
-    // decline there is nothing to add, as a later read says.
-    invitation.setLandable(invitation.isLandable() && answer != InvitationAnswer.DECLINED);
+    // What the reader offers was computed before this answer existed: said
+    // again with it, as a later read would -- nothing to add after a decline,
+    // the offer back after an acceptance that follows one.
+    invitation.setLandable(delegation == null && addable(invitation) && invitationLandingService.holdsCalendarFor(username));
     if (delegation == null) {
       land(username, parsed, answer);
     }
@@ -522,14 +523,8 @@ public class CalendarInvitationService {
     // The user's own calendar, from their own mailbox: a shared mailbox's invitation
     // is its owner's event. Asked only when there is a UID to land under.
     if (delegation == null && StringUtils.isNotBlank(invitation.getUid()) && invitationLandingService.holdsCalendarFor(username)) {
-      boolean cancellation = CalendarInvitationUtils.METHOD_CANCEL.equals(invitation.getMethod());
-      // An invitation, a published event, or an object naming no method: a REPLY
-      // or a COUNTER speaks to an organiser, not to a calendar.
-      boolean addable = invitation.getMethod() == null || CalendarInvitationUtils.METHOD_REQUEST.equals(invitation.getMethod())
-          || CalendarInvitationUtils.METHOD_PUBLISH.equals(invitation.getMethod());
-      // Not after a decline: the add-on creates nothing for a declined event.
-      invitation.setLandable(addable && !invitation.isCancelled() && invitation.getAnswer() != InvitationAnswer.DECLINED);
-      invitation.setRemovable(cancellation);
+      invitation.setLandable(addable(invitation));
+      invitation.setRemovable(CalendarInvitationUtils.METHOD_CANCEL.equals(invitation.getMethod()));
     }
     return parsed;
   }
@@ -552,6 +547,25 @@ public class CalendarInvitationService {
                      .filter(attendee -> StringUtils.equalsIgnoreCase(sender, attendee.getAddress()))
                      .findFirst()
                      .orElse(null);
+  }
+
+  /**
+   * Whether an invitation may be added to the user's calendar, the calendar being
+   * there: an invitation, a published event, or an object naming no method -- a REPLY,
+   * a COUNTER, a REFRESH or a DECLINECOUNTER ({@link CalendarInvitationUtils#ANSWER_METHODS})
+   * speaks to an organiser, not to a calendar -- with a UID, not cancelled, not one of
+   * this deployment's own Agenda events (it lives in Agenda already, and is answered
+   * there), and not declined by the user: the add-on creates nothing for a declined
+   * event.
+   *
+   * @param invitation the invitation, with the answer the user gave when they did
+   * @return true when "Add to my calendar" may be offered
+   */
+  private static boolean addable(CalendarInvitation invitation) {
+    boolean addableMethod = invitation.getMethod() == null || CalendarInvitationUtils.METHOD_REQUEST.equals(invitation.getMethod())
+        || CalendarInvitationUtils.METHOD_PUBLISH.equals(invitation.getMethod());
+    return addableMethod && StringUtils.isNotBlank(invitation.getUid()) && !invitation.isCancelled() && !invitation.isExoMeeting()
+        && invitation.getAnswer() != InvitationAnswer.DECLINED;
   }
 
   /**
