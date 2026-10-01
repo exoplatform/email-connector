@@ -551,11 +551,13 @@ export function moveTargets(folders, sourceFolder) {
   // A move never crosses from one mailbox to another (EmailBoxService
   // #checkDelegatedMove): out of a shared mailbox, only that mailbox's own folders the
   // user may insert into -- none in phase 1, which registers its INBOX alone -- and out
-  // of the user's own, never a shared mailbox's folder.
+  // of the user's own, never a shared mailbox's folder; never a folder the user may only
+  // see, kept in the lists as the label its folders nest under.
   const sourceMailbox = sharedMailboxOfFolder(source);
   if (sourceMailbox) {
     return (folders || []).filter(folder => folder.key !== source
                                             && !folder.missing
+                                            && folder.readable !== false
                                             && sharedMailboxOfFolder(folder.key)?.delegationId === sourceMailbox.delegationId
                                             && sharedMailboxAllows(folder.key, 'moveTarget'));
   }
