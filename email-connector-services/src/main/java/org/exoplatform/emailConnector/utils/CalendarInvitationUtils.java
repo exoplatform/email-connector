@@ -267,8 +267,10 @@ public final class CalendarInvitationUtils {
 
   /**
    * Who a message that is not an invitation speaks for (RFC 5546 §1.4): the attendee of a
-   * REPLY -- its one ATTENDEE, with the answer it gives -- of a COUNTER or a REFRESH, or
-   * the organiser of a DECLINECOUNTER. Null for anything else, an invitation included.
+   * REPLY -- its one ATTENDEE, with the answer it gives -- of a COUNTER or a REFRESH when
+   * it names exactly one, or the organiser of a DECLINECOUNTER. A COUNTER may list every
+   * attendee, and then which one proposes is the mail's sender's to say, not the
+   * calendar's: none is named here. Null for anything else, an invitation included.
    *
    * @param invitation the description, its attendees and organiser already read
    * @return the person, or null
@@ -279,7 +281,7 @@ public final class CalendarInvitationUtils {
       return invitation.getOrganizer();
     }
     if (METHOD_REPLY.equals(method) || METHOD_COUNTER.equals(method) || METHOD_REFRESH.equals(method)) {
-      return invitation.getAttendees().isEmpty() ? null : invitation.getAttendees().get(0);
+      return invitation.getAttendeeCount() == 1 ? invitation.getAttendees().get(0) : null;
     }
     return null;
   }
