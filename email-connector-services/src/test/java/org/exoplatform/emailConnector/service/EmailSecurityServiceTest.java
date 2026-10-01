@@ -25,6 +25,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -280,7 +281,7 @@ class EmailSecurityServiceTest {
     }
     // The organisation's own domains are excused before the directory is asked.
     Email insider = received("Ann Insider", "ann@acme-group.example", "x");
-    org.mockito.Mockito.clearInvocations(identityManager);
+    clearInvocations(identityManager);
     service.decorate(insider, USER, false);
     verify(identityManager, never()).getIdentitiesByProfileFilter(anyString(), any(ProfileFilter.class), anyLong(), anyLong());
   }

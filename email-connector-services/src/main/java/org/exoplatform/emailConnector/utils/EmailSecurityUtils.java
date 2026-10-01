@@ -112,8 +112,9 @@ public final class EmailSecurityUtils {
    * already accounts for both.</li>
    * <li>Otherwise, when DMARC said nothing conclusive and no DKIM signature aligned with
    * the {@code From} domain passed: {@code spf=fail} (a hard fail, never
-   * {@code softfail}) gives {@link #AUTH_SPF}, and {@code dkim=fail} with SPF not passing
-   * gives {@link #AUTH_DKIM}. A signature is aligned when its {@code header.d} (or the
+   * {@code softfail}) gives {@link #AUTH_SPF}, and an aligned {@code dkim=fail} with SPF
+   * not passing gives {@link #AUTH_DKIM}; an unaligned signature, passing or failing, is
+   * ignored, as DMARC ignores it. A signature is aligned when its {@code header.d} (or the
    * domain of its {@code header.i}) has the same registrable domain as {@code From}, as
    * DMARC's relaxed alignment reads it; one that names no domain, or a message whose
    * {@code From} is unknown, counts as aligned, so a terse server raises no warning. A
