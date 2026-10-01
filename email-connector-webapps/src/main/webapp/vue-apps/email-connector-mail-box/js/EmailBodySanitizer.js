@@ -23,9 +23,12 @@
 
 /**
  * The names a purified document is cut into: the sender's style sheets, which the
- * reader places in the frame's head beside its own, and the body markup.
+ * reader places in the frame's head beside its own; the attributes the sender put on
+ * the document and on the body (`dir`, `lang`, `bgcolor`, `style`...), as the
+ * browser serialises them, ready to sit inside the reader's own `<html>` and `<body>`
+ * tags; and the body markup.
  *
- * @typedef {{styles: string, body: string}} PurifiedBody
+ * @typedef {{styles: string, htmlAttributes: string, bodyAttributes: string, body: string}} PurifiedBody
  */
 
 /**
@@ -74,6 +77,42 @@ const HTML_ESCAPES = {
 let purifier = null;
 
 /**
+ * A name an attribute may carry into the reader's tags: letters, digits and dashes,
+ * which is what the purifier lets through and what a tag written by hand can hold.
+ */
+const ATTRIBUTE_NAME = /^[a-z][a-z0-9-]*$/i;
+
+/**
+ * The attributes of a purified element, written as they would appear in its opening
+ * tag (a leading space included, or an empty string), so that the reader can put
+ * them into a tag of its own. Each value is escaped here for an attribute: the four
+ * characters that could end the value or the tag become entities, whatever the
+ * sender wrote, and an attribute whose name is not a plain name is left behind.
+ *
+ * @param {Element|null} element the purified element whose attributes travel
+ * @returns {string} the attributes as markup, or an empty string
+ */
+function serializedAttributes(element) {
+  if (!element) {
+    return '';
+  }
+  return Array.from(element.attributes)
+    .filter(attribute => ATTRIBUTE_NAME.test(attribute.name))
+    .map(attribute => ` ${attribute.name}="${escapeAttribute(attribute.value)}"`)
+    .join('');
+}
+
+/**
+ * Escapes a value so it can sit between the quotes of an attribute.
+ *
+ * @param {string} value the attribute value
+ * @returns {string} the escaped value
+ */
+function escapeAttribute(value) {
+  return String(value ?? '').replace(/[&<>"]/g, character => HTML_ESCAPES[character]);
+}
+
+/**
  * The purifier this module uses: an instance of its own, created once from the
  * DOMPurify factory the platform loads, and never the shared default instance. The
  * shared one carries the hooks the platform's rich-text sanitiser registered on it:
@@ -114,13 +153,16 @@ function escapeHtml(text) {
 
 /**
  * Purifies a received HTML body against the allow-list above, and cuts the result
- * into the sender's style sheets and the body markup.
+ * into the sender's style sheets, the document-level attributes and the body markup.
  * <p>
  * The style sheets are returned apart because the frame the reader builds has a
  * head of its own: placed there, after the reader's base style, they apply to the
  * message exactly as they did in the sender's client, which is the one thing a
  * purifier that drops the head would have lost. A style sheet cannot run anything in
- * a frame that allows no script, so keeping it costs nothing.
+ * a frame that allows no script, so keeping it costs nothing. The attributes of the
+ * sender's `<html>` and `<body>` travel the same way: a mail written right to left
+ * says so on its document, and a dark mail carries its background on its body; the
+ * reader's own tags take them over, purified like everything else.
  *
  * @param {string} html the body as it was received
  * @param {Function} [factory] a DOMPurify factory to use instead of the platform's
@@ -132,7 +174,7 @@ export function sanitizeMailBody(html, factory) {
   const source = html || '';
   const instance = purifierInstance(factory);
   if (!instance) {
-    return { styles: '', body: escapeHtml(source) };
+    return { styles: '', htmlAttributes: '', bodyAttributes: '', body: escapeHtml(source) };
   }
   const clean = instance.sanitize(source, CONFIG);
   const doc = new DOMParser().parseFromString(clean, 'text/html');
@@ -140,5 +182,10 @@ export function sanitizeMailBody(html, factory) {
     .map(sheet => sheet.textContent)
     .filter(sheet => sheet && sheet.trim())
     .join('\n');
-  return { styles, body: doc.body ? doc.body.innerHTML : '' };
+  return {
+    styles,
+    htmlAttributes: serializedAttributes(doc.documentElement),
+    bodyAttributes: serializedAttributes(doc.body),
+    body: doc.body ? doc.body.innerHTML : '',
+  };
 }

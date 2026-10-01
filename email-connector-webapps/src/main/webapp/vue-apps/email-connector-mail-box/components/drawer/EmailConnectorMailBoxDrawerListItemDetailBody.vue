@@ -18,13 +18,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <span v-if="isEmptyBody">
     {{ $t('emailConnector.mailBox.list.drawer.emptyEmail') }}</span>
   <!--
-    The message is somebody else's markup, so the frame it is shown in allows no
-    script (no `allow-scripts`, never together with `allow-same-origin`: a frame with
-    both can lift its own sandbox), no form, no navigation of the page around it. It
-    keeps the page's origin only so that this component can read the frame's document
-    from outside: the mail's height, its images, the quoted-history toggle. Popups
-    are allowed so that a link, which the document's base targets at a new tab, opens
-    one that is not sandboxed itself. No referrer leaves with the images it loads.
+    The message is somebody else's markup, so the frame it is shown in runs no script:
+    no `allow-scripts`, never together with `allow-same-origin`, since a frame with
+    both can lift its own sandbox. That stops inline handlers, `javascript:` URLs,
+    nested frames and a `<meta refresh>` as well; forms, embedded documents and players
+    are the purifier's job, the sandbox alone would let a form out through a popup. The
+    frame keeps the page's origin only so that this component can read its document
+    from outside: the mail's height, its images, the quoted-history toggle, the anchor
+    links. Popups are allowed so that a link, which the document's base targets at a
+    new tab, opens one that is not sandboxed itself. The referrer policy of the
+    document itself is the meta the reader writes into its head: the attribute below
+    governs the frame's own request, which a `srcdoc` frame never makes.
   -->
   <iframe
     v-else
@@ -103,11 +107,12 @@ export default {
      * allow-list gone, the sender's style sheets set apart for the frame's head. A
      * plain-text body is not markup and is escaped where it is rendered instead.
      *
-     * @returns {{styles: string, body: string}} the sender's style sheets and the body
+     * @returns {{styles: string, htmlAttributes: string, bodyAttributes: string, body: string}}
+     *          the sender's style sheets, document attributes and the body
      */
     sanitizedBody() {
       const body = this.emailBody || '';
-      return this.htmlBody ? sanitizeMailBody(body) : { styles: '', body };
+      return this.htmlBody ? sanitizeMailBody(body) : { styles: '', htmlAttributes: '', bodyAttributes: '', body };
     },
     /**
      * The whole document the frame shows: the reader's style, the sender's style
@@ -141,10 +146,16 @@ export default {
      * <p>
      * The document carries no script: the frame would refuse to run one, and the
      * toggle is wired from this component once the frame has loaded. Its base targets
-     * every link at a new tab, so a click never navigates the frame itself.
+     * every link at a new tab, so a click never navigates the frame itself, and its
+     * referrer meta keeps the page's address out of every request the message makes
+     * (an image, an imported style sheet): the policy of a `srcdoc` document is the
+     * one its own head declares. The sender's document and body attributes go onto the
+     * reader's tags, so a right-to-left mail or a dark one keeps its direction and its
+     * background.
      *
-     * @param {{styles: string, body: string}} purified the sender's style sheets and the
-     *          purified body (for a plain-text body, no styles and the raw text)
+     * @param {{styles: string, htmlAttributes: string, bodyAttributes: string, body: string}} purified
+     *          the sender's style sheets, document attributes and purified body (for a
+     *          plain-text body, no styles, no attributes and the raw text)
      * @returns {string} the full HTML document served to the iframe srcdoc
      */
     makeMailHtml(purified) {
@@ -216,14 +227,15 @@ export default {
       const renderedBody = this.renderBody(purified.body);
       const senderCSS = purified.styles ? `<style>${purified.styles}</style>` : '';
       return `
-        <html>
+        <html${purified.htmlAttributes}>
           <head>
             <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta name="referrer" content="no-referrer">
             <base target="_blank">
             <style>${finalCSS}</style>
             ${senderCSS}
           </head>
-          <body>${renderedBody}</body>
+          <body${purified.bodyAttributes}>${renderedBody}</body>
         </html>
       `;
     },
@@ -370,6 +382,7 @@ export default {
      */
     onLoadIframe() {
       this.wireQuotedHistoryToggle();
+      this.wireAnchorLinks();
       this.recalculateIframeHeight();
 
       setTimeout(() => this.recalculateIframeHeight(), 150);
@@ -407,6 +420,33 @@ export default {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
           flip();
+        }
+      });
+    },
+    /**
+     * Keep a link to an anchor of the message ("back to top", "jump to section")
+     * scrolling inside the message: the document's base sends every link to a new tab,
+     * which for a fragment would be a blank one. Wired from this component for the same
+     * reason as the toggle, and scrolling through the browser, which brings the target
+     * into view through the frame and the drawer alike.
+     *
+     * @returns {void}
+     */
+    wireAnchorLinks() {
+      const doc = this.frameContentDocument();
+      if (!doc) {
+        return;
+      }
+      doc.addEventListener('click', event => {
+        const link = event.target && event.target.closest && event.target.closest('a[href^="#"]');
+        if (!link) {
+          return;
+        }
+        event.preventDefault();
+        const name = decodeURIComponent(link.getAttribute('href').slice(1));
+        const target = name ? (doc.getElementById(name) || doc.getElementsByName(name)[0]) : doc.body;
+        if (target) {
+          target.scrollIntoView();
         }
       });
     },
