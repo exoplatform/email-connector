@@ -24,6 +24,7 @@ export * from './EmailConnectorReadReceiptService.js';
 export * from './EmailConnectorSharedMailboxes.js';
 import { inboxOnlyShareOf, isSharedMailboxFolder, sharedFolderRole, sharedMailboxAllows, sharedMailboxAllowsMoveOut, sharedMailboxCanFileInto, sharedMailboxOfFolder } from './EmailConnectorSharedMailboxes.js';
 import { refusal } from './EmailConnectorScheduledSendService.js';
+import { folderPathLabel } from './EmailConnectorFolderTree.js';
 
 const presentation = {
   class: 'fas fa-file-powerpoint',
@@ -511,16 +512,14 @@ export function formatCount(count) {
 
 /**
  * A custom folder's full path, readable: the server's hierarchy separator replaced by
- * a spaced slash ("Customers / Acme"), so a nested folder says where it lives.
+ * a spaced slash ("Customers / Acme"), so a nested folder says where it lives -- without
+ * the INBOX every folder lives under on some servers (EmailConnectorFolderTree).
  *
  * @param {Object} folder the folder as the server lists it
  * @returns {String} the path, or nothing for a built-in
  */
 export function folderPath(folder) {
-  if (!folder?.path) {
-    return '';
-  }
-  return folder.delimiter ? folder.path.split(folder.delimiter).join(' / ') : folder.path;
+  return folderPathLabel(folder);
 }
 
 // Folders the server keeps rows of but lists to nobody: All Mail is a thread-completion

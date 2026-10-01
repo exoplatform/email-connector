@@ -5458,6 +5458,14 @@ public class EmailBoxService {
     }
     emailFolderService.checkFullNameFits(username, customFolder, newRemoteName);
     emailFolderService.checkNameAvailable(username, newRemoteName, customFolder.getId());
+    // A folder the mailbox uses as a built-in is never carried along by a rename or a
+    // move of a folder of the user's, as it is never deleted with one: every client and
+    // every server rule filing into it would lose it.
+    for (String builtInName : builtInFolderNames(loadMailboxSyncState(username))) {
+      if (EmailFolderService.isInside(builtInName, customFolder.getRemoteName(), customFolder.getDelimiter())) {
+        throw new IllegalArgumentException(EmailFolderService.FOLDER_SUB_FOLDER_BUILT_IN_MESSAGE);
+      }
+    }
     Store store = null;
     try {
       store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);

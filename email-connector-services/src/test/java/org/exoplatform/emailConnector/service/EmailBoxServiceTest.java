@@ -13325,6 +13325,30 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * A folder the mailbox uses as a built-in is never carried along by a rename or a move
+   * of a folder of the user's, as it is never deleted with one: refused before anything
+   * reaches the server.
+   */
+  @Test
+  void renameAndMoveRefuseAFolderHoldingABuiltIn() throws Exception {
+    givenAConnectedMailboxForFolderManagement();
+    MailboxSyncState state = new MailboxSyncState();
+    state.setTrashFolderName("Customers/Trash");
+    doReturn(SettingValue.create(JsonUtils.toJsonString(state))).when(settingService)
+                                                                .get(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Customers", true));
+    when(emailFolderStorage.getFolder(TEST_USER, 9L)).thenReturn(registeredFolder(9L, "Archive 2025", true));
+
+    assertEquals(EmailFolderService.FOLDER_SUB_FOLDER_BUILT_IN_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.renameCustomFolder(TEST_USER, 5L, "Clients"))
+                                                                                                                              .getMessage());
+    assertEquals(EmailFolderService.FOLDER_SUB_FOLDER_BUILT_IN_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.moveCustomFolder(TEST_USER, 5L, 9L, null))
+                                                                                                                          .getMessage());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
    * A move to the top level checks the folder's own name as a typed one would be: a
    * folder kept as "Projects/Archive" never becomes the mailbox's Archive by a move.
    */
