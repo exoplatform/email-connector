@@ -158,7 +158,8 @@ export default {
      * @returns {Array} the entries
      */
     folderEntries() {
-      // The user's own folders as a tree (EXO-90839), a collapsed one's folders left out.
+      // A mailbox's folders (the user's own, or a shared mailbox's) as a tree (EXO-90839),
+      // a collapsed one's folders left out.
       return visibleFolderRows(buildFolderTree(this.folders, this.namespaceFolders || this.folders), this.collapsed).map(row => {
         const folder = row.folder;
         const counted = this.folderCounts[folder.key];
