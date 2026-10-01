@@ -211,10 +211,13 @@ public class EmailBoxRest {
   }
 
   /**
-   * Creates one of the user's own folders on the mail server.
+   * Creates one of the user's own folders on the mail server, at the top level or inside
+   * one of their folders.
    *
    * @param request the caller
    * @param name the folder name, as typed
+   * @param parentId the registry id of the caller's own folder to create it in, null for
+   *          the top level
    * @return the folder as registered
    */
   @PostMapping("/folders")
