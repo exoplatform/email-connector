@@ -2097,25 +2097,23 @@ export default {
         return override ? { ...result, starred: override.favorite } : result;
       });
     },
-    // The chips narrow the search the same way they narrow the list. A lit Favorites
-    // chip that stopped filtering the moment the user typed was the defect here: the
-    // search read the mailbox directly and never went through the emails() computed
-    // that applies them.
-    // Favorites and Unread also travel to the server, since both are IMAP flags that
-    // /search takes, so they hold for hits the cache has never seen. A category is
-    // assigned locally after a message is cached, so an uncached hit carries none —
-    // it is left alone rather than silently dropped for lacking what it cannot have.
+    /**
+     * Whether a search hit passes the row's Unread and Favorites chips, which narrow the
+     * search as they narrow the list -- they also travel to both searches, so they hold
+     * for hits the list has never seen. A category view does not narrow a search
+     * (EXO-90838): its chip is not on the search row, and the hits of eXo's copy and of
+     * the mail server carry no categories to be matched against -- filtering them by
+     * the view the list was opened on (the Inbox's Important) hid every one of them
+     * under a count that still said they matched.
+     *
+     * @param {Object} result the hit
+     * @returns {Boolean} true when it is shown
+     */
     searchResultMatchesFilters(result) {
       if (this.favoriteOnly && !result.starred) {
         return false;
       }
-      if (this.unreadOnly && result.read) {
-        return false;
-      }
-      if (this.selectedCategoryIds.length > 0 && result.cached) {
-        return this.selectedCategoryIds.some(id => (result.categoryIds || []).includes(id));
-      }
-      return true;
+      return !this.unreadOnly || !result.read;
     },
     /**
      * Ends the search: its text, its results, any answer still on its way, and its
