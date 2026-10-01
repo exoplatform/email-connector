@@ -465,8 +465,27 @@ public class EmailBoxService {
    */
   public static final String             EXPORT_TOO_MANY         = "emailConnector.export.tooMany";
 
+  /**
+   * Message code answered as a 400 for a folder mail is not imported into: Drafts, Trash,
+   * Spam, the Scheduled view, All Mail, or a shared mailbox's folder of those roles
+   * (EXO-90846).
+   */
+  public static final String             IMPORT_FOLDER_REFUSED   = "emailConnector.import.folderRefused";
+
+  // The folder keys an import never writes into (EXO-90846): Drafts is authored here,
+  // Trash and Spam have their own meaning, the Scheduled view is not a folder and All
+  // Mail is a conversation cache.
+  private static final Set<String>       NOT_IMPORTABLE_FOLDER_KEYS = Set.of(MailFolder.DRAFTS,
+                                                                             MailFolder.TRASH,
+                                                                             MailFolder.JUNK,
+                                                                             MailFolder.SCHEDULED,
+                                                                             MailFolder.ALL_MAIL);
+
   // How many messages a whole-folder export fetches the envelopes of at once (EXO-90845).
   private static final int               EXPORT_FETCH_WINDOW     = 100;
+
+  // How many Message-IDs an import reads at once from the folder it fills (EXO-90846).
+  private static final int               IMPORT_ID_FETCH_WINDOW  = 1000;
 
   // Every header createEmails reads per message. They must be fetched in the one batched
   // FETCH: JavaMail otherwise goes back to the server for each header of each message.
@@ -749,6 +768,9 @@ public class EmailBoxService {
 
   private static final String     USER_NOT_ALLOWED_FOR_GET_RAW_EMAIL                          =
                                                                      "User %s is not allowed to get the source of an email";
+
+  private static final String     USER_NOT_ALLOWED_FOR_IMPORT                                 =
+                                                              "User %s is not allowed to import mail into this folder";
 
   private static final String     USER_NOT_ALLOWED_FOR_BROADCAST_OPEN_EMAIL_EVENT_MESSAGE     =
                                                                                           "User %s is not allowed to broadcast open email event";
@@ -4978,7 +5000,13 @@ public class EmailBoxService {
      * A mail sent from a shared mailbox was filed in its owner's Sent (EXO-90551) -- on
      * the switch of the sender's own Sent re-read, which it is the counterpart of.
      */
-    SENT_COPY(SENT_REFRESH_ENABLED_PROPERTY, "filing the copy of a mail sent from a shared mailbox into it");
+    SENT_COPY(SENT_REFRESH_ENABLED_PROPERTY, "filing the copy of a mail sent from a shared mailbox into it"),
+    /**
+     * Mail imported from files was appended to the folder (EXO-90846,
+     * {@link EmailBoxService#openImportTarget}) -- on the move's switch: like a move, it
+     * files messages into a folder the user then opens to look for them.
+     */
+    IMPORT(MOVE_REFRESH_ENABLED_PROPERTY, "importing message(s) into it");
 
     private final String property;
 
@@ -6379,8 +6407,8 @@ public class EmailBoxService {
 
   /**
    * The caller's mailbox setting, when they may use their mailbox at all: connected, on a
-   * connector they may connect to. The first step of every raw read (EXO-90842, EXO-90845),
-   * refused before anything else is read.
+   * connector they may connect to. The first step of every raw read and of every import
+   * (EXO-90842, EXO-90845, EXO-90846), refused before anything else is read.
    *
    * @param username the caller
    * @param refusal the refusal's message format, given the username
@@ -6663,6 +6691,110 @@ public class EmailBoxService {
    */
   private static boolean isExportableFolderKey(String folderKey) {
     return !MailFolder.SCHEDULED.equals(folderKey) && !MailFolder.ALL_MAIL.equals(folderKey);
+  }
+
+  /**
+   * Checks that the caller may import mail into a folder (EXO-90846), without contacting
+   * the mail server: they may use their mailbox; the folder is one mail is filed into
+   * (not Drafts, Trash, Spam, the Scheduled view or All Mail, nor a shared mailbox's
+   * folder of those roles); in a shared mailbox the share is still accepted and the
+   * caller holds the RFC 4314 insert right ({@code i}) on THAT folder.
+   *
+   * @param username the caller
+   * @param folder the folder key
+   * @throws IllegalAccessException when the caller may not use their mailbox, or lacks
+   *           the insert right on that shared folder
+   * @throws IllegalArgumentException {@link #IMPORT_FOLDER_REFUSED} for a folder mail is
+   *           not imported into
+   */
+  public void checkImportTarget(String username, String folder) throws IllegalAccessException {
+    requireConnectable(username, USER_NOT_ALLOWED_FOR_IMPORT);
+    String folderKey = StringUtils.defaultIfBlank(folder, MailFolder.INBOX);
+    if (NOT_IMPORTABLE_FOLDER_KEYS.contains(folderKey)) {
+      throw new IllegalArgumentException(IMPORT_FOLDER_REFUSED);
+    }
+    FolderRole role = emailDelegationService.roleOf(username, folderKey);
+    if (role == FolderRole.DRAFTS || role == FolderRole.TRASH || role == FolderRole.JUNK) {
+      throw new IllegalArgumentException(IMPORT_FOLDER_REFUSED);
+    }
+    checkDelegatedRight(username, folderKey, MailboxRights.INSERT);
+  }
+
+  /**
+   * Opens a folder for an import (EXO-90846): every check of {@link #checkImportTarget},
+   * then the folder resolved through the caller's own registry on their own connection,
+   * and the Message-IDs it already holds read once, so that a mail already there is
+   * skipped and importing the same file twice adds nothing. The target holds the
+   * connection until it is closed; closing it queues a re-read of the folder when mail
+   * was added, so the new rows appear in the list without waiting for the next check.
+   *
+   * @param username the caller
+   * @param folder the folder key
+   * @return the open target, or null when the caller has no such folder
+   * @throws IllegalAccessException when the caller may not use their mailbox, or lacks
+   *           the insert right on that shared folder
+   * @throws IllegalArgumentException {@link #IMPORT_FOLDER_REFUSED} for a folder mail is
+   *           not imported into
+   * @throws IllegalStateException when the mail server could not be read
+   */
+  public MailImportTarget openImportTarget(String username, String folder) throws IllegalAccessException {
+    checkImportTarget(username, folder);
+    String folderKey = StringUtils.defaultIfBlank(folder, MailFolder.INBOX);
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    Store store = null;
+    Folder remote = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      remote = resolveCachedFolder(store, folderKey, username);
+      if (remote == null) {
+        closeQuietly(null, store, username);
+        return null;
+      }
+      Set<String> knownMessageIds = readMessageIds(remote);
+      Store openStore = store;
+      Folder target = remote;
+      return new MailImportTarget(target, knownMessageIds, appended -> {
+        closeQuietly(target, openStore, username);
+        if (appended > 0) {
+          scheduleFolderRefresh(username, folderKey, FolderRefreshCause.IMPORT);
+        }
+      });
+    } catch (MessagingException | ConnectorCredentialsException | RuntimeException e) {
+      closeQuietly(remote, store, username);
+      LOG.warn("Could not open folder {} of user {} for an import", folderKey, username, e);
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
+    }
+  }
+
+  /**
+   * The Message-IDs a folder holds, normalised by {@link #normalizeMessageId}: the folder
+   * opened read-only, the one header fetched a window at a time, the folder closed again.
+   *
+   * @param folder the folder, closed
+   * @return the normalised ids
+   * @throws MessagingException when the folder cannot be read
+   */
+  private static Set<String> readMessageIds(Folder folder) throws MessagingException {
+    Set<String> ids = new HashSet<>();
+    folder.open(Folder.READ_ONLY);
+    try {
+      int count = folder.getMessageCount();
+      for (int start = 1; start <= count; start += IMPORT_ID_FETCH_WINDOW) {
+        Message[] window = folder.getMessages(start, Math.min(count, start + IMPORT_ID_FETCH_WINDOW - 1));
+        FetchProfile profile = new FetchProfile();
+        profile.add(HEADER_MESSAGE_ID);
+        folder.fetch(window, profile);
+        for (Message message : window) {
+          String[] values = message.getHeader(HEADER_MESSAGE_ID);
+          if (values != null && values.length > 0 && StringUtils.isNotBlank(values[0])) {
+            ids.add(normalizeMessageId(StringUtils.trim(values[0])));
+          }
+        }
+      }
+    } finally {
+      folder.close(false);
+    }
+    return ids;
   }
 
   public String broadcastOpenEmail(String username) throws IllegalAccessException {
