@@ -110,6 +110,8 @@ import org.exoplatform.emailConnector.rest.model.DelegationInviteRequest;
 import org.exoplatform.emailConnector.rest.model.DelegationPreferencesRequest;
 import org.exoplatform.emailConnector.service.EmailAbsenceService;
 import org.exoplatform.emailConnector.service.EmailForwardingService;
+import org.exoplatform.emailConnector.service.EmailScheduledSendService;
+import org.exoplatform.emailConnector.model.UndoSendSettings;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
@@ -166,6 +168,9 @@ public class UserEmailSettingRestTest {
 
   @MockitoBean
   private EmailForwardingService  emailForwardingService;
+
+  @MockitoBean
+  private EmailScheduledSendService emailScheduledSendService;
 
   @Autowired
   private SecurityFilterChain     filterChain;
@@ -888,6 +893,34 @@ public class UserEmailSettingRestTest {
                                                                    .content("{\"responsePolicy\":\"ALWAYS\"}")
                                                                    .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isBadRequest());
+  }
+
+  /**
+   * The Undo send preference (EXO-90837) is the caller's: read with the offered waits,
+   * stored as given, and a wait not offered is a 400 with its code.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void undoSendPreference() throws Exception {
+    when(emailScheduledSendService.getUndoSendSettings(SIMPLE_USER)).thenReturn(new UndoSendSettings(10, List.of(0, 5, 10, 20, 30)));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/undo-send").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.delaySeconds").value(10))
+           .andExpect(jsonPath("$.allowedDelays[4]").value(30));
+
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/undo-send").with(testSimpleUser())
+                                                                .content("{\"delaySeconds\":20}")
+                                                                .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailScheduledSendService).saveUndoSendSettings(SIMPLE_USER, new UndoSendSettings(20, null));
+
+    when(emailScheduledSendService.saveUndoSendSettings(eq(SIMPLE_USER), any())).thenThrow(new IllegalArgumentException(EmailScheduledSendService.UNDO_SEND_INVALID_DELAY));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/undo-send").with(testSimpleUser())
+                                                                .content("{\"delaySeconds\":7}")
+                                                                .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(EmailScheduledSendService.UNDO_SEND_INVALID_DELAY));
   }
 
   // ---------------------------------------------------------------------------------
