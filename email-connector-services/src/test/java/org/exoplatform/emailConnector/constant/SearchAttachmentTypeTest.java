@@ -46,6 +46,7 @@ class SearchAttachmentTypeTest {
     assertEquals(EnumSet.of(SearchAttachmentType.PRESENTATION), kindsOf("deck", "application/vnd.ms-powerpoint"));
     assertEquals(EnumSet.of(SearchAttachmentType.IMAGE), kindsOf("photo", "image/heic"), "any image type");
     assertEquals(EnumSet.of(SearchAttachmentType.ARCHIVE), kindsOf("bundle", "application/x-7z-compressed"));
+    assertEquals(EnumSet.of(SearchAttachmentType.VIDEO), kindsOf("clip", "video/quicktime"), "any video type");
   }
 
   /**
@@ -61,6 +62,10 @@ class SearchAttachmentTypeTest {
     assertEquals(EnumSet.of(SearchAttachmentType.PRESENTATION), kindsOf("deck.odp", null));
     assertEquals(EnumSet.of(SearchAttachmentType.IMAGE), kindsOf("logo.SVG", ""));
     assertEquals(EnumSet.of(SearchAttachmentType.ARCHIVE), kindsOf("backup.tar.gz", "application/octet-stream"));
+    for (String video : new String[] { "demo.mp4", "demo.MOV", "demo.avi", "demo.mkv", "demo.webm" }) {
+      assertEquals(EnumSet.of(SearchAttachmentType.VIDEO), kindsOf(video, "application/octet-stream"), video);
+    }
+    assertEquals(EnumSet.noneOf(SearchAttachmentType.class), kindsOf("song.mp3", "audio/mpeg"), "a sound is no video");
     assertEquals(EnumSet.noneOf(SearchAttachmentType.class), kindsOf("README", "application/octet-stream"));
     assertEquals(EnumSet.noneOf(SearchAttachmentType.class), kindsOf("pdf.", "text/plain"));
     assertEquals(EnumSet.noneOf(SearchAttachmentType.class), kindsOf("invite.ics", "text/calendar"));
@@ -74,6 +79,7 @@ class SearchAttachmentTypeTest {
   void aKeyNamesItsKind() {
     assertEquals(SearchAttachmentType.SPREADSHEET, SearchAttachmentType.fromKey(" spreadsheet "));
     assertEquals(SearchAttachmentType.PDF, SearchAttachmentType.fromKey("PDF"));
+    assertEquals(SearchAttachmentType.VIDEO, SearchAttachmentType.fromKey("video"));
     assertNull(SearchAttachmentType.fromKey("EXECUTABLE"));
     assertNull(SearchAttachmentType.fromKey(" "));
     assertNull(SearchAttachmentType.fromKey(null));
