@@ -29,6 +29,8 @@ import EmailConnectorMailBoxDrawerListItem from '../EmailConnectorMailBoxDrawerL
 import EmailConnectorMailBoxDrawerSearchResults from '../EmailConnectorMailBoxDrawerSearchResults.vue';
 import EmailConnectorMailBoxSuggestionsList from '../EmailConnectorMailBoxSuggestionsList.vue';
 import EmailConnectorMailBoxDrawerListItemDetailSenderAvatar from '../EmailConnectorMailBoxDrawerListItemDetailSenderAvatar.vue';
+import EmailConnectorMailBoxDrawerMultiSelectEmail from '../EmailConnectorMailBoxDrawerMultiSelectEmail.vue';
+import EmailConnectorMailBoxDrawerActions from '../EmailConnectorMailBoxDrawerActions.vue';
 import { MAX_AVATAR_BATCH, rememberSenderAvatar, requestSenderAvatar, resetSenderAvatars, senderAvatarUrl, watchSenderAvatar } from '../../../js/EmailConnectorSenderAvatars.js';
 import { avatarColor } from '../../../js/EmailRecipientDisplay.js';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
@@ -450,6 +452,8 @@ describe('the mailbox drawer gives its bars the rows on screen and ends a search
     service = serviceStub({
       folderLabel: emailConnectorMailBoxService.folderLabel,
       isReadOnlyFolder: emailConnectorMailBoxService.isReadOnlyFolder,
+      groupEmailsByThread: emailConnectorMailBoxService.groupEmailsByThread,
+      threadRowsInFolder: emailConnectorMailBoxService.threadRowsInFolder,
       getAvailableEmailCategories: jest.fn(() => Promise.resolve([])),
       updateEmailsFavoriteStatus: jest.fn(() => Promise.resolve({ failedUpdates: 0 })),
       updateEmailsReadStatus: jest.fn(() => Promise.resolve({ failedUpdates: 0 })),
@@ -569,6 +573,81 @@ describe('the mailbox drawer gives its bars the rows on screen and ends a search
     expect(userSettingService.getWaitingSuggestionEmails.mock.calls.length).toBe(readsBefore + 1);
   });
 
+  it('ends the select mode once the last row is unticked, or the select-all row cleared, and the rows show their avatars again (EXO-90891)', async () => {
+    await mountDrawer();
+    wrapper.vm.$root.$emit('select-email', { emailId: 5, folder: 'INBOX', selected: true });
+    wrapper.vm.$root.$emit('select-email', { emailId: 6, folder: 'INBOX', selected: true });
+    wrapper.vm.$root.$emit('select-email', { emailId: 5, folder: 'INBOX', selected: false });
+    expect(wrapper.vm.selectMode).toBe(true);
+    expect(wrapper.vm.selectedEmails).toEqual(['INBOX:6']);
+
+    wrapper.vm.$root.$emit('select-email', { emailId: 6, folder: 'INBOX', selected: false });
+    expect(wrapper.vm.selectMode).toBe(false);
+    expect(wrapper.vm.selectedEmails).toEqual([]);
+
+    // The select-all row ticked keeps it on; cleared, its list hands the drawer an empty
+    // selection (update:selected-emails -> setSelectedEmails), which ends it.
+    wrapper.vm.$root.$emit('select-email', { emailId: 5, folder: 'INBOX', selected: true });
+    wrapper.vm.setSelectedEmails(['INBOX:5', 'INBOX:6']);
+    expect(wrapper.vm.selectMode).toBe(true);
+    wrapper.vm.setSelectedEmails([]);
+    expect(wrapper.vm.selectMode).toBe(false);
+  });
+
+  it('enters the select mode from the drawer\'s menu with one row ticked: the reader\'s, else the list\'s first (EXO-90891)', async () => {
+    await mountDrawer();
+    // In the narrow drawer no reader stands beside the list: its first row.
+    await wrapper.setData({ email: listed(6) });
+
+    wrapper.vm.$root.$emit('enter-select-mode');
+    expect(wrapper.vm.selectMode).toBe(true);
+    expect(wrapper.vm.selectedEmails).toEqual(['INBOX:5']);
+    wrapper.vm.cancelSelectMode();
+
+    // In full screen, the row of the mail the reader shows.
+    await wrapper.setData({ expanded: true, email: listed(6), selectEmailPlaceHolder: false });
+    wrapper.vm.$root.$emit('enter-select-mode');
+    expect(wrapper.vm.selectedEmails).toEqual(['INBOX:6']);
+    wrapper.vm.cancelSelectMode();
+
+    // The placeholder showing, the reader shows none: the first row.
+    await wrapper.setData({ selectEmailPlaceHolder: true });
+    wrapper.vm.$root.$emit('enter-select-mode');
+    expect(wrapper.vm.selectedEmails).toEqual(['INBOX:5']);
+    wrapper.vm.cancelSelectMode();
+
+    // A row the server has not listed yet is not ticked.
+    await wrapper.setData({ selectEmailPlaceHolder: false, email: null, emailBox: { emails: [{ ...listed(5), refreshPending: true }, listed(6)], folders: FOLDERS } });
+    wrapper.vm.$root.$emit('enter-select-mode');
+    expect(wrapper.vm.selectedEmails).toEqual(['INBOX:6']);
+    wrapper.vm.cancelSelectMode();
+
+    // The search's first hit while searching, the reader's hit when it shows one.
+    await wrapper.setData({ searchTerm: 'nothing listed matches', searchServerResults: [hit(5, 'ARCHIVE'), hit(7, 'ARCHIVE')] });
+    wrapper.vm.$root.$emit('enter-select-mode');
+    expect(wrapper.vm.selectedEmails).toEqual(['ARCHIVE:5']);
+    wrapper.vm.cancelSelectMode();
+    await wrapper.setData({ email: hit(7, 'ARCHIVE') });
+    wrapper.vm.$root.$emit('enter-select-mode');
+    expect(wrapper.vm.selectedEmails).toEqual(['ARCHIVE:7']);
+    wrapper.vm.cancelSelectMode();
+
+    // An empty list: nothing.
+    await wrapper.setData({ searchServerResults: [] });
+    wrapper.vm.$root.$emit('enter-select-mode');
+    expect(wrapper.vm.selectMode).toBe(false);
+    expect(wrapper.vm.selectedEmails).toEqual([]);
+  });
+
+  it('enters the select mode on the Suggestions view with its first mail ticked (EXO-90891)', async () => {
+    await mountDrawer();
+    await suggestionsRead([hit(7, 'ARCHIVE', { mailHeaderId: '<7@host>', waitingCount: 1 }), hit(8, 'INBOX', { mailHeaderId: '<8@host>', waitingCount: 1 })]);
+    await wrapper.setData({ currentFolder: emailConnectorMailBoxService.SUGGESTIONS_VIEW });
+
+    wrapper.vm.$root.$emit('enter-select-mode');
+    expect(wrapper.vm.selectedEmails).toEqual(['ARCHIVE:7']);
+  });
+
   it('ends a selection made among the hits when the search ends, and leaves one made in the list when no search ran', async () => {
     await mountDrawer();
     await wrapper.setData({ searchTerm: 'nothing listed matches', searchServerResults: [hit(5, 'ARCHIVE')] });
@@ -621,7 +700,7 @@ describe('the row\'s sender avatar is its checkbox (EXO-90891)', () => {
     expect(wrapper.findAll('v-checkbox').length).toBe(0);
   });
 
-  it('turns into the checkbox while hovered or focused, labelled, and back', async () => {
+  it('in full screen, turns into the checkbox while the row is hovered or focused, labelled, and back', async () => {
     wrapper = mountRow({ email: hit(5, 'ARCHIVE'), rowKey: 'ARCHIVE:5', expanded: true });
 
     await wrapper.trigger('mouseenter');
@@ -635,6 +714,39 @@ describe('the row\'s sender avatar is its checkbox (EXO-90891)', () => {
     expect(checkboxOf(wrapper).exists()).toBe(true);
     await wrapper.trigger('focusout');
     expect(checkboxOf(wrapper).exists()).toBe(false);
+  });
+
+  it('in the narrow drawer, turns into the checkbox only under the pointer on the avatar itself, or with the keyboard focus', async () => {
+    wrapper = mountRow({ email: hit(5, 'ARCHIVE'), rowKey: 'ARCHIVE:5' });
+
+    // Hovering the row to read it keeps its avatar.
+    await wrapper.trigger('mouseenter');
+    expect(avatarOf(wrapper).exists()).toBe(true);
+    expect(checkboxOf(wrapper).exists()).toBe(false);
+
+    await wrapper.find('.row-avatar').trigger('mouseenter');
+    expect(checkboxOf(wrapper).attributes('aria-label')).toBe('emailConnector.mailBox.list.drawer.selectRow|Alice|ARCHIVE 5');
+    await wrapper.find('.row-avatar').trigger('mouseleave');
+    expect(checkboxOf(wrapper).exists()).toBe(false);
+    expect(avatarOf(wrapper).exists()).toBe(true);
+    await wrapper.trigger('mouseleave');
+
+    // The keyboard's focus shows it, as in full screen.
+    await wrapper.trigger('focusin');
+    expect(checkboxOf(wrapper).exists()).toBe(true);
+    await wrapper.trigger('focusout', { relatedTarget: document.body });
+    expect(checkboxOf(wrapper).exists()).toBe(false);
+
+    // And select mode, on every row.
+    await wrapper.setProps({ selectMode: true });
+    expect(checkboxOf(wrapper).exists()).toBe(true);
+  });
+
+  it('on a phone, an avatar the pointer is reported over stays an avatar', async () => {
+    wrapper = mountRow({ email: hit(5, 'ARCHIVE'), rowKey: 'ARCHIVE:5' }, {}, true);
+
+    await wrapper.find('.row-avatar').trigger('mouseenter');
+    expect(avatarOf(wrapper).exists()).toBe(true);
   });
 
   it('keeps the checkbox the keyboard focus is on when the pointer leaves, and while the focus moves inside the row', async () => {
@@ -787,11 +899,8 @@ describe('the sender avatar draws the reader\'s initials and the page\'s cached 
    */
   async function answered() {
     jest.advanceTimersByTime(100);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    // The request's chain settles over a handful of microtasks.
+    await Array.from({ length: 12 }).reduce(settled => settled.then(() => Promise.resolve()), Promise.resolve());
   }
 
   /**
@@ -924,5 +1033,40 @@ describe('the sender avatar draws the reader\'s initials and the page\'s cached 
     await answered();
     expect(wrapper.text()).toBe('VS');
     expect(requests).toEqual([]);
+  });
+});
+
+describe('the reading pane of a selection says how many mails its tiles act on (EXO-90891)', () => {
+  let wrapper;
+
+  afterEach(() => wrapper?.destroy());
+
+  it('says it in bold, centred above the tiles', async () => {
+    wrapper = shallowMount(EmailConnectorMailBoxDrawerMultiSelectEmail, {
+      propsData: { emails: [hit(5), hit(6)], selectedEmails: ['INBOX:5'] },
+      mocks: { $t: t },
+    });
+    const count = wrapper.find('.multi-select-count');
+    expect(count.text()).toBe('emailConnector.mailBox.list.drawer.multiSelect.selectedOne');
+    expect(count.classes()).toEqual(expect.arrayContaining(['font-weight-bold', 'text-center']));
+    expect(count.element.nextElementSibling.tagName.toLowerCase()).toBe('email-connector-mail-box-drawer-actions');
+    expect(wrapper.classes()).toEqual(expect.arrayContaining(['flex-column', 'align-center', 'justify-center']));
+
+    await wrapper.setProps({ selectedEmails: ['INBOX:5', 'INBOX:6'] });
+    expect(wrapper.find('.multi-select-count').text()).toBe('emailConnector.mailBox.list.drawer.multiSelect.selectedMany|2');
+  });
+
+  it('draws the tiles\' icons at 32 px', () => {
+    wrapper = shallowMount(EmailConnectorMailBoxDrawerActions, {
+      propsData: { emails: [hit(5)], selectedEmails: ['INBOX:5'], selectMode: true, top: false },
+      mocks: {
+        $t: t,
+        $emailConnectorMailBoxService: { ...emailConnectorMailBoxService },
+        $vuetify: { breakpoint: {}, rtl: false },
+      },
+    });
+    const icons = wrapper.findAll('v-icon');
+    expect(icons.length).toBeGreaterThan(0);
+    icons.wrappers.forEach(icon => expect(icon.attributes('size')).toBe('32'));
   });
 });
