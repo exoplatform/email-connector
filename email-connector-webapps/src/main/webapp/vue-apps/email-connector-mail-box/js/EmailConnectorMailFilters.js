@@ -101,6 +101,44 @@ export function refreshWaitingSuggestions(force) {
 }
 
 /**
+ * How many suggestions wait for the user over their whole mailbox, as last read: the
+ * count the folder column's "Suggestions" entry shows (EXO-90851). Reactive, as the
+ * rows' markers are: it follows every read.
+ *
+ * @returns {number} the number of waiting suggestions, 0 when none
+ */
+export function waitingSuggestionTotal() {
+  return Object.values(waitingSuggestions.mailHeaderIds).reduce((total, count) => total + count, 0);
+}
+
+// Whether the mailbox lists its "Suggestions" view (EXO-90851): a mail opened from it
+// shows its Automations panel open, whatever the user last chose for the panel.
+// Observable for the same reason as the waiting suggestions above.
+const suggestionsView = typeof Vue !== 'undefined' && Vue.observable
+  ? Vue.observable({ listed: false })
+  : { listed: false };
+
+/**
+ * Tells whether the mailbox lists its "Suggestions" view.
+ *
+ * @param {boolean} listed - true while it does
+ * @returns {void}
+ */
+export function setSuggestionsViewListed(listed) {
+  suggestionsView.listed = !!listed;
+}
+
+/**
+ * Whether the mailbox lists its "Suggestions" view: the Automations panel then shows
+ * open on a mail with a suggestion waiting.
+ *
+ * @returns {boolean} true while it does
+ */
+export function isSuggestionsViewListed() {
+  return suggestionsView.listed;
+}
+
+/**
  * How many suggestions wait for the user on the given mails -- a list row's, or every
  * mail of its conversation --, as last read: the server answers a Message-ID once per
  * waiting suggestion. Mails of a mailbox somebody shared with the user count none.
