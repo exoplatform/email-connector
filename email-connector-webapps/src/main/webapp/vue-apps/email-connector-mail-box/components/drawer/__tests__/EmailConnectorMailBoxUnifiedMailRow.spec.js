@@ -444,17 +444,24 @@ describe('the mailbox drawer gives its bars the rows on screen and ends a search
     jest.restoreAllMocks();
   });
 
-  it('lists the folder\'s rows, the search\'s hits while searching, the Suggestions view\'s mails on it', async () => {
+  it('lists the folder\'s rows, the search\'s hits while searching, the Suggestions view\'s mails on it, the Important chip offered on the folder only (EXO-90882)', async () => {
     await mountDrawer();
+    const important = { id: 3, nameId: 'emailImportantCategory', name: 'Important' };
+    await wrapper.setData({ emailCategories: [important] });
     expect(wrapper.vm.listedEmails.map(row => row.mailRemoteId)).toEqual([5, 6]);
+    expect(wrapper.vm.searchBarProps.importantCategory).toEqual(important);
 
     await wrapper.setData({ searchTerm: 'nothing listed matches', searchServerResults: [hit(5, 'ARCHIVE')] });
     expect(wrapper.vm.listedEmails.map(row => `${row.folder}:${row.mailRemoteId}`)).toEqual(['ARCHIVE:5']);
+    expect(wrapper.vm.searchBarProps.importantCategory).toBeNull();
 
     const mails = await suggestionsRead([hit(7, 'ARCHIVE', { mailHeaderId: '<7@host>', waitingCount: 1 })]);
     wrapper.vm.clearSearch();
     await wrapper.setData({ currentFolder: emailConnectorMailBoxService.SUGGESTIONS_VIEW });
     expect(wrapper.vm.listedEmails).toEqual(mails);
+    // The Suggestions view's row offers what the search results' does: no Important chip.
+    expect(wrapper.vm.searchBarProps.importantCategory).toBeNull();
+    expect(wrapper.vm.searchBarProps).toMatchObject({ favoriteOnly: false, unreadOnly: false });
   });
 
   /**
