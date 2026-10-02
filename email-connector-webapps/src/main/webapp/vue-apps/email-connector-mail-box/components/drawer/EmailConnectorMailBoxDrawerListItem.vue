@@ -25,14 +25,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     @dragstart="onDragStart"
     @dragend="onDragEnd"
     @mouseenter="!isMobile && (isHover = true)"
-    @mouseleave="!isMobile && (isHover = false)"
-    @focusin="!isMobile && (isHover = true)"
-    @focusout="!isMobile && (isHover = false)"
-    :class="[
-      backgroundClass,
-      selectMode ? 'ps-4' : 'ps-7'
-    ]"
-    class="position-relative no-border pt-3 pb-3 pe-4">
+    @mouseleave="pointerDown = false; !isMobile && (isHover = false)"
+    @mousedown="pointerDown = true"
+    @mouseup="pointerDown = false"
+    @focusin="onFocusIn"
+    @focusout="onFocusOut"
+    :class="backgroundClass"
+    class="position-relative no-border pt-3 pb-3 ps-4 pe-4">
     <div
       v-if="absolute"
       :class="[
@@ -72,19 +71,38 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         width: `${minWidth}px`,
         'min-width': `${minWidth}px`,
       }">
-      <!-- Disabled as well as unclickable for a row the server has not listed yet
+      <!-- The sender's avatar, which is also the row's checkbox (EXO-90891): the
+           checkbox takes its place while the row is hovered or holds the keyboard focus,
+           and on every row in select mode (showCheckbox). On a phone, with no hover, a tap
+           on the avatar ticks the row and enters select mode. The box keeps its size
+           whichever shows, so the row never shifts under the pointer. The checkbox is
+           disabled as well as unclickable for a row the server has not listed yet
            (refreshPending): pointer-events stops the mouse, not Tab + Space, and a
            placeholder UID must not enter the selection. -->
-      <v-checkbox
-        v-if="selectMode"
-        class="me-0 pt-0 align-self-center"
-        color="#707070"
-        background-color="transparent"
-        :input-value="selected"
-        :disabled="email.refreshPending"
-        @click.stop
-        @change="onSelectChange" />
-      <div class="flex-grow-1 no-min-width">    
+      <!-- eslint-disable-next-line vuejs-accessibility/click-events-have-key-events, vuejs-accessibility/no-static-element-interactions -->
+      <div
+        class="row-avatar d-flex align-center justify-center align-self-start flex-shrink-0 me-4"
+        style="width: 32px; height: 32px;"
+        @click="onAvatarClick">
+        <v-checkbox
+          v-if="showCheckbox"
+          class="ma-0 pa-0"
+          color="#707070"
+          background-color="transparent"
+          hide-details
+          :aria-label="selectLabel"
+          :input-value="selected"
+          :disabled="email.refreshPending"
+          @click.stop
+          @change="onSelectChange" />
+        <email-connector-mail-box-drawer-list-item-detail-sender-avatar
+          v-else
+          :email="email"
+          :person="avatarPerson"
+          :size="32"
+          class="ma-0" />
+      </div>
+      <div class="flex-grow-1 no-min-width">
         <!-- eslint-disable vuejs-accessibility/no-static-element-interactions -->
         <!-- data-thread-key is how the arrow keys find the row they stand on, and
              aria-current tells a screen reader which conversation the reader shows --
@@ -250,6 +268,11 @@ export default {
     return {
       menuOpen: false,
       isHover: false,
+      // Whether the keyboard focus is inside the row: kept apart from the pointer's
+      // hover, so the pointer leaving never takes the focused checkbox away (EXO-90891).
+      isFocused: false,
+      // Whether a press of the pointer is what brings the focus in, not the keyboard.
+      pointerDown: false,
       absolute: false,
       left: 0,
       startEvent: null,
@@ -515,6 +538,34 @@ export default {
      */
     senderName() {
       return this.email.sender?.name || this.email.sender?.address || '';
+    },
+    /**
+     * Who the row's avatar draws, by the rule its first line names people by
+     * (participants): a message's sender -- in Sent, the user themselves, as the line
+     * reads --, a draft's first other participant, known by name only, so drawn with
+     * initials. Null for the message's sender.
+     *
+     * @returns {Object} {name}, or null for the sender
+     */
+    avatarPerson() {
+      return this.isDraft && this.threadParticipants.length ? { name: this.threadParticipants[0] } : null;
+    },
+    /**
+     * Whether the avatar shows as the row's checkbox: in select mode, while the row is
+     * hovered, and while it holds the keyboard focus (neither set on a phone).
+     *
+     * @returns {Boolean} true when the checkbox shows
+     */
+    showCheckbox() {
+      return this.selectMode || this.isHover || this.isFocused;
+    },
+    /**
+     * What the row's checkbox is called, for screen readers.
+     *
+     * @returns {String} the label
+     */
+    selectLabel() {
+      return this.$t('emailConnector.mailBox.list.drawer.selectRow', { 0: this.participants || this.draftMarker, 1: this.subject });
     },
     // Server-stamped, read off the thread the grouping built or off the lone row,
     // exactly like the draft flag beside it.
@@ -878,8 +929,50 @@ export default {
       this.left = deltaX;
       this.movingLeft = this.left < 0;
     },
+    /**
+     * The focus entered the row: lit, and its avatar shows as the checkbox -- kept there
+     * while the pointer is away only when the keyboard brought the focus.
+     *
+     * @returns {void}
+     */
+    onFocusIn() {
+      if (!this.isMobile) {
+        this.isHover = true;
+        // A click focuses the row too; only the keyboard's focus keeps the checkbox
+        // once the pointer has gone, or the row open in the reader would keep one.
+        this.isFocused = !this.pointerDown;
+      }
+      this.pointerDown = false;
+    },
+    /**
+     * The keyboard focus moved: the row is unlit, and its checkbox gives way to the
+     * avatar again, only once the focus has left the row -- not when it moves from the
+     * row to its own checkbox, which the swap would otherwise destroy under it.
+     *
+     * @param {FocusEvent} event the focusout event
+     * @returns {void}
+     */
+    onFocusOut(event) {
+      if (this.isMobile || (event?.relatedTarget && this.$el.contains(event.relatedTarget))) {
+        return;
+      }
+      this.isHover = false;
+      this.isFocused = false;
+    },
     onSelectChange(value) {
       this.emitSelect(value);
+    },
+    /**
+     * A tap on the avatar while it shows as the sender's picture -- a phone, with no
+     * hover to turn it into the checkbox: ticks the row, or unticks it, and enters
+     * select mode. A click on the checkbox itself never reaches here (its click.stop).
+     *
+     * @returns {void}
+     */
+    onAvatarClick() {
+      if (!this.email.refreshPending) {
+        this.emitSelect(!this.selected);
+      }
     },
     /**
      * Starts dragging the row -- or the selection it belongs to (dragPayloadOfRow) --
@@ -913,6 +1006,7 @@ export default {
      */
     onDragEnd() {
       this.isHover = false;
+      this.pointerDown = false;
       this.$root.$emit('email-drag-end');
     },
   }

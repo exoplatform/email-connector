@@ -36,6 +36,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -231,6 +232,11 @@ public class EmailConnectorUtils {
   private static final Pattern WINDOWS_DEVICE_NAME     = Pattern.compile("(?i)(con|prn|aux|nul|com[0-9]|lpt[0-9])(\\..*)?");
 
   private static final Log     LOG                     = ExoLogger.getLogger(EmailConnectorUtils.class);
+
+  // Who a sender's or a recipient's address belongs to, when a message is read with its
+  // profiles: the EmailSenderProfileService registers its own matching and cache here
+  // (EXO-90891); until it has, the account address alone (getUserProfileByEmail).
+  private static volatile Function<String, Profile> senderProfileResolver;
 
   /**
    * Extracts a message's displayable body and attachment descriptors, without
@@ -479,6 +485,16 @@ public class EmailConnectorUtils {
     return new Date(now.getTime() - minutes * 60000L);
   }
 
+  /**
+   * The recipients of a message as the mailbox shows them: each named, and with their
+   * profiles, linked to the platform user the address belongs to, the reading user
+   * marked as such.
+   *
+   * @param messageRecipients the message's addresses of one kind (To, Cc, ...)
+   * @param username the reading user, or null
+   * @param withProfile whether to resolve the platform users behind them (the reader)
+   * @return the recipients, empty for none
+   */
   public static List<EmailRecipient> getEmailRecipients(Address[] messageRecipients, String username, boolean withProfile) {
     if (messageRecipients == null) {
       return Collections.emptyList();
@@ -489,7 +505,7 @@ public class EmailConnectorUtils {
       String profileName = null;
       boolean isCurrentUser = false;
       if (username != null && withProfile) {
-        Profile userProfile = getUserProfileByEmail(ia.getAddress());
+        Profile userProfile = senderProfile(ia.getAddress());
         if (userProfile != null) {
           profileUrl = userProfile.getUrl();
           profileName = userProfile.getFullName();
@@ -525,6 +541,38 @@ public class EmailConnectorUtils {
     return StringUtils.isNotBlank(profileName) ? profileName : address;
   }
 
+  /**
+   * Sets who resolves a sender's or a recipient's address to a platform profile when a
+   * message is read with its profiles ({@link #getEmailSender(Address, boolean)},
+   * {@link #getEmailRecipients(Address[], String, boolean)}).
+   *
+   * @param resolver the resolver, or null for the account address alone
+   */
+  public static void setSenderProfileResolver(Function<String, Profile> resolver) {
+    senderProfileResolver = resolver;
+  }
+
+  /**
+   * The profile of the platform user an address of a message belongs to, by the
+   * registered resolver, else by the account address alone.
+   *
+   * @param address the sender's or a recipient's address
+   * @return the profile, or null for nobody
+   */
+  private static Profile senderProfile(String address) {
+    Function<String, Profile> resolver = senderProfileResolver;
+    return resolver != null ? resolver.apply(address) : getUserProfileByEmail(address);
+  }
+
+  /**
+   * The sender of a message as the mailbox shows it: the name, and with its profile,
+   * the picture and profile link of the platform user the address belongs to, or the
+   * generated initials for anybody else.
+   *
+   * @param messageSenderAddress the message's From address
+   * @param withProfile whether to resolve the platform user behind it (the reader)
+   * @return the sender, or null for an address that is not an internet address
+   */
   public static EmailSender getEmailSender(Address messageSenderAddress, boolean withProfile) {
     if (messageSenderAddress instanceof InternetAddress internetAddress) {
       String avatarUrl = null;
@@ -532,7 +580,7 @@ public class EmailConnectorUtils {
       String senderName = internetAddress.getPersonal() != null ? decodeHeader(internetAddress.getPersonal())
                                                                 : internetAddress.getAddress();
       if (withProfile) {
-        Profile userProfile = getUserProfileByEmail(internetAddress.getAddress());
+        Profile userProfile = senderProfile(internetAddress.getAddress());
         if (userProfile != null) {
           avatarUrl = userProfile.getAvatarUrl();
           profileUrl = userProfile.getUrl();

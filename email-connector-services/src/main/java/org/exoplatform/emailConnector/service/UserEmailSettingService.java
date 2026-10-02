@@ -18,6 +18,8 @@ package org.exoplatform.emailConnector.service;
 
 import java.lang.reflect.UndeclaredThrowableException;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -60,6 +62,7 @@ import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.emailConnector.utils.EmailContactUtils;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.log.ExoLogger;
@@ -633,6 +636,63 @@ public class UserEmailSettingService {
     }
     UserEmailSettingEntity stored = JsonUtils.fromJsonString(value.getValue().toString(), UserEmailSettingEntity.class);
     return stored == null ? null : stored.getEmailConnectorId();
+  }
+
+  /**
+   * The address of every connected mailbox, with its owner: who a mail sent from a
+   * mailbox connected here comes from, when that address is not the one their platform
+   * account carries (EXO-90891). One walk over the stored documents, read as stored --
+   * no password decode, no connector read. An address two users connected names
+   * neither: it is left out rather than guessed.
+   *
+   * @return the eXo login by normalized mailbox address; a user whose document cannot
+   *         be read is logged and left out
+   */
+  public Map<String, String> getConnectedMailboxOwners() {
+    List<Context> contexts =
+                           settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                                  Scope.APPLICATION.getName(),
+                                                                                  EmailConnectorService.EMAIL_CONNECTOR_SCOPE_ID,
+                                                                                  EmailConnectorService.USER_EMAIL_SETTING_KEY,
+                                                                                  0,
+                                                                                  Integer.MAX_VALUE);
+    Map<String, String> owners = new HashMap<>();
+    Set<String> shared = new HashSet<>();
+    for (Context context : contexts) {
+      String username = context.getId();
+      String address = EmailContactUtils.normalizeAddress(getStoredEmailAddress(username));
+      if (address == null || shared.contains(address)) {
+        continue;
+      }
+      String other = owners.putIfAbsent(address, username);
+      if (other != null && !other.equals(username)) {
+        owners.remove(address);
+        shared.add(address);
+      }
+    }
+    return owners;
+  }
+
+  /**
+   * The mailbox address a user's stored setting names, read from the document alone.
+   *
+   * @param username the eXo login
+   * @return the address as stored, or null when there is none or the document cannot be read
+   */
+  private String getStoredEmailAddress(String username) {
+    try {
+      SettingValue<?> value = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
+      if (value == null || value.getValue() == null) {
+        return null;
+      }
+      UserEmailSettingEntity stored = JsonUtils.fromJsonString(value.getValue().toString(), UserEmailSettingEntity.class);
+      return stored == null || stored.getEmailConnectorId() == null ? null : stored.getEmailAddress();
+    } catch (Exception e) {
+      // Exception, not RuntimeException: a malformed document surfaces as Jackson's
+      // checked exception, thrown sneakily. One unreadable user must not fail the walk.
+      LOG.warn("Cannot read the mail setting of user {}; left out of the connected mailboxes", username, e);
+      return null;
+    }
   }
 
   /**

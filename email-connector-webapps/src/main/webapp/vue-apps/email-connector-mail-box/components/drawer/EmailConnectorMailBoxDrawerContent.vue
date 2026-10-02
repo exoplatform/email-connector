@@ -16,8 +16,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <div>
+    <!-- Lined up with the rows' checkboxes, centred in their 32 px avatar box (EXO-90891). -->
     <v-checkbox
-      class="ps-4 my-2 pt-0"
+      class="ps-5 my-2 pt-0"
       v-if="selectMode"
       :indeterminate="indeterminate"
       color="#707070"
