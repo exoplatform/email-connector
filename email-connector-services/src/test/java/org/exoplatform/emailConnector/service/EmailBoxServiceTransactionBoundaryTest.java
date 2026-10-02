@@ -111,6 +111,9 @@ class EmailBoxServiceTransactionBoundaryTest {
   private EmailDelegationService        emailDelegationService;
 
   @MockitoBean
+  private EmailDmarcVerdictBackfillService emailDmarcVerdictBackfillService;
+
+  @MockitoBean
   private CategoryService               categoryService;
 
   @MockitoBean
