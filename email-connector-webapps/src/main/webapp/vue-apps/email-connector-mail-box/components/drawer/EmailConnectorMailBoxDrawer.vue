@@ -220,9 +220,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :signal="scheduledViewSignal"
             compact
             @loading="scheduledLoading = $event" />
-          <!-- The Suggestions view (EXO-90851): its own list, no chips. Its row of the
-               mail the reader shows is lit, and the arrow keys walk it, as the search
-               results (EXO-90875). -->
+          <!-- The Suggestions view (EXO-90851): its own list, narrowed by the Favorites
+               and Unread chips as a folder's (EXO-90892). Its row of the mail the reader
+               shows is lit, and the arrow keys walk it, as the search results (EXO-90875). -->
           <email-connector-mail-box-suggestions-list
             v-else-if="suggestionsView"
             ref="expandedSuggestionsList"
@@ -232,8 +232,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :selected-emails="selectedEmails"
             :drag-source="emailDrag"
             :folders="folders"
+            :filtered="hasActiveFilters"
             compact
-            @loading="suggestionsLoading = $event" />
+            @loading="suggestionsLoading = $event"
+            @clear-filters="clearFilters" />
           <template v-else>
             <email-connector-mail-box-drawer-content
               v-if="hasEmails"
@@ -371,7 +373,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :select-mode="selectMode"
           :selected-emails="selectedEmails"
           :folders="folders"
-          @loading="suggestionsLoading = $event" />
+          :filtered="hasActiveFilters"
+          @loading="suggestionsLoading = $event"
+          @clear-filters="clearFilters" />
         <template v-else>
           <template v-if="hasEmails">
             <email-connector-mail-box-drawer-content
@@ -1322,8 +1326,9 @@ export default {
     },
     /**
      * Whether the Suggestions view is listed (EXO-90851): its own list replaces the
-     * folder's, with no chips or search, as the Scheduled view's does; its rows are the
-     * folder list's, selected and dragged as they are there (EXO-90871).
+     * folder's, as the Scheduled view's does, narrowed by the Favorites and Unread chips
+     * as a folder's list is (EXO-90892); its rows are the folder list's, selected and
+     * dragged as they are there (EXO-90871).
      *
      * @returns {Boolean} true on the Suggestions view
      */
@@ -1460,12 +1465,15 @@ export default {
     /**
      * The Suggestions view's mails (EXO-90851), as last read, less the ones an action
      * here took out of their folder before the server says so (isOptimisticallyRemoved)
-     * -- as the folder's list and the search's hits leave theirs out (EXO-90871).
+     * -- as the folder's list and the search's hits leave theirs out (EXO-90871) --, and
+     * narrowed by the Favorites and Unread chips as a folder's list is (matchesListChips,
+     * EXO-90892). On the client: the view's read answers every mail it lists at once,
+     * bounded by the mailbox's pending cap, so no page is left out of what it narrows.
      *
      * @returns {Array} the mails, newest first
      */
     suggestionMails() {
-      return waitingSuggestionMails().filter(mail => !this.isOptimisticallyRemoved(mail));
+      return waitingSuggestionMails().filter(mail => !this.isOptimisticallyRemoved(mail) && this.matchesListChips(mail));
     },
     /**
      * Whether the drawer is open, for listNavigationMixin: the arrow keys are listened
@@ -1525,25 +1533,7 @@ export default {
       // category VIEW is single selection (categoryViewId), so at most one
       // category ever narrows the list; Favorites and Unread apply on top of
       // whichever view is open.
-      // The favorite view: the server already answered with the favorite subset;
-      // filtering again here makes a just-unfavorited message leave the list at
-      // once instead of waiting for the next reload.
-      if (this.favoriteOnly) {
-        emails = emails.filter(e => e.starred);
-      }
-      if (this.unreadOnly) {
-        // The one message being read stays listed even once marked read:
-        // opening a mail under the Unread filter must not yank the reader
-        // out from under the user for the select-an-email placeholder.
-        // Folder as well as UID: a UID is only unique within its folder, and the open
-        // reader can now hold a message from another one (openMailFromOutside,
-        // openSearchResult), so comparing the number alone would spare an unrelated
-        // read message that happens to share it.
-        emails = emails.filter(e => !e.read
-          || (this.email
-            && e.mailRemoteId === this.email.mailRemoteId
-            && (e.folder || this.currentFolder) === (this.email.folder || this.currentFolder)));
-      }
+      emails = emails.filter(e => this.matchesListChips(e));
       if (this.selectedCategoryIds.length > 0) {
         emails = emails.filter(e => this.selectedCategoryIds.some(id => e.categoryIds.includes(id)));
       }
@@ -2235,6 +2225,35 @@ export default {
       });
     },
     /**
+     * Whether a listed mail passes the Favorites and Unread chips, which narrow the
+     * folder's list and the Suggestions view's alike (EXO-90892); the filters combine,
+     * each narrowing what the other left.
+     * <p>
+     * Favorites: in a folder the server already answered with the favorite subset;
+     * filtering again here makes a just-unfavorited message leave the list at once
+     * instead of waiting for the next reload, and on the Suggestions view, whose mails
+     * are its own read's, it is the whole of the filter.
+     * <p>
+     * Unread: the one message being read stays listed even once marked read: opening a
+     * mail under the Unread filter must not yank the reader out from under the user for
+     * the select-an-email placeholder. Folder as well as UID: a UID is only unique within
+     * its folder, and the open reader can now hold a message from another one
+     * (openMailFromOutside, openSearchResult), so comparing the number alone would spare
+     * an unrelated read message that happens to share it.
+     *
+     * @param {Object} email the listed mail
+     * @returns {Boolean} true when it is shown
+     */
+    matchesListChips(email) {
+      if (this.favoriteOnly && !email.starred) {
+        return false;
+      }
+      return !this.unreadOnly || !email.read
+        || !!this.email
+          && email.mailRemoteId === this.email.mailRemoteId
+          && (email.folder || this.currentFolder) === (this.email.folder || this.currentFolder);
+    },
+    /**
      * Whether a search hit passes the row's Unread and Favorites chips, which narrow the
      * search as they narrow the list -- they also travel to both searches, so they hold
      * for hits the list has never seen. A category view does not narrow a search
@@ -2838,12 +2857,21 @@ export default {
       });
       return Array.from(groups.entries());
     },
-    // Toggle the favorite-only view from the chip row, reloading the listed
-    // folder (the favorite subset is answered server-side).
+    /**
+     * Toggles the favorite-only view from the chip row, reloading the listed folder (the
+     * favorite subset is answered server-side). Not on the Suggestions view, whose mails
+     * are its own read's, narrowed here (suggestionMails, EXO-90892): no listing serves
+     * it a favorite subset.
+     *
+     * @returns {void}
+     */
     onToggleFavoriteFilter() {
       this.filtersTouched = true;
       this.favoriteOnly = !this.favoriteOnly;
       this.cancelSelectMode();
+      if (this.suggestionsView) {
+        return;
+      }
       this.loading = true;
       this.loadEmailBox().finally(() => this.loading = false);
     },
@@ -2934,8 +2962,9 @@ export default {
       // One navigation, whichever filters were on: the list is re-listed -- reloaded
       // when Favorites narrowed it, since that subset is the server's -- and then its
       // first mail opens once, as after a folder switch; the folder-switch flag keeps
-      // the category view's own opening from firing on the list still narrowed.
-      const reload = this.favoriteOnly;
+      // the category view's own opening from firing on the list still narrowed. The
+      // Suggestions view's mails are its own read's, narrowed here: nothing to reload.
+      const reload = this.favoriteOnly && !this.suggestionsView;
       const load = ++this.folderLoads;
       this.folderLoading = true;
       this.categoryViewId = null;
