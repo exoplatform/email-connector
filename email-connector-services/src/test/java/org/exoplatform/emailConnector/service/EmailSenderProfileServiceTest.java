@@ -59,7 +59,8 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * Who a mail address belongs to on the platform (EXO-90891): the account's address
  * whatever its case, else a connected mailbox's; enabled, undeleted users only; one
  * resolution per address for the cache's lifetime, shared by the mail list's batch and
- * the reader.
+ * the reader. Then, for an address with no platform photo, the viewing user's own
+ * contact's picture (EXO-90908), kept per viewer.
  */
 @ExtendWith(MockitoExtension.class)
 class EmailSenderProfileServiceTest {
@@ -78,6 +79,9 @@ class EmailSenderProfileServiceTest {
 
   @Mock
   private EmailBoxStorage         emailBoxStorage;
+
+  @Mock
+  private EmailContactService     emailContactService;
 
   @InjectMocks
   private EmailSenderProfileService service;
@@ -116,6 +120,7 @@ class EmailSenderProfileServiceTest {
   @AfterEach
   void forgetResolver() {
     EmailConnectorUtils.setSenderProfileResolver(null);
+    EmailConnectorUtils.setContactPhotoResolver(null);
   }
 
   /** The platform account's address is matched whatever the case either side writes it in. */
@@ -299,8 +304,10 @@ class EmailSenderProfileServiceTest {
     try (org.mockito.MockedStatic<EmailConnectorUtils> utils = org.mockito.Mockito.mockStatic(EmailConnectorUtils.class)) {
       service.register();
       utils.verify(() -> EmailConnectorUtils.setSenderProfileResolver(org.mockito.ArgumentMatchers.notNull()));
+      utils.verify(() -> EmailConnectorUtils.setContactPhotoResolver(org.mockito.ArgumentMatchers.notNull()));
       service.unregister();
       utils.verify(() -> EmailConnectorUtils.setSenderProfileResolver(null));
+      utils.verify(() -> EmailConnectorUtils.setContactPhotoResolver(null));
     }
     assertTrue(EmailSenderProfileService.class.getMethod("register").isAnnotationPresent(jakarta.annotation.PostConstruct.class));
     assertTrue(EmailSenderProfileService.class.getMethod("unregister").isAnnotationPresent(jakarta.annotation.PreDestroy.class));
@@ -313,6 +320,99 @@ class EmailSenderProfileServiceTest {
                                               .isAnnotationPresent(io.meeds.common.ContainerTransactional.class));
     assertTrue(EmailSenderProfileService.class.getMethod("getAvatars", List.class, String.class)
                                               .isAnnotationPresent(io.meeds.common.ContainerTransactional.class));
+    assertTrue(EmailSenderProfileService.class.getMethod("getContactPhotoUrl", String.class, String.class)
+                                              .isAnnotationPresent(io.meeds.common.ContainerTransactional.class));
+  }
+
+  /**
+   * The order of the batch's pictures (EXO-90908): a platform user's own photo; else
+   * the viewer's own contact's; else the platform's generated picture of a user with
+   * no photo; else nothing, for the client's initials. The contacts are asked once,
+   * for the addresses with no platform photo only.
+   */
+  @Test
+  void theBatchPicksThePlatformPhotoThenTheViewersContactThenTheGeneratedPicture() {
+    accounts.put("bob@example.org", "bob");
+    enabledUser("bob", "bob-photo");
+    accounts.put("dan@example.org", "dan");
+    defaultAvatarUser("dan", "dan-generated");
+    accounts.put("eve@example.org", "eve");
+    defaultAvatarUser("eve", "eve-generated");
+    when(emailContactService.getContactPhotoUrls("alice", List.of("dan@example.org", "eve@example.org",
+                                                                  "ann@client.org", "nobody@client.org")))
+        .thenReturn(Map.of("bob@example.org", "bob-contact", "dan@example.org", "dan-contact", "ann@client.org", "ann-contact"));
+
+    Map<String, String> avatars = service.resolveAvatars(List.of("bob@example.org", "dan@example.org", "eve@example.org",
+                                                                 "ann@client.org", "nobody@client.org"), "alice");
+
+    assertEquals(Map.of("bob@example.org", "bob-photo",
+                        "dan@example.org", "dan-contact",
+                        "eve@example.org", "eve-generated",
+                        "ann@client.org", "ann-contact"), avatars);
+    verify(emailContactService, times(1)).getContactPhotoUrls(any(), any());
+  }
+
+  /**
+   * A contact's picture is the viewer's: another user asking for the same address
+   * reads their own store, never the first viewer's answer from the cache, and each
+   * viewer's answer, a picture or none, is kept for the cache's lifetime.
+   */
+  @Test
+  void contactPicturesAreKeptPerViewer() {
+    when(emailContactService.getContactPhotoUrls("alice", List.of("ann@client.org"))).thenReturn(Map.of("ann@client.org", "alice-ann"));
+
+    assertEquals(Map.of("ann@client.org", "alice-ann"), service.resolveAvatars(List.of("ann@client.org"), "alice"));
+    assertEquals(Map.of(), service.resolveAvatars(List.of("ann@client.org"), "mallory"));
+    assertEquals(Map.of("ann@client.org", "alice-ann"), service.resolveAvatars(List.of("ANN@client.org"), "alice"));
+    assertEquals(Map.of(), service.resolveAvatars(List.of("ann@client.org"), "mallory"));
+    assertEquals("alice-ann", service.resolveContactPhotoUrl("alice", "Ann@Client.org"));
+    assertNull(service.resolveContactPhotoUrl("mallory", "ann@client.org"));
+
+    verify(emailContactService, times(1)).getContactPhotoUrls("alice", List.of("ann@client.org"));
+    verify(emailContactService, times(1)).getContactPhotoUrls("mallory", List.of("ann@client.org"));
+  }
+
+  /** A store that could not be read shows no contact picture this time, and is read again next time. */
+  @Test
+  void aContactStoreFailureIsNotRememberedAsNoPicture() {
+    when(emailContactService.getContactPhotoUrls("alice", List.of("ann@client.org"))).thenThrow(new IllegalStateException("down"))
+                                                                                     .thenReturn(Map.of("ann@client.org", "alice-ann"));
+
+    assertEquals(Map.of(), service.resolveAvatars(List.of("ann@client.org"), "alice"));
+    assertEquals(Map.of("ann@client.org", "alice-ann"), service.resolveAvatars(List.of("ann@client.org"), "alice"));
+  }
+
+  /**
+   * The reader's sender takes the same order, with the reading user's contacts: a
+   * platform photo; else the reader's contact's picture, for a colleague with no photo
+   * as for an outsider; else the generated picture, else the initials. Without a
+   * reader no contact is read.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theReadersSenderTakesTheReadersContactPictureAfterThePlatformPhoto() throws Exception {
+    accounts.put("bob@example.org", "bob");
+    enabledUser("bob", "bob-photo");
+    accounts.put("dan@example.org", "dan");
+    defaultAvatarUser("dan", "dan-generated");
+    accounts.put("eve@example.org", "eve");
+    defaultAvatarUser("eve", "eve-generated");
+    lenient().when(emailContactService.getContactPhotoUrls(any(), any())).thenReturn(Map.of());
+    when(emailContactService.getContactPhotoUrls("alice", List.of("dan@example.org"))).thenReturn(Map.of("dan@example.org", "dan-contact"));
+    when(emailContactService.getContactPhotoUrls("alice", List.of("ann@client.org"))).thenReturn(Map.of("ann@client.org", "ann-contact"));
+    EmailConnectorUtils.setSenderProfileResolver(service::resolveSenderProfile);
+    EmailConnectorUtils.setContactPhotoResolver(service::resolveContactPhotoUrl);
+
+    assertEquals("bob-photo", EmailConnectorUtils.getEmailSender(new InternetAddress("bob@example.org", "Bob"), true, "alice").getAvatarUrl());
+    assertEquals("dan-contact", EmailConnectorUtils.getEmailSender(new InternetAddress("dan@example.org", "Dan"), true, "alice").getAvatarUrl());
+    assertEquals("eve-generated", EmailConnectorUtils.getEmailSender(new InternetAddress("eve@example.org", "Eve"), true, "alice").getAvatarUrl());
+    assertEquals("ann-contact", EmailConnectorUtils.getEmailSender(new InternetAddress("ann@client.org", "Ann"), true, "alice").getAvatarUrl());
+    assertTrue(EmailConnectorUtils.getEmailSender(new InternetAddress("ann@client.org", "Ann"), true, "mallory")
+                                  .getAvatarUrl()
+                                  .startsWith("data:"));
+    assertTrue(EmailConnectorUtils.getEmailSender(new InternetAddress("ann@client.org", "Ann"), true).getAvatarUrl().startsWith("data:"));
+    verify(emailContactService, never()).getContactPhotoUrls(any(), org.mockito.ArgumentMatchers.eq(List.of("bob@example.org")));
   }
 
   /**
@@ -329,6 +429,20 @@ class EmailSenderProfileServiceTest {
     lenient().when(profile.getAvatarUrl()).thenReturn(avatarUrl);
     lenient().when(identity.getProfile()).thenReturn(profile);
     lenient().when(identityManager.getOrCreateUserIdentity(login)).thenReturn(identity);
+    return profile;
+  }
+
+  /**
+   * An enabled user whose profile carries the platform's generated picture, no photo of
+   * their own.
+   *
+   * @param login the eXo login
+   * @param avatarUrl the generated picture's URL
+   * @return the profile
+   */
+  private Profile defaultAvatarUser(String login, String avatarUrl) {
+    Profile profile = enabledUser(login, avatarUrl);
+    lenient().when(profile.isDefaultAvatar()).thenReturn(true);
     return profile;
   }
 
