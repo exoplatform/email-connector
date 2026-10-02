@@ -36,6 +36,7 @@ const URL_PARAMS = {
   folder: 'searchFolder',
   unread: 'searchUnread',
   favorites: 'searchStarred',
+  categories: 'searchCategories',
 };
 
 // The longest text taken from the address: a criterion, not a document.
@@ -47,6 +48,10 @@ const SEARCH_FOLDER_PATTERN = /^(INBOX|SENT|ARCHIVE|CUSTOM:\d{1,18})$/;
 
 const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
+// The categories a search asks for in the address (EXO-90888): comma-separated ids, at
+// most twenty -- the mailbox has a handful -- each a safe integer.
+const CATEGORY_IDS_PATTERN = /^\d{1,15}(,\d{1,15}){0,19}$/;
+
 // Whether this page's address got openEmailBox=true from a search, rather than from
 // the link that loaded it: only then does clearing the search take it away again.
 let openParamAddedBySearch = false;
@@ -57,8 +62,8 @@ let mailboxParamAddedBySearch = false;
 /**
  * The criteria of no advanced search.
  *
- * @returns {Object} {from, to, words, after, before, attachment, folder}, all empty;
- *          folder null means the folder shown
+ * @returns {Object} {from, to, words, after, before, attachment, folder, categoryIds}, all
+ *          empty; folder null means the folder shown
  */
 export function emptySearchCriteria() {
   return {
@@ -69,6 +74,8 @@ export function emptySearchCriteria() {
     before: null,
     attachment: false,
     folder: null,
+    // The categories the mail must be filed under, one of them, by id (EXO-90888).
+    categoryIds: [],
   };
 }
 
@@ -81,7 +88,7 @@ export function emptySearchCriteria() {
  */
 export function hasSearchCriteria(criteria) {
   return !!criteria && (TEXT_CRITERIA.some(name => !!(criteria[name] || '').trim())
-    || !!criteria.after || !!criteria.before || !!criteria.attachment);
+    || !!criteria.after || !!criteria.before || !!criteria.attachment || !!criteria.categoryIds?.length);
 }
 
 /**
@@ -123,7 +130,8 @@ export function nextSearchDay(value) {
  * instant matches never show a row the answers then contradict: the words are matched
  * against the subject only, the copy's search adding the body's matches. A range of
  * days is not evaluated here -- the browser's day and eXo's server's can differ -- so
- * a search with one draws no instant match (null).
+ * a search with one draws no instant match (null); nor are categories, which take their
+ * subcategories along on the server (EXO-90888).
  *
  * @param {Object} email the listed row
  * @param {String} term the search box's text, lower-cased, may be empty
@@ -131,7 +139,7 @@ export function nextSearchDay(value) {
  * @returns {Boolean} whether the row matches, or null when it cannot be told here
  */
 export function listedRowMatches(email, term, criteria) {
-  if (criteria?.after || criteria?.before) {
+  if (criteria?.after || criteria?.before || criteria?.categoryIds?.length) {
     return null;
   }
   const has = (value, text) => (value || '').toLowerCase().includes(text);
@@ -149,8 +157,8 @@ export function listedRowMatches(email, term, criteria) {
 /**
  * Reads the search an address asks for. The parameters are data from the address bar,
  * so each is checked: a text is trimmed and capped, a day is a real yyyy-MM-dd one, a
- * folder one of the keys a search can read, a mailbox a delegation id; anything else is
- * left out. A range whose days are in the wrong order keeps its first day only.
+ * folder one of the keys a search can read, a mailbox a delegation id, the categories a
+ * short list of ids; anything else is left out. A range whose days are in the wrong order keeps its first day only.
  *
  * @param {URLSearchParams} urlParams the page's query parameters
  * @returns {Object} {searchTerm, searchCriteria, searchUnread, searchFavorites, mailbox},
@@ -169,6 +177,8 @@ export function searchFromUrl(urlParams) {
   criteria.attachment = urlParams.get(URL_PARAMS.attachment) === 'true';
   const folder = urlParams.get(URL_PARAMS.folder) || '';
   criteria.folder = SEARCH_FOLDER_PATTERN.test(folder) ? folder : null;
+  const categories = urlParams.get(URL_PARAMS.categories) || '';
+  criteria.categoryIds = CATEGORY_IDS_PATTERN.test(categories) ? [...new Set(categories.split(',').map(Number))] : [];
   const searchTerm = text('term');
   const searchUnread = urlParams.get(URL_PARAMS.unread) === 'true';
   const searchFavorites = urlParams.get(URL_PARAMS.favorites) === 'true';
@@ -211,6 +221,7 @@ export function writeSearchToUrl(search) {
   set('before', criteria.before);
   set('attachment', criteria.attachment && 'true');
   set('folder', criteria.folder);
+  set('categories', (criteria.categoryIds || []).join(','));
   set('unread', search.unread && 'true');
   set('favorites', search.favorites && 'true');
   if (search.mailbox && url.searchParams.get('mailbox') !== String(search.mailbox)) {

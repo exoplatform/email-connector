@@ -1254,7 +1254,7 @@ export function searchEmails(query, folder, limit, favorites, unread, criteria) 
  * @param {Number} limit how many hits to return (newest first)
  * @param {Boolean} favorites when true, only starred messages
  * @param {Boolean} unread when true, only unread messages
- * @param {Object} criteria {from, to, words, after, before, attachment}
+ * @param {Object} criteria {from, to, words, after, before, attachment, categoryIds}
  * @returns {Promise} resolves with { results, totalMatches }; rejects with
  *          the response status on the error
  */
@@ -1308,6 +1308,8 @@ function searchParams(query, folder, limit, favorites, unread, criteria) {
   if (criteria?.attachment) {
     params.append('attachment', 'true');
   }
+  // The categories eXo filed the mail under, one parameter each (EXO-90888).
+  (criteria?.categoryIds || []).forEach(id => params.append('categoryIds', id));
   return params;
 }
 
