@@ -88,7 +88,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           @switch="onSwitchMailbox" />
         <span v-else></span>
         <email-connector-mail-box-drawer-actions
-          :emails="emails"
+          :emails="listedEmails"
           class="d-flex align-center"
           :webmail-url="webmailUrl"
           :selected-emails="selectedEmails"
@@ -115,7 +115,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <email-connector-mail-box-drawer-actions
         v-else-if="!syncBlocked"
         class="d-flex align-center"
-        :emails="emails"
+        :emails="listedEmails"
         :webmail-url="webmailUrl"
         :selected-emails="selectedEmails"
         :select-mode="selectMode"
@@ -205,7 +205,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :offer-server-search="offerServerSearch"
             :local-searching="searchLocalRunning"
             :scanned="searchScanned"
-            draggable-hits
+            :select-mode="selectMode"
+            :selected-emails="selectedEmails"
+            :drag-source="emailDrag"
+            expanded
             @open-result="openSearchResult"
             @search-server="searchWholeMailbox" />
           <!-- The Scheduled view (EXO-90434): its own list, no chips. -->
@@ -217,6 +220,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <!-- The Suggestions view (EXO-90851): its own list, no chips. -->
           <email-connector-mail-box-suggestions-list
             v-else-if="suggestionsView"
+            :select-mode="selectMode"
+            :selected-emails="selectedEmails"
+            :drag-source="emailDrag"
             compact
             @loading="suggestionsLoading = $event" />
           <template v-else>
@@ -314,6 +320,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :offer-server-search="offerServerSearch"
             :local-searching="searchLocalRunning"
             :scanned="searchScanned"
+            :select-mode="selectMode"
+            :selected-emails="selectedEmails"
             @open-result="openSearchResult"
             @search-server="searchWholeMailbox" />
         </template>
@@ -323,7 +331,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <template v-else-if="expanded">
           <email-connector-mail-box-drawer-multi-select-email
             v-if="selectMode"
-            :emails="emails"
+            :emails="listedEmails"
             :selected-emails="selectedEmails" />
           <template v-else-if="selectEmailPlaceHolder">
             <email-connector-mail-box-drawer-select-email v-if="navigationEmails.length" />
@@ -348,6 +356,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           @loading="scheduledLoading = $event" />
         <email-connector-mail-box-suggestions-list
           v-else-if="suggestionsView"
+          :select-mode="selectMode"
+          :selected-emails="selectedEmails"
           @loading="suggestionsLoading = $event" />
         <template v-else>
           <template v-if="hasEmails">
@@ -384,7 +394,7 @@ import emailDragMixin from '../../js/EmailConnectorMailBoxEmailDragMixin.js';
 import columnWidthsMixin, { DEFAULT_LIST_WIDTH_PX } from '../../js/EmailConnectorMailBoxColumnWidths.js';
 import advancedSearchMixin from '../../js/EmailConnectorMailBoxAdvancedSearchMixin.js';
 import { listedRowMatches } from '../../js/EmailConnectorMailBoxSearchCriteria.js';
-import { refreshWaitingSuggestions, waitingSuggestionTotal } from '../../js/EmailConnectorMailFilters.js';
+import { refreshWaitingSuggestions, waitingSuggestionMails, waitingSuggestionTotal } from '../../js/EmailConnectorMailFilters.js';
 
 // The drawer's width in its narrow layout: exo-drawer's own default, which is also the
 // full-screen list's default width.
@@ -1295,7 +1305,8 @@ export default {
     },
     /**
      * Whether the Suggestions view is listed (EXO-90851): its own list replaces the
-     * folder's, with no chips, search, selection or drag, as the Scheduled view's does.
+     * folder's, with no chips or search, as the Scheduled view's does; its rows are the
+     * folder list's, selected and dragged as they are there (EXO-90871).
      *
      * @returns {Boolean} true on the Suggestions view
      */
@@ -1392,6 +1403,20 @@ export default {
      */
     navigationEmails() {
       return this.searchActive ? this.mergedSearchResults : this.emails;
+    },
+    /**
+     * The rows the list on screen holds, for the bulk actions bar and the selection's
+     * placeholder, which read a selected row's folder and kind off them (EXO-90871): a
+     * search's hits, the Suggestions view's mails, the folder's rows otherwise -- the
+     * three lists select their rows alike, by folder and UID.
+     *
+     * @returns {Array} the listed rows
+     */
+    listedEmails() {
+      if (this.searchActive) {
+        return this.mergedSearchResults;
+      }
+      return this.suggestionsView ? waitingSuggestionMails() : this.emails;
     },
     /**
      * Whether the drawer is open, for listNavigationMixin: the arrow keys are listened
@@ -2148,6 +2173,12 @@ export default {
      */
     clearSearch() {
       window.clearTimeout(this.searchDebounceTimer);
+      // A selection made among the hits does not carry over to the folder's list, as
+      // one made in the list does not carry into a search (runSearch): the two do not
+      // hold the same rows (EXO-90871).
+      if (this.searchActive) {
+        this.cancelSelectMode();
+      }
       // Invalidate any in-flight server answer.
       this.searchRequestId++;
       this.searchTerm = '';
@@ -2471,11 +2502,23 @@ export default {
           });
       this.byOwnFolder(emailIdsToUpdate, folder).forEach(([ownFolder, ids]) => pushReadStatus(ids, ownFolder));
       if (unlisted.length) {
-        this.searchServerResults
-          .filter(result => unlisted.includes(result.mailRemoteId) && (result.folder || 'INBOX') === folder)
-          .forEach(result => this.$set(result, 'read', read));
+        this.searchHitsIn(folder, new Set(unlisted)).forEach(result => this.$set(result, 'read', read));
         pushReadStatus(unlisted, folder);
       }
+    },
+    /**
+     * The search's hits among the given messages of one folder, as the server and eXo's
+     * copy answered them (EXO-90838) -- the rows a star or a read status set on a hit is
+     * stamped on, so the hit shows it before the next search answer. The instant matches
+     * are not among them: they are read off the listed rows, stamped on their own.
+     *
+     * @param {String} folder the folder the UIDs are numbered in
+     * @param {Set<Number>} ids the UIDs
+     * @returns {Array} the hits
+     */
+    searchHitsIn(folder, ids) {
+      return [...this.searchServerResults, ...this.searchLocalResults]
+        .filter(result => (result.folder || 'INBOX') === folder && ids.has(result.mailRemoteId));
     },
     /**
      * Moves a folder's unread count by one message read or unread here, until the next
@@ -2792,12 +2835,9 @@ export default {
       });
       // A server hit is a snapshot of the FLAGS as they were when the search ran, so
       // the toggled rows still have to be stamped even though hits now carry the
-      // flag. That folder's hits only: UIDs are per-folder.
-      this.searchServerResults.forEach(result => {
-        if ((result.folder || 'INBOX') === folder && ids.has(result.mailRemoteId)) {
-          this.$set(result, 'starred', favorite);
-        }
-      });
+      // flag -- and so is a hit of eXo's copy (EXO-90838), whose star the row offers
+      // too (EXO-90871). That folder's hits only: UIDs are per-folder.
+      this.searchHitsIn(folder, ids).forEach(result => this.$set(result, 'starred', favorite));
       // And remember it, so a search answer still in flight — which left before the
       // push and therefore reports the old flag — cannot undo the stamp when it lands.
       // While the push is unacknowledged the entry is immune from pruning whatever
