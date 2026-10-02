@@ -117,6 +117,12 @@ public class EmailConnectorService {
   /** Administration-wide kill switch of the copy into a shared mailbox owner's Sent (EXO-90551). */
   public static final String        SHARED_MAILBOX_SENT_COPY_ENABLED_KEY         = "sharedMailboxSentCopyEnabled";
 
+  /** Setting key of the administration-wide switch of the sender brand logos (EXO-90893). */
+  public static final String        SENDER_LOGOS_ENABLED_KEY                     = "senderLogosEnabled";
+
+  /** The JVM property the sender brand logo switch falls back to, true by default. */
+  public static final String        SENDER_LOGOS_ENABLED_PROPERTY                = "email.connector.senderLogos.enabled";
+
   private static final int          MIN_EMAIL_BOX_CACHE_SIZE                     = 1;
 
   private static final int          MAX_EMAIL_BOX_CACHE_SIZE                     = 5000;
@@ -680,6 +686,38 @@ public class EmailConnectorService {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNC_SETTINGS_MESSAGE, username));
     }
     settingService.set(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, SHARED_MAILBOX_SENT_COPY_ENABLED_KEY, SettingValue.create(String.valueOf(enabled)));
+  }
+
+  /**
+   * Whether the reader shows a company sender's brand logo, administration-wide
+   * (EXO-90893): the logo its domain publishes (BIMI), else its site's icon, both
+   * fetched by the server from the internet. Off, nothing is fetched and senders keep
+   * their initials: the switch of a deployment with no outbound calls. Falls back to
+   * the {@value #SENDER_LOGOS_ENABLED_PROPERTY} JVM property (default {@code true}).
+   *
+   * @return true when brand logos are shown
+   */
+  public boolean isSenderLogosEnabled() {
+    SettingValue<?> settingValue = settingService.get(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, SENDER_LOGOS_ENABLED_KEY);
+    if (settingValue != null && settingValue.getValue() != null) {
+      return Boolean.parseBoolean(settingValue.getValue().toString());
+    }
+    return Boolean.parseBoolean(System.getProperty(SENDER_LOGOS_ENABLED_PROPERTY, "true"));
+  }
+
+  /**
+   * Save the administration-wide switch of the sender brand logos (EXO-90893).
+   * Administrators only.
+   *
+   * @param enabled whether brand logos should be shown
+   * @param username user updating the switch
+   * @throws IllegalAccessException if the user is not allowed to update it
+   */
+  public void saveSenderLogosEnabled(boolean enabled, String username) throws IllegalAccessException {
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNC_SETTINGS_MESSAGE, username));
+    }
+    settingService.set(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, SENDER_LOGOS_ENABLED_KEY, SettingValue.create(String.valueOf(enabled)));
   }
 
   /**

@@ -2502,7 +2502,8 @@ public class EmailBoxStorage {
                                                          // The draft's mailbox and name, set by name below.
                                                          null,
                                                          null,
-                                                         // The authentication verdict, set by name below.
+                                                         // The authentication verdicts, set by name below.
+                                                         null,
                                                          null);
       emailBoxEntity.setReadReceiptRequested(email.isReadReceiptRequested());
       emailBoxEntity.setReadReceiptTo(email.getReadReceiptTo());
@@ -2514,6 +2515,7 @@ public class EmailBoxStorage {
       // And the name it is to go out in (EXO-90584), which every later save rewrites.
       emailBoxEntity.setDraftSendMode(email.getSendMode());
       emailBoxEntity.setAuthFailure(email.getContent() != null ? email.getContent().getAuthFailure() : null);
+      emailBoxEntity.setDmarcPass(email.getContent() != null ? email.getContent().isDmarcPassed() : null);
       List<EmailAttachmentEntity> attachments = email.getContent() != null
           && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
             return toEmailAttachmentEntity(attachment, emailBoxEntity);
@@ -2623,6 +2625,7 @@ public class EmailBoxStorage {
       EmailContent content = new EmailContent(listedWithoutBody ? null : body, excerpt, attachments);
       content.setHtml(isHtmlBody(emailBoxEntity));
       content.setAuthFailure(emailBoxEntity.getAuthFailure());
+      content.setDmarcPassed(Boolean.TRUE.equals(emailBoxEntity.getDmarcPass()));
       String[] emailSenderParts = splitStoredPerson(emailBoxEntity.getSender());
       InternetAddress emailSenderAddress = new InternetAddress(emailSenderParts[1], emailSenderParts[0]);
       String linkedObjectId = String.valueOf(emailBoxEntity.getId());
