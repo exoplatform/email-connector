@@ -999,6 +999,21 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<Long> mailRemoteIds);
 
   /**
+   * Every message of one user's folder that eXo holds with its IMAP UID, as (UID, id)
+   * pairs: what a server search narrowed to categories starts from (EXO-90888), the
+   * categories being eXo's links on these rows. A draft not yet on the server has no
+   * UID and is left out. A projection: no body, recipient or attachment is read.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @return {UID, id} pairs of the folder's cached messages
+   */
+  @Query("SELECT email.mailRemoteId, email.id FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId IS NOT NULL")
+  List<Object[]> findCachedIdsByUserIdAndFolder(@Param("userId")
+  String userId, @Param("folder")
+  String folder);
+
+  /**
    * The identity of a conversation's real mail, newest first — what a stored summary
    * is checked against to decide whether it still describes the conversation.
    * <p>

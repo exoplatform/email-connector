@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.model;
 
 import java.time.LocalDate;
+import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
 
@@ -68,6 +69,11 @@ public class EmailSearchCriteria {
   // emailConnector.search.invalidDate, once the caller's access to the mailbox is checked.
   private boolean   invalidDay;
 
+  // Only the messages eXo filed under one of these categories, a category taking its
+  // subcategories along (EXO-90888): ids of the mailbox's own categories, an id of any
+  // other category refused with emailConnector.search.invalidCategory.
+  private List<Long> categoryIds;
+
   /**
    * Whether at least one criterion is set: a search with none would list the whole
    * folder, which is what the folder's own list is for.
@@ -77,6 +83,6 @@ public class EmailSearchCriteria {
   public boolean hasCriterion() {
     return StringUtils.isNotBlank(query) || StringUtils.isNotBlank(from) || StringUtils.isNotBlank(to)
         || StringUtils.isNotBlank(words) || unreadOnly || favoritesOnly || attachmentsOnly || sinceDays != null
-        || after != null || before != null;
+        || after != null || before != null || categoryIds != null && !categoryIds.isEmpty();
   }
 }
