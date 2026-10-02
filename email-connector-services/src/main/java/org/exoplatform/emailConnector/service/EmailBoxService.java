@@ -7089,19 +7089,7 @@ public class EmailBoxService {
    * @return the summaries, by thread id
    */
   private Map<String, ThreadSummary> threadSummariesFor(String username, String folder, String userEmail) {
-    return threadSummariesIn(username, emailDelegationService.delegationOf(username, folder), userEmail);
-  }
-
-  /**
-   * {@link #threadSummariesFor}, the mailbox already known: a shared mailbox's
-   * conversations counted over its own folders, the user's own over theirs.
-   *
-   * @param username the reader
-   * @param listed the share the mailbox is, null for the user's own
-   * @param userEmail the reader's own address
-   * @return the summaries, by thread id
-   */
-  private Map<String, ThreadSummary> threadSummariesIn(String username, EmailDelegation listed, String userEmail) {
+    EmailDelegation listed = emailDelegationService.delegationOf(username, folder);
     if (listed != null) {
       return emailBoxStorage.getMailboxThreadSummaries(username, emailDelegationService.getMailboxFolderKeys(username, listed.getId()));
     }
@@ -7118,13 +7106,13 @@ public class EmailBoxService {
    * the folder list counts them, within the mailbox the mail belongs to.
    * <p>
    * Read in one batch, the folder list's own mapping of the rows ({@code
-   * EmailBoxStorage#getListedEmailsByIds}), and one conversation count per mailbox the
-   * mails belong to: never a read per mail, never the mail server. A mail is given them
-   * only when its local id names one of the user's own cached rows ({@code userId}-scoped
-   * read), filed in the folder the mail was listed from, and that folder is one the user
-   * may list: neither Trash, Spam nor All Mail, and in a mailbox shared with them a
-   * folder its search may read while the share is accepted. Any other mail -- not in the
-   * local copy, or out of those bounds -- is left as it came.
+   * EmailBoxStorage#getListedEmailsByIds}), and one count per mailbox the mails belong
+   * to, over their conversations only: never a read per mail, never the mail server. A
+   * mail is given them only when its local id names one of the user's own cached rows
+   * ({@code userId}-scoped read), filed in the folder the mail was listed from, and that
+   * folder is one the user may list: neither Trash, Spam nor All Mail, and in a mailbox
+   * shared with them a folder its search may read while the share is accepted. Any other
+   * mail -- not in the local copy, or out of those bounds -- is left as it came.
    *
    * @param username the user the list is shown to
    * @param rows the mails, given those fields in place
@@ -7141,17 +7129,24 @@ public class EmailBoxService {
     if (listed.isEmpty()) {
       return;
     }
+    // Per folder, once: its share (null for the user's own, kept as such) and whether
+    // its rows may be listed so.
     Map<String, EmailDelegation> shareOfFolder = new HashMap<>();
     Map<String, Boolean> listableFolder = new HashMap<>();
-    // By the share's id; the user's own mailbox under the null key.
-    Map<Long, Map<String, ThreadSummary>> summariesByMailbox = new HashMap<>();
+    // The conversations to count, by the share's id; the user's own mailbox under the null key.
+    Map<Long, EmailDelegation> mailboxes = new HashMap<>();
+    Map<Long, Set<String>> threadIdsByMailbox = new HashMap<>();
+    List<ListedMailRow> given = new ArrayList<>();
     for (ListedMailRow row : rows) {
       Email email = row.getEmailId() == null ? null : listed.get(row.getEmailId());
       String folder = row.getFolder();
       if (email == null || StringUtils.isBlank(folder) || !folder.equals(email.getFolder())) {
         continue;
       }
-      EmailDelegation share = shareOfFolder.computeIfAbsent(folder, key -> emailDelegationService.delegationOf(username, key));
+      if (!shareOfFolder.containsKey(folder)) {
+        shareOfFolder.put(folder, emailDelegationService.delegationOf(username, folder));
+      }
+      EmailDelegation share = shareOfFolder.get(folder);
       if (!listableFolder.computeIfAbsent(folder, key -> isListableFolder(username, key, share))) {
         continue;
       }
@@ -7159,16 +7154,49 @@ public class EmailBoxService {
       row.setContent(new EmailContent(null,
                                       content == null ? null : content.getExcerpt(),
                                       content == null ? null : content.getAttachments()));
+      given.add(row);
       if (StringUtils.isNotBlank(email.getThreadId())) {
-        ThreadSummary summary = summariesByMailbox.computeIfAbsent(share == null ? null : share.getId(),
-                                                                   key -> threadSummariesIn(username, share, ownAddress(username)))
-                                                  .get(email.getThreadId());
-        if (summary != null) {
-          row.setThreadCount(summary.messageCount());
-          row.setThreadHasDraft(summary.hasDraft());
-        }
+        Long mailbox = share == null ? null : share.getId();
+        mailboxes.put(mailbox, share);
+        threadIdsByMailbox.computeIfAbsent(mailbox, key -> new HashSet<>()).add(email.getThreadId());
       }
     }
+    Map<Long, Map<String, ThreadSummary>> summariesByMailbox = new HashMap<>();
+    threadIdsByMailbox.forEach((mailbox, threadIds) -> summariesByMailbox.put(mailbox,
+                                                                              listedThreadSummaries(username,
+                                                                                                    mailboxes.get(mailbox),
+                                                                                                    threadIds)));
+    for (ListedMailRow row : given) {
+      EmailDelegation share = shareOfFolder.get(row.getFolder());
+      Map<String, ThreadSummary> summaries = summariesByMailbox.get(share == null ? null : share.getId());
+      String threadId = listed.get(row.getEmailId()).getThreadId();
+      ThreadSummary summary = summaries == null || StringUtils.isBlank(threadId) ? null : summaries.get(threadId);
+      if (summary != null) {
+        row.setThreadCount(summary.messageCount());
+        row.setThreadHasDraft(summary.hasDraft());
+      }
+    }
+  }
+
+  /**
+   * Some conversations of a mailbox, counted as {@link #threadSummariesFor} counts the
+   * folder list's: a shared mailbox's over its own folders, the user's own over theirs,
+   * the copies a shared mailbox holds left out. Without the draft's participants, which
+   * only a draft row reads, and a listed mail of a search or of the Suggestions view is
+   * never one.
+   *
+   * @param username the reader
+   * @param share the share the mailbox is, null for the user's own
+   * @param threadIds the conversations to count, not empty
+   * @return their summaries, by thread id
+   */
+  private Map<String, ThreadSummary> listedThreadSummaries(String username, EmailDelegation share, Set<String> threadIds) {
+    if (share != null) {
+      return emailBoxStorage.getMailboxThreadSummariesOf(username,
+                                                         emailDelegationService.getMailboxFolderKeys(username, share.getId()),
+                                                         threadIds);
+    }
+    return emailBoxStorage.getThreadSummariesOf(username, threadIds, emailDelegationService.getDelegatedFolderKeys(username));
   }
 
   /**
@@ -7194,18 +7222,6 @@ public class EmailBoxService {
     } catch (DelegationRevokedException e) {
       return false;
     }
-  }
-
-  /**
-   * The user's own address, as their mailbox setting gives it: what a conversation's
-   * participants leave out.
-   *
-   * @param username the mailbox owner
-   * @return the address, null when the user has no setting
-   */
-  private String ownAddress(String username) {
-    UserEmailSetting setting = userEmailSettingService.getUserEmailSetting(username);
-    return setting == null ? null : setting.getEmailAddress();
   }
 
   /**
