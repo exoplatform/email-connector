@@ -153,10 +153,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </span>
     </v-list-item>
     <!-- Select mode: multi-select rows to read/archive/delete in bulk. Not in the
-         Scheduled view, whose mails are acted on one at a time (EXO-90434), nor in the
-         Suggestions view, whose mails are decided in their own panel (EXO-90851). -->
+         Scheduled view, whose mails are acted on one at a time (EXO-90434). The
+         Suggestions view lists mails, and they are selected as any list's (EXO-90891). -->
     <v-list-item
-      v-if="!mailboxView"
+      v-if="!scheduledView"
       class="height-auto"
       @click="enterSelectMode()">
       <v-sheet
@@ -247,6 +247,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { buildFolderTree, readCollapsedFolders, toggleCollapsedFolder, visibleFolderRows } from '../../js/EmailConnectorFolderTree.js';
+import { isScheduledView } from '../../js/EmailConnectorMailBoxService.js';
 import { OPEN_IMPORT_DRAWER_EVENT, canExportFolder, canImportInto, downloadFolderMbox, exportErrorKey } from '../../js/EmailConnectorMailTransfer.js';
 
 // The folder list scrolls inside its own pane once it is longer than seven rows,
@@ -378,13 +379,13 @@ export default {
       });
     },
     /**
-     * Whether one of the mailbox's views is listed -- Scheduled, Suggestions --: no
-     * multi-selection there.
+     * Whether the Scheduled view is listed: no multi-selection there, its mails are
+     * acted on one at a time.
      *
-     * @returns {Boolean} true on a view
+     * @returns {Boolean} true on the Scheduled view
      */
-    mailboxView() {
-      return this.$emailConnectorMailBoxService.isMailboxView(this.currentFolder);
+    scheduledView() {
+      return isScheduledView(this.currentFolder);
     },
     /**
      * Whether the listed folder can be exported whole (EXO-90845).
