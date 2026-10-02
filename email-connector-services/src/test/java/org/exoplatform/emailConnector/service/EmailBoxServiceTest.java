@@ -10836,6 +10836,48 @@ public class EmailBoxServiceTest {
     assertEquals(EmailSecurityUtils.AUTH_DMARC, created.getValue().getContent().getAuthFailure());
   }
 
+  /**
+   * EXO-90893: whether the message passed DMARC for its From domain is read at sync,
+   * from the top Authentication-Results header only, and kept with the row; a pass
+   * that only a lower header claims counts for nothing.
+   */
+  @Test
+  @SneakyThrows
+  void synchronizePersistsTheDmarcPass() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    Folder inbox = mockInboxForSync(userEmailSetting, 1);
+    MimeMessage message = (MimeMessage) inbox.getMessages(1, 1)[0];
+    lenient().when(message.getFrom()).thenReturn(new InternetAddress[] { new InternetAddress("news@brand.example") });
+    lenient().when(message.getHeader("Authentication-Results"))
+             .thenReturn(new String[] { "mx.example.com; spf=pass; dkim=pass; dmarc=pass header.from=brand.example" });
+
+    emailBoxService.synchronize(TEST_USER);
+
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    assertTrue(created.getValue().getContent().isDmarcPassed());
+  }
+
+  /**
+   * EXO-90893: a pass only a header below the receiving server's claims is no pass.
+   */
+  @Test
+  @SneakyThrows
+  void synchronizeIgnoresALowerDmarcPass() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    Folder inbox = mockInboxForSync(userEmailSetting, 1);
+    MimeMessage message = (MimeMessage) inbox.getMessages(1, 1)[0];
+    lenient().when(message.getFrom()).thenReturn(new InternetAddress[] { new InternetAddress("news@brand.example") });
+    lenient().when(message.getHeader("Authentication-Results"))
+             .thenReturn(new String[] { "mx.example.com; spf=pass", "forged.example; dmarc=pass header.from=brand.example" });
+
+    emailBoxService.synchronize(TEST_USER);
+
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    assertFalse(created.getValue().getContent().isDmarcPassed());
+  }
+
   @Test
   @SneakyThrows
   void aBackstopOnlyFlushesTheWindowItWasArmedFor() {
