@@ -166,23 +166,41 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <template v-if="criteria.attachment">
           <!-- What the attachment must be (EXO-90910): one of some kinds, several at once,
                and a text its name contains. eXo tells them from the attachments it holds,
-               so only mail it holds can match. -->
+               so only mail it holds can match. The kinds are laid out as the documents
+               app's "Type of file" filter lays them out (DocumentAdvancedFilterDrawer.vue):
+               one checkbox per kind, its coloured file icon, its name, in Drive's order. -->
           <div class="mt-4 mb-2">{{ $t('emailConnector.mailBox.search.advanced.attachmentType') }}</div>
-          <v-select
-            ref="attachmentTypeSelect"
-            v-model="criteria.attachmentTypes"
-            :items="attachmentTypeOptions"
-            :menu-props="{ bottom: true, offsetY: true }"
-            :placeholder="$t('emailConnector.mailBox.search.advanced.attachmentType.none')"
+          <v-list
             :aria-label="$t('emailConnector.mailBox.search.advanced.attachmentType')"
-            class="pa-0"
-            multiple
-            small-chips
-            deletable-chips
-            dense
-            outlined
-            hide-details
-            @blur="$refs.attachmentTypeSelect.blur()" />
+            class="py-0"
+            dense>
+            <v-list-item
+              v-for="option in attachmentTypeOptions"
+              :key="option.value"
+              class="ps-2">
+              <v-list-item-action class="me-2 ms-0 my-0">
+                <v-checkbox
+                  v-model="criteria.attachmentTypes"
+                  :value="option.value"
+                  :aria-label="option.text"
+                  :ripple="false"
+                  class="ma-auto"
+                  dense
+                  hide-details />
+              </v-list-item-action>
+              <v-list-item-content>
+                <v-row class="ma-auto pa-0">
+                  <v-icon
+                    :size="16"
+                    :color="option.icon.color"
+                    class="my-auto">
+                    {{ option.icon.class }}
+                  </v-icon>
+                  <div class="px-2 my-auto pt-1">{{ option.text }}</div>
+                </v-row>
+              </v-list-item-content>
+            </v-list-item>
+          </v-list>
           <div class="mt-4 mb-2">{{ $t('emailConnector.mailBox.search.advanced.attachmentName') }}</div>
           <v-text-field
             v-model="criteria.attachmentName"
@@ -218,7 +236,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { OPEN_ADVANCED_SEARCH_EVENT, APPLY_ADVANCED_SEARCH_EVENT } from '../../js/EmailConnectorMailBoxAdvancedSearchMixin.js';
-import { ATTACHMENT_NAME_MAX_LENGTH, ATTACHMENT_TYPES, emptySearchCriteria, nextSearchDay } from '../../js/EmailConnectorMailBoxSearchCriteria.js';
+import { ATTACHMENT_NAME_MAX_LENGTH, ATTACHMENT_TYPES, ATTACHMENT_TYPE_ICON_MIME_TYPES, emptySearchCriteria, nextSearchDay } from '../../js/EmailConnectorMailBoxSearchCriteria.js';
 
 // The longest text a field takes: a criterion, not a document.
 const MAX_TEXT_LENGTH = 200;
@@ -239,12 +257,17 @@ export default {
   }),
   computed: {
     /**
-     * The kinds of attachment offered (EXO-90910), each by its translated name.
+     * The kinds of attachment offered (EXO-90910), in the documents app's order, each by
+     * its translated name and its file-type icon.
      *
-     * @returns {Array} [{value, text}]
+     * @returns {Array} [{value, text, icon: {class, color}}]
      */
     attachmentTypeOptions() {
-      return ATTACHMENT_TYPES.map(type => ({ value: type, text: this.$t(`emailConnector.mailBox.search.advanced.attachmentType.${type}`) }));
+      return ATTACHMENT_TYPES.map(type => ({
+        value: type,
+        text: this.$t(`emailConnector.mailBox.search.advanced.attachmentType.${type}`),
+        icon: this.$emailConnectorMailBoxService.getAttachmentIcon(ATTACHMENT_TYPE_ICON_MIME_TYPES[type]),
+      }));
     },
     /**
      * The latest first day: the day before the excluded last one.
