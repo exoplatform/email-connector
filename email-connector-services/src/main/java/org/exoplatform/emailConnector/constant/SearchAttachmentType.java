@@ -28,7 +28,7 @@ import org.apache.commons.lang3.StringUtils;
  * of the kind's, or when its name ends with one of the kind's extensions: a mail client
  * often sends an office file as {@code application/octet-stream}, which only its name
  * then tells. The webapp's chips name these keys (EmailConnectorMailBoxSearchCriteria.js,
- * ATTACHMENT_TYPES), and only these.
+ * ATTACHMENT_TYPES, in the documents app's "Type of file" order), and only these.
  */
 public enum SearchAttachmentType {
 
@@ -64,6 +64,8 @@ public enum SearchAttachmentType {
                Set.of("ppt", "pptx", "pptm", "pps", "ppsx", "pot", "potx", "odp", "otp")),
 
   IMAGE(Set.of(), Set.of("image/"), Set.of("jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "tif", "tiff", "heic")),
+
+  VIDEO(Set.of(), Set.of("video/"), Set.of("mp4", "m4v", "mov", "avi", "mkv", "webm", "wmv", "mpg", "mpeg")),
 
   ARCHIVE(Set.of("application/zip",
                  "application/x-zip-compressed",
