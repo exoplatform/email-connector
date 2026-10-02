@@ -1929,23 +1929,31 @@ export default {
         }
       } catch (error) {
         // An opening superseded meanwhile is not the user's any more: no toast for it.
-        if (request !== this.emailRequest) {
-          return;
+        if (request === this.emailRequest) {
+          this.alertOutsideOpeningFailed(error);
         }
-        // A mailbox held by a running synchronization is a "one moment", not a
-        // failure.
-        const syncing = error?.status === 409;
-        const messageKey = syncing && 'emailConnector.mailBox.search.syncInProgress'
-          || 'emailConnector.mailBox.search.openError';
-        document.dispatchEvent(new CustomEvent('alert-message', {detail: {
-          alertType: syncing && 'warning' || 'error',
-          alertMessage: this.$t(messageKey),
-        }}));
       } finally {
         if (request === this.emailRequest) {
           this.releaseEmailRequest();
         }
       }
+    },
+    /**
+     * Says why a message picked outside the mailbox could not be opened
+     * (openMailFromOutside): a mailbox held by a running synchronization is a "one
+     * moment", not a failure.
+     *
+     * @param {Object} error the failure, its status 409 for a running synchronization
+     * @returns {void}
+     */
+    alertOutsideOpeningFailed(error) {
+      const syncing = error?.status === 409;
+      const messageKey = syncing && 'emailConnector.mailBox.search.syncInProgress'
+        || 'emailConnector.mailBox.search.openError';
+      document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+        alertType: syncing && 'warning' || 'error',
+        alertMessage: this.$t(messageKey),
+      }}));
     },
     /**
      * Opens a mail of the Suggestions view (EXO-90851) as a mail picked outside the list
