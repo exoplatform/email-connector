@@ -347,7 +347,8 @@ public final class SvgLogoSanitizer {
   /**
    * Whether a style sheet or a {@code style} attribute stays: no {@code @import}, no
    * backslash escape (which could spell any of what follows), no {@code expression(},
-   * no script scheme, and no {@code url(...)} but to a fragment of the document.
+   * no script scheme, no {@code image-set(} (which takes a bare string as a URL), and
+   * no {@code url(...)} but to a fragment of the document.
    *
    * @param style the style text
    * @return true when it stays
@@ -358,7 +359,7 @@ public final class SvgLogoSanitizer {
     }
     String lower = style.toLowerCase(Locale.ROOT);
     return !lower.contains("@import") && !lower.contains("\\") && !lower.contains("expression(") && !lower.contains("script:")
-        && hasOnlyLocalReferences(style);
+        && !lower.contains("image-set(") && hasOnlyLocalReferences(style);
   }
 
   /**
