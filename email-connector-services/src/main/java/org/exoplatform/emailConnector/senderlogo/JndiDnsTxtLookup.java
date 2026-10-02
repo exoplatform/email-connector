@@ -40,9 +40,9 @@ import org.exoplatform.emailConnector.utils.SenderLogoUtils;
  * <p>
  * Bounded: one second for the first try and two for its one retry, per name server
  * the host is configured with, and at most {@link #MAX_RECORDS} records read. It runs
- * on the sender logo's background pool, never on a request thread. Only a plain DNS name is ever asked: JNDI picks a provider from a
- * name's URL scheme, so a name holding a {@code :} could reach another provider, and
- * none can get here.
+ * on the sender logo's background pool, never on a request thread. Only a plain DNS
+ * name is ever asked: JNDI picks a provider from a name's URL scheme, so a name holding
+ * a {@code :} could reach another provider, and none can get here.
  */
 @Component
 public class JndiDnsTxtLookup implements DnsTxtLookup {
