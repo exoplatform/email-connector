@@ -1553,7 +1553,9 @@ export default {
     async categoryViewId(id) {
       this.cancelSelectMode();
       const token = ++this.categoryExpansionToken;
-      const expanded = id ? await this.$emailConnectorMailBoxService.getSubcategoryIds(id) : [];
+      // An expansion that fails narrows to the category itself, as the column's counts
+      // do (readCategorySubtrees): the view then lists, and opens its first mail.
+      const expanded = id ? await Promise.resolve(this.$emailConnectorMailBoxService.getSubcategoryIds(id)).catch(() => [id]) : [];
       if (token === this.categoryExpansionToken) {
         this.selectedCategoryIds = expanded;
         // In full screen a view is navigated to like a folder: when the mail on screen
@@ -2866,7 +2868,7 @@ export default {
      * lists of their own, which it does not narrow, so from either the category opens
      * on the inbox, as it does when picked there (EXO-90885). Nor does it narrow a
      * search's hits, which do not all say their categories: a search ends with the
-     * pick, so the list shown is the category's.
+     * pick, so the list shown is the category's -- opened, even when it was the one lit.
      *
      * @param {Number} categoryId the category id
      * @returns {void}
@@ -2876,11 +2878,14 @@ export default {
       if (isMailboxView(this.currentFolder)) {
         this.onSwitchFolder('INBOX');
       }
-      if (this.searchActive) {
+      // A pick that ends a search opens the category, the one lit included: the
+      // search's hits were on screen, not that category's list.
+      const endedSearch = this.searchActive;
+      if (endedSearch) {
         this.clearSearch();
         this.resetSearchField();
       }
-      this.categoryViewId = this.categoryViewId === categoryId ? null : categoryId;
+      this.categoryViewId = !endedSearch && this.categoryViewId === categoryId ? null : categoryId;
     },
     /**
      * Clears every filter narrowing the list -- the category view, the Unread and
