@@ -138,7 +138,6 @@ public class SenderLogoService {
 
   private final ExecutorService warmPool      = warmPool();
 
-
   private final int             epoch         = new SecureRandom().nextInt();
 
   private final AtomicLong      resolutions   = new AtomicLong();
