@@ -284,6 +284,7 @@ public class EmailBoxRestTest {
                                                    .param("unread", "true")
                                                    .param("favorites", "true")
                                                    .param("sinceDays", "30")
+                                                   .param("categoryIds", "11", "12")
                                                    .param("folder", "SENT")
                                                    .param("limit", "7")
                                                    .with(testSimpleUser()))
@@ -291,6 +292,7 @@ public class EmailBoxRestTest {
 
     ArgumentCaptor<EmailSearchCriteria> sent = ArgumentCaptor.forClass(EmailSearchCriteria.class);
     verify(emailBoxService).searchEmails(eq(SIMPLE_USER), sent.capture(), eq("SENT"), eq(7));
+    assertEquals(List.of(11L, 12L), sent.getValue().getCategoryIds(), "EXO-90888 -- the categories, as sent");
     EmailSearchCriteria criteria = sent.getValue();
     assertEquals("report", criteria.getQuery());
     assertEquals("carol", criteria.getFrom());
@@ -341,6 +343,7 @@ public class EmailBoxRestTest {
                                                          .param("unread", "true")
                                                          .param("favorites", "true")
                                                          .param("sinceDays", "30")
+                                                         .param("categoryIds", "11,12")
                                                          .param("folder", "SENT")
                                                          .param("limit", "7")
                                                          .with(testSimpleUser()))
@@ -348,6 +351,7 @@ public class EmailBoxRestTest {
 
     ArgumentCaptor<EmailSearchCriteria> sent = ArgumentCaptor.forClass(EmailSearchCriteria.class);
     verify(emailBoxService).searchCachedFolder(eq(SIMPLE_USER), sent.capture(), eq("SENT"), eq(7));
+    assertEquals(List.of(11L, 12L), sent.getValue().getCategoryIds(), "EXO-90888 -- the categories, as the drawer sends them");
     EmailSearchCriteria criteria = sent.getValue();
     assertEquals("report", criteria.getQuery());
     assertEquals("carol", criteria.getFrom());
