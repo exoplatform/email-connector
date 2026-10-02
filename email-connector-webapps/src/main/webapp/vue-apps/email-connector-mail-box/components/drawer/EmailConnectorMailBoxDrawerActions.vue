@@ -200,6 +200,9 @@ const TILE_MIN_WIDTH_PX = 92;
 
 const TILE_MAX_WIDTH_PX = 120;
 
+// The space between two tiles.
+const TILE_GAP_PX = 4;
+
 export default {
   props: {
     emails: {
@@ -527,17 +530,18 @@ export default {
      */
     tilesStyle() {
       const count = this.tiles.length || 1;
+      const fits = columns => !this.tilesWidth || this.tilesWidth >= columns * TILE_MIN_WIDTH_PX + (columns - 1) * TILE_GAP_PX;
       let columns = count;
-      if (this.tilesWidth && this.tilesWidth < count * TILE_MIN_WIDTH_PX) {
+      if (!fits(columns)) {
         columns = Math.ceil(count / 2);
-        if (this.tilesWidth < columns * TILE_MIN_WIDTH_PX) {
+        if (!fits(columns)) {
           columns = Math.ceil(count / 3);
         }
       }
       return {
         display: 'grid',
         gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-        gap: '4px',
+        gap: `${TILE_GAP_PX}px`,
         maxWidth: `${count * TILE_MAX_WIDTH_PX}px`,
       };
     },
@@ -602,19 +606,40 @@ export default {
   created() {
     this.$root.$on('open-webmail', this.openWebmail);
   },
+  watch: {
+    /**
+     * Follows the tiles each time they appear: a selection mode entered with nothing
+     * selected yet, or a selection emptied and filled again, renders them anew.
+     *
+     * @returns {void}
+     */
+    hasSelectedEmails() {
+      this.$nextTick(() => this.observeTiles());
+    },
+  },
   mounted() {
-    // The selection tiles follow the pane's width, not the window's: the pane is a
-    // drawer or a column of the full-screen mailbox.
-    const tiles = this.$refs.tiles;
-    if (tiles && typeof window.ResizeObserver === 'function') {
-      this.tilesObserver = new window.ResizeObserver(entries => this.tilesWidth = entries[0]?.contentRect?.width || 0);
-      this.tilesObserver.observe(tiles.parentElement || tiles);
-    }
+    this.observeTiles();
   },
   beforeDestroy() {
     this.tilesObserver?.disconnect();
   },
   methods: {
+    /**
+     * Measures the pane the selection tiles are laid out in -- its width, not the
+     * window's: the pane is a drawer or a column of the full-screen mailbox. The previous
+     * observation, of tiles no longer rendered, is dropped first.
+     *
+     * @returns {void}
+     */
+    observeTiles() {
+      this.tilesObserver?.disconnect();
+      this.tilesObserver = null;
+      const tiles = this.$refs.tiles;
+      if (tiles && typeof window.ResizeObserver === 'function') {
+        this.tilesObserver = new window.ResizeObserver(entries => this.tilesWidth = entries[0]?.contentRect?.width || 0);
+        this.tilesObserver.observe(tiles.parentElement || tiles);
+      }
+    },
     /**
      * Whether a bulk read/unread is worth offering: at least one selected message
      * would actually change, and none of them is in a read-only folder.
