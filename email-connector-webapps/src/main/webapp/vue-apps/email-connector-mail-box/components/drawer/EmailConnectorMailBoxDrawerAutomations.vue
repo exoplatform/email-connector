@@ -37,7 +37,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          writes its inline actions (social ProfileSingleValuedProperty): a text v-btn has a
          height and padding of its own and sits lower than the line it follows. -->
     <!-- The header folds the whole panel: open by default while a suggestion waits for the
-         user, folded otherwise; the user's own choice, once made, is kept per browser. -->
+         user, folded otherwise; the user's own choice, once made, is kept per browser. A
+         mail opened from the Suggestions view shows it open while a suggestion waits,
+         whatever that choice (EXO-90851), until the user folds it there. -->
     <div :class="collapsed ? '' : 'mb-1'" class="d-flex align-center">
       <v-icon size="14" class="me-2 primary--text">fas fa-filter</v-icon>
       <span class="text-caption font-weight-bold primary--text">{{ $t('emailConnector.mailBox.automations.title') }}</span>
@@ -243,7 +245,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { FILTER_OUTCOME_EXTENSION, filtersMessage } from '../../../email-connector-user-setting/js/EmailConnectorFilters.js';
-import { isOwnMailboxMail } from '../../js/EmailConnectorMailFilters.js';
+import { isOwnMailboxMail, isSuggestionsViewListed } from '../../js/EmailConnectorMailFilters.js';
 
 /** The assistant statuses after which it runs again only when asked. */
 const TERMINAL = ['DONE', 'FAILED', 'SKIPPED_CAP', 'SKIPPED_SPAM', 'SKIPPED_DISABLED'];
@@ -296,6 +298,9 @@ export default {
     outcomeExtensions: [],
     // The user's own choice to fold the panel, as this browser remembers it: null until made.
     collapsedChoice: null,
+    // The choice made on this mail's panel, which rules it over everything else until
+    // another mail is shown: null until made.
+    panelChoice: null,
     // Which matches show their earlier runs' suggestions, by match id: none until opened.
     earlierOpen: {},
   }),
@@ -445,12 +450,20 @@ export default {
       return this.groups.reduce((count, group) => count + this.waitingOf(group), 0);
     },
     /**
-     * Whether the panel is folded: as the user chose it last in this browser, else folded
-     * unless a suggestion waits for the user.
+     * Whether the panel is folded: as the user chose it on this mail's panel; else open
+     * when the mail was opened from the Suggestions view with a suggestion waiting
+     * (EXO-90851), ready to approve or reject; else as the user chose it last in this
+     * browser, and failing that folded unless a suggestion waits for the user.
      *
      * @returns {Boolean} true when folded
      */
     collapsed() {
+      if (this.panelChoice !== null) {
+        return this.panelChoice;
+      }
+      if (this.waitingCount && isSuggestionsViewListed()) {
+        return false;
+      }
       return this.collapsedChoice === null ? !this.waitingCount : this.collapsedChoice;
     },
     /**
@@ -494,6 +507,7 @@ export default {
     },
     'email.id'() {
       this.groupsOpen = false;
+      this.panelChoice = null;
     },
   },
   created() {
@@ -515,12 +529,14 @@ export default {
       }
     },
     /**
-     * Folds or opens the panel, and keeps the choice in this browser when it can.
+     * Folds or opens the panel, and keeps the choice for this mail's panel, and in this
+     * browser when it can.
      *
      * @returns {void}
      */
     toggleCollapsed() {
       this.collapsedChoice = !this.collapsed;
+      this.panelChoice = this.collapsedChoice;
       try {
         window.localStorage.setItem(COLLAPSED_STORAGE_KEY, String(this.collapsedChoice));
       } catch (e) {
