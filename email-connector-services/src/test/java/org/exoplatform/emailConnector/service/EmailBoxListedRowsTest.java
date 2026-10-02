@@ -51,7 +51,6 @@ import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailWaitingSuggestionMail;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ThreadSummary;
-import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
@@ -77,8 +76,6 @@ import io.meeds.social.category.service.CategoryService;
 class EmailBoxListedRowsTest {
 
   private static final String       USER    = "john";
-
-  private static final String       ADDRESS = "john@acme.com";
 
   private static final String       SHARED  = "CUSTOM:8";
 
@@ -156,8 +153,7 @@ class EmailBoxListedRowsTest {
                                                                                          8L,
                                                                                          row(8L, MailFolder.SENT, "t2")));
     when(emailDelegationService.getDelegatedFolderKeys(USER)).thenReturn(List.of());
-    when(userEmailSettingService.getUserEmailSetting(USER)).thenReturn(setting());
-    when(emailBoxStorage.getThreadSummaries(USER, ADDRESS)).thenReturn(Map.of("t1",
+    when(emailBoxStorage.getThreadSummariesOf(USER, Set.of("t1", "t2"), List.of())).thenReturn(Map.of("t1",
                                                                               new ThreadSummary("t1", 3, true, List.of()),
                                                                               "t2",
                                                                               new ThreadSummary("t2", 2, false, List.of())));
@@ -175,7 +171,9 @@ class EmailBoxListedRowsTest {
     assertEquals(2, sent.getThreadCount());
     assertFalse(sent.getThreadHasDraft());
     verify(emailBoxStorage, times(1)).getListedEmailsByIds(anyString(), any());
-    verify(emailBoxStorage, times(1)).getThreadSummaries(USER, ADDRESS);
+    verify(emailBoxStorage, times(1)).getThreadSummariesOf(anyString(), any(), anyList());
+    verify(emailBoxStorage, never()).getThreadSummaries(anyString(), any());
+    verify(emailBoxStorage, never()).getThreadSummaries(anyString(), any(), anyList());
   }
 
   /**
@@ -191,8 +189,7 @@ class EmailBoxListedRowsTest {
                                                                                          8L,
                                                                                          row(8L, MailFolder.ARCHIVE, null)));
     when(emailDelegationService.getDelegatedFolderKeys(USER)).thenReturn(List.of(SHARED));
-    when(userEmailSettingService.getUserEmailSetting(USER)).thenReturn(setting());
-    when(emailBoxStorage.getThreadSummaries(USER, ADDRESS, List.of(SHARED))).thenReturn(Map.of("t1",
+    when(emailBoxStorage.getThreadSummariesOf(USER, Set.of("t1"), List.of(SHARED))).thenReturn(Map.of("t1",
                                                                                                new ThreadSummary("t1",
                                                                                                                  5,
                                                                                                                  false,
@@ -228,8 +225,7 @@ class EmailBoxListedRowsTest {
       assertNull(hit.getThreadCount());
       assertNull(hit.getThreadHasDraft());
     }
-    verify(emailBoxStorage, never()).getThreadSummaries(anyString(), any());
-    verify(emailBoxStorage, never()).getThreadSummaries(anyString(), any(), anyList());
+    verify(emailBoxStorage, never()).getThreadSummariesOf(anyString(), any(), anyList());
 
     emailBoxService.decorateListedRows(USER, List.of(hit(null, MailFolder.INBOX)));
     emailBoxService.decorateListedRows(" ", List.of(hit(7L, MailFolder.INBOX)));
@@ -271,8 +267,8 @@ class EmailBoxListedRowsTest {
       assertNull(hit.getContent(), hit.getFolder());
       assertNull(hit.getThreadCount(), hit.getFolder());
     }
-    verify(emailBoxStorage, never()).getMailboxThreadSummaries(anyString(), anyList());
-    verify(emailBoxStorage, never()).getThreadSummaries(anyString(), any());
+    verify(emailBoxStorage, never()).getMailboxThreadSummariesOf(anyString(), anyList(), any());
+    verify(emailBoxStorage, never()).getThreadSummariesOf(anyString(), any(), anyList());
   }
 
   /**
@@ -287,7 +283,7 @@ class EmailBoxListedRowsTest {
     when(emailDelegationService.delegationOf(USER, SHARED)).thenReturn(share(8L));
     when(emailDelegationService.isSearchableSharedFolder(USER, SHARED)).thenReturn(true);
     when(emailDelegationService.getMailboxFolderKeys(USER, 8L)).thenReturn(List.of(SHARED, "CUSTOM:11"));
-    when(emailBoxStorage.getMailboxThreadSummaries(USER, List.of(SHARED, "CUSTOM:11"))).thenReturn(Map.of("t1",
+    when(emailBoxStorage.getMailboxThreadSummariesOf(USER, List.of(SHARED, "CUSTOM:11"), Set.of("t1"))).thenReturn(Map.of("t1",
                                                                                                           new ThreadSummary("t1",
                                                                                                                             4,
                                                                                                                             false,
@@ -297,8 +293,41 @@ class EmailBoxListedRowsTest {
 
     assertEquals("Excerpt of 7", shared.getContent().getExcerpt());
     assertEquals(4, shared.getThreadCount());
-    verify(emailBoxStorage, never()).getThreadSummaries(anyString(), any());
-    verify(emailBoxStorage, never()).getThreadSummaries(anyString(), any(), anyList());
+    verify(emailBoxStorage, never()).getThreadSummariesOf(anyString(), any(), anyList());
+  }
+
+  /**
+   * The mails of one folder of the user's own -- a folder they made, which the
+   * Suggestions view lists from -- look the folder's share up once, not once per mail:
+   * the folder has none, and that answer is kept too.
+   */
+  @Test
+  void aFoldersShareIsLookedUpOnceWhateverTheNumberOfItsMails() {
+    String own = "CUSTOM:3";
+    EmailWaitingSuggestionMail first = suggestion(7L, own);
+    EmailWaitingSuggestionMail second = suggestion(8L, own);
+    EmailWaitingSuggestionMail third = suggestion(9L, own);
+    when(emailBoxStorage.getListedEmailsByIds(USER, Set.of(7L, 8L, 9L))).thenReturn(Map.of(7L,
+                                                                                             row(7L, own, "t1"),
+                                                                                             8L,
+                                                                                             row(8L, own, "t2"),
+                                                                                             9L,
+                                                                                             row(9L, own, "t2")));
+    when(emailDelegationService.getDelegatedFolderKeys(USER)).thenReturn(List.of());
+    when(emailBoxStorage.getThreadSummariesOf(USER, Set.of("t1", "t2"), List.of())).thenReturn(Map.of("t2",
+                                                                                                    new ThreadSummary("t2",
+                                                                                                                      2,
+                                                                                                                      false,
+                                                                                                                      List.of())));
+
+    emailBoxService.decorateListedRows(USER, List.of(first, second, third));
+
+    assertEquals("Excerpt of 9", third.getContent().getExcerpt());
+    assertNull(first.getThreadCount(), "a conversation the count does not know keeps no size");
+    assertEquals(2, second.getThreadCount());
+    assertEquals(2, third.getThreadCount());
+    verify(emailDelegationService, times(1)).delegationOf(USER, own);
+    verify(emailBoxStorage, times(1)).getThreadSummariesOf(anyString(), any(), anyList());
   }
 
   /**
@@ -354,14 +383,5 @@ class EmailBoxListedRowsTest {
     EmailDelegation delegation = new EmailDelegation();
     delegation.setId(id);
     return delegation;
-  }
-
-  /**
-   * The user's mailbox setting, with their own address.
-   *
-   * @return the setting
-   */
-  private static UserEmailSetting setting() {
-    return new UserEmailSetting("1", ADDRESS, "testPassword", null, null, 0, 0L, null, null, "connector", true);
   }
 }
