@@ -64,7 +64,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <!-- The text and the actions share one line when the reading pane has room for
            both; when it has not, the actions wrap under the text, which then takes the
            whole line. The text grows to push the actions to the end of a shared line and
-           never shrinks below a readable width before they wrap. The platform's core.css
+           never wraps beside them: they wrap first. The platform's core.css
            gives the align-center class text-align: center, so the line is centred
            vertically by an inline style instead, and the text sets its own start
            alignment. -->
@@ -125,10 +125,11 @@ const TEXT_BLOCK_STYLE = { flex: '1 1 auto', minWidth: 0, textAlign: 'start' };
 const LINE_STYLE = { minWidth: 0, alignItems: 'center', columnGap: '8px' };
 
 /**
- * The text of the images notice: it grows to fill its line and keeps a readable width,
- * below which the actions wrap under it rather than squeezing it into a narrow column.
+ * The text of the images notice: it grows to fill its line, and asks for the width of its
+ * text on one line, so the actions wrap under it as soon as both no longer fit, rather
+ * than squeezing it beside them; alone on its line, it may then wrap itself.
  */
-const MESSAGE_STYLE = { flex: '1 1 14em', minWidth: 0, textAlign: 'start' };
+const MESSAGE_STYLE = { flex: '1 1 auto', minWidth: 0, textAlign: 'start' };
 
 /**
  * The actions of the images notice: as wide as their labels on a shared line, and, once
