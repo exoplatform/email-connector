@@ -16,11 +16,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <!-- The "Suggestions" view (EXO-90851), in place of a folder's list: the user's own
-       mails with a suggestion of an assistant waiting for them, newest first, read from
-       their own endpoint. Each one is drawn and opened as a search hit is -- it may sit
-       in any folder --, and its Automations panel shows open, ready to approve or reject
-       (isSuggestionsViewListed). No loading bar of its own: the drawer's header bar shows
-       what it waits on (the loading event), as for the Scheduled view. -->
+       mails with a suggestion of an assistant waiting for them, newest first, from their
+       own endpoint, read with the waiting suggestions (refreshWaitingSuggestions), which
+       the folder column counts from. Each one is drawn and opened as a search hit is --
+       it may sit in any folder --, and its Automations panel shows open, ready to approve
+       or reject (isSuggestionsViewListed). No loading bar of its own: the drawer's header
+       bar shows what it waits on (the loading event), as for the Scheduled view. -->
   <div class="suggestions-email-list">
     <div
       v-if="items.length"
@@ -49,7 +50,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-import { refreshWaitingSuggestions, setSuggestionsViewListed, waitingSuggestionTotal } from '../../js/EmailConnectorMailFilters.js';
+import { refreshWaitingSuggestions, setSuggestionsViewListed, waitingSuggestionMails, waitingSuggestionsReadFailed } from '../../js/EmailConnectorMailFilters.js';
 
 export default {
   props: {
@@ -60,7 +61,6 @@ export default {
     },
   },
   data: () => ({
-    items: [],
     loading: false,
     loaded: false,
     // The mail the reader was opened on from this view, by its folder and UID.
@@ -68,20 +68,18 @@ export default {
   }),
   computed: {
     /**
-     * How many suggestions wait over the mailbox, as last read: the view reads its mails
-     * again whenever it moves -- a decision taken in a mail's panel, a new run of an
-     * assistant, a suggestion expired.
+     * The view's mails, as the last read of the waiting suggestions gave them -- the read
+     * the folder column's count comes from too, so the two always agree. It follows every
+     * read: a decision taken in a mail's panel, a new run of an assistant, a suggestion
+     * expired.
      *
-     * @returns {Number} the count
+     * @returns {Array} the mails, newest first
      */
-    waitingTotal() {
-      return waitingSuggestionTotal();
+    items() {
+      return waitingSuggestionMails();
     },
   },
   watch: {
-    waitingTotal() {
-      this.reload();
-    },
     loading: {
       immediate: true,
       handler(loading) {
@@ -90,12 +88,9 @@ export default {
     },
   },
   created() {
-    // Which read is current: an answer for an older one is dropped. Plain: nothing
-    // renders it.
-    this.readRequest = 0;
     setSuggestionsViewListed(true);
     // A suggestion decided, or a rule's work undone or run again, in the reader: the
-    // count the folder column shows is read again at once, and the view with it.
+    // waiting suggestions are read again at once, the view and its count with them.
     this.$root.$on('email-automations-updated', this.onAutomationsUpdated);
     // The reader moved off the mail, or its drawer closed: no row stays lit.
     this.$root.$on('set-opened', this.onSetOpened);
@@ -112,29 +107,22 @@ export default {
   },
   methods: {
     /**
-     * Reads the view's mails. A refusal says so; the list keeps what it held.
+     * Reads the waiting suggestions now, whatever the last read's age: the view opens on
+     * what waits at this moment. A failed read says so; the list keeps what it held.
      *
-     * @returns {Promise<void>} resolved once read, or dropped
+     * @returns {Promise<void>} resolved once read
      */
     reload() {
-      const request = ++this.readRequest;
       this.loading = true;
-      return this.$emailConnectorUserSettingService.getWaitingSuggestionEmails()
-        .then(mails => {
-          if (request === this.readRequest) {
-            this.items = mails || [];
-          }
-        })
-        .catch(() => {
-          if (request === this.readRequest) {
+      return refreshWaitingSuggestions(true)
+        .then(() => {
+          if (waitingSuggestionsReadFailed()) {
             this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.suggestions.loadError'), 'error');
           }
         })
         .finally(() => {
-          if (request === this.readRequest) {
-            this.loading = false;
-            this.loaded = true;
-          }
+          this.loading = false;
+          this.loaded = true;
         });
     },
     /**
@@ -159,15 +147,12 @@ export default {
       this.openedKey = this.keyOf(mail);
     },
     /**
-     * Reads the waiting suggestions again at once, which reads the view again when their
-     * count moved, and the view itself in any case: a decision may leave the count where
-     * it was while another suggestion arrived meanwhile.
+     * Reads the waiting suggestions again at once, which reads the view and its count.
      *
      * @returns {void}
      */
     onAutomationsUpdated() {
       refreshWaitingSuggestions(true);
-      this.reload();
     },
     /**
      * Forgets the opened mail when the full-screen reader shows nothing any more.
