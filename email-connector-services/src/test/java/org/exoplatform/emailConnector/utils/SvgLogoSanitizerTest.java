@@ -73,8 +73,8 @@ class SvgLogoSanitizerTest {
 
   /**
    * Every reference that leaves the document goes: an external href, a url() to a
-   * server in an attribute or a style, an @import, an escape that could spell one, a
-   * script scheme.
+   * server in an attribute or a style, an image-set() string, an @import, an escape
+   * that could spell one, a script scheme.
    */
   @Test
   void everyExternalReferenceGoes() {
@@ -83,6 +83,8 @@ class SvgLogoSanitizerTest {
         + "<rect width=\"2\" height=\"2\" style=\"fill:url('https://evil.example/s')\"/>"
         + "<rect width=\"3\" height=\"3\" style=\"fill:u\\72l(//evil.example)\"/>"
         + "<rect width=\"4\" height=\"4\" fill=\"javascript:alert(1)\"/>"
+        + "<rect width=\"5\" height=\"5\" style=\"fill:red;background-image:image-set('https://evil.example/i.png' 1x)\"/>"
+        + "<style>rect{background-image:-webkit-image-set(\"https://evil.example/w.png\" 1x)}</style>"
         + "<style>@import url(https://evil.example/a.css); .a{fill:red}</style><style>.b{fill:blue}</style>" + CLOSE);
     assertFalse(clean.contains("evil.example"), clean);
     assertFalse(clean.contains("data:"), clean);
