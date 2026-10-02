@@ -38,8 +38,9 @@ import org.exoplatform.emailConnector.utils.SenderLogoUtils;
  * Reads TXT records through the JDK's own DNS client (JNDI's DNS provider, which uses
  * the host's resolvers), for the sender logo's BIMI and DMARC lookups (EXO-90893).
  * <p>
- * Bounded: two seconds for the first try, one retry, at most {@link #MAX_RECORDS}
- * records read. Only a plain DNS name is ever asked: JNDI picks a provider from a
+ * Bounded: one second for the first try and two for its one retry, per name server
+ * the host is configured with, and at most {@link #MAX_RECORDS} records read. It runs
+ * on the sender logo's background pool, never on a request thread. Only a plain DNS name is ever asked: JNDI picks a provider from a
  * name's URL scheme, so a name holding a {@code :} could reach another provider, and
  * none can get here.
  */
@@ -49,8 +50,8 @@ public class JndiDnsTxtLookup implements DnsTxtLookup {
   /** The most TXT records read for one name: a real name carries a handful. */
   static final int             MAX_RECORDS     = 20;
 
-  /** The first try's timeout, in ms; each retry doubles it. */
-  private static final String  INITIAL_TIMEOUT = "2000";
+  /** The first try's timeout, in ms; the retry waits twice as long. */
+  private static final String  INITIAL_TIMEOUT = "1000";
 
   /** How many times a query is retried. */
   private static final String  RETRIES         = "1";
