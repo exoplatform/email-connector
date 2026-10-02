@@ -17,10 +17,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <span v-if="isEmptyBody">
     {{ $t('emailConnector.mailBox.list.drawer.emptyEmail') }}</span>
+  <!--
+    The message is somebody else's markup, so the frame it is shown in runs no script:
+    no `allow-scripts`, never together with `allow-same-origin`, since a frame with
+    both can lift its own sandbox. That stops inline handlers, `javascript:` URLs,
+    nested frames and a `<meta refresh>` as well; forms, embedded documents and players
+    are the purifier's job, the sandbox alone would let a form out through a popup. The
+    frame keeps the page's origin only so that this component can read its document
+    from outside: the mail's height, its images, the quoted-history toggle, the anchor
+    links. Popups are allowed so that a link, which the document's base targets at a
+    new tab, opens one that is not sandboxed itself. The referrer policy of the
+    document itself is the meta the reader writes into its head: the attribute below
+    governs the frame's own request, which a `srcdoc` frame never makes.
+  -->
   <iframe
     v-else
     ref="iframe"
-    :srcdoc="sanitizedBody"
+    :srcdoc="frameDocument"
+    sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+    referrerpolicy="no-referrer"
     :style="{
       width: '100%',
       border: 'none',
@@ -33,7 +48,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-import { foldPlainTextQuotedHistory, foldQuotedHistory } from '../../js/EmailQuotedHistoryFold.js';
+import { HISTORY_ID, TOGGLE_ID, TOGGLE_OPEN_CLASS, foldPlainTextQuotedHistory, foldQuotedHistory } from '../../js/EmailQuotedHistoryFold.js';
+import { sanitizeMailBody } from '../../js/EmailBodySanitizer.js';
 
 /**
  * Tags that open a line box of their own. One of them anywhere in an HTML body means
@@ -86,8 +102,26 @@ export default {
     },
   },
   computed: {
+    /**
+     * The received body, purified when it is HTML: every tag and attribute outside the
+     * allow-list gone, the sender's style sheets set apart for the frame's head. A
+     * plain-text body is not markup and is escaped where it is rendered instead.
+     *
+     * @returns {{styles: string, htmlAttributes: string, bodyAttributes: string, body: string}}
+     *          the sender's style sheets, document attributes and the body
+     */
     sanitizedBody() {
-      return this.makeMailHtml(this.emailBody || '');
+      const body = this.emailBody || '';
+      return this.htmlBody ? sanitizeMailBody(body) : { styles: '', htmlAttributes: '', bodyAttributes: '', body };
+    },
+    /**
+     * The whole document the frame shows: the reader's style, the sender's style
+     * sheets, then the purified body with its quoted history folded.
+     *
+     * @returns {string} the frame's document
+     */
+    frameDocument() {
+      return this.makeMailHtml(this.sanitizedBody);
     },
     isEmptyBody() {
       if (!this.emailBody) {
@@ -104,16 +138,27 @@ export default {
   },
   methods: {
     /**
-     * Wrap the (untrusted) email body into a self-contained HTML document for the
+     * Wrap the purified email body into a self-contained HTML document for the
      * iframe, first folding the quoted history behind a Gmail-style "···" toggle so
      * the reader lands on the latest message and reaches the attachments row without
      * scrolling past the quoted thread. Folding degrades to the untouched body when
      * no clear quoted boundary is found.
+     * <p>
+     * The document carries no script: the frame would refuse to run one, and the
+     * toggle is wired from this component once the frame has loaded. Its base targets
+     * every link at a new tab, so a click never navigates the frame itself, and its
+     * referrer meta keeps the page's address out of every request the message makes
+     * (an image, an imported style sheet): the policy of a `srcdoc` document is the
+     * one its own head declares. The sender's document and body attributes go onto the
+     * reader's tags, so a right-to-left mail or a dark one keeps its direction and its
+     * background.
      *
-     * @param {string} html the sanitized email body HTML
+     * @param {{styles: string, htmlAttributes: string, bodyAttributes: string, body: string}} purified
+     *          the sender's style sheets, document attributes and purified body (for a
+     *          plain-text body, no styles, no attributes and the raw text)
      * @returns {string} the full HTML document served to the iframe srcdoc
      */
-    makeMailHtml(html) {
+    makeMailHtml(purified) {
       const baseCSS = `
         html, body {
           margin: 0 !important;
@@ -179,14 +224,18 @@ export default {
         }
       `;
       const finalCSS = this.expandedDrawer ? baseCSS : baseCSS + responsiveCSS;
-      const renderedBody = this.renderBody(html);
+      const renderedBody = this.renderBody(purified.body);
+      const senderCSS = purified.styles ? `<style>${purified.styles}</style>` : '';
       return `
-        <html>
+        <html${purified.htmlAttributes}>
           <head>
             <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta name="referrer" content="no-referrer">
+            <base target="_blank">
             <style>${finalCSS}</style>
+            ${senderCSS}
           </head>
-          <body>${renderedBody}</body>
+          <body${purified.bodyAttributes}>${renderedBody}</body>
         </html>
       `;
     },
@@ -199,13 +248,14 @@ export default {
      * fold cannot see it, there being no markup, so such a reply used to show its whole
      * thread.
      * <p>
-     * An HTML body is served as it always was, except for one shape — typed text
-     * inside a lone wrapper, which the flag cannot and should not tell apart from any
-     * other HTML: the part really is text/html, and the sender's client simply left the
-     * message's line structure in raw newlines instead of markup. So that one stays a
-     * question about the markup, and only about the markup.
+     * An HTML body, already purified, is served as it is, except for one shape — typed
+     * text inside a lone wrapper, which the flag cannot and should not tell apart from
+     * any other HTML: the part really is text/html, and the sender's client simply left
+     * the message's line structure in raw newlines instead of markup. So that one stays
+     * a question about the markup, and only about the markup.
      *
-     * @param {string} html the raw email body
+     * @param {string} html the email body: purified markup, or the raw text of a
+     *          plain-text body
      * @returns {string} the markup to place in the iframe's body
      */
     renderBody(html) {
@@ -213,10 +263,9 @@ export default {
         return this.foldPlainTextHistory(html) || this.wrapPlainText(html);
       }
       if (this.isTextInWrapper(html)) {
-        // Not escaped, and deliberately: this exact string is what already went into
-        // the iframe for such a body. Only the whitespace rule around it changes, so
-        // nothing can render here that did not render before. Folded before being
-        // wrapped, so the fold sees the body's own elements and never our wrapper.
+        // Not escaped: it is markup the purifier has already cleaned, and only the
+        // whitespace rule around it changes. Folded before being wrapped, so the fold
+        // sees the body's own elements and never our wrapper.
         return `<div class="ec-plain-text">${this.foldHistory(html)}</div>`;
       }
       return this.foldHistory(html);
@@ -332,6 +381,8 @@ export default {
      * @returns {void}
      */
     onLoadIframe() {
+      this.wireQuotedHistoryToggle();
+      this.wireAnchorLinks();
       this.recalculateIframeHeight();
 
       setTimeout(() => this.recalculateIframeHeight(), 150);
@@ -339,17 +390,119 @@ export default {
     },
 
     /**
+     * Give the quoted-history toggle its behaviour, from outside the frame: the frame
+     * allows no script, so the fold left a plain element in the document and this
+     * component attaches the click and the keyboard handlers through the frame's
+     * document, which the sandbox lets it read. Nothing to do when the body had no
+     * history to fold.
+     *
+     * @returns {void}
+     */
+    wireQuotedHistoryToggle() {
+      const doc = this.frameContentDocument();
+      const toggle = doc && doc.getElementById(TOGGLE_ID);
+      const history = doc && doc.getElementById(HISTORY_ID);
+      // The fold's own elements, never the body: the ids are looked up in document
+      // order, and the body comes first.
+      if (!toggle || !history || toggle === doc.body || history === doc.body) {
+        return;
+      }
+      const labels = this.quotedHistoryLabels();
+      const set = open => {
+        history.style.display = open ? 'block' : 'none';
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        toggle.setAttribute('title', open ? labels.hide : labels.show);
+        toggle.textContent = open ? labels.hide : labels.show;
+        toggle.className = open ? `ec-quoted-toggle ${TOGGLE_OPEN_CLASS}` : 'ec-quoted-toggle';
+        this.recalculateIframeHeight();
+      };
+      const flip = () => set(toggle.getAttribute('aria-expanded') !== 'true');
+      toggle.addEventListener('click', flip);
+      toggle.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          flip();
+        }
+      });
+    },
+    /**
+     * Keep a link to an anchor of the message ("back to top", "jump to section")
+     * scrolling inside the message: the document's base sends every link to a new tab,
+     * which for a fragment would be a blank one. Wired from this component for the same
+     * reason as the toggle, and scrolling through the browser, which brings the target
+     * into view through the frame and the drawer alike.
+     *
+     * @returns {void}
+     */
+    wireAnchorLinks() {
+      const doc = this.frameContentDocument();
+      if (!doc) {
+        return;
+      }
+      doc.addEventListener('click', event => {
+        const link = event.target && event.target.closest && event.target.closest('a[href^="#"]');
+        if (!link) {
+          return;
+        }
+        event.preventDefault();
+        const target = this.fragmentTarget(doc, link.getAttribute('href').slice(1));
+        if (target) {
+          target.scrollIntoView();
+        }
+      });
+    },
+    /**
+     * The element a fragment names, resolved the way the browser resolves one: for the
+     * fragment as written, then for its percent-decoded form, the element with that id,
+     * else the first `<a>` with that name; failing both, "top" (in any case) is the top
+     * of the document, and so is an empty fragment.
+     *
+     * @param {Document} doc the frame's document
+     * @param {string} fragment the part of the link after the "#"
+     * @returns {Element|null} the element to bring into view, or null when the fragment
+     *          names nothing
+     */
+    fragmentTarget(doc, fragment) {
+      if (!fragment) {
+        return doc.body;
+      }
+      let decoded = fragment;
+      try {
+        decoded = decodeURIComponent(fragment);
+      } catch (e) {
+        // A malformed escape decodes to nothing: the fragment as written is the only
+        // name to try.
+      }
+      const candidates = decoded === fragment ? [fragment] : [fragment, decoded];
+      for (const name of candidates) {
+        const found = doc.getElementById(name)
+          || Array.from(doc.getElementsByName(name)).find(element => element.localName === 'a');
+        if (found) {
+          return found;
+        }
+      }
+      return decoded.toLowerCase() === 'top' ? doc.body : null;
+    },
+    /**
+     * The frame's document, when the frame is there and has one.
+     *
+     * @returns {Document|null} the document the frame shows
+     */
+    frameContentDocument() {
+      const iframe = this.$refs.iframe;
+      if (!iframe) {
+        return null;
+      }
+      return iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document) || null;
+    },
+    /**
      * Match the iframe's height to the mail it holds, so the drawer scrolls as one
      * page instead of the mail scrolling inside a fixed frame.
      *
      * @returns {void}
      */
     recalculateIframeHeight() {
-      const iframe = this.$refs.iframe;
-      if (!iframe) {
-        return;
-      }
-      const doc = iframe.contentDocument || iframe.contentWindow.document;
+      const doc = this.frameContentDocument();
       if (!doc || !doc.body) {
         return;
       }

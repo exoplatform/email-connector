@@ -112,6 +112,10 @@
     <depends>
       <module>commonVueComponents</module>
     </depends>
+    <!-- The DOMPurify factory the mail reader builds its own purifier from -->
+    <depends>
+      <module>purify</module>
+    </depends>
     <depends>
       <module>extensionRegistry</module>
     </depends>
