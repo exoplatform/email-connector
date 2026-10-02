@@ -631,8 +631,10 @@ public class EmailConnectorUtils {
         Profile userProfile = senderProfile(internetAddress.getAddress());
         String platformPicture = userProfile == null ? null : StringUtils.trimToNull(userProfile.getAvatarUrl());
         if (platformPicture == null || userProfile.isDefaultAvatar()) {
-          // A sender's brand logo (EXO-90893) belongs after the reader's contact, before
-          // the platform's generated picture and the initials.
+          // A sender's brand logo (EXO-90893) needs the message's DMARC verdict and
+          // warnings, so it is offered later, per message, as EmailSender#logoUrl
+          // (EmailSecurityService#decorate); the reader shows it after this contact
+          // photo and before the generated pictures.
           avatarUrl = contactPhoto(reader, internetAddress.getAddress());
         }
         if (avatarUrl == null) {
