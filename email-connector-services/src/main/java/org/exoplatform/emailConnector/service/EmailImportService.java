@@ -574,28 +574,20 @@ public class EmailImportService {
 
   /**
    * Creates a run's directory in the temporary directory, readable, writable and
-   * traversable by this server's user alone: the temporary directory is shared with
-   * every user of the machine, and the files are users' mail. Owner-only from its
-   * creation on a POSIX file system; on another one, made so right after, the
-   * directory being empty meanwhile.
+   * traversable by this server's user alone: the files are users' mail. On a POSIX file
+   * system the temporary directory is shared with every user of the machine, and the
+   * directory is created owner-only. Elsewhere -- Windows -- the temporary directory is
+   * the service account's own profile directory, which other users cannot read, and
+   * the directory is created there as it is.
    *
    * @return the directory
-   * @throws IOException when it cannot be created, or made private
+   * @throws IOException when it cannot be created
    */
   static Path createPrivateDirectory() throws IOException {
     if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
       return Files.createTempDirectory(WORK_DIR_PREFIX, PosixFilePermissions.asFileAttribute(OWNER_ONLY));
     }
-    Path directory = Files.createTempDirectory(WORK_DIR_PREFIX); // NOSONAR made owner-only below, empty until then
-    File file = directory.toFile();
-    boolean ownerOnly = file.setReadable(false, false) && file.setReadable(true, true)
-        && file.setWritable(false, false) && file.setWritable(true, true)
-        && file.setExecutable(false, false) && file.setExecutable(true, true);
-    if (!ownerOnly) {
-      Files.delete(directory);
-      throw new IOException("The import directory could not be made private");
-    }
-    return directory;
+    return Files.createTempDirectory(WORK_DIR_PREFIX); // NOSONAR not POSIX: Windows' temporary directory is the account's own
   }
 
   /**
@@ -612,20 +604,29 @@ public class EmailImportService {
   }
 
   /**
-   * Deletes a run's directory and its files, best-effort.
+   * Deletes a run's directory and its files, best-effort and entry by entry: what cannot
+   * be deleted is logged, and everything else is deleted all the same.
    *
    * @param workDir the directory, possibly null
    */
-  private static void deleteQuietly(Path workDir) {
+  static void deleteQuietly(Path workDir) {
     if (workDir == null) {
       return;
     }
-    try (Stream<Path> paths = Files.walk(workDir)) {
-      for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
-        Files.delete(path);
-      }
+    List<Path> paths;
+    try (Stream<Path> walked = Files.walk(workDir)) {
+      paths = walked.sorted(Comparator.reverseOrder()).toList();
     } catch (IOException | RuntimeException e) {
-      LOG.warn("The import directory {} could not be deleted", workDir, e);
+      LOG.warn("The import directory {} could not be listed for deletion", workDir, e);
+      return;
+    }
+    // Each entry on its own: one that cannot be deleted keeps no other on disk.
+    for (Path path : paths) {
+      try {
+        Files.deleteIfExists(path);
+      } catch (IOException | RuntimeException e) {
+        LOG.warn("{} of the import directory could not be deleted", path, e);
+      }
     }
   }
 }
