@@ -10838,8 +10838,8 @@ public class EmailBoxServiceTest {
 
   /**
    * EXO-90893: whether the message passed DMARC for its From domain is read at sync,
-   * from the top Authentication-Results header only, and kept with the row; a pass
-   * that only a lower header claims counts for nothing.
+   * from the top Authentication-Results header of a mail server the deployment trusts,
+   * and kept with the row.
    */
   @Test
   @SneakyThrows
@@ -10851,7 +10851,12 @@ public class EmailBoxServiceTest {
     lenient().when(message.getHeader("Authentication-Results"))
              .thenReturn(new String[] { "mx.example.com; spf=pass; dkim=pass; dmarc=pass header.from=brand.example" });
 
-    emailBoxService.synchronize(TEST_USER);
+    System.setProperty(EmailSecurityUtils.TRUSTED_AUTHSERV_IDS_PROPERTY, "mx.example.com");
+    try {
+      emailBoxService.synchronize(TEST_USER);
+    } finally {
+      System.clearProperty(EmailSecurityUtils.TRUSTED_AUTHSERV_IDS_PROPERTY);
+    }
 
     ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxStorage).createEmail(created.capture());
@@ -10859,7 +10864,29 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * EXO-90893: a pass only a header below the receiving server's claims is no pass.
+   * EXO-90893: with no mail server named as trusted, no pass is believed, so no
+   * sender gets a logo on a header the sender may have written.
+   */
+  @Test
+  @SneakyThrows
+  void synchronizeBelievesNoDmarcPassByDefault() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    Folder inbox = mockInboxForSync(userEmailSetting, 1);
+    MimeMessage message = (MimeMessage) inbox.getMessages(1, 1)[0];
+    lenient().when(message.getFrom()).thenReturn(new InternetAddress[] { new InternetAddress("news@brand.example") });
+    lenient().when(message.getHeader("Authentication-Results"))
+             .thenReturn(new String[] { "mx.example.com; dmarc=pass header.from=brand.example" });
+
+    emailBoxService.synchronize(TEST_USER);
+
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    assertFalse(created.getValue().getContent().isDmarcPassed());
+  }
+
+  /**
+   * EXO-90893: a pass only a header below the receiving server's claims is no pass,
+   * even with every server's header believed.
    */
   @Test
   @SneakyThrows
@@ -10871,7 +10898,12 @@ public class EmailBoxServiceTest {
     lenient().when(message.getHeader("Authentication-Results"))
              .thenReturn(new String[] { "mx.example.com; spf=pass", "forged.example; dmarc=pass header.from=brand.example" });
 
-    emailBoxService.synchronize(TEST_USER);
+    System.setProperty(EmailSecurityUtils.TRUSTED_AUTHSERV_IDS_PROPERTY, EmailSecurityUtils.ANY_AUTHSERV_ID);
+    try {
+      emailBoxService.synchronize(TEST_USER);
+    } finally {
+      System.clearProperty(EmailSecurityUtils.TRUSTED_AUTHSERV_IDS_PROPERTY);
+    }
 
     ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxStorage).createEmail(created.capture());
