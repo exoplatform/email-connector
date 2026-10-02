@@ -2453,6 +2453,15 @@ public class EmailBoxStorage {
     return fromEmailAttachmentEntity(emailAttachmentEntity);
   }
 
+  /**
+   * The row a message is stored as: the columns its constructor takes positionally,
+   * then those set by name -- read receipts, the draft's mailbox and send mode, and the
+   * sender-authentication verdicts (the failure of EXO-90841, the DMARC pass of
+   * EXO-90893) -- and its attachments.
+   *
+   * @param email the message
+   * @return the row, or null for no message
+   */
   private EmailBoxEntity toEntity(Email email) {
     if (email == null) {
       return null;
