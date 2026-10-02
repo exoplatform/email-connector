@@ -318,6 +318,39 @@ describe('the folder list\'s row as a list of hits uses it (EXO-90871)', () => {
     expect(wrapper.find('.row-not-cached').exists()).toBe(false);
   });
 
+  it('shows the suggestions waiting on a mail as the Suggestions view\'s icon and a flat number before the subject, never as the pill of a count (EXO-90890)', async () => {
+    jest.spyOn(userSettingService, 'getWaitingSuggestionMails').mockResolvedValue(['<7@host>', '<7@host>', '<8@host>']);
+    jest.spyOn(userSettingService, 'getWaitingSuggestionEmails').mockResolvedValue([]);
+    await refreshWaitingSuggestions(true);
+    try {
+      wrapper = mountRow({ email: hit(7, 'ARCHIVE', { mailHeaderId: '<7@host>', threadCount: 3 }) });
+      const marker = wrapper.find('.row-waiting-suggestions');
+      expect(marker.attributes('title')).toBe('emailConnector.mailBox.list.drawer.waitingSuggestionsCount|2');
+      expect(marker.attributes('aria-label')).toBe(marker.attributes('title'));
+      expect(marker.classes()).toEqual(expect.arrayContaining(['text-light-color', 'text-no-wrap', 'flex-shrink-0']));
+      expect(marker.classes()).not.toContain('primary');
+      expect(marker.classes()).not.toContain('rounded-pill');
+      expect(marker.find('v-icon-stub, v-icon').text()).toBe(emailConnectorMailBoxService.folderIcon({ key: 'SUGGESTIONS', type: 'BUILT_IN' }));
+      expect(marker.text()).toBe('fa-magic2');
+      // The conversation's size keeps its place after the sender, the marker its own
+      // before the subject.
+      expect(wrapper.find('v-list-item-title-stub, v-list-item-title').text()).toContain('3');
+      expect(marker.element.nextElementSibling.textContent).toBe('ARCHIVE 7');
+
+      await wrapper.setProps({ email: hit(8, 'INBOX', { mailHeaderId: '<8@host>' }) });
+      expect(wrapper.find('.row-waiting-suggestions').attributes('title')).toBe('emailConnector.mailBox.list.drawer.waitingSuggestionsOne');
+
+      await wrapper.setProps({ email: hit(9, 'INBOX', { mailHeaderId: '<9@host>' }) });
+      expect(wrapper.find('.row-waiting-suggestions').exists()).toBe(false);
+    } finally {
+      jest.restoreAllMocks();
+      jest.spyOn(userSettingService, 'getWaitingSuggestionMails').mockResolvedValue([]);
+      jest.spyOn(userSettingService, 'getWaitingSuggestionEmails').mockResolvedValue([]);
+      await refreshWaitingSuggestions(true);
+      jest.restoreAllMocks();
+    }
+  });
+
   it('names the folder the row sits in when asked, after the sender on the first line (EXO-90882), as the folder column names it, the key until the folders land', async () => {
     // Drawn before the mailbox's folders answered: the key, then the name follows them.
     wrapper = mountRow({ email: hit(5, 'CUSTOM:1'), showFolder: true });
