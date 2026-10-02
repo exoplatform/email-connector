@@ -2640,7 +2640,7 @@ public class EmailBoxStorage {
                               emailBoxEntity.getSubject(),
                               content,
                               emailBoxEntity.getReceivedDate(),
-                              EmailConnectorUtils.getEmailSender(emailSenderAddress, withProfile),
+                              EmailConnectorUtils.getEmailSender(emailSenderAddress, withProfile, userId),
                               emailBoxEntity.isRead(),
                               emailBoxEntity.isRecent(),
                               null,
