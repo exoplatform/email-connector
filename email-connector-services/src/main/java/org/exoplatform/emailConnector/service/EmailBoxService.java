@@ -194,6 +194,7 @@ import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailDelegation;
+import org.exoplatform.emailConnector.model.ListedMailRow;
 import org.exoplatform.emailConnector.model.EmailFolder;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSearchCriteria;
@@ -7088,13 +7089,123 @@ public class EmailBoxService {
    * @return the summaries, by thread id
    */
   private Map<String, ThreadSummary> threadSummariesFor(String username, String folder, String userEmail) {
-    EmailDelegation listed = emailDelegationService.delegationOf(username, folder);
+    return threadSummariesIn(username, emailDelegationService.delegationOf(username, folder), userEmail);
+  }
+
+  /**
+   * {@link #threadSummariesFor}, the mailbox already known: a shared mailbox's
+   * conversations counted over its own folders, the user's own over theirs.
+   *
+   * @param username the reader
+   * @param listed the share the mailbox is, null for the user's own
+   * @param userEmail the reader's own address
+   * @return the summaries, by thread id
+   */
+  private Map<String, ThreadSummary> threadSummariesIn(String username, EmailDelegation listed, String userEmail) {
     if (listed != null) {
       return emailBoxStorage.getMailboxThreadSummaries(username, emailDelegationService.getMailboxFolderKeys(username, listed.getId()));
     }
     List<String> sharedKeys = emailDelegationService.getDelegatedFolderKeys(username);
     return sharedKeys.isEmpty() ? emailBoxStorage.getThreadSummaries(username, userEmail)
                                 : emailBoxStorage.getThreadSummaries(username, userEmail, sharedKeys);
+  }
+
+  /**
+   * Gives the mails of a list that is not a folder's -- the mail drawer's search hits, the
+   * "Suggestions" view's mails -- what the folder list's rows carry beside the envelope
+   * (EXO-90882): the excerpt and the attachments of the cached message, never its body,
+   * and the size of its conversation and whether that carries an unsent draft, counted as
+   * the folder list counts them, within the mailbox the mail belongs to.
+   * <p>
+   * Read in one batch, the folder list's own mapping of the rows ({@code
+   * EmailBoxStorage#getListedEmailsByIds}), and one conversation count per mailbox the
+   * mails belong to: never a read per mail, never the mail server. A mail is given them
+   * only when its local id names one of the user's own cached rows ({@code userId}-scoped
+   * read), filed in the folder the mail was listed from, and that folder is one the user
+   * may list: neither Trash, Spam nor All Mail, and in a mailbox shared with them a
+   * folder its search may read while the share is accepted. Any other mail -- not in the
+   * local copy, or out of those bounds -- is left as it came.
+   *
+   * @param username the user the list is shown to
+   * @param rows the mails, given those fields in place
+   */
+  public void decorateListedRows(String username, List<? extends ListedMailRow> rows) {
+    if (StringUtils.isBlank(username) || rows == null || rows.isEmpty()) {
+      return;
+    }
+    Set<Long> ids = rows.stream().map(ListedMailRow::getEmailId).filter(Objects::nonNull).collect(Collectors.toSet());
+    if (ids.isEmpty()) {
+      return;
+    }
+    Map<Long, Email> listed = emailBoxStorage.getListedEmailsByIds(username, ids);
+    if (listed.isEmpty()) {
+      return;
+    }
+    Map<String, EmailDelegation> shareOfFolder = new HashMap<>();
+    Map<String, Boolean> listableFolder = new HashMap<>();
+    // By the share's id; the user's own mailbox under the null key.
+    Map<Long, Map<String, ThreadSummary>> summariesByMailbox = new HashMap<>();
+    for (ListedMailRow row : rows) {
+      Email email = row.getEmailId() == null ? null : listed.get(row.getEmailId());
+      String folder = row.getFolder();
+      if (email == null || StringUtils.isBlank(folder) || !folder.equals(email.getFolder())) {
+        continue;
+      }
+      EmailDelegation share = shareOfFolder.computeIfAbsent(folder, key -> emailDelegationService.delegationOf(username, key));
+      if (!listableFolder.computeIfAbsent(folder, key -> isListableFolder(username, key, share))) {
+        continue;
+      }
+      EmailContent content = email.getContent();
+      row.setContent(new EmailContent(null,
+                                      content == null ? null : content.getExcerpt(),
+                                      content == null ? null : content.getAttachments()));
+      if (StringUtils.isNotBlank(email.getThreadId())) {
+        ThreadSummary summary = summariesByMailbox.computeIfAbsent(share == null ? null : share.getId(),
+                                                                   key -> threadSummariesIn(username, share, ownAddress(username)))
+                                                  .get(email.getThreadId());
+        if (summary != null) {
+          row.setThreadCount(summary.messageCount());
+          row.setThreadHasDraft(summary.hasDraft());
+        }
+      }
+    }
+  }
+
+  /**
+   * Whether a list that is not a folder's may show the cached rows of a folder with what
+   * the folder list carries (see {@link #decorateListedRows}): never Trash, Spam or All
+   * Mail; any other folder of the user's own mailbox; in a mailbox shared with them, a
+   * folder its search may read, while the share is accepted.
+   *
+   * @param username the reader
+   * @param folder the folder key
+   * @param share the share the folder belongs to, null for the user's own mailbox
+   * @return true when the folder's rows may be shown so
+   */
+  private boolean isListableFolder(String username, String folder, EmailDelegation share) {
+    if (MailFolder.HIDDEN_FOLDERS.contains(folder) || MailFolder.ALL_MAIL.equals(folder)) {
+      return false;
+    }
+    if (share == null) {
+      return true;
+    }
+    try {
+      return emailDelegationService.isSearchableSharedFolder(username, folder);
+    } catch (DelegationRevokedException e) {
+      return false;
+    }
+  }
+
+  /**
+   * The user's own address, as their mailbox setting gives it: what a conversation's
+   * participants leave out.
+   *
+   * @param username the mailbox owner
+   * @return the address, null when the user has no setting
+   */
+  private String ownAddress(String username) {
+    UserEmailSetting setting = userEmailSettingService.getUserEmailSetting(username);
+    return setting == null ? null : setting.getEmailAddress();
   }
 
   /**
