@@ -31,7 +31,7 @@ import EmailConnectorMailBoxSuggestionsList from '../EmailConnectorMailBoxSugges
 import EmailConnectorMailBoxDrawerListItemDetailSenderAvatar from '../EmailConnectorMailBoxDrawerListItemDetailSenderAvatar.vue';
 import EmailConnectorMailBoxDrawerMultiSelectEmail from '../EmailConnectorMailBoxDrawerMultiSelectEmail.vue';
 import EmailConnectorMailBoxDrawerActions from '../EmailConnectorMailBoxDrawerActions.vue';
-import { MAX_AVATAR_BATCH, rememberSenderAvatar, requestSenderAvatar, resetSenderAvatars, senderAvatarUrl, watchSenderAvatar } from '../../../js/EmailConnectorSenderAvatars.js';
+import { MAX_AVATAR_BATCH, SENDER_LOGO_PATH, markSenderRowsVerified, refreshSenderDomain, rememberSenderAvatar, requestSenderAvatar, resetSenderAvatars, senderAvatarUrl, watchSenderAvatar } from '../../../js/EmailConnectorSenderAvatars.js';
 import { avatarColor } from '../../../js/EmailRecipientDisplay.js';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
 import { refreshWaitingSuggestions } from '../../../js/EmailConnectorMailFilters.js';
@@ -877,6 +877,8 @@ describe('the row\'s sender avatar is its checkbox (EXO-90891)', () => {
 describe('the sender avatar draws the reader\'s initials and the page\'s cached picture (EXO-90891)', () => {
   let wrapper;
   let requests;
+  // The brand logos the server offers by address, once resolved (EXO-90909).
+  let logos;
 
   beforeEach(() => {
     jest.useFakeTimers();
@@ -884,12 +886,16 @@ describe('the sender avatar draws the reader\'s initials and the page\'s cached 
     global.Vue = Vue;
     resetSenderAvatars();
     requests = [];
+    logos = {};
     global.fetch = jest.fn((url, options) => {
       const addresses = JSON.parse(options.body);
       requests.push(addresses);
       const answer = {};
       addresses.filter(address => address.endsWith('@example.org')).forEach(address => {
         answer[address] = `/portal/rest/v1/social/users/${address}/avatar`;
+      });
+      addresses.filter(address => logos[address]).forEach(address => {
+        answer[address] = logos[address];
       });
       return Promise.resolve({ ok: true, json: () => Promise.resolve(answer) });
     });
@@ -1046,6 +1052,67 @@ describe('the sender avatar draws the reader\'s initials and the page\'s cached 
     await answered();
     expect(wrapper.text()).toBe('VS');
     expect(requests).toEqual([]);
+  });
+
+  it('switches a verified row to its brand logo once the server says the domain has one, and asks again for that domain only (EXO-90909)', async () => {
+    const logo = `${SENDER_LOGO_PATH}brand.example?t=rita`;
+    wrapper = mountAvatar({ email: hit(5, 'INBOX', { sender: { name: 'Brand', address: 'news@brand.example', domainVerified: true } }) });
+    const spoofed = mountAvatar({ email: hit(6, 'INBOX', { sender: { name: 'Brand', address: 'news@brand.example' } }) });
+    requestSenderAvatar('ann@client.org');
+    await answered();
+    expect(wrapper.find('img').exists()).toBe(false);
+    expect(requests).toEqual([['news@brand.example', 'ann@client.org']]);
+
+    logos['news@brand.example'] = logo;
+    refreshSenderDomain('Brand.Example');
+    await answered();
+    expect(requests).toEqual([['news@brand.example', 'ann@client.org'], ['news@brand.example']]);
+    expect(wrapper.find('img').attributes('src')).toBe(logo);
+    expect(spoofed.find('img').exists()).toBe(false);
+    spoofed.destroy();
+  });
+
+  it('asks again an address whose answer was on its way when the domain\'s logo was found (EXO-90909)', async () => {
+    requestSenderAvatar('news@brand.example');
+    jest.advanceTimersByTime(100);
+    refreshSenderDomain('brand.example');
+    logos['news@brand.example'] = `${SENDER_LOGO_PATH}brand.example?t=rita`;
+    await answered();
+    await answered();
+    expect(requests).toEqual([['news@brand.example'], ['news@brand.example']]);
+    expect(senderAvatarUrl('news@brand.example')).toBe(`${SENDER_LOGO_PATH}brand.example?t=rita`);
+  });
+
+  it('shows the logo on the rows the server found to pass DMARC after they were listed, not on the others (EXO-90909)', async () => {
+    const logo = `${SENDER_LOGO_PATH}brand.example?t=rita`;
+    wrapper = mountAvatar({ email: hit(5, 'INBOX', { id: 7, sender: { name: 'Brand', address: 'news@brand.example' } }) });
+    const other = mountAvatar({ email: hit(6, 'INBOX', { id: 8, sender: { name: 'Brand', address: 'news@brand.example' } }) });
+    await answered();
+
+    logos['news@brand.example'] = logo;
+    markSenderRowsVerified([7], ['News@Brand.example']);
+    await answered();
+    expect(requests).toEqual([['news@brand.example'], ['news@brand.example']]);
+    expect(wrapper.find('img').attributes('src')).toBe(logo);
+    expect(other.find('img').exists()).toBe(false);
+    other.destroy();
+  });
+
+  it('shows in the reader the logo the server was still looking up for it, once found, and never on a message it was not looking it up for (EXO-90909)', async () => {
+    const logo = `${SENDER_LOGO_PATH}brand.example?t=rita`;
+    const initials = 'data:image/png;base64,AAAA';
+    wrapper = mountAvatar({ email: hit(5, 'INBOX', { sender: { name: 'Brand', address: 'news@brand.example', avatarUrl: initials, logoPending: true } }) });
+    const doubted = mountAvatar({ email: hit(6, 'INBOX', { sender: { name: 'Brand', address: 'news@brand.example', avatarUrl: initials, domainVerified: true } }) });
+    await answered();
+    expect(wrapper.find('img').attributes('src')).toBe(initials);
+    expect(requests).toEqual([]);
+
+    logos['news@brand.example'] = logo;
+    refreshSenderDomain('brand.example');
+    await answered();
+    expect(wrapper.find('img').attributes('src')).toBe(logo);
+    expect(doubted.find('img').attributes('src')).toBe(initials);
+    doubted.destroy();
   });
 });
 

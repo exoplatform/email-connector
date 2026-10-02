@@ -54,6 +54,7 @@ import org.exoplatform.emailConnector.model.EmailSecurityWarningType;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.RemoteContentSettings;
+import org.exoplatform.emailConnector.model.SenderLogoOffer;
 import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.model.Profile;
@@ -121,7 +122,9 @@ class EmailSecurityServiceTest {
   @Test
   void theBrandLogoIsOfferedOnlyToAnUndoubtedStranger() {
     String logo = SenderLogoService.LOGO_PATH + "brand.example";
-    lenient().when(senderLogoService.logoUrlFor("news@brand.example", true, USER)).thenReturn(logo);
+    lenient().when(senderLogoService.offerFor(anyString(), org.mockito.ArgumentMatchers.anyBoolean(), anyString()))
+             .thenReturn(SenderLogoOffer.NONE);
+    lenient().when(senderLogoService.offerFor("news@brand.example", true, USER)).thenReturn(new SenderLogoOffer(logo, false));
 
     Email passed = stranger();
     passed.getContent().setDmarcPassed(true);
@@ -130,7 +133,7 @@ class EmailSecurityServiceTest {
 
     Email notPassed = stranger();
     service.decorate(notPassed, USER, false);
-    verify(senderLogoService).logoUrlFor("news@brand.example", false, USER);
+    verify(senderLogoService).offerFor("news@brand.example", false, USER);
     assertEquals(null, notPassed.getSender().getLogoUrl(), "no DMARC pass, no logo");
 
     clearInvocations(senderLogoService);
@@ -154,10 +157,32 @@ class EmailSecurityServiceTest {
     sent.setFolder(MailFolder.SENT);
     service.decorate(sent, USER, false);
 
-    verify(senderLogoService, never()).logoUrlFor(anyString(), org.mockito.ArgumentMatchers.anyBoolean(), anyString());
+    verify(senderLogoService, never()).offerFor(anyString(), org.mockito.ArgumentMatchers.anyBoolean(), anyString());
     for (Email email : List.of(doubted, platformUser, unresolved, sent)) {
       assertEquals(null, email.getSender().getLogoUrl());
+      assertFalse(email.getSender().isLogoPending());
     }
+  }
+
+  /**
+   * EXO-90909 -- a logo still being looked up for the reader is marked pending on the
+   * sender, so that the page shows it in place once told it was found; a cached logo,
+   * or none coming, is not pending.
+   */
+  @Test
+  void aLogoStillResolvingIsMarkedPending() {
+    when(senderLogoService.offerFor("news@brand.example", true, USER)).thenReturn(new SenderLogoOffer(null, true));
+    Email pending = stranger();
+    pending.getContent().setDmarcPassed(true);
+    service.decorate(pending, USER, false);
+    assertTrue(pending.getSender().isLogoPending());
+    assertEquals(null, pending.getSender().getLogoUrl());
+
+    when(senderLogoService.offerFor("news@brand.example", true, USER)).thenReturn(SenderLogoOffer.NONE);
+    Email none = stranger();
+    none.getContent().setDmarcPassed(true);
+    service.decorate(none, USER, false);
+    assertFalse(none.getSender().isLogoPending());
   }
 
   /**
