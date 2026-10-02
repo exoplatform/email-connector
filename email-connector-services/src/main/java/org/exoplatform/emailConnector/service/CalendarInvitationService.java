@@ -55,9 +55,12 @@ import org.exoplatform.emailConnector.model.CalendarInvitationPerson;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailDelegation;
+import org.exoplatform.emailConnector.model.CalendarLanding;
 import org.exoplatform.emailConnector.model.FolderRole;
+import org.exoplatform.emailConnector.model.HeldInvitation;
 import org.exoplatform.emailConnector.model.InvitationAnswer;
 import org.exoplatform.emailConnector.model.InvitationLanding;
+import org.exoplatform.emailConnector.model.InvitationProbe;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ParsedInvitation;
 import org.exoplatform.emailConnector.model.SendMode;
@@ -116,6 +119,15 @@ import io.meeds.social.util.JsonUtils;
  * its organiser cancelled it. For the user's own mailbox only: a shared mailbox's
  * invitation is its owner's event, and nothing here acts for anybody but the user who
  * clicked.
+ * <p>
+ * When the reader shows an invitation it would offer to add, the same add-on is asked
+ * whether the user's calendar holds it already (EXO-90873): answered on their phone, in
+ * another client, in their mail server's webmail. The card then says so, with the answer
+ * the calendar holds as the user's current one, and offers to add it only when the mail
+ * is the organiser's newer revision. The question is bounded and fails open
+ * ({@link InvitationLandingService#held}): the card's own request waits for it a few
+ * seconds at most, the message's body never does, and an add-on that cannot say in time
+ * leaves the card as it was.
  */
 @Service
 public class CalendarInvitationService {
@@ -220,7 +232,7 @@ public class CalendarInvitationService {
    */
   public CalendarInvitation getInvitation(long emailId, String username) throws ObjectNotFoundException, IllegalAccessException {
     Email email = ownedEmail(emailId, username);
-    return read(email, username).invitation();
+    return read(email, username, true).invitation();
   }
 
   /**
@@ -249,7 +261,9 @@ public class CalendarInvitationService {
       throw new IllegalArgumentException(INVALID_ANSWER);
     }
     Email email = ownedEmail(emailId, username);
-    ParsedInvitation parsed = read(email, username);
+    // Not asked whether the calendar holds it: the landing that follows the answer
+    // says what the calendar holds then.
+    ParsedInvitation parsed = read(email, username, false);
     CalendarInvitation invitation = parsed.invitation();
     if (invitation.isCancelled()) {
       throw new IllegalArgumentException(CANCELLED);
@@ -313,7 +327,9 @@ public class CalendarInvitationService {
    * answer: an invitation they do not want to answer yet, or a published event with
    * nobody to answer -- with the answer they already gave for this revision, when they
    * did, so the calendar says what the organiser was told. From the user's own mailbox
-   * only, never a cancelled event, and not after a decline.
+   * only, never a cancelled event, and not after a decline. An event the calendar holds
+   * already, and the mail is no newer revision of, is not handed over again: it is told
+   * as already held, with its link.
    *
    * @param emailId the cached message's technical id
    * @param username the user, who must own the cached row
@@ -328,13 +344,19 @@ public class CalendarInvitationService {
    */
   public CalendarInvitation addToCalendar(long emailId, String username) throws ObjectNotFoundException, IllegalAccessException {
     Email email = ownedEmail(emailId, username);
-    ParsedInvitation parsed = read(email, username);
+    ParsedInvitation parsed = read(email, username, true);
     CalendarInvitation invitation = parsed.invitation();
     if (emailDelegationService.delegationOf(username, email.getFolder()) != null) {
       throw new IllegalAccessException(NOT_LANDABLE);
     }
     if (invitation.isCancelled()) {
       throw new IllegalArgumentException(CANCELLED);
+    }
+    if (invitation.isHeld() && !invitation.isNewerRevision()) {
+      // Answered elsewhere since the card was shown: there is nothing to add.
+      invitation.setLanding(CalendarLanding.ALREADY_HELD);
+      invitation.setLandingLink(invitation.getHeldLink());
+      return invitation;
     }
     if (!invitation.isLandable()) {
       throw new IllegalArgumentException(NOT_LANDABLE);
@@ -362,7 +384,7 @@ public class CalendarInvitationService {
    */
   public CalendarInvitation removeFromCalendar(long emailId, String username) throws ObjectNotFoundException, IllegalAccessException {
     Email email = ownedEmail(emailId, username);
-    ParsedInvitation parsed = read(email, username);
+    ParsedInvitation parsed = read(email, username, false);
     CalendarInvitation invitation = parsed.invitation();
     if (emailDelegationService.delegationOf(username, email.getFolder()) != null) {
       throw new IllegalAccessException(NOT_LANDABLE);
@@ -449,15 +471,18 @@ public class CalendarInvitationService {
 
   /**
    * Reads, parses and describes a message's invitation for the user, with the address
-   * they answer for, the answer they gave, and whether they may answer.
+   * they answer for, the answer they gave, whether they may answer, and -- when asked --
+   * whether their calendar holds it already.
    *
    * @param email the user's message
    * @param username the user
+   * @param askHeld whether to ask the add-on holding the user's calendar whether it
+   *          holds the event already, a bounded wait
    * @return the invitation, decorated for the user
    * @throws ObjectNotFoundException when there is no iCalendar part any more
    * @throws IllegalAccessException when the user's connector is not usable
    */
-  private ParsedInvitation read(Email email, String username) throws ObjectNotFoundException, IllegalAccessException {
+  private ParsedInvitation read(Email email, String username, boolean askHeld) throws ObjectNotFoundException, IllegalAccessException {
     EmailAttachment part = calendarPart(email);
     if (part == null) {
       throw new ObjectNotFoundException(NOT_FOUND);
@@ -525,10 +550,45 @@ public class CalendarInvitationService {
     // The user's own calendar, from their own mailbox: a shared mailbox's invitation
     // is its owner's event. Asked only when there is a UID to land under.
     if (delegation == null && StringUtils.isNotBlank(invitation.getUid()) && invitationLandingService.holdsCalendarFor(username)) {
-      invitation.setLandable(addable(invitation));
+      if (askHeld && addableMethod(invitation) && !invitation.isCancelled()) {
+        applyHeld(invitation, invitationLandingService.held(new InvitationProbe(username,
+                                                                                 invitation.getAttendeeAddress(),
+                                                                                 invitation.getUid(),
+                                                                                 parsed.recurrenceId(),
+                                                                                 invitation.getOrganizer() == null ? null
+                                                                                                                   : invitation.getOrganizer()
+                                                                                                                               .getAddress())));
+      }
+      // Nothing to add when the calendar holds this revision already; its organiser's
+      // newer one is offered, as an update.
+      invitation.setLandable(addable(invitation) && (!invitation.isHeld() || invitation.isNewerRevision()));
       invitation.setRemovable(CalendarInvitationUtils.METHOD_CANCEL.equals(invitation.getMethod()));
     }
     return parsed;
+  }
+
+  /**
+   * Tells the invitation what the user's calendar holds of it: that it holds it, where,
+   * with which answer, and whether the mail is the organiser's newer revision. The held
+   * answer becomes the user's current one unless the mail is newer than the held copy:
+   * it is what the calendar, and every client of it, says the user answered last -- on
+   * their phone, say, after answering from here.
+   *
+   * @param invitation the invitation, with the answer read so far
+   * @param held the held copy, null when nothing is held
+   */
+  private static void applyHeld(CalendarInvitation invitation, HeldInvitation held) {
+    if (held == null) {
+      return;
+    }
+    invitation.setHeld(true);
+    invitation.setHeldLink(held.link());
+    invitation.setHeldResponse(held.answer());
+    boolean newer = invitation.getSequence() > held.sequence();
+    invitation.setNewerRevision(newer);
+    if (!newer && held.answer() != null) {
+      invitation.setAnswer(held.answer());
+    }
   }
 
   /**
@@ -564,10 +624,20 @@ public class CalendarInvitationService {
    * @return true when "Add to my calendar" may be offered
    */
   private static boolean addable(CalendarInvitation invitation) {
-    boolean addableMethod = invitation.getMethod() == null || CalendarInvitationUtils.METHOD_REQUEST.equals(invitation.getMethod())
+    return addableMethod(invitation) && StringUtils.isNotBlank(invitation.getUid()) && !invitation.isCancelled()
+        && !invitation.isExoMeeting() && invitation.getAnswer() != InvitationAnswer.DECLINED;
+  }
+
+  /**
+   * Whether the message is of a kind a calendar takes: an invitation, a published event,
+   * or an object naming no method.
+   *
+   * @param invitation the invitation
+   * @return true for a REQUEST, a PUBLISH or no method
+   */
+  private static boolean addableMethod(CalendarInvitation invitation) {
+    return invitation.getMethod() == null || CalendarInvitationUtils.METHOD_REQUEST.equals(invitation.getMethod())
         || CalendarInvitationUtils.METHOD_PUBLISH.equals(invitation.getMethod());
-    return addableMethod && StringUtils.isNotBlank(invitation.getUid()) && !invitation.isCancelled() && !invitation.isExoMeeting()
-        && invitation.getAnswer() != InvitationAnswer.DECLINED;
   }
 
   /**
