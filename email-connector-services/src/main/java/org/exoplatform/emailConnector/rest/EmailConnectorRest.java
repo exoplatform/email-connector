@@ -534,6 +534,44 @@ public class EmailConnectorRest {
   }
 
   /**
+   * Whether the reader shows a company sender's brand logo, administration-wide
+   * (EXO-90893).
+   *
+   * @param request the caller's request
+   * @return the switch
+   */
+  @GetMapping("/sender-logos")
+  @Secured("administrators")
+  @Operation(summary = "Gets whether senders' brand logos are shown", method = "GET", description = "This will get the administration-wide switch of the senders' brand logos, fetched by the server from the internet")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public boolean isSenderLogosEnabled(HttpServletRequest request) {
+    return emailConnectorService.isSenderLogosEnabled();
+  }
+
+  /**
+   * Switches the senders' brand logos on or off, administration-wide (EXO-90893).
+   *
+   * @param request the caller's request
+   * @param enabled whether brand logos should be shown
+   */
+  @PatchMapping("/sender-logos")
+  @Secured("administrators")
+  @Operation(summary = "Updates whether senders' brand logos are shown", method = "PATCH", description = "This will update the administration-wide switch of the senders' brand logos, fetched by the server from the internet")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation") })
+  public void updateSenderLogosEnabled(HttpServletRequest request,
+                                       @Parameter(description = "Whether senders' brand logos should be shown", required = true)
+                                       @RequestParam("enabled")
+                                       boolean enabled) {
+    try {
+      emailConnectorService.saveSenderLogosEnabled(enabled, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    }
+  }
+
+  /**
    * Creates email connector.
    *
    * @param request the caller's request, for the acting user

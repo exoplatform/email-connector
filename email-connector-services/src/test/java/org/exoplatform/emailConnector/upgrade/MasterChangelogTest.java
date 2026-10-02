@@ -1920,6 +1920,66 @@ public class MasterChangelogTest {
   }
 
   /**
+   * EXO-90893 -- 1.0.0-99 adds EMAIL_BOX.DMARC_PASS, null on a message cached before it
+   * (read as not passed); rolls back to a tag placed immediately before it, dropping
+   * that column and nothing else, the message kept; and applies again.
+   *
+   * @throws Exception when the changeset does not apply or roll back
+   */
+  @Test
+  void theDmarcPassRollsBackAndReapplies() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback99" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-99"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-dmarc-pass");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "DMARC_PASS"), "not before 1.0.0-99");
+      try (Statement statement = connection.createStatement()) {
+        statement.executeUpdate("INSERT INTO EMAIL_BOX (ID, USER_ID, SUBJECT, SENDER, RECEIVED_DATE, FOLDER)"
+            + " VALUES (1, 'bob', 's', 'Brand,news@brand.example', CURRENT_TIMESTAMP, 'INBOX')");
+      }
+      liquibase.update("");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "DMARC_PASS"), "1.0.0-99 adds EMAIL_BOX.DMARC_PASS");
+      try (Statement statement = connection.createStatement()) {
+        try (ResultSet row = statement.executeQuery("SELECT DMARC_PASS FROM EMAIL_BOX WHERE ID = 1")) {
+          assertTrue(row.next());
+          row.getBoolean(1);
+          assertTrue(row.wasNull(), "a message cached before it carries no verdict");
+        }
+        statement.executeUpdate("UPDATE EMAIL_BOX SET DMARC_PASS = TRUE WHERE ID = 1");
+      }
+      liquibase.rollback("before-dmarc-pass", "");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "DMARC_PASS"), "the rollback drops it");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "AUTH_FAILURE"), "and nothing before it");
+      try (Statement statement = connection.createStatement();
+          ResultSet row = statement.executeQuery("SELECT SUBJECT FROM EMAIL_BOX WHERE ID = 1")) {
+        assertTrue(row.next(), "the message itself survives the rollback");
+      }
+      liquibase.update("");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "DMARC_PASS"), "the changeset applies again after its rollback");
+    }
+  }
+
+  /**
+   * EXO-90893 -- 1.0.0-99 as MySQL and PostgreSQL would run it, bounded to its own
+   * changeset: one nullable boolean column, unquoted, and a rollback that drops it.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theDmarcPassOnMySqlAndPostgreSql() throws Exception {
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-99", "1.0.0-99").toUpperCase(Locale.ROOT);
+      assertTrue(update.contains("ALTER TABLE EMAIL_BOX ADD DMARC_PASS " + (vendor.startsWith("mysql") ? "TINYINT" : "BOOLEAN")),
+                 vendor + ": " + update);
+      assertFalse(update.contains("NOT NULL"), vendor + " the column is nullable: " + update);
+      assertFalse(update.contains("DEFAULT"), vendor + " no default: " + update);
+      assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-99", "1.0.0-99").toUpperCase(Locale.ROOT).trim();
+      assertEquals("ALTER TABLE EMAIL_BOX DROP COLUMN DMARC_PASS;", rollback, vendor + " rollback drops that column only");
+    }
+  }
+
+  /**
    * 1.0.0-52 is burned and must never be reused: the index that is 1.0.0-24 today
    * carried that id on feature/ai-contribution between 20 and 23 August 2026, and the
    * databases that ran the branch then hold a 1.0.0-52 row for it. A changeset's

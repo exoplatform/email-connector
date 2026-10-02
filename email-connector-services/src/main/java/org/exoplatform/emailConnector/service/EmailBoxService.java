@@ -15292,6 +15292,11 @@ public class EmailBoxService {
           // message carries (EXO-90841): read now, kept with the row for the reader's banner.
           emailContent.setAuthFailure(EmailSecurityUtils.authenticationFailure(message.getHeader(EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS),
                                                                               emailSender != null ? emailSender.getAddress() : null));
+          // And whether it passed DMARC for its From domain, which the sender's brand
+          // logo waits for (EXO-90893).
+          emailContent.setDmarcPassed(EmailSecurityUtils.dmarcPassed(message.getHeader(EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS),
+                                                                     emailSender != null ? emailSender.getAddress() : null,
+                                                                     EmailSecurityUtils.trustedAuthservIds()));
           String mailHeaderId = ((MimeMessage) message).getMessageID();
           String inReplyTo = firstHeader(message, HEADER_IN_REPLY_TO);
           String references = firstHeader(message, HEADER_REFERENCES);
