@@ -507,6 +507,7 @@ public class EmailFilterProposalService {
     mail.setMailRemoteId(email.getMailRemoteId());
     mail.setFolder(email.getFolder());
     mail.setMailHeaderId(email.getMailHeaderId());
+    mail.setThreadId(email.getThreadId());
     mail.setSubject(email.getSubject());
     mail.setSender(email.getSender());
     mail.setReceivedDate(email.getReceivedDate());

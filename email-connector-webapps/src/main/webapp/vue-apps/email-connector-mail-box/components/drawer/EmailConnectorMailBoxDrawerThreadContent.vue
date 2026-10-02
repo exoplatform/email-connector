@@ -61,7 +61,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          every message the user received in it, grouped by message, each group's header
          leading to its message below (EXO-90669). -->
     <email-connector-mail-box-drawer-automations
-      :email="email"
+      :email="openedMessage"
       :messages="isThread ? categorizableMessages : null"
       @go-to-message="goToMessage" />
     <!-- The messages of this conversation the folder list does not hold (a sent reply,
@@ -271,6 +271,20 @@ export default {
     // header already carries everything the menu would.
     isThread() {
       return this.categorizableMessages.length > 1;
+    },
+    /**
+     * The opened message as the conversation read it, once it landed: what the
+     * Automations panel asks about (EXO-90875). The copy the reader was opened on may
+     * come from the browser's cache and name a row since replaced, whose id the server
+     * no longer knows -- the panel, which reads what the rules did by that id, then
+     * shows nothing --; the conversation's copy names the row as it is. Until the
+     * conversation lands, it is the opened copy.
+     *
+     * @returns {Object} the opened message, or null when none is open
+     */
+    openedMessage() {
+      const key = this.openedKey;
+      return (key && this.threadLanded && this.messages.find(message => this.msgKey(message) === key)) || this.email;
     },
     // Whether the opened message is still only its list row in the reader: the body
     // the user opened is not on screen yet, whichever answer brings it.
