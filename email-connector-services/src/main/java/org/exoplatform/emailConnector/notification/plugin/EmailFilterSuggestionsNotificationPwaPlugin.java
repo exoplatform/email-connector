@@ -31,7 +31,7 @@ public class EmailFilterSuggestionsNotificationPwaPlugin implements PwaNotificat
 
   /**
    * The push message: the title, the sentence as plain text -- a push shows no markup --,
-   * the link to the mailbox.
+   * the link to the mailbox on its "Suggestions" view, as the web plugin wrote it.
    *
    * @param notification the notification
    * @param localeConfig the receiver's locale, unused: the sentence is already theirs

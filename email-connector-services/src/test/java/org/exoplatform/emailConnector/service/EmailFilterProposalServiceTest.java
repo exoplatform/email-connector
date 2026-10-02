@@ -41,6 +41,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
@@ -56,10 +57,14 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.ObjectProvider;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailFilterMatch;
 import org.exoplatform.emailConnector.model.EmailFilterProposal;
 import org.exoplatform.emailConnector.model.EmailFilterSuggestionCounts;
+import org.exoplatform.emailConnector.model.EmailWaitingSuggestionMail;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.plugin.EmailFilterAgentHandler;
+import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailFilterProposalStorage;
 import org.exoplatform.emailConnector.storage.EmailFilterStorage;
 
@@ -100,6 +105,12 @@ public class EmailFilterProposalServiceTest {
 
   @Mock
   private EmailFilterSuggestionDigest             suggestionDigest;
+
+  @Mock
+  private EmailBoxStorage                         emailBoxStorage;
+
+  @Mock
+  private EmailDelegationService                  emailDelegationService;
 
   @InjectMocks
   private EmailFilterProposalService              service;
@@ -352,6 +363,61 @@ public class EmailFilterProposalServiceTest {
     doThrow(new IllegalAccessException("emailConnector.rules.ownMailboxOnly")).when(emailFilterService).checkOwnMailbox(OWNER, 12L);
     assertThrows(IllegalAccessException.class, () -> service.getWaitingMails(OWNER, 12L));
     verify(storage).getWaitingMailHeaderIds(anyString(), any());
+  }
+
+  /**
+   * The Suggestions view lists the caller's own mails (EXO-90851): one row per message,
+   * by its newest listable copy, with how many suggestions wait on it -- the waiting read
+   * answers a Message-ID once per suggestion --, newest first as the cache answers them.
+   * The copies are read outside the folders the Favorites leave out and the caller's
+   * shared mailboxes' folders; a message with no such copy is not listed.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theWaitingEmailsAreOneRowPerMailWithItsWaitingCount() throws Exception {
+    when(storage.getWaitingMailHeaderIds(OWNER, new Date(NOW))).thenReturn(List.of("<a@x>", "<b@x>", "<a@x>", "<gone@x>"));
+    when(emailDelegationService.getDelegatedFolderKeys(OWNER)).thenReturn(List.of("CUSTOM:9"));
+    Email newestB = listed(11L, "CUSTOM:3", "<b@x>", 300);
+    Email newestA = listed(12L, MailFolder.INBOX, "<a@x>", 200);
+    Email olderA = listed(13L, MailFolder.ARCHIVE, "<a@x>", 100);
+    when(emailBoxStorage.getListedEmailsByMailHeaderIds(eq(OWNER), any(), any())).thenReturn(List.of(newestB, newestA, olderA));
+
+    List<EmailWaitingSuggestionMail> mails = service.getWaitingEmails(OWNER, null);
+
+    assertEquals(List.of(11L, 12L), mails.stream().map(EmailWaitingSuggestionMail::getEmailId).toList());
+    assertEquals(1, mails.get(0).getWaitingCount());
+    assertEquals(2, mails.get(1).getWaitingCount(), "two suggestions wait on <a@x>");
+    assertEquals(MailFolder.INBOX, mails.get(1).getFolder());
+    assertEquals(newestA.getMailRemoteId(), mails.get(1).getMailRemoteId());
+    assertEquals("<a@x>", mails.get(1).getMailHeaderId());
+    assertEquals("Subject 12", mails.get(1).getSubject());
+    assertEquals(new Date(200), mails.get(1).getReceivedDate());
+    assertEquals(true, mails.get(1).isRead());
+    assertEquals(false, mails.get(1).isStarred());
+    assertEquals(false, mails.get(0).isRead());
+    assertEquals(true, mails.get(0).isStarred());
+    assertEquals(true, mails.get(1).isCached());
+    verify(emailFilterService).checkOwnMailbox(OWNER, null);
+    verify(emailBoxStorage).getListedEmailsByMailHeaderIds(OWNER,
+                                                           Set.of("<a@x>", "<b@x>", "<gone@x>"),
+                                                           MailFolder.notFavoritedFolders(List.of("CUSTOM:9")));
+  }
+
+  /**
+   * A delegation is refused before anything is read, and nothing waiting reads no mail.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theWaitingEmailsAreTheCallersOwnAndReadNothingWhenNoneWaits() throws Exception {
+    doThrow(new IllegalAccessException("emailConnector.rules.ownMailboxOnly")).when(emailFilterService).checkOwnMailbox(OWNER, 12L);
+    assertThrows(IllegalAccessException.class, () -> service.getWaitingEmails(OWNER, 12L));
+    verifyNoInteractions(storage, emailBoxStorage, emailDelegationService);
+
+    when(storage.getWaitingMailHeaderIds(OWNER, new Date(NOW))).thenReturn(List.of());
+    assertEquals(List.of(), service.getWaitingEmails(OWNER, null));
+    verifyNoInteractions(emailBoxStorage, emailDelegationService);
   }
 
   /**
@@ -693,5 +759,27 @@ public class EmailFilterProposalServiceTest {
                                    proposal.getConversationId(),
                                    proposal.getResult(),
                                    proposal.getLastError());
+  }
+
+  /**
+   * A light listed copy of a message, as the cache's listed read answers it.
+   *
+   * @param id the cached row's id, also its UID and in its subject
+   * @param folder its folder
+   * @param mailHeaderId its Message-ID
+   * @param received its date, in ms
+   * @return the copy, read when its date is below 250 ms and starred otherwise
+   */
+  private static Email listed(long id, String folder, String mailHeaderId, long received) {
+    Email email = new Email();
+    email.setId(id);
+    email.setMailRemoteId(id + 1000);
+    email.setFolder(folder);
+    email.setMailHeaderId(mailHeaderId);
+    email.setSubject("Subject " + id);
+    email.setReceivedDate(new Date(received));
+    email.setRead(received < 250);
+    email.setStarred(received >= 250);
+    return email;
   }
 }
