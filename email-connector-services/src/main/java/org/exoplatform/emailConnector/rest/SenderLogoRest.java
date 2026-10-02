@@ -54,10 +54,11 @@ import jakarta.servlet.http.HttpServletRequest;
  * the server reach a domain of its choosing.
  * <p>
  * <b>How it is served.</b> As the type read from the image's own bytes (an SVG only
- * once sanitised), never sniffed again by the browser ({@code nosniff}), with a
- * Content-Security-Policy that forbids scripts, external loads and plugins and
- * sandboxes the document, should a browser ever open the logo as a page rather than as
- * an image, and kept by the browser for a day.
+ * once the platform's SVG check accepted it), never sniffed again by the browser
+ * ({@code nosniff}), with a Content-Security-Policy that forbids scripts, external loads
+ * and plugins and sandboxes the document, should a browser ever open the logo as a
+ * page rather than as an image -- it also covers the external {@code href} the SVG
+ * check lets through -- and kept by the browser for a day.
  */
 @RestController
 @RequestMapping("/email-box/sender-logo")

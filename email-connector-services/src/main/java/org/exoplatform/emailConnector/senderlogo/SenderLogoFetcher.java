@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.senderlogo;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -49,9 +50,9 @@ import org.springframework.stereotype.Component;
 
 import org.exoplatform.emailConnector.model.SenderLogo;
 import org.exoplatform.emailConnector.utils.SenderLogoUtils;
-import org.exoplatform.emailConnector.utils.SvgLogoSanitizer;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
+import org.exoplatform.upload.SvgUploadValidator;
 
 import jakarta.annotation.PreDestroy;
 
@@ -64,7 +65,10 @@ import jakarta.annotation.PreDestroy;
  * {@code brand.com}). Its logo is used only when the domain's DMARC policy is enforced
  * (its own {@code _dmarc} record, else its organisational domain's), as BIMI requires;
  * a domain that declines (an empty {@code l=}) gets no logo at all, its icon included.
- * BIMI logos are SVG and nothing else is accepted from one.
+ * BIMI logos are SVG and nothing else is accepted from one. An SVG, from BIMI or as an
+ * icon, is served only when the platform's own SVG upload check accepts it
+ * ({@link #isSafeSvg}); the endpoint's Content-Security-Policy covers what that check
+ * leaves, such as an external {@code href}, which no image renders.
  * <p>
  * <b>The icon.</b> {@code https://<organisational domain>/favicon.ico}, one request
  * (two redirects at most): the address every browser asks a site for, so a site with an
@@ -77,8 +81,9 @@ import jakarta.annotation.PreDestroy;
  * public addresses only, checked at every connection, redirects included), a connect
  * and a read timeout, a deadline over each fetch enforced by cancelling it, a body
  * limit counted on the decoded bytes, two redirects at most, the declared type checked
- * against the image types and the bytes against what they claim. <b>Nothing of the
- * platform goes out</b>: no cookie, no credentials, no referrer, no retry.
+ * against the image types and the bytes against what they claim. The guard and the
+ * fetch mirror agenda's {@code CalendarAddressGuard} and {@code CalendarFeedFetcher}.
+ * <b>Nothing of the platform goes out</b>: no cookie, no credentials, no referrer, no retry.
  * <p>
  * Any failure -- no DNS, no answer, a refused address, a wrong type, a body too large
  * -- is "no logo"; the caller caches that too.
@@ -133,6 +138,8 @@ public class SenderLogoFetcher {
   private final CloseableHttpClient      httpClient;
 
   private final ScheduledExecutorService deadlines;
+
+  private final SvgUploadValidator       svgValidator     = new SvgUploadValidator(MAX_BYTES);
 
   /**
    * The production fetcher.
@@ -240,20 +247,38 @@ public class SenderLogoFetcher {
     }
     if (location != null && dmarcEnforced(domain, organisational)) {
       byte[] svg = fetch(location, BIMI_TYPES);
-      byte[] clean = svg == null ? null : SvgLogoSanitizer.sanitize(svg);
-      if (clean != null && clean.length <= maxBytes) {
-        return new SenderLogo(clean, SenderLogoUtils.SVG, SenderLogo.SOURCE_BIMI, now);
+      if (svg != null && isSafeSvg(svg)) {
+        return new SenderLogo(svg, SenderLogoUtils.SVG, SenderLogo.SOURCE_BIMI, now);
       }
     }
     byte[] icon = fetch(String.format(iconUrl, organisational), ICON_TYPES);
     String type = SenderLogoUtils.sniffImageType(icon);
-    if (SenderLogoUtils.SVG.equals(type)) {
-      icon = SvgLogoSanitizer.sanitize(icon);
-    }
-    if (icon == null || icon.length > maxBytes) {
+    if (icon == null || SenderLogoUtils.SVG.equals(type) && !isSafeSvg(icon)) {
       return SenderLogo.none(now);
     }
     return new SenderLogo(icon, type, SenderLogo.SOURCE_ICON, now);
+  }
+
+  /**
+   * Whether an SVG logo is safe to serve, as the platform judges an uploaded SVG
+   * ({@code SvgUploadValidator}): well-formed, no document type declaration, no
+   * external entity or XInclude, no script, foreign object, frame, object, embed or
+   * applet, no event handler, no {@code javascript:} or {@code data:text/html} value, no
+   * {@code xml-stylesheet} instruction. An unsafe one is refused whole -- the domain
+   * gets its next fallback, never a cleaned copy. The validator parses by streaming, so
+   * no nesting depth exhausts the stack.
+   *
+   * @param svg the SVG bytes
+   * @return true when the platform's validator accepts them
+   */
+  boolean isSafeSvg(byte[] svg) {
+    try {
+      svgValidator.validate("logo.svg", SenderLogoUtils.SVG, new ByteArrayInputStream(svg));
+      return true;
+    } catch (Exception e) {
+      LOG.debug("An SVG logo was refused: {}", e.getMessage());
+      return false;
+    }
   }
 
   /**
