@@ -46,19 +46,85 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       class="pa-0"
       dense>
       <template v-for="item in items">
+        <!-- The name takes up to two lines, cut after them with its full text in the
+             tooltip; the switch and the icon buttons stay on the right, centered on its
+             first line. What the filter does and its statistics run below, the whole
+             row wide, so the buttons never squeeze them. -->
         <v-list-item
           :key="item.key"
-          class="pa-0"
+          class="pa-0 align-start"
           dense>
-          <v-list-item-content class="me-2 pa-0">
-            <v-list-item-title class="text-truncate">{{ item.name }}</v-list-item-title>
+          <div class="d-flex flex-column flex-grow-1 py-1 text-start" style="min-width: 0">
+            <div class="d-flex align-start">
+              <!-- The 36px buttons centered on the name's first 16px line. -->
+              <div class="flex-grow-1 me-2" style="min-width: 0; padding-top: 10px">
+                <v-list-item-title :title="item.name" class="text-wrap text-truncate-2">{{ item.name }}</v-list-item-title>
+              </div>
+              <div class="d-flex align-center flex-shrink-0">
+                <v-switch
+                  :input-value="item.enabled"
+                  :disabled="saving"
+                  :aria-label="$t('UserSettings.emailConnector.filters.form.enabled')"
+                  :ripple="false"
+                  class="ma-0 pa-0 width-fit-content"
+                  hide-details
+                  @change="toggle(item, $event)" />
+                <!-- The server's order is the server's: only eXo's filters move, among
+                     themselves. With fewer than two of them nothing moves, and the arrows
+                     give their room back to the text. -->
+                <v-btn
+                  v-if="reorderable"
+                  :class="!canMove(item, -1) && 'invisible'"
+                  :disabled="saving || !canMove(item, -1)"
+                  :title="$t('UserSettings.emailConnector.filters.exo.up')"
+                  :aria-label="$t('UserSettings.emailConnector.filters.exo.up')"
+                  icon
+                  @click="move(item, -1)">
+                  <v-icon size="18">fas fa-arrow-up</v-icon>
+                </v-btn>
+                <v-btn
+                  v-if="reorderable"
+                  :class="!canMove(item, 1) && 'invisible'"
+                  :disabled="saving || !canMove(item, 1)"
+                  :title="$t('UserSettings.emailConnector.filters.exo.down')"
+                  :aria-label="$t('UserSettings.emailConnector.filters.exo.down')"
+                  icon
+                  @click="move(item, 1)">
+                  <v-icon size="18">fas fa-arrow-down</v-icon>
+                </v-btn>
+                <v-btn
+                  :class="item.kind === 'SERVER' && 'invisible'"
+                  :disabled="item.kind === 'SERVER'"
+                  :title="$t('UserSettings.emailConnector.filters.exo.log')"
+                  :aria-label="$t('UserSettings.emailConnector.filters.exo.log')"
+                  icon
+                  @click="openLog(item)">
+                  <v-icon size="18">fas fa-history</v-icon>
+                </v-btn>
+                <v-btn
+                  :title="$t('UserSettings.emailConnector.filters.edit')"
+                  :aria-label="$t('UserSettings.emailConnector.filters.edit')"
+                  icon
+                  @click="$emit('edit', item)">
+                  <v-icon size="18">fas fa-edit</v-icon>
+                </v-btn>
+                <v-btn
+                  :title="$t('UserSettings.emailConnector.filters.delete')"
+                  :aria-label="$t('UserSettings.emailConnector.filters.delete')"
+                  icon
+                  @click="askDelete(item)">
+                  <v-icon size="18" color="error">fas fa-trash</v-icon>
+                </v-btn>
+              </div>
+            </div>
             <v-list-item-subtitle class="text-wrap">{{ summary(item) }}</v-list-item-subtitle>
-            <v-list-item-subtitle v-if="item.kind !== 'SERVER'" class="text-wrap">
-              {{ $t('UserSettings.emailConnector.filters.exo.matches', { 0: item.matchCount || 0 }) }}
-            </v-list-item-subtitle>
-            <!-- What the user decided on the rule's suggestions (EXO-90668), once it has any. -->
-            <v-list-item-subtitle v-if="suggestionCounts[item.id]" class="text-wrap">
-              {{ suggestionLine(suggestionCounts[item.id]) }}
+            <!-- What the filter matched, and what the user decided on its suggestions
+                 (EXO-90668) once it has any: a line each, one line in an expanded drawer. -->
+            <v-list-item-subtitle
+              v-for="(line, index) in statsLines(item)"
+              :key="`${item.key}-stats-${index}`"
+              class="text-wrap">
+              {{ line }}
             </v-list-item-subtitle>
             <div v-if="item.lastError" class="d-flex flex-wrap mt-1">
               <v-chip
@@ -84,74 +150,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 {{ $t('UserSettings.emailConnector.filters.republish') }}
               </v-btn>
             </div>
-          </v-list-item-content>
-          <v-list-item-action class="mx-0 my-auto">
-            <v-switch
-              :input-value="item.enabled"
-              :disabled="saving"
-              :aria-label="$t('UserSettings.emailConnector.filters.form.enabled')"
-              :ripple="false"
-              class="ma-0 width-fit-content"
-              hide-details
-              @change="toggle(item, $event)" />
-          </v-list-item-action>
-          <!-- The server's order is the server's: only eXo's filters move, among
-               themselves. With fewer than two of them nothing moves, and the arrows give
-               their room back to the text. -->
-          <v-list-item-action
-            v-if="reorderable"
-            :class="!canMove(item, -1) && 'invisible'"
-            class="mx-0 my-auto">
-            <v-btn
-              :disabled="saving || !canMove(item, -1)"
-              :title="$t('UserSettings.emailConnector.filters.exo.up')"
-              :aria-label="$t('UserSettings.emailConnector.filters.exo.up')"
-              icon
-              @click="move(item, -1)">
-              <v-icon size="18">fas fa-arrow-up</v-icon>
-            </v-btn>
-          </v-list-item-action>
-          <v-list-item-action
-            v-if="reorderable"
-            :class="!canMove(item, 1) && 'invisible'"
-            class="mx-0 my-auto">
-            <v-btn
-              :disabled="saving || !canMove(item, 1)"
-              :title="$t('UserSettings.emailConnector.filters.exo.down')"
-              :aria-label="$t('UserSettings.emailConnector.filters.exo.down')"
-              icon
-              @click="move(item, 1)">
-              <v-icon size="18">fas fa-arrow-down</v-icon>
-            </v-btn>
-          </v-list-item-action>
-          <v-list-item-action :class="item.kind === 'SERVER' && 'invisible'" class="mx-0 my-auto">
-            <v-btn
-              :disabled="item.kind === 'SERVER'"
-              :title="$t('UserSettings.emailConnector.filters.exo.log')"
-              :aria-label="$t('UserSettings.emailConnector.filters.exo.log')"
-              icon
-              @click="openLog(item)">
-              <v-icon size="18">fas fa-history</v-icon>
-            </v-btn>
-          </v-list-item-action>
-          <v-list-item-action class="mx-0 my-auto">
-            <v-btn
-              :title="$t('UserSettings.emailConnector.filters.edit')"
-              :aria-label="$t('UserSettings.emailConnector.filters.edit')"
-              icon
-              @click="$emit('edit', item)">
-              <v-icon size="18">fas fa-edit</v-icon>
-            </v-btn>
-          </v-list-item-action>
-          <v-list-item-action class="mx-0 my-auto">
-            <v-btn
-              :title="$t('UserSettings.emailConnector.filters.delete')"
-              :aria-label="$t('UserSettings.emailConnector.filters.delete')"
-              icon
-              @click="askDelete(item)">
-              <v-icon size="18" color="error">fas fa-trash</v-icon>
-            </v-btn>
-          </v-list-item-action>
+          </div>
         </v-list-item>
       </template>
     </v-list>
@@ -190,6 +189,11 @@ export default {
     // Whether a filter may run on the mail server: the line on the order the server's and
     // eXo's filters apply in is shown only then.
     serverFilters: {
+      type: Boolean,
+      default: false,
+    },
+    // Whether the drawer is expanded: a filter's statistics then share one line.
+    expanded: {
       type: Boolean,
       default: false,
     },
@@ -297,6 +301,24 @@ export default {
         3: counts.waiting || 0,
         4: counts.handedOver || 0,
       });
+    },
+    /**
+     * A filter's statistics: what it matched, for a filter eXo runs, and what the user
+     * decided on its suggestions, once it has any. A line each, joined into one when the
+     * drawer is expanded and has the width for it.
+     *
+     * @param {Object} item - the filter
+     * @returns {String[]} the localized lines
+     */
+    statsLines(item) {
+      const lines = [];
+      if (item.kind !== 'SERVER') {
+        lines.push(this.$t('UserSettings.emailConnector.filters.exo.matches', { 0: item.matchCount || 0 }));
+      }
+      if (this.suggestionCounts[item.id]) {
+        lines.push(this.suggestionLine(this.suggestionCounts[item.id]));
+      }
+      return this.expanded && lines.length > 1 ? [lines.join(' · ')] : lines;
     },
     /**
      * Reads eXo's filters; a deployment that switched them off is told to the drawer,
