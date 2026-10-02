@@ -17,8 +17,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- The mailbox's advanced search (EXO-90838), a drawer over the mailbox like its other
        pickers: the sender, a recipient, words of the subject or the message, a range of
-       days, the folder, the messages with an attachment, and the categories eXo filed
-       them under (EXO-90888). Unread and Favorites are the search row's own chips, never
+       days, the folder, the messages with an attachment -- of some kinds, or with a name,
+       when it is checked (EXO-90910) -- and the categories eXo filed them under
+       (EXO-90888). Unread and Favorites are the search row's own chips, never
        set here.
        Laid out like the platform's drawer forms: a plain label above each field, the two
        days as two date pickers side by side, empty meaning no bound. "Search" hands the
@@ -162,6 +163,38 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           class="mt-4"
           hide-details
           dense />
+        <template v-if="criteria.attachment">
+          <!-- What the attachment must be (EXO-90910): one of some kinds, several at once,
+               and a text its name contains. eXo tells them from the attachments it holds,
+               so only mail it holds can match. -->
+          <div class="mt-4 mb-2">{{ $t('emailConnector.mailBox.search.advanced.attachmentType') }}</div>
+          <v-select
+            ref="attachmentTypeSelect"
+            v-model="criteria.attachmentTypes"
+            :items="attachmentTypeOptions"
+            :menu-props="{ bottom: true, offsetY: true }"
+            :placeholder="$t('emailConnector.mailBox.search.advanced.attachmentType.none')"
+            :aria-label="$t('emailConnector.mailBox.search.advanced.attachmentType')"
+            class="pa-0"
+            multiple
+            small-chips
+            deletable-chips
+            dense
+            outlined
+            hide-details
+            @blur="$refs.attachmentTypeSelect.blur()" />
+          <div class="mt-4 mb-2">{{ $t('emailConnector.mailBox.search.advanced.attachmentName') }}</div>
+          <v-text-field
+            v-model="criteria.attachmentName"
+            :placeholder="$t('emailConnector.mailBox.search.advanced.attachmentName.placeholder')"
+            :aria-label="$t('emailConnector.mailBox.search.advanced.attachmentName')"
+            :maxlength="ATTACHMENT_NAME_MAX_LENGTH"
+            class="border-box-sizing width-auto pt-0"
+            type="text"
+            outlined
+            dense
+            hide-details />
+        </template>
         <!-- Submitted by the Enter key from a text field. -->
         <button type="submit" class="d-none"></button>
       </v-form>
@@ -185,7 +218,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { OPEN_ADVANCED_SEARCH_EVENT, APPLY_ADVANCED_SEARCH_EVENT } from '../../js/EmailConnectorMailBoxAdvancedSearchMixin.js';
-import { emptySearchCriteria, nextSearchDay } from '../../js/EmailConnectorMailBoxSearchCriteria.js';
+import { ATTACHMENT_NAME_MAX_LENGTH, ATTACHMENT_TYPES, emptySearchCriteria, nextSearchDay } from '../../js/EmailConnectorMailBoxSearchCriteria.js';
 
 // The longest text a field takes: a criterion, not a document.
 const MAX_TEXT_LENGTH = 200;
@@ -193,9 +226,10 @@ const MAX_TEXT_LENGTH = 200;
 export default {
   data: () => ({
     MAX_TEXT_LENGTH,
+    ATTACHMENT_NAME_MAX_LENGTH,
     drawer: false,
     // The criteria being edited: {from, to, words, after, before, attachment, folder,
-    // categoryIds}.
+    // categoryIds, attachmentTypes, attachmentName}.
     criteria: emptySearchCriteria(),
     // The folders the search offers, [{key, label}], and the one shown when it opened.
     folders: [],
@@ -204,6 +238,14 @@ export default {
     shownFolder: null,
   }),
   computed: {
+    /**
+     * The kinds of attachment offered (EXO-90910), each by its translated name.
+     *
+     * @returns {Array} [{value, text}]
+     */
+    attachmentTypeOptions() {
+      return ATTACHMENT_TYPES.map(type => ({ value: type, text: this.$t(`emailConnector.mailBox.search.advanced.attachmentType.${type}`) }));
+    },
     /**
      * The latest first day: the day before the excluded last one.
      *
@@ -242,19 +284,28 @@ export default {
       this.criteria = { ...emptySearchCriteria(), ...(search?.criteria || {}) };
       // A copy: the list is edited here, the search's own only once applied.
       this.criteria.categoryIds = [...(this.criteria.categoryIds || [])];
+      this.criteria.attachmentTypes = [...(this.criteria.attachmentTypes || [])];
       this.shownFolder = search?.shownFolder || this.criteria.folder;
       this.folders = search?.folders || [];
       this.categories = search?.categories || [];
       this.$refs.drawer.open();
     },
     /**
-     * Hands the criteria to the mailbox drawer, which searches, and closes.
+     * Hands the criteria to the mailbox drawer, which searches, and closes. The kinds and
+     * the name of an attachment go only with an attachment asked for: unchecking it
+     * drops them (EXO-90910).
      *
      * @returns {void}
      */
     apply() {
+      const attachment = !!this.criteria.attachment;
       this.$root.$emit(APPLY_ADVANCED_SEARCH_EVENT, {
-        criteria: { ...this.criteria, categoryIds: [...(this.criteria.categoryIds || [])] },
+        criteria: {
+          ...this.criteria,
+          categoryIds: [...(this.criteria.categoryIds || [])],
+          attachmentTypes: attachment ? [...(this.criteria.attachmentTypes || [])] : [],
+          attachmentName: attachment ? (this.criteria.attachmentName || '').trim() : '',
+        },
       });
       this.$refs.drawer.close();
     },
