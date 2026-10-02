@@ -37,6 +37,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -236,7 +237,7 @@ public class EmailConnectorUtils {
   // Who a sender's or a recipient's address belongs to, when a message is read with its
   // profiles: the EmailSenderProfileService registers its own matching and cache here
   // (EXO-90891); until it has, the account address alone (getUserProfileByEmail).
-  private static volatile Function<String, Profile> senderProfileResolver;
+  private static final AtomicReference<Function<String, Profile>> SENDER_PROFILE_RESOLVER = new AtomicReference<>();
 
   /**
    * Extracts a message's displayable body and attachment descriptors, without
@@ -549,7 +550,7 @@ public class EmailConnectorUtils {
    * @param resolver the resolver, or null for the account address alone
    */
   public static void setSenderProfileResolver(Function<String, Profile> resolver) {
-    senderProfileResolver = resolver;
+    SENDER_PROFILE_RESOLVER.set(resolver);
   }
 
   /**
@@ -560,7 +561,7 @@ public class EmailConnectorUtils {
    * @return the profile, or null for nobody
    */
   private static Profile senderProfile(String address) {
-    Function<String, Profile> resolver = senderProfileResolver;
+    Function<String, Profile> resolver = SENDER_PROFILE_RESOLVER.get();
     return resolver != null ? resolver.apply(address) : getUserProfileByEmail(address);
   }
 

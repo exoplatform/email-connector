@@ -15,9 +15,14 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- The selection's actions alone, centred in the reading pane; how many mails are
-       selected is said beside the select-all control at the top of the list. -->
-  <div class="d-flex align-center justify-center full-height full-width pa-4">
+  <!-- The selection's actions, centred in the reading pane, under how many mails they
+       act on (EXO-90891); the select-all row at the top of the list says it too. -->
+  <div class="d-flex flex-column align-center justify-center full-height full-width pa-4">
+    <div
+      class="multi-select-count font-weight-bold text-subtitle-1 text-center mb-4"
+      aria-live="polite">
+      {{ countLabel }}
+    </div>
     <email-connector-mail-box-drawer-actions
       class="full-width"
       select-mode
@@ -36,6 +41,18 @@ export default {
     selectedEmails: {
       type: Array,
       default: () => [],
+    },
+  },
+  computed: {
+    /**
+     * How many mails the actions below act on.
+     *
+     * @returns {String} "1 selected email", "N selected emails"
+     */
+    countLabel() {
+      return this.selectedEmails.length === 1
+        ? this.$t('emailConnector.mailBox.list.drawer.multiSelect.selectedOne')
+        : this.$t('emailConnector.mailBox.list.drawer.multiSelect.selectedMany', { 0: this.selectedEmails.length });
     },
   },
 };
