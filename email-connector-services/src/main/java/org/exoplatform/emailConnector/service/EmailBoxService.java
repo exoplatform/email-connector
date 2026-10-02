@@ -7374,8 +7374,8 @@ public class EmailBoxService {
    * @return the newest matching messages of the copy and how many matched
    * @throws IllegalAccessException if the user may not read their mailbox
    * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for any
-   *           other folder, and the codes of {@link #validateSearchCriteria} and
-   *           {@link #searchCategoryIds}
+   *           other folder, and the codes of {@link #validateSearchCriteria},
+   *           {@link #searchAttachmentTypes} and {@link #searchCategoryIds}
    * @throws DelegationRevokedException when the folder's share is no longer accepted
    */
   public EmailSearchResultPage searchCachedFolder(String username,

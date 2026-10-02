@@ -100,9 +100,9 @@ public enum SearchAttachmentType {
   }
 
   /**
-   * Whether an attachment eXo stores is of this kind: by its MIME type, or by its name's
-   * extension when the MIME type does not tell. Case does not matter, nor a parameter of
-   * the MIME type ({@code application/pdf; name=a.pdf}).
+   * Whether an attachment eXo stores is of this kind: by its MIME type or by its name's
+   * extension, either one sufficing. Case does not matter, nor a parameter of the MIME
+   * type ({@code application/pdf; name=a.pdf}).
    *
    * @param name the attachment's file name, may be null
    * @param mimeType the attachment's stored MIME type, may be null
