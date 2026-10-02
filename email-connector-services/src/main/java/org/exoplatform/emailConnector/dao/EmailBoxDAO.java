@@ -257,6 +257,25 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   int limit);
 
   /**
+   * One message of a mailbox sent from an address, if there is any (EXO-90891): what
+   * lets the mail list name the owner of a connected mailbox only to a user who holds
+   * mail from it. The sender column stores {@code name,address}, or the address alone;
+   * both sides are lowered, so the match ignores case on every database.
+   *
+   * @param userId the mailbox owner: only their own rows are read
+   * @param pattern the lower-cased {@code %,address} pattern, its {@code %}, {@code _}
+   *          and {@code !} escaped with {@code !}
+   * @param address the lower-cased address, for a column holding it alone
+   * @return the id of one such message, or an empty list
+   */
+  @Query("SELECT email.id FROM EmailBoxEntity email WHERE email.userId = :userId"
+      + " AND (LOWER(email.sender) LIKE :pattern ESCAPE '!' OR LOWER(email.sender) = :address) LIMIT 1")
+  List<Long> findOneIdBySenderAddress(@Param("userId")
+  String userId, @Param("pattern")
+  String pattern, @Param("address")
+  String address);
+
+  /**
    * The starred subset of a folder, for the list's starred filter. A dedicated query
    * rather than a flag on {@link #findByUserIdAndFolderWithAttachments} so the common
    * unfiltered listing keeps its exact plan, and the filter runs in SQL instead of
