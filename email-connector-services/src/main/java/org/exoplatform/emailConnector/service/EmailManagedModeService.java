@@ -94,10 +94,23 @@ public class EmailManagedModeService {
    * @return true when the choice applies to them
    */
   public boolean isManagedFor(String username) {
+    return designatedConnectorFor(username) != null;
+  }
+
+  /**
+   * The connector this user is to be attached to at login, or null when managed mode
+   * does not apply to them - nothing designated, or a population the administrator
+   * excluded. The caller does not need to know which: in both cases it does nothing.
+   * Recomputed on every call, never stored.
+   *
+   * @param username the eXo login, null or blank for an anonymous caller
+   * @return the designated connector's id, or null
+   */
+  public Long designatedConnectorFor(String username) {
     if (StringUtils.isBlank(username)) {
-      return false;
+      return null;
     }
-    return managedConnectorService.designatedConnectorFor(EmailCredentialsResolver.CONNECTOR_KIND, username) != null;
+    return managedConnectorService.designatedConnectorFor(EmailCredentialsResolver.CONNECTOR_KIND, username);
   }
 
   /**

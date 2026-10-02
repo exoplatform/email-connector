@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -28,6 +29,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -1009,6 +1011,76 @@ public class UserEmailSettingServiceTest {
   }
 
   /**
+   * The managed enrolment's attach: a connection the user saves while the mailbox
+   * is being probed stands. The setting read again before the write names a
+   * connector by then, so nothing is written and the connect says so.
+   */
+  @Test
+  @SneakyThrows
+  void aConnectionSavedDuringTheProbeIsNotReplaced() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
+    when(emailCredentialsResolver.targetAccount(1L, "bluemind-sudo", TEST_USER)).thenReturn("eric@bm.example.org");
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any()))
+        .thenReturn(mock(Authenticator.class));
+    java.util.concurrent.atomic.AtomicBoolean saved = new java.util.concurrent.atomic.AtomicBoolean();
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY)))
+        .thenAnswer(invocation -> saved.get() ? SettingValue.create("{\"emailConnectorId\":\"2\",\"emailAddress\":\"eric@own.example.org\"}")
+                                              : null);
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+      when(store.isConnected()).thenReturn(true);
+      // The user saves their own connection while the managed mailbox is probed.
+      doAnswer(invocation -> {
+        saved.set(true);
+        return null;
+      }).when(store).connect();
+
+      assertFalse(userEmailSettingService.connectThroughProvider(1L, TEST_USER, true));
+
+      verify(store).connect();
+      verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any());
+    }
+  }
+
+  /**
+   * The user's own one-click connect is not the managed attach: reconnecting to
+   * the connector their stored setting already names records the new connection.
+   * Kills the mutant that drops {@code byManagedMode &&} from the re-read guard.
+   */
+  @Test
+  @SneakyThrows
+  void aUserReconnectingThroughTheProviderReplacesTheirStoredConnection() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
+    when(emailCredentialsResolver.targetAccount(1L, "bluemind-sudo", TEST_USER)).thenReturn("eric@bm.example.org");
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any()))
+        .thenReturn(mock(Authenticator.class));
+    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY)))
+        .thenAnswer(invocation -> SettingValue.create("{\"emailConnectorId\":\"1\",\"emailAddress\":\"eric@old.example.org\"}"));
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+      when(store.isConnected()).thenReturn(true);
+
+      userEmailSettingService.connectThroughProvider(1L, TEST_USER);
+
+      ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
+      verify(settingService).set(any(Context.class), any(Scope.class), anyString(), stored.capture());
+      String document = String.valueOf(stored.getValue().getValue());
+      assertTrue(document, document.contains("eric@bm.example.org"));
+    }
+  }
+
+  /**
    * A connector that does expect typed credentials is refused here, and no mailbox
    * is opened: connecting it with no credentials at all would record an account
    * nobody proved anything about.
@@ -1082,10 +1154,32 @@ public class UserEmailSettingServiceTest {
       when(session.getStore()).thenReturn(store);
       doThrow(new MessagingException("refused")).when(store).connect();
 
-      assertThrows(IllegalStateException.class, () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+      IllegalStateException refusal = assertThrows(IllegalStateException.class,
+                                                   () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
 
+      // The cause travels with the refusal: it is the only thing that says why.
+      assertInstanceOf(MessagingException.class, refusal.getCause());
       verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
     }
+  }
+
+  /**
+   * Only a refusal becomes the connect's IllegalStateException. Any other failure
+   * propagates as it is, so a caller can tell "the server said no" from "something
+   * broke" - the login-time enrolment logs the first at INFO and the second at WARN
+   * with its stack.
+   */
+  @Test
+  @SneakyThrows
+  void letsAFailureThatIsNotARefusalPropagate() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
+    when(emailCredentialsResolver.targetAccount(1L, "bluemind-sudo", TEST_USER)).thenReturn("eric@bm.example.org");
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any()))
+        .thenThrow(new UnsupportedOperationException("boom"));
+
+    assertThrows(UnsupportedOperationException.class, () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
   }
 
   private EmailConnector providerBackedConnector() {
