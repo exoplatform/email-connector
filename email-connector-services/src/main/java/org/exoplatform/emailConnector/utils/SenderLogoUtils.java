@@ -35,7 +35,7 @@ import org.apache.hc.client5.http.psl.PublicSuffixMatcherLoader;
  */
 public final class SenderLogoUtils {
 
-  /** The type a sanitised SVG logo is served as. */
+  /** The type an SVG logo is served as. */
   public static final String       SVG                 = "image/svg+xml";
 
   /** The type a PNG logo is served as. */
@@ -206,7 +206,6 @@ public final class SenderLogoUtils {
     }
     return i;
   }
-
 
   /**
    * What a domain's BIMI records say about its logo.
