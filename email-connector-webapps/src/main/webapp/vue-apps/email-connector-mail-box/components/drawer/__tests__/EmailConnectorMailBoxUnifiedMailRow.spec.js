@@ -318,10 +318,17 @@ describe('the folder list\'s row as a list of hits uses it (EXO-90871)', () => {
     expect(wrapper.find('.row-not-cached').exists()).toBe(false);
   });
 
-  it('names the folder the row sits in when asked, as the folder column names it, the key until the folders land', async () => {
+  it('names the folder the row sits in when asked, after the sender on the first line (EXO-90882), as the folder column names it, the key until the folders land', async () => {
     // Drawn before the mailbox's folders answered: the key, then the name follows them.
     wrapper = mountRow({ email: hit(5, 'CUSTOM:1'), showFolder: true });
     expect(wrapper.find('.row-folder').text()).toBe('CUSTOM:1');
+    // On the sender's line, after the name, which gives way first; never on the subject's.
+    const title = wrapper.find('v-list-item-title');
+    expect(title.find('.row-folder').exists()).toBe(true);
+    expect(title.element.firstElementChild.classList.contains('text-truncate')).toBe(true);
+    expect(title.element.firstElementChild.textContent).toBe('Alice');
+    expect(title.find('.row-folder').classes()).toContain('flex-shrink-0');
+    expect(wrapper.findAll('v-list-item-subtitle').wrappers.some(line => line.find('.row-folder').exists())).toBe(false);
     await wrapper.setProps({ folders: FOLDERS });
     expect(wrapper.find('.row-folder').text()).toBe('Factures');
 
