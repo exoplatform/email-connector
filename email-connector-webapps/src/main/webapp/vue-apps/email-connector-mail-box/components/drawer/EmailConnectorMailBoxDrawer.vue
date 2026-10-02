@@ -1546,10 +1546,16 @@ export default {
     }
   },
   watch: {
-    // The category view changed (opened, replaced or left — from the ⋮ menu or
-    // the Important shortcut chip): expand it to its subcategories, which is
-    // what rows are matched against. The token drops an expansion that
-    // finishes after a newer change already superseded it.
+    /**
+     * The category view changed (opened, replaced or left -- from the folder column,
+     * the 3-dots menu or the Important shortcut chip): expands it to its subcategories,
+     * which is what rows are matched against, or to the category alone when the
+     * expansion fails. The token drops an expansion that finishes after a newer change
+     * already superseded it.
+     *
+     * @param {Number} id the category id, null when the view is left
+     * @returns {Promise<void>} resolved once expanded
+     */
     async categoryViewId(id) {
       this.cancelSelectMode();
       const token = ++this.categoryExpansionToken;
@@ -1567,16 +1573,13 @@ export default {
         }
       }
     },
+    /**
+     * The list changed: the reader leaves a mail it no longer lists.
+     *
+     * @returns {void}
+     */
     emails() {
-      // A search hit, or a mail opened from the Favorites drawer, is often outside
-      // the listed folder view; a background refresh must not knock it out for the
-      // placeholder.
-      if (this.searchActive || this.pinnedEmail) {
-        return;
-      }
-      if (this.email && !this.emails.some(e => e.mailRemoteId === this.email.mailRemoteId)) {
-        this.selectEmailPlaceHolder = true;
-      }
+      this.leaveUnlistedEmail();
     },
     /**
      * Opens the first mail a pending full-screen opening was waiting for, as soon as
@@ -2884,8 +2887,30 @@ export default {
       if (endedSearch) {
         this.clearSearch();
         this.resetSearchField();
+        // The category lit already: neither its watcher nor the list's fires, so the
+        // reader leaves the hit and the category's first mail opens from here.
+        if (this.categoryViewId === categoryId) {
+          this.leaveUnlistedEmail();
+          this.openFirstAfterNavigation();
+          return;
+        }
       }
       this.categoryViewId = !endedSearch && this.categoryViewId === categoryId ? null : categoryId;
+    },
+    /**
+     * Shows the placeholder in place of a mail the list no longer holds. A search hit,
+     * or a mail opened from the Favorites drawer, is often outside the listed folder
+     * view; a background refresh must not knock it out for the placeholder.
+     *
+     * @returns {void}
+     */
+    leaveUnlistedEmail() {
+      if (this.searchActive || this.pinnedEmail) {
+        return;
+      }
+      if (this.email && !this.emails.some(e => e.mailRemoteId === this.email.mailRemoteId)) {
+        this.selectEmailPlaceHolder = true;
+      }
     },
     /**
      * Clears every filter narrowing the list -- the category view, the Unread and
