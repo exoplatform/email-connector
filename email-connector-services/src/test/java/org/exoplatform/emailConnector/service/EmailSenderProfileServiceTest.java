@@ -515,19 +515,52 @@ class EmailSenderProfileServiceTest {
   }
 
   /**
-   * The directory's answer.
+   * The directory's answer, as the platform's IDM list access behaves: it reports its
+   * size, and refuses a load past it ("Try to get more than number users can retrieve").
    *
    * @param users the users found
    * @return the list access
    */
-  @SuppressWarnings("unchecked")
   private ListAccess<User> listOf(User... users) {
-    ListAccess<User> list = mock(ListAccess.class);
-    try {
-      lenient().when(list.load(0, 10)).thenReturn(users);
-    } catch (Exception e) {
-      throw new IllegalStateException(e);
-    }
-    return list;
+    return new ListAccess<User>() {
+      /**
+       * Loads a slice, refused past the size as the IDM list refuses it.
+       *
+       * @param index the first user
+       * @param length how many users
+       * @return the slice
+       */
+      @Override
+      public User[] load(int index, int length) {
+        if (index + length > users.length) {
+          throw new IllegalArgumentException("Try to get more than number users can retrieve");
+        }
+        return java.util.Arrays.copyOfRange(users, index, index + length);
+      }
+
+      /**
+       * The number of users found.
+       *
+       * @return the size
+       */
+      @Override
+      public int getSize() {
+        return users.length;
+      }
+    };
+  }
+
+  /**
+   * EXO-90893 -- a directory query matching fewer users than the candidates read is
+   * loaded up to its own size, never past it, which the IDM list refuses: the address
+   * names its user instead of failing as "nobody this time", and an empty answer reads
+   * nobody without a load at all.
+   */
+  @Test
+  void aDirectoryAnswerIsLoadedWithinItsSize() {
+    accounts.put("Bob@Example.org", "bob");
+    enabledUser("bob", "bob-avatar");
+    assertEquals("bob-avatar", service.resolveAvatars(List.of("bob@example.org"), "viewer").get("bob@example.org"));
+    assertNull(service.resolveSenderProfile("nobody@example.org"));
   }
 }
