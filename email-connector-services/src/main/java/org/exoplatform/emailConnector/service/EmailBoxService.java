@@ -577,6 +577,11 @@ public class EmailBoxService {
   // attachment examines (EXO-90838): their MIME structure comes in one batched FETCH.
   static final int                ATTACHMENT_SCAN_LIMIT                                       = 200;
 
+  // How many categories one search may name (EXO-90888): the mailbox has a handful, and
+  // each one named is a read of the category tree. Twin of the webapp's
+  // CATEGORY_IDS_PATTERN (EmailConnectorMailBoxSearchCriteria.js).
+  static final int                SEARCH_MAX_CATEGORIES                                       = 20;
+
   /** How much of a message to quote when the search matched nothing in its body. */
   private static final int        EXCERPT_LENGTH                                              = 180;
 
@@ -7514,23 +7519,34 @@ public class EmailBoxService {
    * it -- or null when the search names none. Only the mailbox's own categories can be
    * named: the add-on's email categories (Important, Invitation, Notification, To
    * review) and the categories under them. Any other id is refused, so a search never
-   * reads the links another feature's categories hold on the user's mail. Package-visible
-   * for tests.
+   * reads the links another feature's categories hold on the user's mail. An id named
+   * twice counts once, and each category's subtree is read once per search. The tree is
+   * read as the platform holds it, not narrowed to what the user may see: the email
+   * categories are open to every user ({@code default-categories.json}), and only the
+   * user's own mail is ever filtered. Package-visible for tests.
    *
    * @param criteria the search's criteria
    * @return the categories' ids with their subcategories', or null for no category
-   * @throws IllegalArgumentException {@code emailConnector.search.invalidCategory} for
-   *           an id that is not one of the mailbox's categories
+   * @throws IllegalArgumentException {@code emailConnector.search.tooManyCategories}
+   *           past {@value #SEARCH_MAX_CATEGORIES} categories,
+   *           {@code emailConnector.search.invalidCategory} for an id that is not one of
+   *           the mailbox's categories
    */
   Set<Long> searchCategoryIds(EmailSearchCriteria criteria) {
-    List<Long> requested = criteria.getCategoryIds();
-    if (requested == null || requested.isEmpty()) {
+    List<Long> named = criteria.getCategoryIds();
+    if (named == null || named.isEmpty()) {
       return null; // NOSONAR -- null says "no category criterion", an empty set "no category"
     }
+    Set<Long> requested = new LinkedHashSet<>(named);
+    if (requested.size() > SEARCH_MAX_CATEGORIES) {
+      throw new IllegalArgumentException("emailConnector.search.tooManyCategories");
+    }
+    // Each category's subtree, read once: the roots' here, a subcategory's when named.
+    Map<Long, List<Long>> subtrees = new HashMap<>();
     Set<Long> mailboxCategoryIds = new HashSet<>();
     getDefaultEmailCategoryIds().forEach(rootId -> {
       mailboxCategoryIds.add(rootId);
-      mailboxCategoryIds.addAll(subcategoryIdsOf(rootId));
+      mailboxCategoryIds.addAll(subtrees.computeIfAbsent(rootId, this::subcategoryIdsOf));
     });
     Set<Long> expanded = new HashSet<>();
     for (Long categoryId : requested) {
@@ -7538,7 +7554,7 @@ public class EmailBoxService {
         throw new IllegalArgumentException("emailConnector.search.invalidCategory");
       }
       expanded.add(categoryId);
-      expanded.addAll(subcategoryIdsOf(categoryId));
+      expanded.addAll(subtrees.computeIfAbsent(categoryId, this::subcategoryIdsOf));
     }
     return expanded;
   }
