@@ -15,20 +15,24 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- The selection's actions, centred in the reading pane, under how many mails they
-       act on (EXO-90891); the select-all row at the top of the list says it too. -->
+  <!-- The selection's actions, their row held at the reading pane's vertical centre,
+       under how many mails they act on (EXO-90891), placed just above that row so the
+       count never pushes it down; the select-all row at the top of the list says it too. -->
   <div class="d-flex flex-column align-center justify-center full-height full-width pa-4">
-    <div
-      class="multi-select-count font-weight-bold text-subtitle-1 text-center mb-4"
-      aria-live="polite">
-      {{ countLabel }}
+    <div class="full-width" style="position: relative;">
+      <div
+        class="multi-select-count font-weight-bold text-h6 text-center full-width"
+        style="position: absolute; bottom: 100%; left: 0; padding-bottom: 24px;"
+        aria-live="polite">
+        {{ countLabel }}
+      </div>
+      <email-connector-mail-box-drawer-actions
+        class="full-width"
+        select-mode
+        :emails="emails"
+        :top="false"
+        :selected-emails="selectedEmails" />
     </div>
-    <email-connector-mail-box-drawer-actions
-      class="full-width"
-      select-mode
-      :emails="emails"
-      :top="false"
-      :selected-emails="selectedEmails" />
   </div>
 </template>
 <script>
