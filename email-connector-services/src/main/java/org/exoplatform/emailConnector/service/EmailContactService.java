@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import java.util.Collection;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -618,6 +619,38 @@ public class EmailContactService {
       return null;
     }
     return emailContactStorage.getPhotoFileItem(contact.getPhotoFileId());
+  }
+
+  /**
+   * The pictures a user's own contacts carry for a set of addresses: the mail's
+   * avatars after the platform profile (EXO-90908). Only the user's own store is
+   * read, in one query: the contact an address names there, when it has a stored
+   * photo and is neither suppressed nor a directory row. Its URL is the one the
+   * contacts app shows, which answers the photo to the contact's owner only.
+   *
+   * @param username the viewing user, whose store is read
+   * @param addresses the addresses; blank and malformed ones are skipped
+   * @return the picture's URL by normalized address, for the addresses one of the
+   *         user's contacts with a picture holds; empty for none
+   */
+  public Map<String, String> getContactPhotoUrls(String username, Collection<String> addresses) {
+    if (StringUtils.isBlank(username) || addresses == null || addresses.isEmpty()) {
+      return Map.of();
+    }
+    Set<String> keys = new LinkedHashSet<>();
+    for (String address : addresses) {
+      String key = EmailContactUtils.normalizeAddress(address);
+      if (key != null) {
+        keys.add(key);
+      }
+    }
+    if (keys.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, String> urls = new LinkedHashMap<>();
+    emailContactStorage.findContactPhotos(username, keys)
+                       .forEach((address, photo) -> urls.put(address, contactPhotoUrl(photo.contactId(), photo.version())));
+    return urls;
   }
 
   /**
@@ -1520,7 +1553,19 @@ public class EmailContactService {
       return;
     }
     long version = contact.getUpdatedDate() == null ? contact.getPhotoFileId() : contact.getUpdatedDate().getTime();
-    contact.setAvatarUrl(String.format("/email-connector/rest/contacts/%s/photo?v=%s", contact.getId(), version));
+    contact.setAvatarUrl(contactPhotoUrl(contact.getId(), version));
+  }
+
+  /**
+   * The URL a contact's stored picture is served at, by {@code GET /contacts/{id}/photo},
+   * which answers it to the contact's owner only.
+   *
+   * @param contactId the contact's id
+   * @param version the version the URL is cached under
+   * @return the URL
+   */
+  private static String contactPhotoUrl(long contactId, long version) {
+    return String.format("/email-connector/rest/contacts/%s/photo?v=%s", contactId, version);
   }
 
   /**
