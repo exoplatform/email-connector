@@ -15983,8 +15983,8 @@ public class EmailBoxServiceTest {
    */
   @Test
   void theAttachmentKindsAreParsedAndTheFileNameBounded() {
-    assertEquals(EnumSet.of(SearchAttachmentType.PDF, SearchAttachmentType.ARCHIVE),
-                 EmailBoxService.searchAttachmentTypes(withAttachmentTypes("pdf", "Archive", "PDF")));
+    assertEquals(EnumSet.of(SearchAttachmentType.PDF, SearchAttachmentType.ARCHIVE, SearchAttachmentType.VIDEO),
+                 EmailBoxService.searchAttachmentTypes(withAttachmentTypes("pdf", "Archive", "PDF", "VIDEO")));
     assertEquals(Set.of(), EmailBoxService.searchAttachmentTypes(new EmailSearchCriteria()));
     assertEquals("emailConnector.search.invalidAttachmentType",
                  assertThrows(IllegalArgumentException.class,
