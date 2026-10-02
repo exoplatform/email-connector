@@ -362,7 +362,7 @@ public class EmailManagedModeServiceTest {
    * EXO-90836. A governed user may connect the designated connector, and only it: the
    * designated id is returned for the caller to mark the connection; a disconnection or
    * an edit (no target) and any other connector are refused with the message code the
-   * interface translates.
+   * 403 body carries.
    */
   @Test
   public void aGovernedUserMayConnectTheDesignatedConnectorAndNothingElse() throws Exception {

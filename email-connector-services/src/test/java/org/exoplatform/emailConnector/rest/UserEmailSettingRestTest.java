@@ -216,7 +216,7 @@ public class UserEmailSettingRestTest {
 
   /**
    * EXO-90836. A governed user's disconnection, typed connection and one-click
-   * connection elsewhere answer 403 with the code the interface translates.
+   * connection elsewhere answer 403 with their code carried in the 403 body.
    */
   @Test
   void aGovernedUsersConnectionChangesAnswer403WithTheirCode() throws Exception {
