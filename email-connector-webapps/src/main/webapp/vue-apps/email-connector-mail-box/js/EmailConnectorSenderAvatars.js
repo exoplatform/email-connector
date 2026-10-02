@@ -16,8 +16,9 @@
  */
 
 /*
- * The profile pictures of the senders the mail list shows (EXO-90891), one cache for
- * the page: a listed row carries no picture -- the server resolves none for a list,
+ * The pictures of the senders the mail list shows (EXO-90891) -- the platform user's
+ * photo, else the photo of the viewing user's own contact at the address (EXO-90908),
+ * whichever the server finds first --, one cache for the page: a listed row carries no picture -- the server resolves none for a list,
  * that is one directory query per row --, so the rows on screen ask for theirs here,
  * by address, and the addresses asked within one moment leave in one request
  * (POST /contacts/avatars). An address is asked once: its answer, a picture or none
@@ -35,8 +36,8 @@ export const MAX_AVATAR_BATCH = 50;
 /** How long the addresses asked for are gathered before they leave, in ms. */
 const BATCH_DELAY_MS = 50;
 
-// The answers, by normalized address: a URL, or null for an address no platform user
-// holds. An address whose request failed is not kept: drawn with initials, it is asked
+// The answers, by normalized address: a URL, or null for an address with no picture
+// (no platform photo, no contact of the viewer's with one). An address whose request failed is not kept: drawn with initials, it is asked
 // again by the next avatar of it watched -- a row drawn again, or showing that sender
 // anew -- not by the one already asked for, which is watched no more.
 const answers = new Map();
