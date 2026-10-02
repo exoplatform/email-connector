@@ -16,16 +16,18 @@
  */
 
 /*
- * The pictures of the senders the mail list shows (EXO-90891) -- the platform user's
- * photo, else the photo of the viewing user's own contact at the address (EXO-90908),
- * whichever the server finds first --, one cache for the page: a listed row carries no picture -- the server resolves none for a list,
- * that is one directory query per row --, so the rows on screen ask for theirs here,
- * by address, and the addresses asked within one moment leave in one request
+ * The pictures of the senders the mail list shows (EXO-90891), one cache for the page.
+ * The server answers, in this order, the platform user's own photo, the photo of the
+ * viewing user's own contact at the address (EXO-90908), and the platform's generated
+ * picture of a user with no photo; an address with none of them is drawn with initials.
+ * A listed row carries no picture -- the server resolves none for a list, that is one
+ * directory query per row --, so the rows on screen ask for theirs here, by address,
+ * and the addresses asked within one moment leave in one request
  * (POST /contacts/avatars). An address is asked once: its answer, a picture or none
- * (an outsider, drawn with initials), is kept for the page; a failed request is not. A row off screen asks
- * nothing: a shared IntersectionObserver hands an address over only once its avatar
- * is in view. The reader, which reads a whole message with its sender's picture,
- * fills the same cache (rememberSenderAvatar).
+ * (drawn with initials), is kept for the page; a failed request is not. A row off
+ * screen asks nothing: a shared IntersectionObserver hands an address over only once
+ * its avatar is in view. The reader, which reads a whole message with its sender's
+ * picture, fills the same cache (rememberSenderAvatar).
  */
 /**
  * The most addresses one request carries: EmailSenderProfileService.AVATARS_MAX_ADDRESSES
