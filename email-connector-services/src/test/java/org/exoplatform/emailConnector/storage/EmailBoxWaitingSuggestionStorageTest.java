@@ -126,17 +126,22 @@ public class EmailBoxWaitingSuggestionStorageTest {
   }
 
   /**
-   * A stored sender with no name is its address, named by it; no Message-ID, or no
-   * owner, reads nothing.
+   * A stored sender with no name is its address, named by it -- the legacy word
+   * {@code null} a former writer stored in place of a name included; no Message-ID, or
+   * no owner, reads nothing.
    */
   @Test
   void aBareAddressIsTheSenderAndNothingIsReadForNoMessageId() {
     save("uma", MailFolder.INBOX, "<d@host>", "bare@example.org", 1_000L, false, false);
+    save("uma", MailFolder.INBOX, "<e@host>", "null,legacy@example.org", 2_000L, false, false);
 
-    Email found = emailBoxStorage.getListedEmailsByMailHeaderIds("uma", List.of("<d@host>"), MailFolder.HIDDEN_FOLDERS).get(0);
+    List<Email> found = emailBoxStorage.getListedEmailsByMailHeaderIds("uma", List.of("<d@host>", "<e@host>"),
+                                                                       MailFolder.HIDDEN_FOLDERS);
 
-    assertEquals("bare@example.org", found.getSender().getAddress());
-    assertEquals("bare@example.org", found.getSender().getName());
+    assertEquals("legacy@example.org", found.get(0).getSender().getAddress());
+    assertEquals("legacy@example.org", found.get(0).getSender().getName(), "the word null is no name");
+    assertEquals("bare@example.org", found.get(1).getSender().getAddress());
+    assertEquals("bare@example.org", found.get(1).getSender().getName());
     assertEquals(List.of(), emailBoxStorage.getListedEmailsByMailHeaderIds("uma", List.of(), MailFolder.HIDDEN_FOLDERS));
     assertEquals(List.of(), emailBoxStorage.getListedEmailsByMailHeaderIds(" ", List.of("<d@host>"), MailFolder.HIDDEN_FOLDERS));
   }
