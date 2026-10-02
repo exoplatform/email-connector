@@ -1222,8 +1222,9 @@ export function completeThreadByThreadId(threadId, folder) {
  * @param {Boolean} unread when true, only unread messages come back, for the same
  *          reason: the chip is lit, so it must still be filtering
  * @param {Object} criteria the advanced search's criteria (EXO-90838), may be absent:
- *          {from, to, words, after, before, attachment} -- the days as yyyy-MM-dd, the
- *          first included and the last excluded; an empty one is not sent
+ *          {from, to, words, after, before, attachment, categoryIds} -- the days as
+ *          yyyy-MM-dd, the first included and the last excluded; an empty one is not
+ *          sent; the categories are eXo's, so only mail eXo holds can match them
  * @returns {Promise} resolves with { results, totalMatches }
  */
 export function searchEmails(query, folder, limit, favorites, unread, criteria) {
