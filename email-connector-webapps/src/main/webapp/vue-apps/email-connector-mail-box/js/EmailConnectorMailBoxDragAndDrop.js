@@ -107,20 +107,6 @@ export function draggedRowCount({ email, thread, selectMode, selectedEmails, ema
 }
 
 /**
- * What dragging a search hit carries: the hit alone, in the folder the server found it.
- *
- * @param {Object} result the hit ({mailRemoteId, folder})
- * @returns {Object} {folder, ids}, or null when it may not be dragged
- */
-export function dragPayloadOfSearchHit(result) {
-  const folder = result?.folder || 'INBOX';
-  if (!result || !canDragFrom(folder)) {
-    return null;
-  }
-  return { folder, ids: [result.mailRemoteId] };
-}
-
-/**
  * What dropping the dragged mail on a folder of the column does, or null when it may not
  * be dropped there. The Trash and the Spam take the mail their actions take (the same
  * rows, from any other folder) when the mailbox lists them; every other folder is a
