@@ -216,7 +216,7 @@ public class SenderLogoService {
   /**
    * A value that changes whenever a logo offer could: at each server start (the URL
    * tokens' key is drawn anew), when the switch or the trusted mail servers change, and
-   * each time a domain's resolution ends. The reader's cache validators fold it in, so
+   * each time a domain's resolution finds a logo. The reader's cache validators fold it in, so
    * a copy cached before a logo was resolved, or carrying a URL a restart made stale,
    * is not confirmed as current.
    *
@@ -266,8 +266,10 @@ public class SenderLogoService {
           if (evictFirst) {
             senderLogoStorage.evict(domain);
           }
-          senderLogoStorage.getLogo(domain);
-          resolutions.incrementAndGet();
+          if (senderLogoStorage.getLogo(domain).isPresent()) {
+            // Only a logo changes what a reader is offered; a "none" leaves it null.
+            resolutions.incrementAndGet();
+          }
         } catch (RuntimeException e) {
           LOG.debug("The logo of a sender domain could not be resolved", e);
         } finally {
