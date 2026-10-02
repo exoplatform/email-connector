@@ -16,74 +16,40 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <!-- Undo send (EXO-90837): how long a sent mail waits, with an Undo, before it goes.
-       A one-line row under Advanced settings that says the choice and opens on it, as
-       the read receipts' does. The waits offered are the server's, read with the
-       preference: this screen keeps no copy of them. -->
-  <div class="undo-send-settings">
-    <v-list-item>
-      <v-list-item-content>
-        <v-list-item-title class="text-color">
-          {{ $t('UserSettings.emailConnector.undoSend.title') }}
-        </v-list-item-title>
-        <v-list-item-subtitle>
-          {{ summary }}
-        </v-list-item-subtitle>
-      </v-list-item-content>
-      <v-list-item-action>
-        <v-btn
-          :aria-expanded="expanded ? 'true' : 'false'"
-          :title="$t('UserSettings.emailConnector.undoSend.edit.tooltip')"
-          aria-controls="emailConnectorUndoSendChoices"
-          icon
-          @click="expanded = !expanded">
-          <v-icon size="16" class="icon-default-color">
-            {{ expanded ? 'fa-chevron-up' : 'fa-chevron-down' }}
-          </v-icon>
-        </v-btn>
-      </v-list-item-action>
-    </v-list-item>
-    <div v-show="expanded" id="emailConnectorUndoSendChoices">
-      <v-list-item class="height-auto">
-        <v-list-item-content class="ps-4">
-          <v-list-item-subtitle>
-            {{ $t('UserSettings.emailConnector.undoSend.label') }}
-          </v-list-item-subtitle>
-          <v-radio-group
-            v-model="delaySeconds"
-            :disabled="!loaded || saving"
-            class="mt-1 undo-send-delay"
-            hide-details
-            dense
-            row
-            @change="save">
-            <v-radio
-              v-for="delay in allowedDelays"
-              :key="delay"
-              :value="delay"
-              :label="optionLabel(delay)"
-              :class="`undo-send-delay-${delay}`" />
-          </v-radio-group>
-        </v-list-item-content>
-      </v-list-item>
-    </div>
-  </div>
+       A one-line row under Advanced settings that says the choice, with the edit action
+       that opens the drawer mounted at the app's root, like the other rows of this
+       screen (EXO-90872). -->
+  <v-list-item class="undo-send-settings">
+    <v-list-item-content>
+      <v-list-item-title class="text-color">
+        {{ $t('UserSettings.emailConnector.undoSend.title') }}
+      </v-list-item-title>
+      <v-list-item-subtitle>
+        {{ summary }}
+      </v-list-item-subtitle>
+    </v-list-item-content>
+    <v-list-item-action>
+      <v-btn
+        icon
+        :title="$t('UserSettings.emailConnector.undoSend.edit.tooltip')"
+        class="undo-send-edit"
+        @click="$root.$emit('open-email-undo-send-drawer')">
+        <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
+      </v-btn>
+    </v-list-item-action>
+  </v-list-item>
 </template>
 
 <script>
 export default {
   data: () => ({
-    expanded: false,
     loaded: false,
-    saving: false,
     delaySeconds: null,
-    allowedDelays: [],
-    // What the server last said, to go back to when a save is refused.
-    stored: null,
   }),
   computed: {
     /**
-     * The choice on one line, as the row shows it folded. Until the preference is read,
-     * what the row is about rather than a default that may not be the user's.
+     * The choice on one line. Until the preference is read, what the row is about rather
+     * than a default that may not be the user's.
      *
      * @returns {String} the localized summary
      */
@@ -95,13 +61,28 @@ export default {
         : this.$t('UserSettings.emailConnector.undoSend.summary.off');
     },
   },
+  /**
+   * Reads the summary, and follows what the drawer saves.
+   *
+   * @returns {void}
+   */
   created() {
     this.read();
+    // The drawer is where the wait is saved: what it stored is what this row shows.
+    this.$root.$on('email-undo-send-updated', this.apply);
+  },
+  /**
+   * Stops following the drawer once the row is gone.
+   *
+   * @returns {void}
+   */
+  beforeDestroy() {
+    this.$root.$off('email-undo-send-updated', this.apply);
   },
   methods: {
     /**
-     * Reads the preference. Failing leaves the row disabled and silent, like the other
-     * rows of this screen.
+     * Reads the preference the row summarises. Failing leaves the row on what it is
+     * about, silent like the other rows of this screen.
      *
      * @returns {Promise<void>} resolved once read or given up
      */
@@ -111,23 +92,7 @@ export default {
         .catch(() => null);
     },
     /**
-     * Stores the wait chosen on screen, and shows what the server kept. A refused save
-     * puts the screen back as it was and says so.
-     *
-     * @returns {Promise<void>} resolved once saved or refused
-     */
-    save() {
-      this.saving = true;
-      return this.$emailConnectorCommonService.saveUndoSendSettings(this.delaySeconds)
-        .then(settings => this.apply(settings))
-        .catch(() => {
-          this.apply(this.stored);
-          this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.undoSend.saveError'), 'error');
-        })
-        .finally(() => this.saving = false);
-    },
-    /**
-     * Shows the preference as the server answered it.
+     * Summarises the preference as the server answered it.
      *
      * @param {Object} settings {delaySeconds, allowedDelays}
      * @returns {void}
@@ -136,20 +101,8 @@ export default {
       if (!settings) {
         return;
       }
-      this.stored = settings;
-      this.allowedDelays = settings.allowedDelays || [];
       this.delaySeconds = settings.delaySeconds;
       this.loaded = true;
-    },
-    /**
-     * A wait's label: "Off", or "{n} seconds".
-     *
-     * @param {Number} delay the wait in seconds
-     * @returns {String} the localized label
-     */
-    optionLabel(delay) {
-      return delay > 0 ? this.$t('UserSettings.emailConnector.undoSend.option', { 0: delay })
-        : this.$t('UserSettings.emailConnector.undoSend.option.off');
     },
   },
 };
