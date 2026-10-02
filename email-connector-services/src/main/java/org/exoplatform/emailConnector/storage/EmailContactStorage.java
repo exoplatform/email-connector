@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.storage;
 import java.io.ByteArrayInputStream;
 import java.util.Arrays;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -46,6 +47,7 @@ import org.exoplatform.emailConnector.entity.EmailContactAddressEntity;
 import org.exoplatform.emailConnector.entity.EmailContactEntity;
 import org.exoplatform.emailConnector.model.CardDavContactData;
 import org.exoplatform.emailConnector.model.CardDavRow;
+import org.exoplatform.emailConnector.model.ContactPhoto;
 import org.exoplatform.emailConnector.model.PhotoOrigin;
 import org.exoplatform.emailConnector.model.PostalAddress;
 import org.exoplatform.emailConnector.model.EmailContact;
@@ -954,6 +956,30 @@ public class EmailContactStorage {
     }
     FileItem fileItem = fileService.getFile(photoFileId);
     return fileItem == null || fileItem.getAsByte() == null ? null : fileItem;
+  }
+
+  /**
+   * The pictures of one user's own contacts at a set of addresses: the contact the
+   * address names in their store, when it carries a stored photo and is neither
+   * suppressed nor a directory row (EXO-90908).
+   *
+   * @param userId the store owner
+   * @param addresses the normalized addresses; null or empty answers nothing
+   * @return the contact's picture by address, for the addresses that name one
+   */
+  public Map<String, ContactPhoto> findContactPhotos(String userId, Collection<String> addresses) {
+    if (StringUtils.isBlank(userId) || addresses == null || addresses.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, ContactPhoto> photos = new LinkedHashMap<>();
+    for (Object[] row : emailContactAddressDAO.findPhotoContactsByAddresses(userId, addresses, EmailContactSource.DIRECTORY)) {
+      String address = (String) row[0];
+      long contactId = ((Number) row[1]).longValue();
+      Date updatedDate = (Date) row[2];
+      long version = updatedDate == null ? ((Number) row[3]).longValue() : updatedDate.getTime();
+      photos.putIfAbsent(address, new ContactPhoto(contactId, version));
+    }
+    return photos;
   }
 
   /**
