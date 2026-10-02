@@ -209,7 +209,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <div v-else class="text-caption text-sub-title mt-1">
           {{ $t('emailConnector.mailBox.automations.proposal.noArguments') }}
         </div>
-        <div v-if="proposal.rationale" class="text-caption font-italic mt-1 text-break">
+        <div v-if="proposal.rationale" class="text-caption mt-1 text-break">
           {{ rationaleLine }}
         </div>
         <div
@@ -238,6 +238,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             @keydown.space.prevent="busy || continueInChat()">
             {{ $t('emailConnector.mailBox.automations.proposal.continue') }}
           </a>
+          <v-progress-circular
+            v-if="busy === 'handover'"
+            :size="12"
+            :width="2"
+            indeterminate
+            class="ms-1 icon-default-color" />
           <a
             v-if="fixable"
             :aria-disabled="!!busy"
