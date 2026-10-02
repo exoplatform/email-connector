@@ -569,6 +569,60 @@ export function formatCount(count) {
 }
 
 /**
+ * The event the narrow 3-dots menu sends when it opens on its categories: their unread
+ * counts take the subcategories, which the drawer reads only once something shows them
+ * (EXO-90881).
+ */
+export const CATEGORY_COUNTS_NEEDED_EVENT = 'email-category-counts-needed';
+
+/**
+ * The count one folder shows, read from the mailbox's counts by folder (the drawer's
+ * folderCounts, which holds the rules: which folders count, unread or total). Read by the
+ * full-screen folder column and the narrow 3-dots menu alike, so the two can never show
+ * one folder with two counts (EXO-90881).
+ *
+ * @param {Object} folderCounts the counts by folder key, each {count, unread, attention}
+ * @param {String} key the folder's key
+ * @returns {Object} {count, unread, attention}: count 0 for none, unread only with a count
+ */
+export function folderCountOf(folderCounts, key) {
+  const counted = folderCounts?.[key];
+  const count = counted?.count > 0 ? counted.count : 0;
+  return { count, unread: !!(count && counted.unread), attention: !!counted?.attention };
+}
+
+/**
+ * The unread mail one category shows, read from the drawer's categoryUnreadCounts. Read by
+ * the full-screen folder column and the narrow 3-dots menu alike (EXO-90881).
+ *
+ * @param {Object} categoryUnreadCounts the unread mail by category id
+ * @param {Number|String} id the category's id
+ * @returns {Number} the count, 0 for none
+ */
+export function categoryCountOf(categoryUnreadCounts, id) {
+  const count = categoryUnreadCounts?.[id];
+  return count > 0 ? count : 0;
+}
+
+/**
+ * An entry's name with its count, as a screen reader and a hover say it: "Inbox, 7
+ * unread", "Drafts, 12", and whether one of its mails needs the user. The name alone
+ * without a count. Shared by the folder column and the 3-dots menu (EXO-90881).
+ *
+ * @param {Function} translate the component's $t
+ * @param {String} label the entry's name
+ * @param {Number} count its count, 0 for none
+ * @param {Boolean} unread whether the count is unread mail
+ * @param {Boolean} attention whether one of its mails needs the user (EXO-90434)
+ * @returns {String} the description
+ */
+export function countDescription(translate, label, count, unread, attention) {
+  const key = unread ? 'emailConnector.mailBox.list.drawer.navigation.unread' : 'emailConnector.mailBox.list.drawer.navigation.total';
+  const described = count ? translate(key, { 0: label, 1: count }) : label;
+  return attention ? translate('emailConnector.mailBox.list.drawer.navigation.attention', { 0: described }) : described;
+}
+
+/**
  * A custom folder's full path, readable: the server's hierarchy separator replaced by
  * a spaced slash ("Customers / Acme"), so a nested folder says where it lives -- without
  * the INBOX every folder lives under on some servers (EmailConnectorFolderTree).
