@@ -19,8 +19,11 @@ package org.exoplatform.emailConnector.service;
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -163,7 +166,13 @@ public class EmailImportService {
   // withdrawn right refuses every mail after it, and trying them all reports nothing new.
   static final int                 SERVER_REFUSALS_TO_STOP = 20;
 
+  // The prefix of a run's directory in the temporary directory.
+  static final String              WORK_DIR_PREFIX         = "email-import-";
+
   private static final Log         LOG                     = ExoLogger.getLogger(EmailImportService.class);
+
+  // A run's directory: this server's user alone may list, read and write it.
+  private static final Set<PosixFilePermission> OWNER_ONLY = PosixFilePermissions.fromString("rwx------");
 
   private static final AtomicInteger THREADS             = new AtomicInteger();
 
@@ -545,7 +554,7 @@ public class EmailImportService {
   private Path takeUploads(List<String> uploadIds, List<File> files) {
     Path workDir = null;
     try {
-      workDir = Files.createTempDirectory("email-import-");
+      workDir = createPrivateDirectory();
       for (int i = 0; i < files.size(); i++) {
         Files.move(files.get(i).toPath(), workDir.resolve(String.format("%03d", i)));
       }
@@ -561,6 +570,32 @@ public class EmailImportService {
       }
     }
     return workDir;
+  }
+
+  /**
+   * Creates a run's directory in the temporary directory, readable, writable and
+   * traversable by this server's user alone: the temporary directory is shared with
+   * every user of the machine, and the files are users' mail. Owner-only from its
+   * creation on a POSIX file system; on another one, made so right after, the
+   * directory being empty meanwhile.
+   *
+   * @return the directory
+   * @throws IOException when it cannot be created, or made private
+   */
+  static Path createPrivateDirectory() throws IOException {
+    if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+      return Files.createTempDirectory(WORK_DIR_PREFIX, PosixFilePermissions.asFileAttribute(OWNER_ONLY));
+    }
+    Path directory = Files.createTempDirectory(WORK_DIR_PREFIX); // NOSONAR made owner-only below, empty until then
+    File file = directory.toFile();
+    boolean ownerOnly = file.setReadable(false, false) && file.setReadable(true, true)
+        && file.setWritable(false, false) && file.setWritable(true, true)
+        && file.setExecutable(false, false) && file.setExecutable(true, true);
+    if (!ownerOnly) {
+      Files.delete(directory);
+      throw new IOException("The import directory could not be made private");
+    }
+    return directory;
   }
 
   /**
@@ -586,7 +621,9 @@ public class EmailImportService {
       return;
     }
     try (Stream<Path> paths = Files.walk(workDir)) {
-      paths.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+      for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
+        Files.delete(path);
+      }
     } catch (IOException | RuntimeException e) {
       LOG.warn("The import directory {} could not be deleted", workDir, e);
     }
