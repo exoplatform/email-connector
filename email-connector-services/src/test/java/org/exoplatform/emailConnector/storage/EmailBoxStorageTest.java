@@ -65,6 +65,7 @@ import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.upload.UploadService;
@@ -349,6 +350,31 @@ public class EmailBoxStorageTest {
     emailBoxStorage.createEmail(email1);
     retrievedEmail = emailBoxStorage.getEmailById(2l, "root", null);
     assertNotNull(retrievedEmail);
+  }
+
+  /**
+   * The reader's sender picture after the platform photo is read from the reading
+   * user's own contacts (EXO-90908): the storage hands the contact lookup the user it
+   * reads the message for.
+   */
+  @Test
+  void theReaderAsksTheReadingUsersOwnContactsForItsSendersPicture() {
+    Email email1 = email("root");
+    email1.setSender(new EmailSender("Ann", "ann@client.org", null, null));
+    emailBoxStorage.createEmail(email1);
+    List<String> asked = new ArrayList<>();
+    EmailConnectorUtils.setSenderProfileResolver(address -> null);
+    EmailConnectorUtils.setContactPhotoResolver((reader, address) -> {
+      asked.add(reader + " " + address);
+      return "root".equals(reader) ? "root-contact" : null;
+    });
+    try {
+      assertEquals("root-contact", emailBoxStorage.getEmailById(ID, "root", null).getSender().getAvatarUrl());
+      assertEquals(List.of("root ann@client.org"), asked);
+    } finally {
+      EmailConnectorUtils.setSenderProfileResolver(null);
+      EmailConnectorUtils.setContactPhotoResolver(null);
+    }
   }
 
   @Test
