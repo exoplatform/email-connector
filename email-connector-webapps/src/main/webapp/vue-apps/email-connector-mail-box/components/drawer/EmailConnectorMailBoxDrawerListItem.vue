@@ -120,12 +120,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                    without opening anything, which is what stops it being forgotten.
                    A plain span with no listener of its own: this list streams
                    thousands of rows, and one handler per row is a real cost. -->
-              <v-list-item-title>
-                {{ participants }}<span
+              <!-- In a list gathering several folders' mails, the folder the mail sits in
+                   follows the sender (EXO-90882): the name gives way first, the chip
+                   never wraps, and the subject line is left to the subject. -->
+              <v-list-item-title class="d-flex align-center">
+                <span class="text-truncate">{{ participants }}</span><span
                   v-if="showDraftMarker"
-                  class="error--text font-weight-regular">{{ draftMarker }}</span><span
+                  class="error--text font-weight-regular flex-shrink-0">{{ draftMarker }}</span><span
                     v-if="threadCount > 1"
-                    class="text-light-color ms-1 font-weight-regular">{{ threadCount }}</span>
+                    class="text-light-color ms-1 font-weight-regular flex-shrink-0">{{ threadCount }}</span>
+                <v-chip
+                  v-if="folderName"
+                  :title="folderName"
+                  style="max-width: 50%;"
+                  class="row-folder ms-2 flex-shrink-0 font-weight-regular"
+                  x-small
+                  outlined>
+                  <span class="text-truncate">{{ folderName }}</span>
+                </v-chip>
               </v-list-item-title>
             </v-list-item-content>
             <v-list-item-action class="my-0 flex-row align-center">
@@ -185,26 +197,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 {{ draftMailboxLabel }}
               </v-list-item-subtitle>
             </v-list-item-content>
-            <!-- What a list gathering several folders' mails says of a row (EXO-90871) --
-                 a search's hits, the Suggestions view: the folder the mail sits in, and a
-                 cloud for a hit outside the local copy, fetched when opened. Native titles,
-                 as the count above: this list streams thousands of rows. -->
+            <!-- What a list of search hits says of a hit outside the local copy
+                 (EXO-90871): a cloud, fetched when opened. A native title, as the count
+                 above: this list streams thousands of rows. -->
             <v-list-item-action
-              v-if="folderName || notCached"
+              v-if="notCached"
               class="my-0 ms-2 flex-row align-center flex-shrink-0">
-              <v-chip
-                v-if="folderName"
-                :title="folderName"
-                class="row-folder"
-                x-small
-                outlined>
-                {{ folderName }}
-              </v-chip>
               <v-icon
-                v-if="notCached"
                 :title="$t('emailConnector.mailBox.search.notCached')"
                 size="14"
-                class="text-light-color ms-1 row-not-cached">
+                class="text-light-color row-not-cached">
                 fa-cloud-download-alt
               </v-icon>
             </v-list-item-action>
