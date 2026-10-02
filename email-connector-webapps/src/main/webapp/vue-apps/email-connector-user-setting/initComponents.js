@@ -20,6 +20,8 @@ import EmailConnectorUserSettingFolders from './components/main/EmailConnectorUs
 import EmailConnectorUserSettingReadReceipts from './components/main/EmailConnectorUserSettingReadReceipts.vue';
 import EmailConnectorUserSettingUndoSend from './components/main/EmailConnectorUserSettingUndoSend.vue';
 import EmailConnectorUserSettingRemoteContent from './components/main/EmailConnectorUserSettingRemoteContent.vue';
+import EmailConnectorUserSettingReadReceiptsDrawer from './components/drawer/read-receipts/EmailConnectorUserSettingReadReceiptsDrawer.vue';
+import EmailConnectorUserSettingUndoSendDrawer from './components/drawer/undo-send/EmailConnectorUserSettingUndoSendDrawer.vue';
 import EmailConnectorUserSettingTrustedSendersDrawer from './components/drawer/remote-content/EmailConnectorUserSettingTrustedSendersDrawer.vue';
 import EmailConnectorUserSettingAddressBook from './components/main/EmailConnectorUserSettingAddressBook.vue';
 import EmailConnectorUserSettingSignature from './components/main/EmailConnectorUserSettingSignature.vue';
@@ -56,6 +58,8 @@ const components = {
   'email-connector-user-setting-folders': EmailConnectorUserSettingFolders,
   'email-connector-user-setting-read-receipts': EmailConnectorUserSettingReadReceipts,
   'email-connector-user-setting-undo-send': EmailConnectorUserSettingUndoSend,
+  'email-connector-user-setting-read-receipts-drawer': EmailConnectorUserSettingReadReceiptsDrawer,
+  'email-connector-user-setting-undo-send-drawer': EmailConnectorUserSettingUndoSendDrawer,
   'email-connector-user-setting-remote-content': EmailConnectorUserSettingRemoteContent,
   'email-connector-user-setting-trusted-senders-drawer': EmailConnectorUserSettingTrustedSendersDrawer,
   'email-connector-user-setting-address-book': EmailConnectorUserSettingAddressBook,
