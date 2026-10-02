@@ -22,7 +22,7 @@ package org.exoplatform.emailConnector.model;
  * the cached row it stands for, and given, from that row, what the folder list's rows
  * carry beside the envelope (EXO-90882) -- the line under the subject, the attachments,
  * the conversation's size and its unsent draft. The field names are the folder list's
- * own ({@link Email#getContent()}, and the {@code threadCount} / {@code threadHasDraft}
+ * own ({@code Email.content}, and the {@code threadCount} / {@code threadHasDraft}
  * the mailbox stamps on a listed row), so the row reads a hit as it reads a listed mail.
  */
 public interface ListedMailRow {
