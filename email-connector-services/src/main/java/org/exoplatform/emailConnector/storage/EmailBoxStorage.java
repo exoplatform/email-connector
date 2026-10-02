@@ -46,6 +46,7 @@ import org.exoplatform.commons.file.model.FileInfo;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.commons.utils.IOUtil;
+import org.exoplatform.emailConnector.constant.SearchAttachmentType;
 import org.exoplatform.emailConnector.dao.EmailAttachmentDAO;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.dao.EmailOrphanFileDAO;
@@ -1522,6 +1523,42 @@ public class EmailBoxStorage {
   }
 
   /**
+   * The ids of the cached messages of some folders that carry an attachment of one of
+   * some kinds and whose name contains some text (EXO-90910): what a search asking for a
+   * kind of attachment, or a file name, keeps. One query of three columns: the name is
+   * matched by the database, literally and case ignored, and the kind here, by
+   * {@link SearchAttachmentType#matches} on each row's name and MIME type. The rows read
+   * are the folders' attachment rows, which the copy's own size bounds.
+   *
+   * @param userId the user whose copy it is
+   * @param folders the folder keys to read; nothing is read when empty
+   * @param types the kinds, one of which an attachment must be; none means any kind
+   * @param nameFragment the text an attachment's name must contain, case ignored; blank
+   *          means any name. Taken whole: the caller bounds it.
+   * @return the ids of the messages with such an attachment, never null
+   */
+  public Set<Long> getEmailIdsWithMatchingAttachmentsInFolders(String userId,
+                                                               Collection<String> folders,
+                                                               Collection<SearchAttachmentType> types,
+                                                               String nameFragment) {
+    if (folders == null || folders.isEmpty()) {
+      return Set.of();
+    }
+    String namePattern = toContainsPattern(nameFragment, Integer.MAX_VALUE);
+    List<Object[]> rows = namePattern == null ? emailAttachmentDAO.findAttachmentsForSearchByUserIdAndFolders(userId, folders)
+                                              : emailAttachmentDAO.findAttachmentsForSearchByUserIdAndFoldersAndName(userId,
+                                                                                                                    folders,
+                                                                                                                    namePattern);
+    Set<Long> ids = new HashSet<>();
+    for (Object[] row : rows) {
+      if (types == null || types.isEmpty() || types.stream().anyMatch(type -> type.matches((String) row[1], (String) row[2]))) {
+        ids.add((Long) row[0]);
+      }
+    }
+    return ids;
+  }
+
+  /**
    * The owner's cached messages whose subject or sender (name or address) contains
    * a keyword, newest first, for the editors' "/mail" link picker.
    * <p>
@@ -1572,11 +1609,25 @@ public class EmailBoxStorage {
    *         keyword
    */
   public static String toContainsPattern(String keyword) {
+    return toContainsPattern(keyword, MAX_LINK_KEYWORD_LENGTH);
+  }
+
+  /**
+   * The case-insensitive {@code LIKE} pattern matching a text anywhere, the text taken
+   * literally and cut to a length: {@link #toContainsPattern(String)} for any caller's
+   * bound (EXO-90910).
+   *
+   * @param keyword the searched text, untrusted
+   * @param maxLength how many characters of the trimmed text are kept
+   * @return {@code %keyword%} lower-cased and escaped, or {@code null} for a blank
+   *         keyword
+   */
+  public static String toContainsPattern(String keyword, int maxLength) {
     String text = StringUtils.trim(keyword);
     if (StringUtils.isEmpty(text)) {
       return null;
     }
-    text = StringUtils.left(text, MAX_LINK_KEYWORD_LENGTH).toLowerCase(Locale.ROOT);
+    text = StringUtils.left(text, maxLength).toLowerCase(Locale.ROOT);
     String escaped = text.replace(LIKE_ESCAPE, LIKE_ESCAPE + LIKE_ESCAPE)
                          .replace("%", LIKE_ESCAPE + "%")
                          .replace("_", LIKE_ESCAPE + "_");
