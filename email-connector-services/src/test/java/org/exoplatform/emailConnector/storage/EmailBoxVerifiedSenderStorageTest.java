@@ -43,18 +43,12 @@ import org.exoplatform.upload.UploadService;
 import io.meeds.social.category.service.CategoryLinkService;
 
 /**
- * Whether a mailbox holds mail from an address (EXO-90891), end to end from the
- * storage to the SHIPPED Liquibase schema: the stored {@code name,address} sender and
- * the address stored alone, whatever the case, the owner's rows only, and an address
- * taken literally -- its LIKE wildcards match nothing else.
- * <p>
- * Nothing rolls back here ({@link Propagation#NOT_SUPPORTED}, as the sibling storage
- * rigs), so each test works in a mailbox of its own.
- */
-/**
  * The mail list's brand logo condition (EXO-90893), run through the real query on the
  * real changelog's schema: a mailbox holds genuine mail from an address only when one
  * of its rows from it passed DMARC and failed no sender check.
+ * <p>
+ * Nothing rolls back here ({@link Propagation#NOT_SUPPORTED}, as the sibling storage
+ * rigs), so each test works in a mailbox of its own.
  */
 @DataJpaTest(showSql = false)
 @EnableAutoConfiguration
