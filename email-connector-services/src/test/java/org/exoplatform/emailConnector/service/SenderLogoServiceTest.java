@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -237,6 +238,26 @@ class SenderLogoServiceTest {
     when(emailConnectorService.isSenderLogosEnabled()).thenReturn(true);
     assertNull(service.logoUrlFor("news@brand.example", true, USER));
     assertEquals(1, queued.size(), "the domain was released");
+  }
+
+  /**
+   * The reader's validators change at each resolution that ends and with the switch,
+   * so a copy cached before the logo was resolved, or with a stale URL, is not
+   * confirmed; nothing changes it while no mail server is trusted.
+   */
+  @Test
+  void theOfferFingerprintFollowsResolutionsAndTheSwitch() {
+    when(emailConnectorService.isSenderLogosEnabled()).thenReturn(true);
+    int before = service.offerFingerprint();
+    assertEquals(before, service.offerFingerprint(), "stable while nothing happens");
+    assertNull(service.logoUrlFor("news@brand.example", true, USER));
+    queued.remove(0).run();
+    int resolved = service.offerFingerprint();
+    assertNotEquals(before, resolved, "a resolution ended");
+    when(emailConnectorService.isSenderLogosEnabled()).thenReturn(false);
+    assertNotEquals(resolved, service.offerFingerprint(), "the switch");
+    System.clearProperty(EmailSecurityUtils.TRUSTED_AUTHSERV_IDS_PROPERTY);
+    assertEquals(0, service.offerFingerprint());
   }
 
   /**
