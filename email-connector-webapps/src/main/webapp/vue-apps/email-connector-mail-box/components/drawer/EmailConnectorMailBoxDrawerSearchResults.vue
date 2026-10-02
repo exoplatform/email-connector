@@ -69,6 +69,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { focusKeyedRow } from '../../js/EmailConnectorMailBoxListNavigation.js';
+
 export default {
   props: {
     // The merged (local-instant + server) search hits, newest first.
@@ -197,15 +199,7 @@ export default {
      */
     async revealThread(key) {
       await this.$nextTick();
-      const row = Array.from(this.$el.querySelectorAll('[data-thread-key]'))
-        .find(element => element.getAttribute('data-thread-key') === String(key));
-      if (!row) {
-        return;
-      }
-      row.focus({ preventScroll: true });
-      if (row.scrollIntoView) {
-        row.scrollIntoView({ block: 'nearest' });
-      }
+      focusKeyedRow(this.$el, key);
     },
   },
 };
