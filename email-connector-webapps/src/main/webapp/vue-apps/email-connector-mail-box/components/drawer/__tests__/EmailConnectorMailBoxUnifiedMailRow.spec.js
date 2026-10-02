@@ -1105,7 +1105,7 @@ describe('the sender avatar draws the reader\'s initials and the page\'s cached 
     const doubted = mountAvatar({ email: hit(6, 'INBOX', { sender: { name: 'Brand', address: 'news@brand.example', avatarUrl: initials, domainVerified: true } }) });
     await answered();
     expect(wrapper.find('img').attributes('src')).toBe(initials);
-    expect(requests).toEqual([]);
+    expect(requests).toEqual([['news@brand.example']]);
 
     logos['news@brand.example'] = logo;
     refreshSenderDomain('brand.example');
@@ -1113,6 +1113,24 @@ describe('the sender avatar draws the reader\'s initials and the page\'s cached 
     expect(wrapper.find('img').attributes('src')).toBe(logo);
     expect(doubted.find('img').attributes('src')).toBe(initials);
     doubted.destroy();
+  });
+
+  it('shows in the reader a logo found before the reader came, without a word to wait for (EXO-90909)', async () => {
+    const logo = `${SENDER_LOGO_PATH}brand.example?t=rita`;
+    logos['news@brand.example'] = logo;
+    refreshSenderDomain('brand.example');
+    wrapper = mountAvatar({ email: hit(5, 'INBOX', { sender: { name: 'Brand', address: 'news@brand.example', avatarUrl: 'data:image/png;base64,AAAA', logoPending: true } }) });
+    await answered();
+    expect(wrapper.find('img').attributes('src')).toBe(logo);
+  });
+
+  it('matches the domain the server names in its ASCII form with an address written with an internationalised one (EXO-90909)', async () => {
+    requestSenderAvatar('info@bücher.example');
+    requestSenderAvatar('info@other.example');
+    await answered();
+    refreshSenderDomain('xn--bcher-kva.example');
+    await answered();
+    expect(requests).toEqual([['info@bücher.example', 'info@other.example'], ['info@bücher.example']]);
   });
 });
 

@@ -85,8 +85,10 @@ import jakarta.annotation.PreDestroy;
  * public addresses only, checked at every connection, redirects included), a connect
  * and a read timeout, a deadline over each fetch enforced by cancelling it, a body
  * limit counted on the decoded bytes, two redirects at most, the declared type checked
- * against the image types and the bytes against what they claim. The guard and the
- * fetch mirror agenda's {@code CalendarAddressGuard} and {@code CalendarFeedFetcher}.
+ * against the image types and the bytes against what they claim. Each fetch has its own
+ * deadline, so one domain's lookup -- BIMI logo, favicon, home page, declared icon --
+ * takes at most four of them ({@link #TOTAL_TIMEOUT} each), on a background thread.
+ * The guard and the fetch mirror agenda's {@code CalendarAddressGuard} and {@code CalendarFeedFetcher}.
  * <b>Nothing of the platform goes out</b>: no cookie, no credentials, no referrer, no retry.
  * <p>
  * Any failure -- no DNS, no answer, a refused address, a wrong type, a body too large
