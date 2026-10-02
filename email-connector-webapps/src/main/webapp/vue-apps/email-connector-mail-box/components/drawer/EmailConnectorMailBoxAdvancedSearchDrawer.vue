@@ -17,8 +17,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- The mailbox's advanced search (EXO-90838), a drawer over the mailbox like its other
        pickers: the sender, a recipient, words of the subject or the message, a range of
-       days, the folder, and the messages with an attachment. Unread and Favorites are
-       the search row's own chips, never set here.
+       days, the folder, the messages with an attachment, and the categories eXo filed
+       them under (EXO-90888). Unread and Favorites are the search row's own chips, never
+       set here.
        Laid out like the platform's drawer forms: a plain label above each field, the two
        days as two date pickers side by side, empty meaning no bound. "Search" hands the
        criteria to the mailbox drawer, which shows them as chips under the search row;
@@ -132,6 +133,29 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             hide-details
             @blur="$refs.folderSelect.blur()" />
         </template>
+        <template v-if="categories.length">
+          <!-- The mailbox's categories, as the folder column lists them, several at once:
+               a mail filed under one of them matches, a category taking its subcategories
+               along. -->
+          <div class="mt-4 mb-2">{{ $t('emailConnector.mailBox.search.advanced.category') }}</div>
+          <v-select
+            ref="categorySelect"
+            v-model="criteria.categoryIds"
+            :items="categories"
+            :menu-props="{ bottom: true, offsetY: true }"
+            :placeholder="$t('emailConnector.mailBox.search.advanced.category.none')"
+            :aria-label="$t('emailConnector.mailBox.search.advanced.category')"
+            item-text="name"
+            item-value="id"
+            class="pa-0"
+            multiple
+            small-chips
+            deletable-chips
+            dense
+            outlined
+            hide-details
+            @blur="$refs.categorySelect.blur()" />
+        </template>
         <v-checkbox
           v-model="criteria.attachment"
           :label="$t('emailConnector.mailBox.search.advanced.attachment')"
@@ -170,10 +194,13 @@ export default {
   data: () => ({
     MAX_TEXT_LENGTH,
     drawer: false,
-    // The criteria being edited: {from, to, words, after, before, attachment, folder}.
+    // The criteria being edited: {from, to, words, after, before, attachment, folder,
+    // categoryIds}.
     criteria: emptySearchCriteria(),
     // The folders the search offers, [{key, label}], and the one shown when it opened.
     folders: [],
+    // The categories the search offers, [{id, name, icon}] (EXO-90888).
+    categories: [],
     shownFolder: null,
   }),
   computed: {
@@ -208,13 +235,16 @@ export default {
     /**
      * Opens the drawer on the search as the mailbox drawer has it.
      *
-     * @param {Object} search {criteria, folders, shownFolder}
+     * @param {Object} search {criteria, folders, categories, shownFolder}
      * @returns {void}
      */
     open(search) {
       this.criteria = { ...emptySearchCriteria(), ...(search?.criteria || {}) };
+      // A copy: the list is edited here, the search's own only once applied.
+      this.criteria.categoryIds = [...(this.criteria.categoryIds || [])];
       this.shownFolder = search?.shownFolder || this.criteria.folder;
       this.folders = search?.folders || [];
+      this.categories = search?.categories || [];
       this.$refs.drawer.open();
     },
     /**
@@ -224,7 +254,7 @@ export default {
      */
     apply() {
       this.$root.$emit(APPLY_ADVANCED_SEARCH_EVENT, {
-        criteria: { ...this.criteria },
+        criteria: { ...this.criteria, categoryIds: [...(this.criteria.categoryIds || [])] },
       });
       this.$refs.drawer.close();
     },
