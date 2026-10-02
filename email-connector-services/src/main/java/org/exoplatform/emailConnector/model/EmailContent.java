@@ -62,6 +62,15 @@ public class EmailContent {
   @JsonIgnore
   private String                authFailure;
 
+  /**
+   * Whether the receiving server's own {@code Authentication-Results} header says the
+   * message passed DMARC for its {@code From} domain (EXO-90893), the condition for
+   * showing the sender's brand logo. Read at sync and stored with the row; false on a
+   * row cached before it was recorded. Backend-only.
+   */
+  @JsonIgnore
+  private boolean               dmarcPassed;
+
   public EmailContent(String body) {
     this.body = body;
   }
