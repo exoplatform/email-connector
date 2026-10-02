@@ -170,6 +170,9 @@ public class EmailThreadAiSummaryTest {
   private EmailDelegationService  emailDelegationService;
 
   @MockitoBean
+  private EmailDmarcVerdictBackfillService emailDmarcVerdictBackfillService;
+
+  @MockitoBean
   private UploadService           uploadService;
 
   /**
