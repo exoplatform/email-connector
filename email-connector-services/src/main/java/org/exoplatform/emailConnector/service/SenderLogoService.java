@@ -84,7 +84,12 @@ import jakarta.annotation.PreDestroy;
 @Service
 public class SenderLogoService {
 
-  /** Where a domain's logo is served, the domain appended. */
+  /**
+   * Where a domain's logo is served, the domain appended. The webapp keeps a copy,
+   * {@code SENDER_LOGO_PATH} in {@code EmailConnectorSenderAvatars.js}, which tells a
+   * brand logo from a person's photo so that the list shows a logo on verified rows
+   * only: change both together.
+   */
   public static final String LOGO_PATH      = "/email-connector/rest/email-box/sender-logo/";
 
   /** The query parameter carrying a logo URL's token. */
