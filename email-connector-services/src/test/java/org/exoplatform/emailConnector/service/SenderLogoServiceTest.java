@@ -29,6 +29,7 @@ import static org.mockito.Mockito.when;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -39,6 +40,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.emailConnector.model.SenderLogo;
 import org.exoplatform.emailConnector.storage.SenderLogoStorage;
+import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
 
 /**
  * When a sender brand logo is offered and served (EXO-90893): DMARC, the
@@ -65,11 +67,35 @@ class SenderLogoServiceTest {
   private final List<Runnable>  queued = new ArrayList<>();
 
   /**
-   * Holds the background resolutions so that each test runs them when it wants.
+   * Holds the background resolutions so that each test runs them when it wants, and
+   * names a trusted mail server, without which nothing is ever offered.
    */
   @BeforeEach
   void holdBackgroundWork() {
     service.setWarmExecutor(queued::add);
+    System.setProperty(EmailSecurityUtils.TRUSTED_AUTHSERV_IDS_PROPERTY, "mx.example.com");
+  }
+
+  /**
+   * Forgets the trusted mail server.
+   */
+  @AfterEach
+  void forgetTrust() {
+    System.clearProperty(EmailSecurityUtils.TRUSTED_AUTHSERV_IDS_PROPERTY);
+  }
+
+  /**
+   * With no mail server named as trusted, nothing is offered and nothing is looked up,
+   * even for a pass stored before the property was unset.
+   */
+  @Test
+  void nothingWithoutATrustedMailServer() {
+    System.clearProperty(EmailSecurityUtils.TRUSTED_AUTHSERV_IDS_PROPERTY);
+    assertNull(service.logoUrlFor("news@brand.example", true, USER));
+    assertEquals(false, service.mayOffer("news@brand.example"));
+    verify(senderLogoStorage, never()).peek(anyString());
+    verify(emailConnectorService, never()).isSenderLogosEnabled();
+    assertEquals(List.of(), queued);
   }
 
   /**
