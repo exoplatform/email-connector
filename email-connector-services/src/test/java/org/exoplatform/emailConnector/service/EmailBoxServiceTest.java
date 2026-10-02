@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import com.sun.mail.smtp.SMTPAddressFailedException;
 import com.sun.mail.smtp.SMTPSendFailedException;
 import com.sun.mail.smtp.SMTPSenderFailedException;
+import org.exoplatform.emailConnector.constant.SearchAttachmentType;
 import org.exoplatform.emailConnector.event.NewInboxMailEvent;
 import org.exoplatform.emailConnector.service.filters.FilterRunContext;
 import org.exoplatform.emailConnector.exception.SendModeMissingException;
@@ -79,6 +80,7 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.HashSet;
@@ -15811,6 +15813,206 @@ public class EmailBoxServiceTest {
                  assertThrows(IllegalArgumentException.class,
                               () -> emailBoxService.searchCategoryIds(withCategories(atTheBound))).getMessage(),
                  "at the bound, the ids are checked, not counted");
+  }
+
+  /**
+   * EXO-90910 -- a kind of attachment, or a file name, narrows the search of eXo's copy
+   * to the matches eXo holds such an attachment for, before the page is cut and the
+   * matches counted, the kinds parsed once and handed to the storage; it implies an
+   * attachment, the plain "has an attachment" read being left aside. A bad kind or a
+   * name past the bound is refused once the caller's access is checked, before any read.
+   */
+  @Test
+  void anAttachmentKindNarrowsTheCopysSearchBeforeThePageIsCut() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    EmailSearchCriteria unknownKind = withAttachmentTypes("PDF", "EXECUTABLE");
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.searchCachedFolder(TEST_USER, unknownKind, MailFolder.INBOX, 10));
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    assertEquals("emailConnector.search.invalidAttachmentType",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchCachedFolder(TEST_USER, unknownKind, MailFolder.INBOX, 10)).getMessage());
+    EmailSearchCriteria longName = new EmailSearchCriteria();
+    longName.setAttachmentName("x".repeat(EmailBoxService.SEARCH_MAX_ATTACHMENT_NAME_LENGTH + 1));
+    assertEquals("emailConnector.search.attachmentNameTooLong",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchCachedFolder(TEST_USER, longName, MailFolder.INBOX, 10)).getMessage());
+    verify(emailBoxStorage, never()).getEmailsForSearchInFolders(anyString(), anyList(), anyBoolean());
+
+    Email olderPdf = mirrored(1L, "Contract", "carol@acme.com", false, 2);
+    olderPdf.setId(101L);
+    Email newerPdf = mirrored(2L, "Signed", "erin@acme.com", false, 1);
+    newerPdf.setId(102L);
+    Email noPdf = mirrored(3L, "Photos", "frank@acme.com", false, 0);
+    noPdf.setId(103L);
+    List<Email> rows = List.of(olderPdf, newerPdf, noPdf);
+    rows.forEach(email -> email.setFolder(MailFolder.INBOX));
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of(MailFolder.INBOX), false)).thenReturn(rows);
+    when(emailBoxStorage.getEmailIdsWithMatchingAttachmentsInFolders(TEST_USER,
+                                                                     List.of(MailFolder.INBOX),
+                                                                     EnumSet.of(SearchAttachmentType.PDF),
+                                                                     "contract")).thenReturn(Set.of(101L, 102L));
+    EmailSearchCriteria pdfNamedContract = withAttachmentTypes("pdf", "PDF");
+    pdfNamedContract.setAttachmentsOnly(true);
+    pdfNamedContract.setAttachmentName("contract");
+
+    EmailSearchResultPage page = emailBoxService.searchCachedFolder(TEST_USER, pdfNamedContract, MailFolder.INBOX, 1);
+
+    assertEquals(List.of(2L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList(), "the newest of them");
+    assertEquals(2, page.getTotalMatches(), "counted before the page is cut");
+    verify(emailBoxStorage, never()).getEmailIdsWithAttachmentsInFolders(anyString(), anyCollection());
+
+    EmailSearchCriteria nameAlone = new EmailSearchCriteria();
+    nameAlone.setAttachmentName("  contract ");
+    when(emailBoxStorage.getEmailIdsWithMatchingAttachmentsInFolders(TEST_USER,
+                                                                     List.of(MailFolder.INBOX),
+                                                                     Set.of(),
+                                                                     "  contract ")).thenReturn(Set.of(101L));
+    assertEquals(List.of(1L), cachedUids(nameAlone), "a file name alone is a search, and implies an attachment");
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * EXO-90910 -- the mail server's SEARCH cannot tell an attachment's kind: a server search
+   * asking for one is held to the folder's messages eXo holds such an attachment for, its
+   * other terms asked of those only, and their attachments are never examined again
+   * (eXo's rows have one by construction), so a message eXo has not synced never matches.
+   * No such message asks the server nothing; a bad kind is refused before it is asked.
+   */
+  @Test
+  void anAttachmentKindHoldsTheServerSearchToTheMatchingMessagesOfTheCopy() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    assertEquals("emailConnector.search.invalidAttachmentType",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchEmails(TEST_USER, withAttachmentTypes("BINARY"), "INBOX", 10)).getMessage());
+    Store store = mock(Store.class);
+    lenient().when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(store.getFolder("INBOX")).thenReturn(inbox);
+    lenient().when(inbox.isOpen()).thenReturn(true);
+    when(emailBoxStorage.getCachedFolderEmailIds(TEST_USER, "INBOX")).thenReturn(Map.of(30L, 101L, 31L, 102L, 32L, 103L));
+    EmailSearchCriteria spreadsheets = withAttachmentTypes("SPREADSHEET");
+    spreadsheets.setAttachmentsOnly(true);
+    when(emailBoxStorage.getEmailIdsWithMatchingAttachmentsInFolders(TEST_USER,
+                                                                     List.of("INBOX"),
+                                                                     EnumSet.of(SearchAttachmentType.SPREADSHEET),
+                                                                     null)).thenReturn(Set.of());
+
+    EmailSearchResultPage nothing = emailBoxService.searchEmails(TEST_USER, spreadsheets, "INBOX", 10);
+
+    assertEquals(0, nothing.getTotalMatches());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+
+    when(emailBoxStorage.getEmailIdsWithMatchingAttachmentsInFolders(TEST_USER,
+                                                                     List.of("INBOX"),
+                                                                     EnumSet.of(SearchAttachmentType.SPREADSHEET),
+                                                                     null)).thenReturn(Set.of(101L, 103L, 999L));
+    Message older = mock(Message.class);
+    Message newer = mock(Message.class);
+    when(((UIDFolder) inbox).getMessagesByUID(new long[] { 30L, 32L })).thenReturn(new Message[] { older, newer });
+    when(((UIDFolder) inbox).getUID(older)).thenReturn(30L);
+    when(((UIDFolder) inbox).getUID(newer)).thenReturn(32L);
+    when(emailBoxStorage.getCachedEmailIds(eq(TEST_USER), eq("INBOX"), anyList())).thenReturn(Map.of(30L, 101L, 32L, 103L));
+
+    EmailSearchResultPage found = emailBoxService.searchEmails(TEST_USER, spreadsheets, "INBOX", 10);
+
+    assertEquals(List.of(32L, 30L), found.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList(),
+                 "both kept: their MIME structure, which these messages do not carry, is never examined");
+    assertEquals(2, found.getTotalMatches(), "the matching messages, never the folder's count");
+    assertEquals(0, found.getScanned());
+    verify(inbox, never()).search(any(SearchTerm.class));
+    verify(inbox, never()).getMessageCount();
+
+    EmailSearchCriteria fromAndKind = withAttachmentTypes("SPREADSHEET");
+    fromAndKind.setFrom("carol");
+    when(emailBoxStorage.getEmailIdsWithMatchingAttachmentsInFolders(TEST_USER,
+                                                                     List.of("INBOX"),
+                                                                     EnumSet.of(SearchAttachmentType.SPREADSHEET),
+                                                                     null)).thenReturn(Set.of(101L, 103L));
+    when(inbox.search(any(SearchTerm.class), any(Message[].class))).thenReturn(new Message[] { newer });
+
+    EmailSearchResultPage narrowed = emailBoxService.searchEmails(TEST_USER, fromAndKind, "INBOX", 10);
+
+    assertEquals(List.of(32L), narrowed.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList());
+    ArgumentCaptor<Message[]> askedOf = ArgumentCaptor.forClass(Message[].class);
+    verify(inbox).search(any(SearchTerm.class), askedOf.capture());
+    assertArrayEquals(new Message[] { older, newer }, askedOf.getValue(), "the sender asked of the matching messages only");
+    verify(inbox, never()).search(any(SearchTerm.class));
+  }
+
+  /**
+   * EXO-90910 -- a category and a kind of attachment together hold the server search to
+   * the messages eXo holds that match both.
+   */
+  @Test
+  void aCategoryAndAnAttachmentKindHoldTheServerSearchToBoth() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    mockCategoryIdSetting("emailImportantCategory", "11");
+    when(categoryService.getSubcategoryIds(11L, 0, -1, -1)).thenReturn(List.of());
+    Store store = mock(Store.class);
+    lenient().when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(store.isConnected()).thenReturn(true);
+    lenient().when(store.getFolder("INBOX")).thenReturn(inbox);
+    lenient().when(inbox.isOpen()).thenReturn(true);
+    when(emailBoxStorage.getCachedFolderEmailIds(TEST_USER, "INBOX")).thenReturn(Map.of(30L, 101L, 31L, 102L, 32L, 103L));
+    when(emailBoxStorage.getEmailIdsInCategories(anyCollection(), eq(Set.of(11L)))).thenReturn(Set.of(101L, 102L));
+    when(emailBoxStorage.getEmailIdsWithMatchingAttachmentsInFolders(TEST_USER,
+                                                                     List.of("INBOX"),
+                                                                     EnumSet.of(SearchAttachmentType.IMAGE),
+                                                                     null)).thenReturn(Set.of(102L, 103L));
+    Message both = mock(Message.class);
+    when(((UIDFolder) inbox).getMessagesByUID(new long[] { 31L })).thenReturn(new Message[] { both });
+    when(((UIDFolder) inbox).getUID(both)).thenReturn(31L);
+    when(emailBoxStorage.getCachedEmailIds(eq(TEST_USER), eq("INBOX"), anyList())).thenReturn(Map.of(31L, 102L));
+    EmailSearchCriteria importantImages = withAttachmentTypes("IMAGE");
+    importantImages.setCategoryIds(List.of(11L));
+
+    EmailSearchResultPage found = emailBoxService.searchEmails(TEST_USER, importantImages, "INBOX", 10);
+
+    assertEquals(List.of(31L), found.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList());
+  }
+
+  /**
+   * EXO-90910 -- the kinds a search names are parsed once, case ignored and each once;
+   * an unknown key is refused, and the file name is bounded once trimmed: at the bound it
+   * is taken, past it refused.
+   */
+  @Test
+  void theAttachmentKindsAreParsedAndTheFileNameBounded() {
+    assertEquals(EnumSet.of(SearchAttachmentType.PDF, SearchAttachmentType.ARCHIVE),
+                 EmailBoxService.searchAttachmentTypes(withAttachmentTypes("pdf", "Archive", "PDF")));
+    assertEquals(Set.of(), EmailBoxService.searchAttachmentTypes(new EmailSearchCriteria()));
+    assertEquals("emailConnector.search.invalidAttachmentType",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> EmailBoxService.searchAttachmentTypes(withAttachmentTypes("PDF", ""))).getMessage(),
+                 "a blank key names no kind");
+    EmailSearchCriteria atTheBound = new EmailSearchCriteria();
+    atTheBound.setAttachmentName(" " + "x".repeat(EmailBoxService.SEARCH_MAX_ATTACHMENT_NAME_LENGTH) + " ");
+    assertEquals(Set.of(), EmailBoxService.searchAttachmentTypes(atTheBound));
+    EmailSearchCriteria pastTheBound = new EmailSearchCriteria();
+    pastTheBound.setAttachmentName("x".repeat(EmailBoxService.SEARCH_MAX_ATTACHMENT_NAME_LENGTH + 1));
+    assertEquals("emailConnector.search.attachmentNameTooLong",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> EmailBoxService.searchAttachmentTypes(pastTheBound)).getMessage());
+    EmailSearchCriteria blankName = new EmailSearchCriteria();
+    blankName.setAttachmentName("   ");
+    assertFalse(blankName.hasCriterion(), "a blank file name narrows nothing");
+  }
+
+  /**
+   * Criteria naming some kinds of attachment, and nothing else.
+   *
+   * @param keys the kinds' keys
+   * @return the criteria
+   */
+  private EmailSearchCriteria withAttachmentTypes(String... keys) {
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setAttachmentTypes(List.of(keys));
+    return criteria;
   }
 
   /**

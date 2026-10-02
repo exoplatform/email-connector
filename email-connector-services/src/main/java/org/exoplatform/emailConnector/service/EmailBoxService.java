@@ -51,6 +51,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.Date;
 import java.util.Deque;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -151,6 +152,7 @@ import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.container.PortalContainer;
 import org.exoplatform.commons.utils.CommonsUtils;
+import org.exoplatform.emailConnector.constant.SearchAttachmentType;
 import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.ExportInterruptedException;
@@ -581,6 +583,11 @@ public class EmailBoxService {
   // each one named is a read of the category tree. Twin of the webapp's
   // CATEGORY_IDS_PATTERN (EmailConnectorMailBoxSearchCriteria.js).
   static final int                SEARCH_MAX_CATEGORIES                                       = 20;
+
+  // The longest text a search's "file name contains" takes (EXO-90910): a fragment of a
+  // file name, never a document. Twin of the webapp's ATTACHMENT_NAME_MAX_LENGTH
+  // (EmailConnectorMailBoxSearchCriteria.js).
+  static final int                SEARCH_MAX_ATTACHMENT_NAME_LENGTH                           = 100;
 
   /** How much of a message to quote when the search matched nothing in its body. */
   private static final int        EXCERPT_LENGTH                                              = 180;
@@ -7393,17 +7400,20 @@ public class EmailBoxService {
    * never reaches the server. The rows the sync brought in, filtered by
    * {@link #filterCached} -- which the copy's own size bounds -- and, when the criteria
    * name categories, by eXo's links of the matches to them (EXO-90888), newest first.
+   * A kind of attachment or a file name (EXO-90910) narrows the rows to those eXo holds
+   * such an attachment for, before the page is cut and the matches counted.
    *
    * @param username the reader
    * @param folderKey the folder's key, already checked
    * @param criteria what to match
    * @param limit how many hits to return, newest first
    * @return the newest matching messages and how many matched
-   * @throws IllegalArgumentException the codes of {@link #validateSearchCriteria} and
-   *           {@link #searchCategoryIds}
+   * @throws IllegalArgumentException the codes of {@link #validateSearchCriteria},
+   *           {@link #searchAttachmentTypes} and {@link #searchCategoryIds}
    */
   private EmailSearchResultPage searchMirror(String username, String folderKey, EmailSearchCriteria criteria, int limit) {
     validateSearchCriteria(criteria);
+    Set<SearchAttachmentType> attachmentTypes = searchAttachmentTypes(criteria);
     Set<Long> categoryIds = searchCategoryIds(criteria);
     // The search's own read, not the listing's: no attachment, category or excerpt, which
     // a search discards -- this runs once per keystroke in the drawer's search box.
@@ -7411,10 +7421,19 @@ public class EmailBoxService {
                                                                    List.of(folderKey),
                                                                    StringUtils.isNotBlank(criteria.getTo()));
     // One more read only when the attachment criterion asks for it: the ids of the
-    // folder's rows that have one, never the attachments themselves.
-    Set<Long> withAttachments = criteria.isAttachmentsOnly() ? emailBoxStorage.getEmailIdsWithAttachmentsInFolders(username,
-                                                                                                                   List.of(folderKey))
-                                                             : Set.of();
+    // folder's rows that have one, never the attachments themselves -- an attachment of
+    // a kind, or with a name, when the search asks for that (EXO-90910).
+    Set<Long> withAttachments;
+    if (criteria.hasAttachmentFileCriterion()) {
+      withAttachments = emailBoxStorage.getEmailIdsWithMatchingAttachmentsInFolders(username,
+                                                                                   List.of(folderKey),
+                                                                                   attachmentTypes,
+                                                                                   criteria.getAttachmentName());
+    } else if (criteria.isAttachmentsOnly()) {
+      withAttachments = emailBoxStorage.getEmailIdsWithAttachmentsInFolders(username, List.of(folderKey));
+    } else {
+      withAttachments = Set.of();
+    }
     List<Email> matches = filterCached(rows, criteria, withAttachments);
     if (categoryIds != null) {
       // eXo's category links on the matches, read in batches, before the page is cut and
@@ -7449,13 +7468,16 @@ public class EmailBoxService {
    * days are drawn in eXo's JVM zone -- the zone JavaMail writes the IMAP {@code SINCE}
    * and {@code BEFORE} days in, which the mail server then matches against its own
    * internal dates -- and a message has an attachment when eXo holds an attachment row
-   * for it: the paperclip of the list. Package-visible for tests.
+   * for it: the paperclip of the list. A kind of attachment or a file name (EXO-90910)
+   * asks for an attachment too, the ids given being then those of the rows with such an
+   * attachment. Package-visible for tests.
    *
    * @param rows the copy's messages, as the search read gives them -- with their To and
    *          Cc recipients when the criteria name one
    * @param criteria what to match
-   * @param withAttachments the ids of the rows that carry an attachment; read only when
-   *          the criteria ask for one
+   * @param withAttachments the ids of the rows that carry an attachment -- of the kind,
+   *          or with the name, asked for when the criteria ask one; read only when the
+   *          criteria ask for an attachment
    * @return the matching messages, newest first
    */
   static List<Email> filterCached(List<Email> rows, EmailSearchCriteria criteria, Set<Long> withAttachments) {
@@ -7471,7 +7493,8 @@ public class EmailBoxService {
     return rows.stream()
                .filter(email -> !criteria.isUnreadOnly() || !email.isRead())
                .filter(email -> !criteria.isFavoritesOnly() || email.isStarred())
-               .filter(email -> !criteria.isAttachmentsOnly() || withAttachments.contains(email.getId()))
+               .filter(email -> !criteria.isAttachmentsOnly() && !criteria.hasAttachmentFileCriterion()
+                   || withAttachments.contains(email.getId()))
                .filter(email -> receivedWithin(email, since, after, before))
                .filter(email -> sender == null || senderMatches(email, sender))
                .filter(email -> recipient == null || recipientMatches(email, recipient))
@@ -7511,6 +7534,38 @@ public class EmailBoxService {
     if (!criteria.hasCriterion()) {
       throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
     }
+  }
+
+  /**
+   * The kinds of attachment a search asks for (EXO-90910), each once, and the check of
+   * its file name: an attachment's kind is told by {@link SearchAttachmentType}, the one
+   * place that defines it. Called once the caller's access to the mailbox is checked.
+   * Package-visible for tests.
+   *
+   * @param criteria the search's criteria
+   * @return the kinds, empty when the search names none
+   * @throws IllegalArgumentException {@code emailConnector.search.invalidAttachmentType}
+   *           for a key that names no kind, {@code emailConnector.search.attachmentNameTooLong}
+   *           for a file name longer than {@value #SEARCH_MAX_ATTACHMENT_NAME_LENGTH}
+   *           characters once trimmed
+   */
+  static Set<SearchAttachmentType> searchAttachmentTypes(EmailSearchCriteria criteria) {
+    if (StringUtils.trimToEmpty(criteria.getAttachmentName()).length() > SEARCH_MAX_ATTACHMENT_NAME_LENGTH) {
+      throw new IllegalArgumentException("emailConnector.search.attachmentNameTooLong");
+    }
+    List<String> keys = criteria.getAttachmentTypes();
+    if (keys == null || keys.isEmpty()) {
+      return Set.of();
+    }
+    Set<SearchAttachmentType> types = EnumSet.noneOf(SearchAttachmentType.class);
+    for (String key : keys) {
+      SearchAttachmentType type = SearchAttachmentType.fromKey(key);
+      if (type == null) {
+        throw new IllegalArgumentException("emailConnector.search.invalidAttachmentType");
+      }
+      types.add(type);
+    }
+    return types;
   }
 
   /**
@@ -16081,6 +16136,11 @@ public class EmailBoxService {
    * a search naming some is held to the folder's messages eXo holds and filed under one
    * of them ({@link #searchCategoryIds}), its other terms asked of those messages only. A
    * message outside eXo's copy carries no category, so it never matches such a search.
+   * <p>
+   * A kind of attachment and a file name (EXO-90910) are eXo's too: the mail server's
+   * SEARCH cannot tell an attachment's kind, so such a search is held the same way to the
+   * folder's messages eXo holds an attachment of that kind, or with that name, for. A
+   * message eXo has not synced never matches it.
    *
    * @param username the mailbox owner
    * @param criteria what to match, at least one criterion
@@ -16090,8 +16150,8 @@ public class EmailBoxService {
    * @return the newest matching messages plus the total match count
    * @throws IllegalAccessException if the user is not allowed to search their mailbox
    * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for any
-   *           other folder, and the codes of {@link #validateSearchCriteria} and
-   *           {@link #searchCategoryIds}
+   *           other folder, and the codes of {@link #validateSearchCriteria},
+   *           {@link #searchAttachmentTypes} and {@link #searchCategoryIds}
    * @throws DelegationRevokedException when the folder's share is no longer accepted
    */
   public EmailSearchResultPage searchEmails(String username,
@@ -16115,18 +16175,27 @@ public class EmailBoxService {
       throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
     }
     validateSearchCriteria(criteria);
+    Set<SearchAttachmentType> attachmentTypes = searchAttachmentTypes(criteria);
     Set<Long> categoryIds = searchCategoryIds(criteria);
+    boolean attachmentFileCriterion = criteria.hasAttachmentFileCriterion();
     Date since = criteria.getSinceDays() == null ? null
                                                  : new Date(System.currentTimeMillis()
                                                      - TimeUnit.DAYS.toMillis(criteria.getSinceDays()));
     SearchTerm searchTerm = buildEmailSearchTerm(criteria, since);
     boolean favoritesOnly = criteria.isFavoritesOnly();
     int cappedLimit = Math.min(Math.max(limit, 1), SEARCH_MAX_RESULTS);
-    // The categories are eXo's, never the mail server's (EXO-90888): the search is held to
-    // the folder's messages eXo holds and filed under one of them, so a message outside
-    // eXo's copy never matches. None of them: nothing to ask the server.
-    long[] categorizedUids = categoryIds == null ? null : categorizedUids(username, folder, categoryIds);
-    if (categorizedUids != null && categorizedUids.length == 0) {
+    // The categories (EXO-90888) and the attachments' kind and name (EXO-90910) are eXo's,
+    // never the mail server's: the search is held to the folder's messages eXo holds that
+    // match them, so a message outside eXo's copy never matches. None of them: nothing to
+    // ask the server.
+    long[] restrictedUids = categoryIds == null && !attachmentFileCriterion ? null
+                                                                            : restrictedUids(username,
+                                                                                             folder,
+                                                                                             categoryIds,
+                                                                                             attachmentFileCriterion ? attachmentTypes
+                                                                                                                     : null,
+                                                                                             criteria.getAttachmentName());
+    if (restrictedUids != null && restrictedUids.length == 0) {
       return new EmailSearchResultPage(List.of(), 0, favoritesOnly);
     }
     Store store = null;
@@ -16140,10 +16209,10 @@ public class EmailBoxService {
       }
       remoteFolder.open(Folder.READ_ONLY);
       Message[] found;
-      if (categorizedUids != null) {
-        // The categorized messages still on the server, the search's other terms asked of
+      if (restrictedUids != null) {
+        // The messages eXo matched still on the server, the search's other terms asked of
         // them only -- one UID FETCH, then one SEARCH over that set.
-        Message[] byUid = ((UIDFolder) remoteFolder).getMessagesByUID(categorizedUids);
+        Message[] byUid = ((UIDFolder) remoteFolder).getMessagesByUID(restrictedUids);
         Message[] categorized = byUid == null ? new Message[0]
                                               : Arrays.stream(byUid).filter(Objects::nonNull).toArray(Message[]::new);
         found = searchTerm == null || categorized.length == 0 ? categorized : remoteFolder.search(searchTerm, categorized);
@@ -16156,10 +16225,12 @@ public class EmailBoxService {
         return new EmailSearchResultPage(List.of(), 0);
       }
       // The attachment criterion alone counts the folder; any other search, its matches.
-      int totalMatches = searchTerm == null && categorizedUids == null ? remoteFolder.getMessageCount() : found.length;
+      int totalMatches = searchTerm == null && restrictedUids == null ? remoteFolder.getMessageCount() : found.length;
       int scanned = 0;
       Message[] page;
-      if (criteria.isAttachmentsOnly()) {
+      // An attachment of a kind or with a name was already matched on eXo's rows
+      // (EXO-90910), which have one by construction: no structure to examine.
+      if (criteria.isAttachmentsOnly() && !attachmentFileCriterion) {
         // The attachment criterion is eXo's (the paperclip of the list), never an IMAP
         // term (EXO-90838): the newest matches are examined against the attachment rows
         // eXo would write for them, from their MIME structure -- one batched FETCH with
@@ -16256,22 +16327,41 @@ public class EmailBoxService {
   }
 
   /**
-   * The UIDs of the messages of one of the user's folders that eXo holds and filed under
-   * one of some categories, oldest first (EXO-90888): what a server search narrowed to
-   * categories is held to. Two reads: the folder's (UID, id) pairs, then eXo's category
-   * links of those rows in batches -- never one per message.
+   * The UIDs of the messages of one of the user's folders that eXo holds and that match
+   * what only eXo knows of them, oldest first: filed under one of some categories
+   * (EXO-90888), carrying an attachment of one of some kinds or with a name (EXO-90910).
+   * What a server search narrowed by them is held to. The folder's (UID, id) pairs, then
+   * eXo's category links of those rows in batches -- never one per message -- and its
+   * attachment rows of the folder in one read.
    *
    * @param username the mailbox owner
    * @param folder the folder searched
-   * @param categoryIds the categories, each already expanded to its subcategories
+   * @param categoryIds the categories, each already expanded to its subcategories, or
+   *          null for no category criterion
+   * @param attachmentTypes the kinds of attachment, empty for any kind, or null for no
+   *          attachment criterion
+   * @param attachmentName the text an attachment's name contains, blank for any name
    * @return the UIDs, ascending, empty when none
    */
-  private long[] categorizedUids(String username, String folder, Set<Long> categoryIds) {
+  private long[] restrictedUids(String username,
+                                String folder,
+                                Set<Long> categoryIds,
+                                Set<SearchAttachmentType> attachmentTypes,
+                                String attachmentName) {
     Map<Long, Long> cachedIds = emailBoxStorage.getCachedFolderEmailIds(username, folder);
-    Set<Long> inCategories = emailBoxStorage.getEmailIdsInCategories(cachedIds.values(), categoryIds);
+    Set<Long> kept = new HashSet<>(cachedIds.values());
+    if (categoryIds != null && !kept.isEmpty()) {
+      kept.retainAll(emailBoxStorage.getEmailIdsInCategories(cachedIds.values(), categoryIds));
+    }
+    if (attachmentTypes != null && !kept.isEmpty()) {
+      kept.retainAll(emailBoxStorage.getEmailIdsWithMatchingAttachmentsInFolders(username,
+                                                                                List.of(folder),
+                                                                                attachmentTypes,
+                                                                                attachmentName));
+    }
     return cachedIds.entrySet()
                     .stream()
-                    .filter(entry -> inCategories.contains(entry.getValue()))
+                    .filter(entry -> kept.contains(entry.getValue()))
                     .mapToLong(Map.Entry::getKey)
                     .sorted()
                     .toArray();
