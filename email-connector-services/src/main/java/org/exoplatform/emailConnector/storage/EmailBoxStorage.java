@@ -1675,6 +1675,51 @@ public class EmailBoxStorage {
   }
 
   /**
+   * The newest rows of a folder whose DMARC verdict was never recorded (EXO-90909), for
+   * it to be filled in from the mail server's header: each with its id, folder,
+   * Message-ID, UID and sender, nothing else.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @param limit how many at most
+   * @return the rows, newest first
+   */
+  public List<Email> getEmailsWithoutDmarcVerdict(String userId, String folder, int limit) {
+    if (StringUtils.isBlank(userId) || StringUtils.isBlank(folder) || limit <= 0) {
+      return List.of();
+    }
+    return emailBoxDao.findWithoutDmarcVerdict(userId, folder, PageRequest.of(0, limit)).stream().map(row -> {
+      Email email = new Email();
+      email.setId((Long) row[0]);
+      email.setFolder((String) row[1]);
+      email.setMailHeaderId((String) row[2]);
+      email.setMailRemoteId((Long) row[3]);
+      String sender = (String) row[4];
+      if (StringUtils.isNotBlank(sender)) {
+        String[] parts = splitStoredPerson(sender);
+        email.setSender(new EmailSender(parts[0], parts[1], null, null));
+      }
+      return email;
+    }).toList();
+  }
+
+  /**
+   * Records the DMARC verdict of rows of a mailbox that had none (EXO-90909); a row given
+   * one meanwhile keeps its own.
+   *
+   * @param userId the mailbox owner
+   * @param ids the rows
+   * @param dmarcPass the verdict
+   * @return how many rows were written
+   */
+  public int setDmarcVerdict(String userId, Collection<Long> ids, boolean dmarcPass) {
+    if (StringUtils.isBlank(userId) || ids == null || ids.isEmpty()) {
+      return 0;
+    }
+    return emailBoxDao.setDmarcVerdict(userId, ids, dmarcPass);
+  }
+
+  /**
    * Maps a cached row to what a search reads: its keys, subject, date, flags, raw body
    * and sender, and its To and Cc recipients when asked -- never its attachments.
    *
