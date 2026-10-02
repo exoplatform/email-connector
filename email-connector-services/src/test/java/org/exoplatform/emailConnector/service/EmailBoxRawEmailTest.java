@@ -158,6 +158,9 @@ class EmailBoxRawEmailTest {
   @MockitoBean
   private EmailDelegationService  emailDelegationService;
 
+  @MockitoBean
+  private EmailDmarcVerdictBackfillService emailDmarcVerdictBackfillService;
+
   @Autowired
   private EmailBoxService         emailBoxService;
 
