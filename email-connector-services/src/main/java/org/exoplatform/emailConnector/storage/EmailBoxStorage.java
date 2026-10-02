@@ -1601,6 +1601,7 @@ public class EmailBoxStorage {
                         .replace("_", LIKE_ESCAPE + "_");
     return !emailBoxDao.findOneIdBySenderAddress(userId, "%," + escaped, key).isEmpty();
   }
+
   /**
    * Whether a mailbox holds mail sent from an address that passed DMARC for its domain
    * and failed no sender check, in any folder (EXO-90893): the condition for the mail
@@ -1621,7 +1622,6 @@ public class EmailBoxStorage {
                         .replace("_", LIKE_ESCAPE + "_");
     return !emailBoxDao.findOneVerifiedIdBySenderAddress(userId, "%," + escaped, key).isEmpty();
   }
-
 
   /**
    * Maps a cached row to what a search reads: its keys, subject, date, flags, raw body
