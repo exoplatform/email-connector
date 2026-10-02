@@ -58,6 +58,7 @@ import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.service.EmailContactCardDavSyncService;
 import org.exoplatform.emailConnector.service.EmailContactService;
 import org.exoplatform.emailConnector.service.EmailContactVCardService;
+import org.exoplatform.emailConnector.service.EmailSenderProfileService;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -92,6 +93,9 @@ public class EmailContactRest {
 
   @Autowired
   private EmailContactVCardService       emailContactVCardService;
+
+  @Autowired
+  private EmailSenderProfileService      emailSenderProfileService;
 
   /**
    * Lists the user's contacts. One alphabetical page of the caller's own contact store,
@@ -193,6 +197,32 @@ public class EmailContactRest {
                                                         @RequestParam(value = "limit", required = false, defaultValue = "0")
                                                         int limit) {
     return emailContactService.suggestRecipients(request.getRemoteUser(), query, limit);
+  }
+
+  /**
+   * Gets the profile pictures of the platform users behind a set of addresses: the
+   * senders of the mail list's rows on screen, asked for in one request (EXO-90891).
+   *
+   * @param request the caller's request, for the acting user
+   * @param addresses the addresses, at most {@link EmailSenderProfileService#AVATARS_MAX_ADDRESSES}
+   * @return the picture's URL by normalized address, for the addresses a platform user holds
+   */
+  @PostMapping("/avatars")
+  @Secured("users")
+  @Operation(summary = "Gets the profile pictures of the platform users behind a set of addresses", method = "POST",
+             description = "The picture the mail reader shows for each sender, for the rows of the mail list on screen at once. An address belongs to a platform user when it is their account's address, whatever its case, or the address of the mailbox they connected - the latter answered only when the caller's own mailbox holds mail from it. One no enabled user holds is left out of the answer, and the list draws its coloured initials itself. Blank, malformed and repeated addresses are skipped. More than 50 addresses answer 400.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "More addresses than one request takes"),
+      @ApiResponse(responseCode = "403", description = "Not signed in"), })
+  public Map<String, String> getPlatformAvatars(HttpServletRequest request,
+                                                @Parameter(description = "The addresses, as a JSON array", required = true)
+                                                @RequestBody
+                                                List<String> addresses) {
+    try {
+      return emailSenderProfileService.getAvatars(addresses, request.getRemoteUser());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
   }
 
   /**
