@@ -40,6 +40,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailSecurityWarning;
 import org.exoplatform.emailConnector.model.EmailSecurityWarningType;
+import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.RemoteContentSettings;
 import org.exoplatform.emailConnector.model.SanitizedEmailBody;
@@ -94,6 +95,9 @@ public class EmailSecurityService {
 
   @Autowired
   private IdentityManager     identityManager;
+
+  @Autowired
+  private SenderLogoService   senderLogoService;
 
   /**
    * The user's remote-content choices; blocking on and no trusted sender when they
@@ -237,7 +241,27 @@ public class EmailSecurityService {
       }
       content.setRemoteContentBlocked(html && sanitized.remoteContentBlocked());
       content.setSecurityWarnings(warnings);
+      offerSenderLogo(email, ownMessage, warnings);
     }
+  }
+
+  /**
+   * Offers the sender's brand logo (EXO-90893) on a received message that passed DMARC
+   * for its domain and gives no reason for doubt, from a sender the read found no
+   * platform user for: one whose avatar is the server's initials and who has no
+   * profile. A read that did not resolve profiles at all (no avatar) offers none, so a
+   * platform user's photo, which always wins, is never hidden behind a logo.
+   *
+   * @param email the message
+   * @param ownMessage whether it is the mailbox's own sent mail
+   * @param warnings its phishing warnings
+   */
+  private void offerSenderLogo(Email email, boolean ownMessage, List<EmailSecurityWarning> warnings) {
+    EmailSender sender = email.getSender();
+    if (ownMessage || !warnings.isEmpty() || sender == null || sender.getAvatarUrl() == null || sender.getProfileUrl() != null) {
+      return;
+    }
+    sender.setLogoUrl(senderLogoService.logoUrlFor(sender.getAddress(), email.getContent().isDmarcPassed()));
   }
 
   /**

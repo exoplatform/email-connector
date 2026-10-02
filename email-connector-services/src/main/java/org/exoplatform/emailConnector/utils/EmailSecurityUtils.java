@@ -26,6 +26,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
 
@@ -44,6 +45,13 @@ public final class EmailSecurityUtils {
   /** The header the receiving server writes its SPF, DKIM and DMARC verdicts in (RFC 8601). */
   public static final String   HEADER_AUTHENTICATION_RESULTS = "Authentication-Results";
 
+  /**
+   * The authserv-ids, comma-separated, of the mail servers whose
+   * {@code Authentication-Results} header is believed when it says a message passed
+   * DMARC (EXO-90893); unset or empty to believe the top header whoever wrote it.
+   */
+  public static final String   TRUSTED_AUTHSERV_IDS_PROPERTY = "email.connector.security.trustedAuthservIds";
+
   /** A DMARC failure: the sender's domain disowns the message. */
   public static final String   AUTH_DMARC                    = "DMARC";
 
@@ -59,6 +67,9 @@ public final class EmailSecurityUtils {
 
   /** The domain a DKIM result names: {@code header.d=}, or the part after {@code @} of {@code header.i=}. */
   private static final Pattern DKIM_DOMAIN                   = Pattern.compile("\\bheader\\.(?:d=|i=[^@\\s;]*@)([a-z0-9.-]+)");
+
+  /** The domain a DMARC result was evaluated for: its {@code header.from=}. */
+  private static final Pattern DMARC_HEADER_FROM             = Pattern.compile("\\bheader\\.from=([a-z0-9.-]+)");
 
   /** The mark of a DKIM result whose signing domain is not the {@code From} one. */
   private static final String  UNALIGNED                     = "-unaligned";
@@ -132,19 +143,13 @@ public final class EmailSecurityUtils {
    *         nothing failed or nothing was said
    */
   public static String authenticationFailure(String[] headerValues, String fromAddress) {
-    if (headerValues == null || headerValues.length == 0 || StringUtils.isBlank(headerValues[0])) {
+    String[] parts = topHeaderParts(headerValues);
+    if (parts.length == 0) {
       return null;
     }
-    String header = StringUtils.left(headerValues[0], MAX_HEADER_LENGTH).replaceAll("[\\r\\n]+", " ").toLowerCase(Locale.ROOT);
-    String previous;
-    do {
-      previous = header;
-      header = COMMENT.matcher(header).replaceAll(" ");
-    } while (!header.equals(previous));
     List<String> dmarc = new ArrayList<>();
     List<String> spf = new ArrayList<>();
     List<String> dkim = new ArrayList<>();
-    String[] parts = header.split(";");
     // The first part is the authserv-id of the server that wrote the header.
     for (int i = 1; i < parts.length; i++) {
       Matcher result = RESULT.matcher(parts[i].trim());
@@ -172,6 +177,88 @@ public final class EmailSecurityUtils {
       return AUTH_DKIM;
     }
     return null;
+  }
+
+  /**
+   * Whether the receiving server reports that the message passed DMARC for its own
+   * {@code From} domain (EXO-90893): the condition for showing the sender's brand logo.
+   * <p>
+   * Read from the first {@code Authentication-Results} header only, as
+   * {@link #authenticationFailure} reads it. It holds when that header carries a
+   * {@code dmarc=pass} whose {@code header.from} (when it names one) is the
+   * {@code From} domain, and no {@code dmarc=fail}. Unlike a failure, a pass is
+   * something a sender could forge when the receiving server writes no header of its
+   * own; a deployment whose mail server's authserv-id is known names it in
+   * {@code trustedAuthservIds}, and then a header written by any other server vouches
+   * for nothing.
+   *
+   * @param headerValues the header's values, top first, as the message carries them
+   * @param fromAddress the message's {@code From} address
+   * @param trustedAuthservIds the authserv-ids whose header is believed, lower-cased;
+   *          empty to believe the top header whoever wrote it
+   * @return true when DMARC passed for the {@code From} domain
+   */
+  public static boolean dmarcPassed(String[] headerValues, String fromAddress, Set<String> trustedAuthservIds) {
+    String fromDomain = StringUtils.isBlank(fromAddress) ? null : StringUtils.substringAfterLast(fromAddress.trim(), "@");
+    String[] parts = topHeaderParts(headerValues);
+    if (parts.length == 0 || StringUtils.isBlank(fromDomain)) {
+      return false;
+    }
+    if (trustedAuthservIds != null && !trustedAuthservIds.isEmpty()) {
+      String authservId = StringUtils.substringBefore(parts[0].trim(), " ");
+      if (!trustedAuthservIds.contains(authservId)) {
+        return false;
+      }
+    }
+    String from = asciiHost(fromDomain);
+    boolean passed = false;
+    for (int i = 1; i < parts.length; i++) {
+      Matcher result = RESULT.matcher(parts[i].trim());
+      if (!result.find() || !"dmarc".equals(result.group(1))) {
+        continue;
+      }
+      if ("fail".equals(result.group(2))) {
+        return false;
+      }
+      if ("pass".equals(result.group(2))) {
+        Matcher headerFrom = DMARC_HEADER_FROM.matcher(parts[i]);
+        passed |= !headerFrom.find() || asciiHost(headerFrom.group(1)).equals(from);
+      }
+    }
+    return passed;
+  }
+
+  /**
+   * The authserv-ids named by {@link #TRUSTED_AUTHSERV_IDS_PROPERTY}, lower-cased.
+   *
+   * @return the ids, empty when the deployment names none
+   */
+  public static Set<String> trustedAuthservIds() {
+    return Arrays.stream(StringUtils.split(System.getProperty(TRUSTED_AUTHSERV_IDS_PROPERTY, ""), ", "))
+                 .map(id -> id.trim().toLowerCase(Locale.ROOT))
+                 .filter(StringUtils::isNotEmpty)
+                 .collect(Collectors.toUnmodifiableSet());
+  }
+
+  /**
+   * The first {@code Authentication-Results} header, bounded, lower-cased, on one line,
+   * its comments removed, split into its {@code ;}-separated parts: the authserv-id of
+   * the server that wrote it first, then one result per part.
+   *
+   * @param headerValues the header's values, top first
+   * @return the parts, empty when the message carries no such header
+   */
+  private static String[] topHeaderParts(String[] headerValues) {
+    if (headerValues == null || headerValues.length == 0 || StringUtils.isBlank(headerValues[0])) {
+      return new String[0];
+    }
+    String header = StringUtils.left(headerValues[0], MAX_HEADER_LENGTH).replaceAll("[\\r\\n]+", " ").toLowerCase(Locale.ROOT);
+    String previous;
+    do {
+      previous = header;
+      header = COMMENT.matcher(header).replaceAll(" ");
+    } while (!header.equals(previous));
+    return header.split(";");
   }
 
   /**

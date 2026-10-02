@@ -2151,4 +2151,20 @@
       <dropColumn tableName="EMAIL_BOX" columnName="AUTH_FAILURE"/>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-99">
+    <comment>
+      EMAIL_BOX.DMARC_PASS (EXO-90893): whether the receiving server reported, in the
+      message's own Authentication-Results header, that it passed DMARC for its From
+      domain -- decided at sync, when the header still exists, and the condition for the
+      reader to show the sender's brand logo. Null on every row written before this, read
+      as not passed. Nullable, no default, no index (read with its row only). Rolled back
+      explicitly.
+    </comment>
+    <addColumn tableName="EMAIL_BOX">
+      <column name="DMARC_PASS" type="BOOLEAN"/>
+    </addColumn>
+    <rollback>
+      <dropColumn tableName="EMAIL_BOX" columnName="DMARC_PASS"/>
+    </rollback>
+  </changeSet>
 </databaseChangeLog>
