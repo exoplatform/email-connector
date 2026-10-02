@@ -30,7 +30,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       ref="filtersDrawer"
       v-model="drawer"
       :loading="loading || saving || applying || listLoading"
-      right>
+      right
+      allow-expand
+      @expand-updated="expanded = $event">
       <template #title>
         <span>{{ title }}</span>
       </template>
@@ -139,6 +141,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :server-rules="supported && group ? group.rules : null"
               :folders="folders"
               :server-filters="serverFilters"
+              :expanded="expanded"
               @edit="edit"
               @changed="read"
               @loading="listLoading = $event"
@@ -218,6 +221,9 @@ const CONSENT_REQUIRED = 'emailConnector.rules.consentRequired';
 export default {
   data: () => ({
     drawer: false,
+    // Whether the drawer is expanded with the platform's own header action: the list
+    // then lays a filter's statistics on one line.
+    expanded: false,
     group: null,
     // Why the server group could not be read, or null.
     groupError: null,
