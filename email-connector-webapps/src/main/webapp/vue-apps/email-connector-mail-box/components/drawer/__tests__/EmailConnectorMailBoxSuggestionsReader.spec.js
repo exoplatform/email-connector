@@ -124,18 +124,21 @@ const readerStub = {
 };
 
 /**
- * Mounts the mailbox drawer, open, over an empty inbox.
+ * Mounts the mailbox drawer, open, over an inbox -- empty unless given.
  *
- * @param {Object} options {expanded}: whether in full screen
+ * @param {Object} options {expanded}: whether in full screen; {emails}: the inbox's rows;
+ *        {categories}: the add-on's categories; {subcategoryIds}: what a category's
+ *        expansion answers, the category alone by default
  * @returns {Promise<Object>} {wrapper, service, teardown}
  */
-async function mountDrawer({ expanded = true } = {}) {
+async function mountDrawer({ expanded = true, emails = [], categories = [], subcategoryIds = id => Promise.resolve([id]) } = {}) {
   const service = serviceStub({
     folderLabel: emailConnectorMailBoxService.folderLabel,
     isReadOnlyFolder: emailConnectorMailBoxService.isReadOnlyFolder,
     getEmailByRemoteId: jest.fn((mailRemoteId, folder) => Promise.resolve({ id: 100 + mailRemoteId, mailRemoteId, folder, subject: `mail ${mailRemoteId}` })),
-    getEmailBox: jest.fn(() => Promise.resolve({ emails: [], folders: FOLDERS, emailSyncStatus: 'SUCCESS' })),
-    getAvailableEmailCategories: jest.fn(() => Promise.resolve([])),
+    getEmailBox: jest.fn(folder => Promise.resolve({ emails: folder === 'INBOX' ? emails : [], folders: FOLDERS, emailSyncStatus: 'SUCCESS' })),
+    getAvailableEmailCategories: jest.fn(() => Promise.resolve(categories)),
+    getSubcategoryIds: jest.fn(subcategoryIds),
     broadcastOpenEmail: jest.fn(() => Promise.resolve()),
   });
   const wrapper = shallowMount(EmailConnectorMailBoxDrawer, {
@@ -156,7 +159,7 @@ async function mountDrawer({ expanded = true } = {}) {
   await wrapper.setData({
     emailBoxDrawer: true,
     expanded,
-    emailBox: { emails: [], folders: FOLDERS, emailSyncStatus: 'SUCCESS' },
+    emailBox: { emails, folders: FOLDERS, emailSyncStatus: 'SUCCESS' },
   });
   return {
     wrapper,
@@ -273,6 +276,155 @@ describe('the Suggestions view opens its first mail on entry in full screen (EXO
     await flush();
 
     expect(readerOpenings(fixture)).toEqual([]);
+  });
+});
+
+describe('a category picked on a view lists the inbox narrowed to it, as picked from the inbox (EXO-90885)', () => {
+  const IMPORTANT = { id: 11, name: 'Important', nameId: 'emailImportantCategory' };
+  const INVITATION = { id: 12, name: 'Invitation', nameId: 'emailInvitationCategory' };
+  const CATEGORIES = [IMPORTANT, INVITATION];
+  let fixture;
+
+  afterEach(() => {
+    fixture?.teardown();
+    jest.restoreAllMocks();
+    suggestionsListStub.methods.revealThread.mockClear();
+  });
+
+  /**
+   * A row of the inbox's list, in the given categories.
+   *
+   * @param {Number} mailRemoteId its UID, the smallest the newest
+   * @param {Array<Number>} categoryIds its categories
+   * @returns {Object} the row
+   */
+  function inboxRow(mailRemoteId, categoryIds) {
+    return suggestion(mailRemoteId, 'INBOX', { waitingCount: 0, categoryIds });
+  }
+
+  /**
+   * The UIDs of the rows the list on screen holds.
+   *
+   * @returns {Array<Number>} the UIDs
+   */
+  function listed() {
+    return fixture.wrapper.vm.listedEmails.map(row => row.mailRemoteId);
+  }
+
+  /**
+   * Mounts the drawer over an inbox of three mails -- one in no category, the newest,
+   * one Important, one an Invitation -- and lists the given view, its first mail opened
+   * in full screen.
+   *
+   * @param {String} view the view's key
+   * @param {Object} options what mountDrawer takes on top
+   * @returns {Promise<void>} resolved once the view is listed
+   */
+  async function onView(view, options = {}) {
+    await suggestionsRead([suggestion(7, 'ARCHIVE')]);
+    fixture = await mountDrawer({ emails: [inboxRow(1, []), inboxRow(2, [IMPORTANT.id]), inboxRow(3, [INVITATION.id])], categories: CATEGORIES, ...options });
+    await flush();
+    fixture.wrapper.vm.onSwitchFolder(view);
+    await flush();
+    await flush();
+    fixture.service.getEmailByRemoteId.mockClear();
+  }
+
+  it.each([
+    ['Important', IMPORTANT, 2],
+    ['a category of the user\'s', INVITATION, 3],
+  ])('from Suggestions, %s: the inbox is listed narrowed to it, lit and titled, its first mail opened', async (label, category, uid) => {
+    await onView(emailConnectorMailBoxService.SUGGESTIONS_VIEW);
+    expect(fixture.wrapper.vm.suggestionsView).toBe(true);
+
+    fixture.wrapper.vm.$root.$emit('open-category-view', category.id);
+    await flush();
+    await flush();
+    await flush();
+
+    expect(fixture.wrapper.vm.currentFolder).toBe('INBOX');
+    expect(fixture.wrapper.vm.suggestionsView).toBe(false);
+    expect(fixture.wrapper.vm.categoryViewId).toBe(category.id);
+    expect(listed()).toEqual([uid]);
+    expect(fixture.wrapper.vm.titleSuffix).toBe(category.name);
+    expect(readerOpenings(fixture)).toEqual([[uid, 'INBOX', { broadcast: false }]]);
+  });
+
+  it('from Scheduled: the inbox is listed narrowed to the category', async () => {
+    await onView(emailConnectorMailBoxService.SCHEDULED_VIEW);
+    expect(fixture.wrapper.vm.scheduledView).toBe(true);
+
+    fixture.wrapper.vm.openCategoryView(INVITATION.id);
+    await flush();
+    await flush();
+    await flush();
+
+    expect(fixture.wrapper.vm.scheduledView).toBe(false);
+    expect(fixture.wrapper.vm.currentFolder).toBe('INBOX');
+    expect(listed()).toEqual([3]);
+    expect(readerOpenings(fixture)).toEqual([[3, 'INBOX', { broadcast: false }]]);
+  });
+
+  it('in the narrow drawer: the inbox is listed narrowed to the category, nothing opened', async () => {
+    await onView(emailConnectorMailBoxService.SUGGESTIONS_VIEW, { expanded: false });
+
+    fixture.wrapper.vm.openCategoryView(IMPORTANT.id);
+    await flush();
+    await flush();
+
+    expect(fixture.wrapper.vm.currentFolder).toBe('INBOX');
+    expect(listed()).toEqual([2]);
+    expect(readerOpenings(fixture)).toEqual([]);
+  });
+
+  it('from a category, Suggestions leaves it: the view\'s mails, the category no longer lit nor titled', async () => {
+    await onView('INBOX');
+    fixture.wrapper.vm.openCategoryView(IMPORTANT.id);
+    await flush();
+    await flush();
+    expect(listed()).toEqual([2]);
+
+    fixture.wrapper.vm.onSwitchFolder(emailConnectorMailBoxService.SUGGESTIONS_VIEW);
+    await flush();
+    await flush();
+
+    expect(fixture.wrapper.vm.categoryViewId).toBe(null);
+    expect(listed()).toEqual([7]);
+    expect(fixture.wrapper.vm.titleSuffix).not.toContain(IMPORTANT.name);
+  });
+
+  it('from a search: the search ends and the category\'s list shows', async () => {
+    await onView('INBOX');
+    await fixture.wrapper.setData({ searchTerm: 'mail' });
+    expect(fixture.wrapper.vm.searchActive).toBe(true);
+
+    fixture.wrapper.vm.openCategoryView(INVITATION.id);
+    await flush();
+    await flush();
+
+    expect(fixture.wrapper.vm.searchActive).toBe(false);
+    expect(listed()).toEqual([3]);
+  });
+
+  it('opens no mail of the inbox before the category is expanded, when its expansion lands after the inbox', async () => {
+    let expand;
+    await onView(emailConnectorMailBoxService.SUGGESTIONS_VIEW, {
+      subcategoryIds: id => new Promise(resolve => expand = () => resolve([id])),
+    });
+
+    fixture.wrapper.vm.openCategoryView(INVITATION.id);
+    await flush();
+    await flush();
+    // The inbox is listed, the category not expanded yet: its newest mail, in no
+    // category, is not opened.
+    expect(fixture.wrapper.vm.folderLoading).toBe(false);
+    expect(readerOpenings(fixture)).toEqual([]);
+
+    expand();
+    await flush();
+    await flush();
+
+    expect(readerOpenings(fixture)).toEqual([[3, 'INBOX', { broadcast: false }]]);
   });
 });
 
