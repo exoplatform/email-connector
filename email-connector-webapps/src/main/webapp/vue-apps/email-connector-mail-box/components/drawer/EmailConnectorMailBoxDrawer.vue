@@ -124,6 +124,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :namespace-folders="namespaceFolders"
         :categories="emailCategories"
         :category-view-id="categoryViewId"
+        :folder-counts="folderCounts"
+        :category-unread-counts="categoryUnreadCounts"
         :sync-in-progress="syncInProgress" />
     </template>
     <!-- The left pane in full screen: the folder column, then the list, each scrolling
@@ -394,7 +396,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
 import { LIST_TOP_ROW_HEIGHT, SCHEDULED_VIEW, isScheduledView, SUGGESTIONS_VIEW, isSuggestionsView, isMailboxView, withSuggestionsView, SHARED_INBOX_TYPE, SHARED_FOLDER_TYPE, canMarkReadIn, isDestructiveActionConfirmed,
-  loadSharedMailboxes, setCurrentSharedMailbox, sharedMailboxById, sharedMailboxOfFolder, sharedMailboxState } from '../../js/EmailConnectorMailBoxService.js';
+  loadSharedMailboxes, setCurrentSharedMailbox, sharedMailboxById, sharedMailboxOfFolder, sharedMailboxState, CATEGORY_COUNTS_NEEDED_EVENT } from '../../js/EmailConnectorMailBoxService.js';
 import listNavigationMixin, { firstOpenableThread, searchRows, threadIndexOf, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
 import emailDragMixin from '../../js/EmailConnectorMailBoxEmailDragMixin.js';
 import columnWidthsMixin, { DEFAULT_LIST_WIDTH_PX } from '../../js/EmailConnectorMailBoxColumnWidths.js';
@@ -788,6 +790,9 @@ export default {
     this.onDelegationsUpdated = () => this.refreshSharedMailboxes();
     this.$root.$on('email-delegations-updated', this.onDelegationsUpdated);
     this.$root.$on('open-category-view', this.openCategoryView);
+    // The narrow 3-dots menu opened on its categories: their counts need the
+    // subcategories, as the column's do (EXO-90881).
+    this.$root.$on(CATEGORY_COUNTS_NEEDED_EVENT, this.ensureCategorySubtrees);
     this.$root.$on('enter-select-mode', this.onEnterSelectMode);
     this.$root.$on('update-email-favorite-status', this.onUpdateEmailFavoriteStatus);
     this.$root.$on('apply-email-favorite-status', this.applyEmailsFavoriteStatus);
@@ -1053,6 +1058,7 @@ export default {
     this.$root.$off('switch-folder', this.onSwitchFolder);
     this.$root.$off('email-delegations-updated', this.onDelegationsUpdated);
     this.$root.$off('open-category-view', this.openCategoryView);
+    this.$root.$off(CATEGORY_COUNTS_NEEDED_EVENT, this.ensureCategorySubtrees);
     this.$root.$off('enter-select-mode', this.onEnterSelectMode);
     this.$root.$off('update-email-favorite-status', this.onUpdateEmailFavoriteStatus);
     this.$root.$off('apply-email-favorite-status', this.applyEmailsFavoriteStatus);
@@ -2559,8 +2565,9 @@ export default {
     },
     /**
      * Reads the categories' subcategories the first time the drawer goes full screen,
-     * where the column's unread counts need them -- never for a drawer that stays
-     * narrow -- and keeps them for the page's lifetime.
+     * where the column's unread counts need them, or the narrow 3-dots menu first opens
+     * on its categories, which show the same counts (EXO-90881) -- never for a narrow
+     * drawer whose menu stays shut -- and keeps them for the page's lifetime.
      *
      * @returns {Promise<void>} resolved once they are read
      */
