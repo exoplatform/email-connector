@@ -384,12 +384,9 @@ export default {
     },
     /**
      * The line under the subject: the opening words of the message's body, or that the
-     * body is empty. A hit of a search or of the Suggestions view carries no body
-     * (EXO-90871): it quotes the excerpt it carries, when it carries one -- the text
-     * around what was searched for, which a hit of the platform's search quotes and which
-     * neither of the mailbox's own searches, envelope-only on the server and in eXo's
-     * copy alike, gives today --, and has nothing to quote otherwise, which is not the
-     * same as an empty body: the line is left out.
+     * body is empty. A hit of a search or a mail of the Suggestions view in the local
+     * copy carries them as a listed row does (EXO-90882); a hit outside the copy has no
+     * body to quote, which is not the same as an empty body: the line is left out.
      *
      * @returns {String} the line, or an empty string for none
      */
@@ -397,7 +394,7 @@ export default {
       if (this.email.content) {
         return this.email.content.excerpt || this.$t('emailConnector.mailBox.list.drawer.emptyEmail');
       }
-      return this.email.excerpt || '';
+      return '';
     },
     /**
      * Whether the row is a search hit outside the local copy, pulled in when opened: a
@@ -439,8 +436,15 @@ export default {
     threadKey() {
       return this.rowKey || String(this.thread ? this.thread.threadId : this.email.mailRemoteId);
     },
+    /**
+     * How many messages the row's conversation holds: the grouped thread's count in a
+     * folder's list, the count a hit or a Suggestions mail carries (EXO-90882) -- the
+     * folder list's own --, a lone mail otherwise.
+     *
+     * @returns {Number} the count, 1 at least
+     */
     threadCount() {
-      return this.thread ? this.thread.count : 1;
+      return this.thread ? this.thread.count : this.email.threadCount || 1;
     },
     // Whether this row IS a draft, as opposed to a message whose conversation holds
     // one. The two are different rows on different screens and are labelled by
