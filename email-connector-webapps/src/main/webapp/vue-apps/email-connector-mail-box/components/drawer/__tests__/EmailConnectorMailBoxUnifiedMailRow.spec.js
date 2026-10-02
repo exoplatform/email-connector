@@ -838,6 +838,19 @@ describe('the row\'s sender avatar is its checkbox (EXO-90891)', () => {
     expect(emit).not.toHaveBeenCalled();
   });
 
+  it('ticks the row on Enter or Space pressed on the avatar box, and leaves a key inside the checkbox to it', async () => {
+    wrapper = mountRow({ email: hit(5, 'ARCHIVE'), rowKey: 'ARCHIVE:5' });
+    const emit = jest.fn();
+    wrapper.vm.$root.$emit = emit;
+
+    await wrapper.find('.row-avatar').trigger('keydown', { key: 'Enter' });
+    expect(emit).toHaveBeenCalledWith('select-email', expect.objectContaining({ emailId: 5, folder: 'ARCHIVE', selected: true }));
+
+    emit.mockClear();
+    wrapper.vm.onAvatarKeydown({ key: ' ', target: {}, currentTarget: {}, preventDefault: jest.fn() });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it('on a phone, with no hover, a tap on the avatar ticks the row and enters select mode', async () => {
     wrapper = mountRow({ email: hit(5, 'ARCHIVE'), rowKey: 'ARCHIVE:5' }, {}, true);
     const emit = jest.fn();
