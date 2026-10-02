@@ -17,7 +17,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <v-list-item class="full-height align-center">
     <v-list-item-content>
-      <v-list-item-title class="text-wrap text-header-title mb-8">
+      <v-list-item-title class="text-wrap text-sub-title caption text-center mb-4">
         {{ title }}
       </v-list-item-title>
       <email-connector-mail-box-drawer-actions
