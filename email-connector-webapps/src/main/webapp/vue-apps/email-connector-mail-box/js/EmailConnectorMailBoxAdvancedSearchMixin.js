@@ -50,10 +50,13 @@ const BODY_SEARCH_DEBOUNCE_MS = 1200;
 // How many hits the local arm asks for, as the server arm does.
 const LOCAL_PAGE_SIZE = 20;
 
+// The key of a category's chip, before the category's id (EXO-90888).
+const CATEGORY_CHIP_PREFIX = 'category:';
+
 export default {
   data: () => ({
     // The advanced criteria, beside the search box's text: {from, to, words, after,
-    // before, attachment, folder}; folder null searches the folder shown.
+    // before, attachment, folder, categoryIds}; folder null searches the folder shown.
     searchCriteria: emptySearchCriteria(),
     // The search row: whether its field replaces the chips, and its text.
     searchFieldOpen: false,
@@ -117,6 +120,17 @@ export default {
         .map(key => ({ key, label: this.folderLabelOf(key) }));
     },
     /**
+     * The categories the advanced search offers (EXO-90888): the mailbox's own, as the
+     * folder column lists them -- Important included -- each one taking its subcategories
+     * along, as its count there does. None in a mailbox shared with the user, whose mail
+     * eXo never files under a category.
+     *
+     * @returns {Array} [{id, name, icon}]
+     */
+    searchCategoryOptions() {
+      return this.currentSharedMailbox ? [] : (this.emailCategories || []).map(({ id, name, icon }) => ({ id, name, icon }));
+    },
+    /**
      * Whether the server arm can be offered: in the user's own mailbox only -- a shared
      * mailbox is only ever searched in eXo's copy of it.
      *
@@ -176,9 +190,9 @@ export default {
     },
     /**
      * The criteria line under the search row: one chip per criterion of the advanced
-     * search, the folder when it is not the one shown, and -- while the search field
-     * hides the row's own chips -- a lit Unread or Favorites, so a filter on the list or
-     * the search is never unseen.
+     * search -- one per category -- the folder when it is not the one shown, and -- while
+     * the search field hides the row's own chips -- a lit Unread or Favorites, so a filter
+     * on the list or the search is never unseen.
      *
      * @returns {Array} [{key, label}]
      */
@@ -196,6 +210,15 @@ export default {
       if (criteria.attachment) {
         chips.push({ key: 'attachment', label: this.$t('emailConnector.mailBox.search.chip.attachment') });
       }
+      // One chip per category, by its name (EXO-90888); one the mailbox no longer lists
+      // keeps a chip all the same, so it can be taken off.
+      (criteria.categoryIds || []).forEach(id => {
+        const category = (this.emailCategories || []).find(candidate => candidate.id === id);
+        chips.push({
+          key: `${CATEGORY_CHIP_PREFIX}${id}`,
+          label: category?.name || this.$t('emailConnector.mailBox.search.chip.category'),
+        });
+      });
       if (criteria.folder && criteria.folder !== this.currentFolder) {
         chips.push({ key: 'folder', label: this.$t('emailConnector.mailBox.search.chip.folder', { 0: this.folderLabelOf(criteria.folder) }) });
       }
@@ -254,6 +277,7 @@ export default {
       this.$root.$emit(OPEN_ADVANCED_SEARCH_EVENT, {
         criteria: { ...this.searchCriteria, folder: this.searchFolder, ...(this.advancedCarriedText ? { [field]: text } : {}) },
         folders: this.searchFolderOptions,
+        categories: this.searchCategoryOptions,
         shownFolder: this.currentFolder,
       });
     },
@@ -285,10 +309,17 @@ export default {
      * Takes one criterion off the search -- a chip's close button -- and searches again.
      *
      * @param {String} key the criterion: from, to, words, after, before, attachment,
-     *          folder, or the row's unread or favorites shown on the line
+     *          folder, category:<id> for one of the categories, or the row's unread or
+     *          favorites shown on the line
      * @returns {void}
      */
     removeSearchCriterion(key) {
+      if (key?.startsWith(CATEGORY_CHIP_PREFIX)) {
+        const id = Number(key.substring(CATEGORY_CHIP_PREFIX.length));
+        this.searchCriteria = { ...this.searchCriteria, categoryIds: (this.searchCriteria.categoryIds || []).filter(categoryId => categoryId !== id) };
+        this.rerunSearch();
+        return;
+      }
       if (key === 'unread' || key === 'favorites') {
         // The row's chip, put out as its own toggle does it: the search follows.
         if (key === 'unread') {
