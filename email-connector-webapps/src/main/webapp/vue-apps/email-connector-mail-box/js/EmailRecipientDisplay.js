@@ -99,3 +99,21 @@ export function avatarInitials(label) {
     .slice(0, 2)
     .join('') || '?';
 }
+
+/**
+ * The initials the mail reader's generated avatar draws for a sender
+ * (EmailConnectorUtils#getSenderDefaultAvatar): the first letter of each of the first
+ * two words, words being split on spaces only -- an address with no name is one word,
+ * one letter. Unlike avatarInitials, which a recipient chip uses, so that a list row
+ * and the reader draw one sender alike (EXO-90891).
+ *
+ * @param {string} label - the sender's name, or their address when they have none
+ * @returns {string} the initials, or ? when there is nothing
+ */
+export function senderAvatarInitials(label) {
+  return (label || '').split(' ')
+    .filter(word => word.trim())
+    .map(word => word.charAt(0).toUpperCase())
+    .slice(0, 2)
+    .join('') || '?';
+}
