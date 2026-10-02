@@ -65,8 +65,9 @@ import jakarta.annotation.PreDestroy;
  * the cache ({@link SenderLogoStorage}); a domain not resolved yet is handed to a small
  * background pool ({@link #WARM_THREADS} threads, {@link #WARM_QUEUE} waiting domains,
  * the rest dropped and offered again at the next read) and its sender keeps the
- * initials until then. Only a message that passed DMARC, read by its recipient, ever
- * starts a fetch; the logo endpoint serves the cache and never fetches, so no caller
+ * initials until then. Only a stored message that passed DMARC -- opened in the
+ * reader, or listed on a row in view of its recipient -- ever starts a fetch; the logo
+ * endpoint serves the cache and never fetches, so no caller
  * can make the server reach a domain of its choosing.
  * <p>
  * <b>A logo URL is its reader's.</b> It carries a token binding the domain to the user
