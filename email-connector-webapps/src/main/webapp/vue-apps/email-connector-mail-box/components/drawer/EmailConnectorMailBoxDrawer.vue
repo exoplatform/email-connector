@@ -2531,8 +2531,16 @@ export default {
      * @returns {Array} the hits
      */
     hitsIn(folder, ids) {
-      return [...this.searchServerResults, ...this.searchLocalResults, ...waitingSuggestionMails()]
-        .filter(result => (result.folder || 'INBOX') === folder && ids.has(result.mailRemoteId));
+      return this.allHits().filter(result => (result.folder || 'INBOX') === folder && ids.has(result.mailRemoteId));
+    },
+    /**
+     * Every row of the lists of hits the drawer holds: the search's, as the server and
+     * eXo's copy answered them, and the Suggestions view's mails as last read.
+     *
+     * @returns {Array} the hits
+     */
+    allHits() {
+      return [...this.searchServerResults, ...this.searchLocalResults, ...waitingSuggestionMails()];
     },
     /**
      * Moves a folder's unread count by one message read or unread here, until the next
@@ -2685,8 +2693,7 @@ export default {
       if (typeof knownRead === 'boolean') {
         return knownRead;
       }
-      const result = (this.searchServerResults || [])
-        .find(row => row.mailRemoteId === mailRemoteId && (row.folder || 'INBOX') === folder);
+      const result = this.hitOf(mailRemoteId, folder);
       if (result && typeof result.read === 'boolean') {
         return result.read;
       }
@@ -2714,8 +2721,22 @@ export default {
     rowOfEmail(mailRemoteId, folder = null) {
       const inFolder = (row, fallback) => !folder || (row.folder || fallback) === folder;
       return (this.emails || []).find(email => email.mailRemoteId === mailRemoteId && inFolder(email, 'INBOX'))
-        || (this.searchServerResults || []).find(result => result.mailRemoteId === mailRemoteId && inFolder(result, 'INBOX'))
+        || this.hitOf(mailRemoteId, folder)
         || (this.email?.mailRemoteId === mailRemoteId && inFolder(this.email, 'INBOX') ? this.email : null);
+    },
+    /**
+     * One message among the lists of hits (see hitsIn): the search's, the Suggestions
+     * view's -- what the drawer knows of a row the folder's list does not hold, for a
+     * move's Undo (its Message-ID, which a Suggestions mail carries) and for the read
+     * state a toggle starts from (EXO-90871).
+     *
+     * @param {Number} mailRemoteId the UID
+     * @param {String} folder the folder it is numbered in; any when null
+     * @returns {Object} the hit, or undefined
+     */
+    hitOf(mailRemoteId, folder = null) {
+      return this.allHits()
+        .find(result => result.mailRemoteId === mailRemoteId && (!folder || (result.folder || 'INBOX') === folder));
     },
     /**
      * Groups message ids by the folder each one is listed in, so one request goes out
