@@ -91,8 +91,8 @@ public class EmailBoxWaitingSuggestionStorageTest {
 
   /**
    * The owner's copies come back newest first, as light mails carrying the id, the
-   * folder, the Message-ID, the UID, the subject, the sender, the date and the read and
-   * starred flags; another owner's copy, an excluded folder's and another Message-ID's
+   * folder, the Message-ID, the UID, the subject, the sender, the date, the read and
+   * starred flags and the conversation id (EXO-90875); another owner's copy, an excluded folder's and another Message-ID's
    * never do.
    */
   @Test
@@ -117,6 +117,7 @@ public class EmailBoxWaitingSuggestionStorageTest {
     assertEquals(new Date(1_000L), first.getReceivedDate());
     assertTrue(first.isRead());
     assertFalse(first.isStarred());
+    assertEquals("<thread-a@host>", first.getThreadId(), "the conversation the reader reads it by");
     Email second = found.get(0);
     assertEquals("Doe, John", second.getSender().getName(), "a comma in the name keeps the name whole");
     assertEquals("john@example.org", second.getSender().getAddress());
@@ -172,6 +173,7 @@ public class EmailBoxWaitingSuggestionStorageTest {
     email.setBody("body");
     email.setRead(read);
     email.setStarred(starred);
+    email.setThreadId("<thread-" + mailHeaderId.replaceAll("[<>]", "") + ">");
     return emailBoxDAO.save(email).getId();
   }
 }
