@@ -168,15 +168,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             <v-list-item-content class="py-0">
               <v-list-item-subtitle :class="['mb-1 text-color d-flex align-center', { 'font-weight-bold': threadUnread }]">
                 <!-- The suggestions of an assistant waiting for the user on this mail, or on
-                     the mails of its conversation (EXO-90669), as a count before the subject:
-                     the left edge is never under the row's hover actions. A native title,
-                     not a v-tooltip: this list streams thousands of rows. -->
+                     the mails of its conversation (EXO-90669), before the subject: the left
+                     edge is never under the row's hover actions. The Suggestions view's own
+                     icon and a flat number in the secondary colour (EXO-90890), so it is never
+                     taken for a count of messages. A native title, not a v-tooltip: this list
+                     streams thousands of rows. -->
                 <span
                   v-if="waitingSuggestionCount"
                   :title="waitingSuggestionsLabel"
                   :aria-label="waitingSuggestionsLabel"
                   role="img"
-                  class="primary white--text rounded-pill px-2 me-2 flex-shrink-0 caption font-weight-bold">{{ waitingSuggestionCount }}</span>
+                  class="row-waiting-suggestions d-inline-flex align-center text-light-color text-no-wrap me-2 flex-shrink-0 caption font-weight-regular"><v-icon
+                    size="12"
+                    class="text-light-color me-1">{{ suggestionsIcon }}</v-icon>{{ waitingSuggestionCount }}</span>
                 <span class="text-truncate">{{ subject }}</span>
               </v-list-item-subtitle>
               <v-list-item-subtitle
@@ -234,7 +238,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
 import { waitingSuggestionCount } from '../../js/EmailConnectorMailFilters.js';
+import { SUGGESTIONS_VIEW, folderIcon } from '../../js/EmailConnectorMailBoxService.js';
 import { canDragFrom, dragLabel, dragPayloadOfRow, draggedRowCount, startDrag } from '../../js/EmailConnectorMailBoxDragAndDrop.js';
+
+// The icon the folder column gives the Suggestions view, read once for every row: the
+// waiting suggestions of a row show under it (EXO-90890).
+const SUGGESTIONS_ICON = folderIcon({ key: SUGGESTIONS_VIEW, type: 'BUILT_IN' });
 
 export default {
   data() {
@@ -363,6 +372,15 @@ export default {
       return this.waitingSuggestionCount === 1
         ? this.$t('emailConnector.mailBox.list.drawer.waitingSuggestionsOne')
         : this.$t('emailConnector.mailBox.list.drawer.waitingSuggestionsCount', { 0: this.waitingSuggestionCount });
+    },
+    /**
+     * The icon the waiting suggestions show under: the Suggestions view's own, as the
+     * folder column draws it.
+     *
+     * @returns {string} the icon class
+     */
+    suggestionsIcon() {
+      return SUGGESTIONS_ICON;
     },
     gapSize() {
       return Math.abs(this.left);
