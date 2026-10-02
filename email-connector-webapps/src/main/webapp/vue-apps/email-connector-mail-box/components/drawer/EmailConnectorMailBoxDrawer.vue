@@ -1469,6 +1469,9 @@ export default {
      * narrowed by the Favorites and Unread chips as a folder's list is (matchesListChips,
      * EXO-90892). On the client: the view's read answers every mail it lists at once,
      * bounded by the mailbox's pending cap, so no page is left out of what it narrows.
+     * A mail the Favorites chip takes out of the view while the reader shows it stays in
+     * the reader, as a search hit does: it was opened pinned (openSuggestedEmail), and
+     * leaveUnlistedEmail spares a pinned mail.
      *
      * @returns {Array} the mails, newest first
      */
