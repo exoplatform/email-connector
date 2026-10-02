@@ -452,35 +452,36 @@ export default {
       });
     },
     /**
-     * The element a fragment names, resolved the way the browser resolves one: the
-     * fragment as written first, then percent-decoded; an empty fragment or "top" is
-     * the top of the document.
+     * The element a fragment names, resolved the way the browser resolves one: for the
+     * fragment as written, then for its percent-decoded form, the element with that id,
+     * else the first `<a>` with that name; failing both, "top" (in any case) is the top
+     * of the document, and so is an empty fragment.
      *
      * @param {Document} doc the frame's document
      * @param {string} fragment the part of the link after the "#"
-     * @returns {Element|null} the element to bring into view
+     * @returns {Element|null} the element to bring into view, or null when the fragment
+     *          names nothing
      */
     fragmentTarget(doc, fragment) {
-      if (!fragment || fragment.toLowerCase() === 'top') {
+      if (!fragment) {
         return doc.body;
       }
-      const candidates = [fragment];
+      let decoded = fragment;
       try {
-        const decoded = decodeURIComponent(fragment);
-        if (decoded !== fragment) {
-          candidates.push(decoded);
-        }
+        decoded = decodeURIComponent(fragment);
       } catch (e) {
-        // A malformed escape is not an address of anything: the fragment as written is
-        // the only name left to try.
+        // A malformed escape decodes to nothing: the fragment as written is the only
+        // name to try.
       }
+      const candidates = decoded === fragment ? [fragment] : [fragment, decoded];
       for (const name of candidates) {
-        const found = doc.getElementById(name) || doc.getElementsByName(name)[0];
+        const found = doc.getElementById(name)
+          || Array.from(doc.getElementsByName(name)).find(element => element.localName === 'a');
         if (found) {
           return found;
         }
       }
-      return null;
+      return decoded.toLowerCase() === 'top' ? doc.body : null;
     },
     /**
      * The frame's document, when the frame is there and has one.
