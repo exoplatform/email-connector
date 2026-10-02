@@ -190,6 +190,27 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<String> excludedFolders);
 
   /**
+   * The owner's cached copies of some messages, by their Message-IDs, outside the given
+   * folders, as the light rows a list of mails shows: what the mailbox's "Suggestions"
+   * view lists (EXO-90851). No body, no attachment. Never called with an empty list of
+   * Message-IDs -- an empty {@code IN} is not valid SQL everywhere --; the mailbox's
+   * pending cap on suggestions bounds it.
+   *
+   * @param userId the mailbox owner
+   * @param mailHeaderIds the Message-IDs, not empty
+   * @param excludedFolders the folders left out, not empty
+   * @return rows of {@code [id, folder, mailHeaderId, mailRemoteId, subject, sender,
+   *         receivedDate, read, starred]}, newest first
+   */
+  @Query("SELECT email.id, email.folder, email.mailHeaderId, email.mailRemoteId, email.subject, email.sender, email.receivedDate,"
+      + " email.read, email.starred FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId IN :mailHeaderIds"
+      + " AND email.folder NOT IN :excludedFolders AND email.draftLocalId IS NULL ORDER BY email.receivedDate DESC, email.id DESC")
+  List<Object[]> findListedByUserIdAndMailHeaderIds(@Param("userId")
+  String userId, @Param("mailHeaderIds")
+  Collection<String> mailHeaderIds, @Param("excludedFolders")
+  Collection<String> excludedFolders);
+
+  /**
    * Some folders of the cached mailbox WITHOUT their attachments, for the search over
    * cached mail: the folders of the mailboxes shared with the user that the unified
    * search reads (EXO-90554). Never called with an empty list -- an empty {@code IN}

@@ -64,6 +64,12 @@ public class EmailFilterSuggestionsNotificationPlugin extends BaseNotificationPl
   static final String                         MANY_KEY  = "emailFilterSuggestions.notification.content.many";
 
   /**
+   * What the mailbox link adds to open the mailbox on its "Suggestions" view, the mails
+   * the suggestions wait on (EXO-90851): the {@code folder=} deep link the webapp reads.
+   */
+  static final String                         SUGGESTIONS_VIEW_PARAMETER = "&folder=SUGGESTIONS";
+
+  /**
    * The plugin, as the kernel declares it.
    *
    * @param initParams the kernel's plugin parameters
@@ -95,8 +101,8 @@ public class EmailFilterSuggestionsNotificationPlugin extends BaseNotificationPl
 
   /**
    * Builds the digest in the receiver's language: a heading, "N suggestions waiting" with
-   * the count the receiver's latest publish recorded, and the link to the mailbox --
-   * unless the receiver already holds an unread digest,
+   * the count the receiver's latest publish recorded, and the link to the mailbox on its
+   * "Suggestions" view -- unless the receiver already holds an unread digest,
    * which is then updated in place with the count and none is built: the platform builds
    * a digest on its own executor, after the sender looked, so a second run close to the
    * first would otherwise stack a second digest.
@@ -123,7 +129,7 @@ public class EmailFilterSuggestionsNotificationPlugin extends BaseNotificationPl
                            .with(NotificationConstants.TITLE, title(receiver))
                            .with(NotificationConstants.CONTENT, content(receiver, count))
                            .with(NotificationConstants.SUGGESTION_COUNT, String.valueOf(count))
-                           .with(NotificationConstants.LINK, EmailConnectorUtils.getEmailsLink(receiver))
+                           .with(NotificationConstants.LINK, EmailConnectorUtils.getEmailsLink(receiver) + SUGGESTIONS_VIEW_PARAMETER)
                            .key(getKey())
                            .end();
   }
