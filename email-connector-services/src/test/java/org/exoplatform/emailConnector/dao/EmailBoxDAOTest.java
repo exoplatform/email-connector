@@ -277,6 +277,50 @@ public class EmailBoxDAOTest {
   }
 
   /**
+   * The listed read of the "Suggestions" view (EXO-90851), run by the engine: the owner's
+   * copies carrying one of the Message-IDs, outside the excluded folders, never a draft,
+   * newest first, as the nine columns it projects -- the sender column as stored.
+   */
+  @Test
+  void theListedReadByMessageIdsIsScopedNewestFirstAndLeavesOutExcludedFoldersAndDrafts() {
+    Long older = persistEmailCarrying(30L, MailFolder.INBOX, "<a@host>");
+    Long newer = persistEmailCarrying(31L, "CUSTOM:1", "<b@host>");
+    persistEmailCarrying(32L, MailFolder.TRASH, "<a@host>");
+    persistEmailCarrying(33L, MailFolder.INBOX, "<other@host>");
+    Long draft = persistEmailCarrying(34L, "CUSTOM:2", "<b@host>");
+    Long bobs = persistEmailCarrying(35L, MailFolder.INBOX, "<a@host>");
+    EmailBoxEntity olderRow = entityManager.find(EmailBoxEntity.class, older);
+    olderRow.setReceivedDate(new Date(1_000L));
+    olderRow.setSubject("Older");
+    olderRow.setRead(true);
+    EmailBoxEntity newerRow = entityManager.find(EmailBoxEntity.class, newer);
+    newerRow.setReceivedDate(new Date(2_000L));
+    newerRow.setStarred(true);
+    entityManager.find(EmailBoxEntity.class, draft).setDraftLocalId("draft-1");
+    entityManager.find(EmailBoxEntity.class, bobs).setUserId("bob");
+    entityManager.flush();
+    entityManager.clear();
+
+    List<Object[]> rows = emailBoxDAO.findListedByUserIdAndMailHeaderIds(USERNAME,
+                                                                         List.of("<a@host>", "<b@host>"),
+                                                                         List.of(MailFolder.TRASH, MailFolder.JUNK));
+
+    assertEquals(List.of(newer, older), rows.stream().map(row -> (Long) row[0]).toList(),
+                 "the owner's two listable copies, newest first; Trash, the draft, another Message-ID and bob's left out");
+    Object[] olderProjected = rows.get(1);
+    assertEquals(MailFolder.INBOX, olderProjected[1]);
+    assertEquals("<a@host>", olderProjected[2]);
+    assertEquals(30L, olderProjected[3]);
+    assertEquals("Older", olderProjected[4]);
+    assertEquals("Bob Smith,bob@example.org", olderProjected[5]);
+    assertEquals(1_000L, ((Date) olderProjected[6]).getTime());
+    assertEquals(Boolean.TRUE, olderProjected[7]);
+    assertEquals(Boolean.FALSE, olderProjected[8]);
+    assertEquals(Boolean.FALSE, rows.get(0)[7]);
+    assertEquals(Boolean.TRUE, rows.get(0)[8]);
+  }
+
+  /**
    * The slice read of a consumer working through new mail (EXO-90418): UIDs strictly
    * between the bounds, highest first, scoped to the owner and the folder, bounded by
    * the page; and the folder's highest UID, null on an empty folder.
