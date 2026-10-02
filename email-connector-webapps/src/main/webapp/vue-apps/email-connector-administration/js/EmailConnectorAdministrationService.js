@@ -499,6 +499,48 @@ export function updateSharedMailboxSentCopyEnabled(enabled) {
   });
 }
 
+/**
+ * Whether the reader shows a company sender's brand logo, administration-wide
+ * (EXO-90893).
+ *
+ * @returns {Promise<Boolean>} the switch
+ */
+export function getSenderLogosEnabled() {
+  return fetch('/email-connector/rest/connectors/sender-logos', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the sender logos switch');
+    }
+  });
+}
+
+/**
+ * Switches the senders' brand logos on or off, administration-wide (EXO-90893).
+ *
+ * @param {Boolean} enabled whether brand logos should be shown
+ * @returns {Promise} resolved once saved
+ */
+export function updateSenderLogosEnabled(enabled) {
+  return fetch(`/email-connector/rest/connectors/sender-logos?enabled=${enabled}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PATCH'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating the sender logos switch');
+    }
+  });
+}
+
 export function deleteEmailConnector(emailConnectorId) {
   return fetch(`/email-connector/rest/connectors/${emailConnectorId}`, {
     headers: {
