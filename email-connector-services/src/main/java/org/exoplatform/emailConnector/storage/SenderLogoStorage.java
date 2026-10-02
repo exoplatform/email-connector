@@ -28,9 +28,10 @@ import org.exoplatform.emailConnector.senderlogo.SenderLogoFetcher;
 
 /**
  * The sender brand logos (EXO-90893), per domain, in the platform cache
- * ({@value #CACHE_NAME}): a domain's logo is fetched once, by whichever request asks
- * first -- concurrent requests for it wait for that one fetch (single-flight) -- and
- * served from the cache until it expires.
+ * ({@value #CACHE_NAME}): a domain's logo is fetched once -- concurrent loads of it
+ * wait for that one fetch (single-flight) -- and served from the cache until it
+ * expires. The service loads on its background pool only, and the endpoint only
+ * {@link #peek}s.
  * <p>
  * "No logo" is cached too, as {@link SenderLogo#none}: the platform's cache adapter
  * never keeps a null, so an absent answer returned as null would be fetched again on
@@ -40,7 +41,7 @@ import org.exoplatform.emailConnector.senderlogo.SenderLogoFetcher;
  * {@code .max} for the cache, as for every Spring cache of the platform.
  * <p>
  * The cache is local to each server; the logos are public images, and a node that has
- * not fetched one yet fetches it once for itself.
+ * not resolved one yet resolves it once for itself, at the next read it serves.
  */
 @Component
 public class SenderLogoStorage {

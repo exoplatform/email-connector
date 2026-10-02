@@ -26,6 +26,7 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.hc.client5.http.psl.PublicSuffixMatcherLoader;
 
 /**
  * The parts of the sender brand logo (EXO-90893) that read text and bytes only: which
@@ -126,16 +127,20 @@ public final class SenderLogoUtils {
   }
 
   /**
-   * The organisational domain of a normalised domain: the part an organisation
-   * registers, as the phishing checks approximate it
-   * ({@code EmailSecurityUtils#registrableDomain}): {@code news.brand.com} gives
-   * {@code brand.com}, {@code mail.brand.co.uk} gives {@code brand.co.uk}.
+   * The organisational domain of a normalised domain, as DMARC and BIMI define it: the
+   * public suffix plus one label, read from the Public Suffix List the server's HTTP
+   * client ships ({@code PublicSuffixMatcherLoader}), private suffixes included. So
+   * {@code news.brand.com} gives {@code brand.com}, {@code mail.brand.co.uk} gives
+   * {@code brand.co.uk}, and {@code tenant.herokuapp.com} stays itself: the hosting
+   * platform's own brand is never shown on a tenant's mail. A domain that is itself a
+   * public suffix is its own.
    *
    * @param domain a normalised domain
    * @return its organisational domain
    */
   public static String organisationalDomain(String domain) {
-    return EmailSecurityUtils.registrableDomain(domain);
+    String root = PublicSuffixMatcherLoader.getDefault().getDomainRoot(domain);
+    return root == null ? domain : root;
   }
 
   /**
