@@ -61,10 +61,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               v-if="managed && !userEmailSetting.connected"
               :loading="connecting"
               :disabled="connecting"
-              color="primary"
-              outlined
-              small
+              :aria-label="$t('UserSettings.emailConnector.managed.connect')"
+              class="btn"
               @click="connectManaged">
+              <v-icon size="14" class="me-1">fa-plug</v-icon>
               {{ $t('UserSettings.emailConnector.managed.connect') }}
             </v-btn>
             <v-btn
