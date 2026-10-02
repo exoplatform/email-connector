@@ -266,6 +266,7 @@ describe('the Scheduled view among the folders (EXO-90434)', () => {
       .toEqual([['2', false], ['3', true]]);
     expect(menu.text()).toContain('emailConnector.mailBox.list.drawer.menu.selectSeveral');
     expect(mountMenu('SCHEDULED').text()).not.toContain('emailConnector.mailBox.list.drawer.menu.selectSeveral');
+    expect(mountMenu('SUGGESTIONS').text()).toContain('emailConnector.mailBox.list.drawer.menu.selectSeveral');
   });
 });
 
