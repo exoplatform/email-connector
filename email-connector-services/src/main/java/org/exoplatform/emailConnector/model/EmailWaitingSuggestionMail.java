@@ -18,6 +18,9 @@ package org.exoplatform.emailConnector.model;
 
 import java.util.Date;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonInclude.Include;
+
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -29,7 +32,7 @@ import lombok.NoArgsConstructor;
  */
 @Data
 @NoArgsConstructor
-public class EmailWaitingSuggestionMail {
+public class EmailWaitingSuggestionMail implements ListedMailRow {
 
   /** The local id of the cached row the view opens. */
   private Long        emailId;
@@ -64,4 +67,19 @@ public class EmailWaitingSuggestionMail {
 
   /** How many suggestions wait on the message. */
   private int         waitingCount;
+
+  /**
+   * What the folder list's row carries of the cached message (EXO-90882): its excerpt and
+   * its attachments, never its body. Left out of the answer when not set.
+   */
+  @JsonInclude(Include.NON_NULL)
+  private EmailContent content;
+
+  /** The size of the message's conversation, as the folder list counts it (EXO-90882). */
+  @JsonInclude(Include.NON_NULL)
+  private Integer     threadCount;
+
+  /** Whether the message's conversation carries an unsent draft (EXO-90882). */
+  @JsonInclude(Include.NON_NULL)
+  private Boolean     threadHasDraft;
 }
