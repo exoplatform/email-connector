@@ -15,19 +15,16 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-list-item class="full-height align-center">
-    <v-list-item-content>
-      <v-list-item-title class="text-wrap text-sub-title caption text-center mb-4">
-        {{ title }}
-      </v-list-item-title>
-      <email-connector-mail-box-drawer-actions
-        v-if="hasSelectedEmails"
-        select-mode
-        :emails="emails"
-        :top="false"
-        :selected-emails="selectedEmails" />
-    </v-list-item-content>
-  </v-list-item>
+  <!-- The selection's actions alone, centred in the reading pane; how many mails are
+       selected is said beside the select-all control at the top of the list. -->
+  <div class="d-flex align-center justify-center full-height full-width pa-4">
+    <email-connector-mail-box-drawer-actions
+      class="full-width"
+      select-mode
+      :emails="emails"
+      :top="false"
+      :selected-emails="selectedEmails" />
+  </div>
 </template>
 <script>
 export default {
@@ -41,17 +38,5 @@ export default {
       default: () => [],
     },
   },
-  computed: {
-    title() {
-      return `${this.selectedEmails.length} ${this.selectedEmails.length === 1 ? 
-        this.$t('emailConnector.mailBox.list.drawer.multiSelect.emailSelected') : 
-        this.$t('emailConnector.mailBox.list.drawer.multiSelect.emailsSelected')}`;
-    },
-  },
-  methods: {
-    hasSelectedEmails() {
-      return this.selectedEmails.length > 0;
-    },
-  }
 };
 </script>
