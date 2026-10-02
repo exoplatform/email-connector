@@ -139,8 +139,8 @@ public class CalendarInvitation {
    * Whether "Add to my calendar" may be offered (EXO-90848): an add-on holds a calendar
    * for the user, the mail is in their own mailbox, the object is an invitation, a
    * published event or one naming no method, the event is not cancelled, not one of this
-   * deployment's own Agenda events (it lives in Agenda already), and the user did not
-   * decline it.
+   * deployment's own Agenda events (it lives in Agenda already), the user did not
+   * decline it, and the calendar does not hold this revision of it already (EXO-90873).
    */
   private boolean                        landable;
 
@@ -160,4 +160,27 @@ public class CalendarInvitation {
 
   /** Where the event landed is read in the platform; null unless it landed. */
   private String                         landingLink;
+
+  /**
+   * Whether the user's calendar already holds the event (EXO-90873): answered on their
+   * phone, in another client or in their mail server's webmail, or added from here
+   * earlier, as the add-on holding the calendar says. False when it does not, when it
+   * could not say in time, and for a message nothing could be added from.
+   */
+  private boolean                        held;
+
+  /**
+   * The user's answer as the held copy says it; null when it says none, or nothing is
+   * held.
+   */
+  private InvitationAnswer               heldResponse;
+
+  /** Where the held copy is read in the platform; null when nothing is held or it has no page. */
+  private String                         heldLink;
+
+  /**
+   * Whether the mail is the organiser's newer revision of the event held: its SEQUENCE
+   * is higher than the held copy's, so adding it updates the calendar.
+   */
+  private boolean                        newerRevision;
 }

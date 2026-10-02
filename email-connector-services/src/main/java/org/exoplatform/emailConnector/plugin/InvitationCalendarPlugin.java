@@ -16,7 +16,9 @@
  */
 package org.exoplatform.emailConnector.plugin;
 
+import org.exoplatform.emailConnector.model.HeldInvitation;
 import org.exoplatform.emailConnector.model.InvitationLanding;
+import org.exoplatform.emailConnector.model.InvitationProbe;
 import org.exoplatform.emailConnector.model.LandedInvitation;
 
 /**
@@ -81,5 +83,35 @@ public interface InvitationCalendarPlugin {
    * @throws RuntimeException when the landing was attempted and failed
    */
   LandedInvitation land(InvitationLanding landing);
+
+  /**
+   * Whether the user's calendar already holds the event an invitation is about, and
+   * with which answer (EXO-90873): the user may have answered it on their phone,
+   * in another client, or in their mail server's webmail, which filed it in the
+   * calendar. Asked when the reader shows an invitation it would offer to add, of the
+   * implementer that answered true to {@link #holdsCalendarFor}, and of that one alone.
+   * <p>
+   * <b>Read only</b>: nothing is written, nothing is created, nothing is synchronised.
+   * The reader waits for the answer a few seconds at most and then shows the
+   * invitation as if nothing were held, so an implementer answers from what it
+   * already knows and keeps any round trip to a server to one bounded read. It answers
+   * null when it does not hold a calendar for the user, holds no copy of this event, or
+   * would not claim the user's calendar for this invitation -- the same rules that
+   * keep it from landing one. The UID is the sender's: an event of the platform's own
+   * that a UID names is not "held" on that strength alone, and a copy is held for this
+   * mail only when it is the mail's organiser's ({@link InvitationProbe#organizer()}),
+   * never one the user organises themselves.
+   * <p>
+   * The default answers null, so an implementer written before this method keeps the
+   * reader's card as it was.
+   *
+   * @param probe the user and the event's UID
+   * @return the held copy, or null when there is none to tell of
+   * @throws RuntimeException when the calendar could not be read; the reader then shows
+   *           the invitation as if nothing were held
+   */
+  default HeldInvitation held(InvitationProbe probe) {
+    return null;
+  }
 
 }

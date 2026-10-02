@@ -81,6 +81,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             </li>
           </ul>
         </div>
+        <!-- What the user's calendar holds already (EXO-90873): answered on their phone,
+             in another client or in their mail server's webmail. -->
+        <div v-if="heldLabel" class="mt-2 font-weight-bold invitation-held">
+          <v-icon size="14" class="primary--text me-1">fas fa-calendar-check</v-icon>{{ heldLabel }}
+        </div>
+        <div v-if="heldLabel && invitation.newerRevision" class="caption text-sub-title invitation-newer-revision">
+          {{ $t('emailConnector.mailBox.invitation.newerRevision') }}
+        </div>
         <div v-if="answerLabel" class="mt-2 font-weight-bold invitation-answer">{{ answerLabel }}</div>
         <div
           v-if="invitation.answerable || invitation.landable || invitation.removable"
@@ -109,7 +117,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             text
             @click="addToCalendar()">
             <v-icon size="14" class="me-1">fa-calendar-plus</v-icon>
-            {{ $t('emailConnector.mailBox.invitation.addToCalendar') }}
+            {{ addLabel }}
           </v-btn>
           <v-btn
             v-if="invitation.removable"
@@ -124,10 +132,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-btn>
         </div>
         <div
-          v-if="(invitation.landing === 'LANDED' || invitation.landing === 'ALREADY_HELD') && invitation.landingLink"
+          v-if="calendarLink"
           class="caption invitation-landed">
           <a
-            :href="invitation.landingLink"
+            :href="calendarLink"
             target="_blank"
             rel="noopener">
             {{ $t('emailConnector.mailBox.invitation.openInAgenda') }}
@@ -241,7 +249,48 @@ export default {
      */
     answerLabel() {
       const answer = this.invitation?.answer;
+      if (this.heldLabel && !this.invitation.newerRevision && answer === this.invitation.heldResponse) {
+        // Said by the line on what the calendar holds.
+        return '';
+      }
       return answer && !this.invitation.cancelled && !ANSWER_METHODS.includes(this.invitation.method) ? this.$t(`emailConnector.mailBox.invitation.answered.${answer}`) : '';
+    },
+    /**
+     * What the user's calendar holds already: "In your calendar · Accepted", or "In
+     * your calendar" when the held copy says no answer; empty when it holds nothing.
+     *
+     * @returns {String} the sentence, empty when there is none
+     */
+    heldLabel() {
+      if (!this.invitation?.held || this.invitation.cancelled) {
+        return '';
+      }
+      const answer = this.invitation.heldResponse;
+      return answer
+        ? this.$t('emailConnector.mailBox.invitation.heldWithAnswer', { 0: this.$t(`emailConnector.mailBox.invitation.status.${answer}`) })
+        : this.$t('emailConnector.mailBox.invitation.held');
+    },
+    /**
+     * @returns {String} "Add to my calendar", or "Update my calendar" for the
+     * organiser's newer revision of an event the calendar holds
+     */
+    addLabel() {
+      return this.invitation?.held && this.invitation.newerRevision
+        ? this.$t('emailConnector.mailBox.invitation.updateInCalendar')
+        : this.$t('emailConnector.mailBox.invitation.addToCalendar');
+    },
+    /**
+     * Where the event is read in the user's calendar: where a click just landed it, else
+     * where the calendar holds it.
+     *
+     * @returns {String} the link, empty when there is none
+     */
+    calendarLink() {
+      const invitation = this.invitation;
+      if ((invitation?.landing === 'LANDED' || invitation?.landing === 'ALREADY_HELD') && invitation.landingLink) {
+        return invitation.landingLink;
+      }
+      return (invitation?.held && !invitation.cancelled && invitation.heldLink) || '';
     },
     /**
      * What a message that answers rather than invites says: "MEYER accepted", "MEYER
