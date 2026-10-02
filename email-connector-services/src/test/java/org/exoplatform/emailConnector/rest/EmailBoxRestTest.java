@@ -28,6 +28,7 @@ import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -284,6 +285,8 @@ public class EmailBoxRestTest {
                                                    .param("favorites", "true")
                                                    .param("sinceDays", "30")
                                                    .param("categoryIds", "11", "12")
+                                                   .param("attachmentTypes", "PDF", "IMAGE")
+                                                   .param("attachmentName", "contract")
                                                    .param("folder", "SENT")
                                                    .param("limit", "7")
                                                    .with(testSimpleUser()))
@@ -292,6 +295,8 @@ public class EmailBoxRestTest {
     ArgumentCaptor<EmailSearchCriteria> sent = ArgumentCaptor.forClass(EmailSearchCriteria.class);
     verify(emailBoxService).searchEmails(eq(SIMPLE_USER), sent.capture(), eq("SENT"), eq(7));
     assertEquals(List.of(11L, 12L), sent.getValue().getCategoryIds(), "EXO-90888 -- the categories, as sent");
+    assertEquals(List.of("PDF", "IMAGE"), sent.getValue().getAttachmentTypes(), "EXO-90910 -- the kinds, as sent");
+    assertEquals("contract", sent.getValue().getAttachmentName(), "EXO-90910 -- the file name, as sent");
     EmailSearchCriteria criteria = sent.getValue();
     assertEquals("report", criteria.getQuery());
     assertEquals("carol", criteria.getFrom());
@@ -343,6 +348,8 @@ public class EmailBoxRestTest {
                                                          .param("favorites", "true")
                                                          .param("sinceDays", "30")
                                                          .param("categoryIds", "11,12")
+                                                         .param("attachmentTypes", "SPREADSHEET,ARCHIVE")
+                                                         .param("attachmentName", "q3_100%")
                                                          .param("folder", "SENT")
                                                          .param("limit", "7")
                                                          .with(testSimpleUser()))
@@ -351,6 +358,8 @@ public class EmailBoxRestTest {
     ArgumentCaptor<EmailSearchCriteria> sent = ArgumentCaptor.forClass(EmailSearchCriteria.class);
     verify(emailBoxService).searchCachedFolder(eq(SIMPLE_USER), sent.capture(), eq("SENT"), eq(7));
     assertEquals(List.of(11L, 12L), sent.getValue().getCategoryIds(), "EXO-90888 -- the categories, as the drawer sends them");
+    assertEquals(List.of("SPREADSHEET", "ARCHIVE"), sent.getValue().getAttachmentTypes(), "EXO-90910 -- the kinds, comma-separated");
+    assertEquals("q3_100%", sent.getValue().getAttachmentName(), "EXO-90910 -- the file name, untouched");
     EmailSearchCriteria criteria = sent.getValue();
     assertEquals("report", criteria.getQuery());
     assertEquals("carol", criteria.getFrom());
@@ -379,6 +388,30 @@ public class EmailBoxRestTest {
                                                                                                          .thenThrow(new IllegalAccessException("no"));
     mockMvc.perform(get(EMAIL_BOX_PATH + "/search/local").param("words", "x").param("folder", "ARCHIVE").with(testSimpleUser()))
            .andExpect(status().isForbidden());
+  }
+
+  /**
+   * EXO-90910 -- an attachment kind the service does not know, or a file name past its
+   * bound, answers 400 with its code on both search routes.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void aBadAttachmentCriterionAnswersBadRequestWithItsCode() throws Exception {
+    when(emailBoxService.searchEmails(anyString(),
+                                      argThat(criteria -> criteria != null && criteria.getAttachmentTypes() != null),
+                                      anyString(),
+                                      anyInt())).thenThrow(new IllegalArgumentException("emailConnector.search.invalidAttachmentType"));
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search").param("attachmentTypes", "EXE").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.search.invalidAttachmentType"));
+    when(emailBoxService.searchCachedFolder(anyString(),
+                                            argThat(criteria -> criteria != null && criteria.getAttachmentName() != null),
+                                            anyString(),
+                                            anyInt())).thenThrow(new IllegalArgumentException("emailConnector.search.attachmentNameTooLong"));
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search/local").param("attachmentName", "x".repeat(101)).with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.search.attachmentNameTooLong"));
   }
 
   /**

@@ -720,6 +720,10 @@ public class EmailBoxRest {
    * @param attachment restrict to messages carrying an attachment
    * @param categoryIds restrict to the messages eXo filed under one of these categories,
    * each with its subcategories; only eXo's copy carries categories (EXO-90888)
+   * @param attachmentTypes restrict to the messages eXo holds an attachment of one of
+   * these kinds for (EXO-90910): PDF, DOCUMENT, SPREADSHEET, PRESENTATION, IMAGE, ARCHIVE
+   * @param attachmentName restrict to the messages eXo holds an attachment whose name
+   * contains this text for, case ignored (EXO-90910)
    * @param folder folder to search: INBOX, SENT or ARCHIVE, or CUSTOM:&lt;id&gt; for a
    * folder of a mailbox shared with the caller
    * @param limit maximum number of hits to return (newest first)
@@ -728,9 +732,9 @@ public class EmailBoxRest {
   @GetMapping("/search")
   @Secured("users")
   @Operation(summary = "Searches the mailbox on the server", method = "GET",
-             description = "Runs an IMAP SEARCH over the remote folder (INBOX by default), so it finds mail anywhere in the mailbox, not just the locally-cached window. Returns the newest hits (uid, folder, subject, sender, date, read flag, cached flag) plus the total match count. A hit in the copy kept in eXo also carries what the mailbox's folder list shows of it: content (its excerpt and attachments, never its body), and, once its conversation is counted, threadCount and threadHasDraft; a hit outside the copy carries none of these three fields. At least one criterion (query, from, to, words, unread, favorites, attachment, sinceDays, after, before or categoryIds) is required; all of them are combined. The categories are eXo's, which the mail server knows nothing of: with categoryIds, only the messages eXo holds and filed under one of those categories (or a category under one of them) can match, so a message outside eXo's copy never does. A folder of a mailbox shared with the caller (CUSTOM:<id>) is searched in the caller's copy of it instead, never on the server: its recent window only, while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read.")
+             description = "Runs an IMAP SEARCH over the remote folder (INBOX by default), so it finds mail anywhere in the mailbox, not just the locally-cached window. Returns the newest hits (uid, folder, subject, sender, date, read flag, cached flag) plus the total match count. A hit in the copy kept in eXo also carries what the mailbox's folder list shows of it: content (its excerpt and attachments, never its body), and, once its conversation is counted, threadCount and threadHasDraft; a hit outside the copy carries none of these three fields. At least one criterion (query, from, to, words, unread, favorites, attachment, sinceDays, after, before, categoryIds, attachmentTypes or attachmentName) is required; all of them are combined. The categories are eXo's, which the mail server knows nothing of: with categoryIds, only the messages eXo holds and filed under one of those categories (or a category under one of them) can match, so a message outside eXo's copy never does. The same holds for attachmentTypes and attachmentName, matched on the attachments eXo stores for a message (an attachment is of a kind by its MIME type or its file extension), which the mail server's search cannot tell: only a message eXo holds can match them. A folder of a mailbox shared with the caller (CUSTOM:<id>) is searched in the caller's copy of it instead, never on the server: its recent window only, while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Bad Request: a folder that cannot be searched (emailConnector.folder.notBrowsable) -- which is also the answer for a folder of a share whose folders were already removed -- no search criterion (emailConnector.search.criteriaRequired), a day that is not yyyy-MM-dd (emailConnector.search.invalidDate), a before day not after the after day (emailConnector.search.invalidDateRange), a category that is not one of the mailbox's (emailConnector.search.invalidCategory) or more than 20 categories (emailConnector.search.tooManyCategories)"),
+      @ApiResponse(responseCode = "400", description = "Bad Request: a folder that cannot be searched (emailConnector.folder.notBrowsable) -- which is also the answer for a folder of a share whose folders were already removed -- no search criterion (emailConnector.search.criteriaRequired), a day that is not yyyy-MM-dd (emailConnector.search.invalidDate), a before day not after the after day (emailConnector.search.invalidDateRange), a category that is not one of the mailbox's (emailConnector.search.invalidCategory), more than 20 categories (emailConnector.search.tooManyCategories), an attachment type that is not one of PDF, DOCUMENT, SPREADSHEET, PRESENTATION, IMAGE or ARCHIVE (emailConnector.search.invalidAttachmentType) or a file name longer than 100 characters (emailConnector.search.attachmentNameTooLong)"),
       @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "410", description = "The folder belongs to a share of the caller's that is no longer accepted (emailConnector.delegation.revoked)"),
       @ApiResponse(responseCode = "500", description = "The mailbox could not be reached or searched"), })
@@ -768,6 +772,12 @@ public class EmailBoxRest {
                                             @Parameter(description = "Restrict to the messages eXo filed under one of these categories, each with its subcategories: ids of the mailbox's own categories")
                                             @RequestParam(value = "categoryIds", required = false)
                                             List<Long> categoryIds,
+                                            @Parameter(description = "Restrict to the messages eXo holds an attachment of one of these kinds for: PDF, DOCUMENT, SPREADSHEET, PRESENTATION, IMAGE, ARCHIVE")
+                                            @RequestParam(value = "attachmentTypes", required = false)
+                                            List<String> attachmentTypes,
+                                            @Parameter(description = "Restrict to the messages eXo holds an attachment whose name contains this text for, case ignored, at most 100 characters")
+                                            @RequestParam(value = "attachmentName", required = false)
+                                            String attachmentName,
                                             @Parameter(description = "Folder to search: INBOX, SENT or ARCHIVE, or CUSTOM:<id> for a folder of a mailbox shared with the caller")
                                             @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
                                             String folder,
@@ -781,6 +791,8 @@ public class EmailBoxRest {
       criteria.setAttachmentsOnly(attachment);
       criteria.setSinceDays(sinceDays);
       criteria.setCategoryIds(categoryIds);
+      criteria.setAttachmentTypes(attachmentTypes);
+      criteria.setAttachmentName(attachmentName);
       EmailSearchResultPage page = emailBoxService.searchEmails(request.getRemoteUser(), criteria, folder, limit);
       // Each hit in the local copy drawn as the folder list's row draws it (EXO-90882).
       emailBoxService.decorateListedRows(request.getRemoteUser(), page.getResults());
@@ -815,6 +827,10 @@ public class EmailBoxRest {
    * @param attachment restrict to messages eXo holds an attachment for
    * @param categoryIds restrict to the messages eXo filed under one of these categories,
    * each with its subcategories (EXO-90888)
+   * @param attachmentTypes restrict to the messages eXo holds an attachment of one of
+   * these kinds for (EXO-90910): PDF, DOCUMENT, SPREADSHEET, PRESENTATION, IMAGE, ARCHIVE
+   * @param attachmentName restrict to the messages eXo holds an attachment whose name
+   * contains this text for, case ignored (EXO-90910)
    * @param folder folder to search: INBOX, SENT or ARCHIVE, or CUSTOM:&lt;id&gt; for a
    * folder of a mailbox shared with the caller
    * @param limit maximum number of hits to return (newest first)
@@ -823,9 +839,9 @@ public class EmailBoxRest {
   @GetMapping("/search/local")
   @Secured("users")
   @Operation(summary = "Searches one folder in the copy of the mailbox kept in eXo", method = "GET",
-             description = "Filters the messages of one folder that this add-on holds locally -- the newest of each folder, as the synchronization keeps them -- with the same criteria as /search, never touching the mail server. Returns the newest hits and the total match count, each with what the mailbox's folder list shows of it: content (its excerpt and attachments, never its body) and, once its conversation is counted, threadCount and threadHasDraft. At least one criterion is required; all of them are combined. The folder is INBOX, SENT or ARCHIVE, or a folder of a mailbox shared with the caller while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read. The attachment criterion is the attachments eXo holds for a message; the categoryIds criterion the categories eXo filed it under, each with the categories under it.")
+             description = "Filters the messages of one folder that this add-on holds locally -- the newest of each folder, as the synchronization keeps them -- with the same criteria as /search, never touching the mail server. Returns the newest hits and the total match count, each with what the mailbox's folder list shows of it: content (its excerpt and attachments, never its body) and, once its conversation is counted, threadCount and threadHasDraft. At least one criterion is required; all of them are combined. The folder is INBOX, SENT or ARCHIVE, or a folder of a mailbox shared with the caller while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read. The attachment criterion is the attachments eXo holds for a message; the categoryIds criterion the categories eXo filed it under, each with the categories under it; the attachmentTypes and attachmentName criteria the kind (by MIME type or file extension) and the name of an attachment eXo holds for it.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Bad Request: a folder that cannot be searched (emailConnector.folder.notBrowsable), no search criterion (emailConnector.search.criteriaRequired), a day that is not yyyy-MM-dd (emailConnector.search.invalidDate), a before day not after the after day (emailConnector.search.invalidDateRange), a category that is not one of the mailbox's (emailConnector.search.invalidCategory) or more than 20 categories (emailConnector.search.tooManyCategories)"),
+      @ApiResponse(responseCode = "400", description = "Bad Request: a folder that cannot be searched (emailConnector.folder.notBrowsable), no search criterion (emailConnector.search.criteriaRequired), a day that is not yyyy-MM-dd (emailConnector.search.invalidDate), a before day not after the after day (emailConnector.search.invalidDateRange), a category that is not one of the mailbox's (emailConnector.search.invalidCategory), more than 20 categories (emailConnector.search.tooManyCategories), an attachment type that is not one of PDF, DOCUMENT, SPREADSHEET, PRESENTATION, IMAGE or ARCHIVE (emailConnector.search.invalidAttachmentType) or a file name longer than 100 characters (emailConnector.search.attachmentNameTooLong)"),
       @ApiResponse(responseCode = "403", description = "Forbidden operation"),
       @ApiResponse(responseCode = "410", description = "The folder belongs to a share of the caller's that is no longer accepted (emailConnector.delegation.revoked)"), })
   public EmailSearchResultPage searchCachedFolder(HttpServletRequest request,
@@ -862,6 +878,12 @@ public class EmailBoxRest {
                                                   @Parameter(description = "Restrict to the messages eXo filed under one of these categories, each with its subcategories: ids of the mailbox's own categories")
                                                   @RequestParam(value = "categoryIds", required = false)
                                                   List<Long> categoryIds,
+                                                  @Parameter(description = "Restrict to the messages eXo holds an attachment of one of these kinds for: PDF, DOCUMENT, SPREADSHEET, PRESENTATION, IMAGE, ARCHIVE")
+                                                  @RequestParam(value = "attachmentTypes", required = false)
+                                                  List<String> attachmentTypes,
+                                                  @Parameter(description = "Restrict to the messages eXo holds an attachment whose name contains this text for, case ignored, at most 100 characters")
+                                                  @RequestParam(value = "attachmentName", required = false)
+                                                  String attachmentName,
                                                   @Parameter(description = "Folder to search: INBOX, SENT or ARCHIVE, or CUSTOM:<id> for a folder of a mailbox shared with the caller")
                                                   @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
                                                   String folder,
@@ -875,6 +897,8 @@ public class EmailBoxRest {
       criteria.setAttachmentsOnly(attachment);
       criteria.setSinceDays(sinceDays);
       criteria.setCategoryIds(categoryIds);
+      criteria.setAttachmentTypes(attachmentTypes);
+      criteria.setAttachmentName(attachmentName);
       EmailSearchResultPage page = emailBoxService.searchCachedFolder(request.getRemoteUser(), criteria, folder, limit);
       // Each hit drawn as the folder list's row draws it (EXO-90882).
       emailBoxService.decorateListedRows(request.getRemoteUser(), page.getResults());
