@@ -63,6 +63,14 @@ public final class SenderLogoUtils {
    * HTML error page answered with a 200, a script, a type left to the browser's
    * guessing -- is refused before its bytes are looked at.
    */
+  private static final Set<String> DECLARED_TYPES      = Set.of(SVG,
+                                                                PNG,
+                                                                JPEG,
+                                                                WEBP,
+                                                                ICO,
+                                                                "image/vnd.microsoft.icon",
+                                                                "image/ico");
+
   /** The declared types of a home page read for the icon it declares. */
   private static final Set<String> PAGE_TYPES          = Set.of("text/html", "application/xhtml+xml");
 
@@ -75,14 +83,6 @@ public final class SenderLogoUtils {
 
   /** The schemes a declared icon is fetched from; the fetcher's guard narrows them further. */
   private static final Set<String> ICON_SCHEMES        = Set.of("https", "http");
-
-  private static final Set<String> DECLARED_TYPES      = Set.of(SVG,
-                                                                PNG,
-                                                                JPEG,
-                                                                WEBP,
-                                                                ICO,
-                                                                "image/vnd.microsoft.icon",
-                                                                "image/ico");
 
   /** The longest domain name, in characters (RFC 1035). */
   private static final int         MAX_DOMAIN_LENGTH   = 253;
