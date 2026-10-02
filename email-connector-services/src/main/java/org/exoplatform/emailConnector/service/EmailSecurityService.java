@@ -241,7 +241,7 @@ public class EmailSecurityService {
       }
       content.setRemoteContentBlocked(html && sanitized.remoteContentBlocked());
       content.setSecurityWarnings(warnings);
-      offerSenderLogo(email, ownMessage, warnings);
+      offerSenderLogo(email, ownMessage, warnings, username);
     }
   }
 
@@ -255,13 +255,14 @@ public class EmailSecurityService {
    * @param email the message
    * @param ownMessage whether it is the mailbox's own sent mail
    * @param warnings its phishing warnings
+   * @param username the user reading it, the only one the logo's URL is served to
    */
-  private void offerSenderLogo(Email email, boolean ownMessage, List<EmailSecurityWarning> warnings) {
+  private void offerSenderLogo(Email email, boolean ownMessage, List<EmailSecurityWarning> warnings, String username) {
     EmailSender sender = email.getSender();
     if (ownMessage || !warnings.isEmpty() || sender == null || sender.getAvatarUrl() == null || sender.getProfileUrl() != null) {
       return;
     }
-    sender.setLogoUrl(senderLogoService.logoUrlFor(sender.getAddress(), email.getContent().isDmarcPassed()));
+    sender.setLogoUrl(senderLogoService.logoUrlFor(sender.getAddress(), email.getContent().isDmarcPassed(), username));
   }
 
   /**

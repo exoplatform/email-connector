@@ -49,7 +49,7 @@ import org.exoplatform.emailConnector.storage.SenderLogoStorage;
 @ExtendWith(MockitoExtension.class)
 class SenderLogoServiceTest {
 
-  private static final String   URL  = SenderLogoService.LOGO_PATH + "brand.example";
+  private static final String   USER = "rita";
 
   private static final SenderLogo LOGO = new SenderLogo(new byte[] { 1 }, "image/png", SenderLogo.SOURCE_ICON, 1L);
 
@@ -80,7 +80,8 @@ class SenderLogoServiceTest {
   void aCachedLogoIsOfferedOnADmarcPass() {
     when(emailConnectorService.isSenderLogosEnabled()).thenReturn(true);
     when(senderLogoStorage.peek("brand.example")).thenReturn(LOGO);
-    assertEquals(URL, service.logoUrlFor("News@Brand.Example", true));
+    assertEquals(SenderLogoService.LOGO_PATH + "brand.example?t=" + service.token("brand.example", USER),
+                 service.logoUrlFor("News@Brand.Example", true, USER));
     assertEquals(List.of(), queued);
     verify(senderLogoStorage, never()).getLogo(anyString());
   }
@@ -92,15 +93,15 @@ class SenderLogoServiceTest {
   @Test
   void anUnknownDomainIsResolvedInTheBackground() {
     when(emailConnectorService.isSenderLogosEnabled()).thenReturn(true);
-    assertNull(service.logoUrlFor("news@brand.example", true));
-    assertNull(service.logoUrlFor("info@brand.example", true));
+    assertNull(service.logoUrlFor("news@brand.example", true, USER));
+    assertNull(service.logoUrlFor("info@brand.example", true, USER));
     verify(senderLogoStorage, never()).getLogo(anyString());
     assertEquals(1, queued.size(), "one resolution per domain at a time");
 
     queued.remove(0).run();
     verify(senderLogoStorage).getLogo("brand.example");
     verify(senderLogoStorage, never()).evict(anyString());
-    assertNull(service.logoUrlFor("news@brand.example", true));
+    assertNull(service.logoUrlFor("news@brand.example", true, USER));
     assertEquals(1, queued.size(), "a domain may be resolved again once its resolution ended");
   }
 
@@ -112,11 +113,11 @@ class SenderLogoServiceTest {
   void aKnownNoneIsBelievedForADay() {
     when(emailConnectorService.isSenderLogosEnabled()).thenReturn(true);
     when(senderLogoStorage.peek("brand.example")).thenReturn(SenderLogo.none(System.currentTimeMillis()));
-    assertNull(service.logoUrlFor("news@brand.example", true));
+    assertNull(service.logoUrlFor("news@brand.example", true, USER));
     assertEquals(List.of(), queued);
 
     when(senderLogoStorage.peek("brand.example")).thenReturn(SenderLogo.none(System.currentTimeMillis() - SenderLogoService.NONE_TTL_MS));
-    assertNull(service.logoUrlFor("news@brand.example", true));
+    assertNull(service.logoUrlFor("news@brand.example", true, USER));
     queued.remove(0).run();
     InOrder order = inOrder(senderLogoStorage);
     order.verify(senderLogoStorage).evict("brand.example");
@@ -129,42 +130,87 @@ class SenderLogoServiceTest {
    */
   @Test
   void nothingWithoutAPassTheSwitchOrADomain() {
-    assertNull(service.logoUrlFor("news@brand.example", false));
+    assertNull(service.logoUrlFor("news@brand.example", false, USER));
     verify(emailConnectorService, never()).isSenderLogosEnabled();
 
     when(emailConnectorService.isSenderLogosEnabled()).thenReturn(false);
-    assertNull(service.logoUrlFor("news@brand.example", true), "switched off");
+    assertNull(service.logoUrlFor("news@brand.example", true, USER), "switched off");
 
-    assertNull(service.logoUrlFor("news@127.0.0.1", true));
-    assertNull(service.logoUrlFor("nobody", true));
-    assertNull(service.logoUrlFor(null, true));
+    assertNull(service.logoUrlFor("news@127.0.0.1", true, USER));
+    assertNull(service.logoUrlFor("nobody", true, USER));
+    assertNull(service.logoUrlFor(null, true, USER));
     assertEquals(List.of(), queued);
     verify(senderLogoStorage, never()).peek(anyString());
   }
 
   /**
-   * The endpoint's read serves the cache only: a cached logo, else nothing -- never a
-   * fetch, whatever the domain -- and nothing at all with the feature off; a path that
-   * is no domain is a 400's message code, checked before anything else.
+   * The endpoint's read serves the cache only -- a cached logo, else nothing, never a
+   * fetch -- to the user its URL was offered to: another user, a forged or missing
+   * token, or another domain's token gets nothing; nothing at all with the feature off;
+   * a path that is no domain is a 400's message code, checked before anything else.
    */
   @Test
-  void theEndpointServesTheCacheOnly() {
+  void theEndpointServesTheCacheToItsReaderOnly() {
     when(emailConnectorService.isSenderLogosEnabled()).thenReturn(true);
     when(senderLogoStorage.peek("brand.example")).thenReturn(LOGO);
-    assertSame(LOGO, service.getLogo("Brand.Example"));
+    String token = service.token("brand.example", USER);
+    assertSame(LOGO, service.getLogo("Brand.Example", token, USER));
+    assertNull(service.getLogo("brand.example", token, "mallory"), "another user");
+    assertNull(service.getLogo("brand.example", service.token("other.example", USER), USER), "another domain's token");
+    assertNull(service.getLogo("brand.example", "forged", USER));
+    assertNull(service.getLogo("brand.example", null, USER));
+    assertNull(service.getLogo("brand.example", token, null));
     when(senderLogoStorage.peek("plain.example")).thenReturn(SenderLogo.none(1L));
-    assertNull(service.getLogo("plain.example"));
-    assertNull(service.getLogo("unknown.example"));
+    assertNull(service.getLogo("plain.example", service.token("plain.example", USER), USER));
+    assertNull(service.getLogo("unknown.example", service.token("unknown.example", USER), USER));
 
     when(emailConnectorService.isSenderLogosEnabled()).thenReturn(false);
-    assertNull(service.getLogo("brand.example"));
-    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> service.getLogo("169.254.169.254"));
+    assertNull(service.getLogo("brand.example", token, USER));
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> service.getLogo("169.254.169.254", token, USER));
     assertEquals(SenderLogoService.INVALID_DOMAIN, refused.getMessage());
-    assertThrows(IllegalArgumentException.class, () -> service.getLogo("localhost"));
+    assertThrows(IllegalArgumentException.class, () -> service.getLogo("localhost", token, USER));
 
     verify(senderLogoStorage, never()).getLogo(anyString());
     verify(senderLogoStorage, never()).evict(anyString());
     assertEquals(List.of(), queued);
+  }
+
+  /**
+   * A free mail provider is no brand: its senders get no logo, and nothing is fetched.
+   * {@code mayOffer} answers what {@code logoUrlFor} could offer without asking more.
+   */
+  @Test
+  void aFreeMailProviderIsNoBrand() {
+    when(emailConnectorService.isSenderLogosEnabled()).thenReturn(true);
+    assertNull(service.logoUrlFor("someone@gmail.com", true, USER));
+    assertEquals(false, service.mayOffer("someone@gmail.com"));
+    assertEquals(List.of(), queued);
+
+    assertEquals(true, service.mayOffer("news@brand.example"), "unknown yet");
+    when(senderLogoStorage.peek("brand.example")).thenReturn(SenderLogo.none(System.currentTimeMillis()));
+    assertEquals(false, service.mayOffer("news@brand.example"), "known to have none");
+    when(senderLogoStorage.peek("brand.example")).thenReturn(LOGO);
+    assertEquals(true, service.mayOffer("news@brand.example"));
+    assertNull(service.logoUrlFor("news@brand.example", true, " "), "no user, no URL");
+    when(emailConnectorService.isSenderLogosEnabled()).thenReturn(false);
+    assertEquals(false, service.mayOffer("news@brand.example"));
+  }
+
+  /**
+   * A domain queued before the administrator switched the feature off is not fetched
+   * after it.
+   */
+  @Test
+  void aQueuedDomainIsNotFetchedOnceSwitchedOff() {
+    when(emailConnectorService.isSenderLogosEnabled()).thenReturn(true);
+    assertNull(service.logoUrlFor("news@brand.example", true, USER));
+    when(emailConnectorService.isSenderLogosEnabled()).thenReturn(false);
+    queued.remove(0).run();
+    verify(senderLogoStorage, never()).getLogo(anyString());
+    when(emailConnectorService.isSenderLogosEnabled()).thenReturn(true);
+    assertNull(service.logoUrlFor("news@brand.example", true, USER));
+    assertEquals(1, queued.size(), "the domain was released");
   }
 
   /**
@@ -176,9 +222,9 @@ class SenderLogoServiceTest {
     service.setWarmExecutor(runnable -> {
       throw new java.util.concurrent.RejectedExecutionException("full");
     });
-    assertNull(service.logoUrlFor("news@brand.example", true));
+    assertNull(service.logoUrlFor("news@brand.example", true, USER));
     service.setWarmExecutor(queued::add);
-    assertNull(service.logoUrlFor("news@brand.example", true));
+    assertNull(service.logoUrlFor("news@brand.example", true, USER));
     assertEquals(1, queued.size(), "the dropped domain was not left marked as resolving");
   }
 }
