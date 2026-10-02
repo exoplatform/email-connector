@@ -412,6 +412,7 @@ import columnWidthsMixin, { DEFAULT_LIST_WIDTH_PX } from '../../js/EmailConnecto
 import advancedSearchMixin from '../../js/EmailConnectorMailBoxAdvancedSearchMixin.js';
 import { listedRowMatches } from '../../js/EmailConnectorMailBoxSearchCriteria.js';
 import { refreshWaitingSuggestions, waitingSuggestionMails, waitingSuggestionTotal } from '../../js/EmailConnectorMailFilters.js';
+import { SENDER_LOGO_FOUND_EVENT, SENDER_ROWS_VERIFIED_EVENT, markSenderRowsVerified, refreshSenderDomain } from '../../js/EmailConnectorSenderAvatars.js';
 
 // The drawer's width in its narrow layout: exo-drawer's own default, which is also the
 // full-screen list's default width.
@@ -974,6 +975,10 @@ export default {
     // The unread badge moved on the server -- new mail synchronized, above all: the one
     // push that reaches an open mailbox, whatever its layout (EXO-90628).
     document.addEventListener(BADGE_UPDATED_EVENT, this.onUnreadBadgeUpdated);
+    // A sender's brand logo found, or rows found to pass DMARC, after the page drew
+    // them (EXO-90909): pushed on the same channel, the avatars switch in place.
+    document.addEventListener(SENDER_LOGO_FOUND_EVENT, this.onSenderLogoFound);
+    document.addEventListener(SENDER_ROWS_VERIFIED_EVENT, this.onSenderRowsVerified);
     // The push travels on app-center's badge channel, which only a mounted App Center
     // badge subscribes a page to -- none on the detached tab, none on a site page whose
     // topbar carries no badge: subscribed here, on every page. Social's WebSocket.js
@@ -1077,6 +1082,8 @@ export default {
     this.$root.$off('expand-mail-box-on-email', this.onExpandMailBoxOnEmail);
     FOLDERS_CHANGED_EVENTS.forEach(event => this.$root.$off(event, this.onFoldersChanged));
     document.removeEventListener(BADGE_UPDATED_EVENT, this.onUnreadBadgeUpdated);
+    document.removeEventListener(SENDER_LOGO_FOUND_EVENT, this.onSenderLogoFound);
+    document.removeEventListener(SENDER_ROWS_VERIFIED_EVENT, this.onSenderRowsVerified);
   },
   computed: {
     hasEmails() {
@@ -4154,6 +4161,27 @@ export default {
       if (focused) {
         this.revealThreadRow(focused.threadId);
       }
+    },
+    /**
+     * Shows a sender's brand logo the server just found (EXO-90909) on every row and
+     * in the reader, in place: the addresses of that domain answered none are asked
+     * again, each page for its own URL.
+     *
+     * @param {CustomEvent} event the push, {detail: {message: {domain}}}
+     * @returns {void}
+     */
+    onSenderLogoFound(event) {
+      refreshSenderDomain(event?.detail?.message?.domain);
+    },
+    /**
+     * Shows the brand logos of rows the server found to pass DMARC after they were
+     * listed (EXO-90909): their verdict was filled in from the mail server's header.
+     *
+     * @param {CustomEvent} event the push, {detail: {message: {ids, addresses}}}
+     * @returns {void}
+     */
+    onSenderRowsVerified(event) {
+      markSenderRowsVerified(event?.detail?.message?.ids, event?.detail?.message?.addresses);
     },
     /**
      * The unread badge moved on the server (EXO-90628): the synchronization brought new
