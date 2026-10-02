@@ -45,11 +45,10 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
  * <p>
  * <b>Who may ask.</b> Any authenticated user, for any domain. A logo is a brand's
  * public image, the same for every reader, so serving it reveals nothing about anyone's
- * mail; tying it to the domains the caller received mail from would cost a query per
- * image for no protection. What an authenticated user can do with it is have the
- * server fetch one public URL per domain and cache the answer: the fetch is the
- * guarded one ({@code SenderLogoFetcher} -- https, public addresses, bounded size and
- * time), at most two requests per domain per week, or per day for a domain with none.
+ * mail. The endpoint serves the server's cache and nothing else: it never fetches, so
+ * no caller can make the server reach a domain of its choosing; only a message that
+ * passed DMARC, opened by its recipient, has a logo resolved
+ * ({@code SenderLogoService#logoUrlFor}).
  * <p>
  * <b>How it is served.</b> As the type read from the image's own bytes (an SVG only
  * once sanitised), never sniffed again by the browser ({@code nosniff}), with a
@@ -77,10 +76,10 @@ public class SenderLogoRest {
    */
   @GetMapping("/{domain:.+}")
   @Secured("users")
-  @Operation(summary = "Gets the brand logo of a mail domain", method = "GET", description = "This returns the logo the domain publishes (BIMI), else its site's icon, as fetched, checked and cached by the server")
+  @Operation(summary = "Gets the brand logo of a mail domain", method = "GET", description = "This returns the logo the domain publishes (BIMI), else its site's icon, as the server fetched, checked and cached it; it never fetches")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Not a domain name"),
-      @ApiResponse(responseCode = "404", description = "The domain has no logo, or brand logos are switched off") })
+      @ApiResponse(responseCode = "404", description = "No logo cached for the domain, or brand logos are switched off") })
   public ResponseEntity<byte[]> getSenderLogo(@Parameter(description = "The mail domain", required = true)
                                               @PathVariable("domain")
                                               String domain) {
