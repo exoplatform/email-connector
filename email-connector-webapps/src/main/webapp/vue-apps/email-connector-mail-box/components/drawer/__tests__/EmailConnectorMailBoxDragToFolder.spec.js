@@ -26,7 +26,6 @@ import { createLocalVue, shallowMount } from '@vue/test-utils';
 import EmailConnectorMailBoxDrawer from '../EmailConnectorMailBoxDrawer.vue';
 import EmailConnectorMailBoxDrawerListItem from '../EmailConnectorMailBoxDrawerListItem.vue';
 import EmailConnectorMailBoxDrawerNavigation from '../EmailConnectorMailBoxDrawerNavigation.vue';
-import EmailConnectorMailBoxDrawerSearchResultItem from '../EmailConnectorMailBoxDrawerSearchResultItem.vue';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
 import { DRAG_MIME, endDrag } from '../../../js/EmailConnectorMailBoxDragAndDrop.js';
 import { OPEN_IMPORT_DRAWER_EVENT } from '../../../js/EmailConnectorMailTransfer.js';
@@ -220,6 +219,31 @@ function mountRow(fixture, mailRemoteId, props = {}, phone = false) {
 }
 
 /**
+ * Mounts a search hit as the search results list renders it: the folder list's own row,
+ * alone in its conversation, keyed by folder and UID (EXO-90871), on the drawer's root.
+ *
+ * @param {Object} fixture the drawer fixture
+ * @param {Object} hit the hit
+ * @param {Object} props further props of the row (expanded, in the full-screen list)
+ * @returns {Wrapper} the row
+ */
+function mountHit(fixture, hit, props = {}) {
+  const localVue = createLocalVue();
+  localVue.directive('touch', {});
+  localVue.directive('touch-hold', {});
+  const item = shallowMount(EmailConnectorMailBoxDrawerListItem, {
+    localVue,
+    propsData: { email: hit, rowKey: `${hit.folder}:${hit.mailRemoteId}`, ...props },
+    mocks: {
+      $t: t,
+      $emailConnectorMailBoxService: fixture.service,
+      $vuetify: { breakpoint: { smAndDown: false } },
+    },
+  });
+  return onDrawerRoot(fixture, item);
+}
+
+/**
  * Mounts the folder column on the drawer's root, fed as the drawer feeds it.
  *
  * @param {Object} fixture the mounted drawer
@@ -378,11 +402,7 @@ describe('dragging a mail onto the folder column (EXO-90421)', () => {
 
   it('a search hit is categorized in ITS folder, and the listed mail with the same UID is left alone', async () => {
     fixture = await mountDrawer([row(1), row(2)]);
-    const hit = shallowMount(EmailConnectorMailBoxDrawerSearchResultItem, {
-      propsData: { result: row(2, 'ARCHIVE'), rowKey: 'ARCHIVE:2', draggableHit: true },
-      mocks: { $t: t, $emailConnectorMailBoxService: fixture.service, $vuetify: { breakpoint: { smAndDown: false } } },
-    });
-    onDrawerRoot(fixture, hit);
+    const hit = mountHit(fixture, row(2, 'ARCHIVE'), { expanded: true });
     expect(hit.attributes('draggable')).toBe('true');
 
     await dragOnto(fixture, hit, mountColumn(fixture), 'category:11');
@@ -514,11 +534,7 @@ describe('which rows may be dragged (EXO-90421)', () => {
 
   it('a hit of the narrow list is not draggable', async () => {
     fixture = await mountDrawer([row(1)]);
-    const hit = shallowMount(EmailConnectorMailBoxDrawerSearchResultItem, {
-      propsData: { result: row(2, 'ARCHIVE'), rowKey: 'ARCHIVE:2' },
-      mocks: { $t: t, $emailConnectorMailBoxService: fixture.service },
-    });
-    fixture.mounted.push(hit);
+    const hit = mountHit(fixture, row(2, 'ARCHIVE'));
 
     expect(hit.attributes('draggable')).toBeUndefined();
   });
