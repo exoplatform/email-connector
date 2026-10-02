@@ -105,7 +105,7 @@ async function suggestionsRead(mails) {
 // The Suggestions view as the drawer renders it, with the reveal the arrow keys call.
 const suggestionsListStub = {
   name: 'SuggestionsListStub',
-  props: ['emails', 'readerKey'],
+  props: ['emails', 'readerKey', 'filtered'],
   methods: {
     revealThread: jest.fn(),
   },
@@ -690,5 +690,170 @@ describe('the Suggestions view lights the reader\'s mail and focuses the one the
     expect(document.activeElement.getAttribute('data-thread-key')).toBe('ARCHIVE:7');
     wrapper.destroy();
     document.body.innerHTML = '';
+  });
+});
+
+describe('the Favorites and Unread chips narrow the Suggestions view in place, as they narrow a folder (EXO-90892)', () => {
+  let fixture;
+
+  afterEach(() => {
+    fixture?.teardown();
+    jest.restoreAllMocks();
+  });
+
+  /**
+   * The keys of the mails the drawer hands the view, in order.
+   *
+   * @returns {Array<String>} folder:uid of each
+   */
+  const listed = () => fixture.wrapper.findComponent(suggestionsListStub).props('emails')
+    .map(mail => `${mail.folder}:${mail.mailRemoteId}`);
+
+  /**
+   * Clicks one of the row's chips, as the search row hands the click to the drawer.
+   *
+   * @param {String} chip favorite or unread
+   * @returns {Promise<void>} resolved once rendered
+   */
+  async function toggle(chip) {
+    fixture.wrapper.vm.searchBarListeners[`toggle-${chip}`]();
+    await flush();
+  }
+
+  it('lists the unread mails, the starred ones, or both, the view staying Suggestions, without reading a folder again', async () => {
+    await suggestionsRead([
+      suggestion(7, 'ARCHIVE', { read: true, starred: true }),
+      suggestion(8, 'INBOX', { read: false, starred: false }),
+      suggestion(9, 'INBOX', { read: false, starred: true }),
+    ]);
+    fixture = await mountDrawer({ expanded: false });
+    await fixture.wrapper.setData({ currentFolder: emailConnectorMailBoxService.SUGGESTIONS_VIEW });
+    fixture.service.getEmailBox.mockClear();
+
+    await toggle('unread');
+    expect(listed()).toEqual(['INBOX:8', 'INBOX:9']);
+    expect(fixture.wrapper.vm.searchBarProps.unreadOnly).toBe(true);
+    expect(fixture.wrapper.findComponent(suggestionsListStub).props('filtered')).toBe(true);
+
+    await toggle('favorite');
+    expect(listed()).toEqual(['INBOX:9']);
+    expect(fixture.wrapper.vm.searchBarProps.favoriteOnly).toBe(true);
+
+    await toggle('unread');
+    expect(listed()).toEqual(['ARCHIVE:7', 'INBOX:9']);
+
+    await toggle('favorite');
+    expect(listed()).toEqual(['ARCHIVE:7', 'INBOX:8', 'INBOX:9']);
+    expect(fixture.wrapper.findComponent(suggestionsListStub).props('filtered')).toBe(false);
+    expect(fixture.wrapper.vm.currentFolder).toBe(emailConnectorMailBoxService.SUGGESTIONS_VIEW);
+    // The view's mails are its own read's: no folder listing is read for a chip.
+    expect(fixture.service.getEmailBox).not.toHaveBeenCalled();
+    // And the arrow keys walk what is shown.
+    await toggle('unread');
+    expect(fixture.wrapper.vm.navigationEmails.map(mail => mail.mailRemoteId)).toEqual([8, 9]);
+  });
+
+  it('keeps the mail the reader shows when it is read under Unread, and lets another read one go, as the inbox does', async () => {
+    await suggestionsRead([
+      suggestion(7, 'ARCHIVE', { read: false }),
+      suggestion(7, 'INBOX', { read: false, mailHeaderId: '<i7@host>' }),
+      suggestion(9, 'INBOX', { read: false }),
+    ]);
+    fixture = await mountDrawer();
+    await fixture.wrapper.setData({ currentFolder: emailConnectorMailBoxService.SUGGESTIONS_VIEW });
+    await toggle('unread');
+    fixture.wrapper.vm.$root.$emit('open-suggested-email', { mailRemoteId: 7, folder: 'ARCHIVE', cached: true });
+    await flush();
+
+    // The opened one read, and its twin of another folder, by its UID: only the twin goes.
+    fixture.wrapper.vm.$root.$emit('update-email-read-status', true, [7], 'ARCHIVE');
+    fixture.wrapper.vm.$root.$emit('update-email-read-status', true, [7], 'INBOX');
+    await flush();
+
+    expect(listed()).toEqual(['ARCHIVE:7', 'INBOX:9']);
+    // Marked unread again, a mail comes back.
+    fixture.wrapper.vm.$root.$emit('update-email-read-status', false, [7], 'INBOX');
+    await flush();
+    expect(listed()).toEqual(['ARCHIVE:7', 'INBOX:7', 'INBOX:9']);
+  });
+
+  it('lets a mail unstarred under Favorites go at once, and a mail starred come in', async () => {
+    await suggestionsRead([
+      suggestion(7, 'ARCHIVE', { starred: true }),
+      suggestion(8, 'INBOX', { starred: false }),
+    ]);
+    fixture = await mountDrawer({ expanded: false });
+    await fixture.wrapper.setData({ currentFolder: emailConnectorMailBoxService.SUGGESTIONS_VIEW });
+    await toggle('favorite');
+    expect(listed()).toEqual(['ARCHIVE:7']);
+
+    fixture.wrapper.vm.$root.$emit('update-email-favorite-status', false, [7], 'ARCHIVE');
+    fixture.wrapper.vm.$root.$emit('update-email-favorite-status', true, [8], 'INBOX');
+    await flush();
+
+    expect(listed()).toEqual(['INBOX:8']);
+  });
+
+  it.each([
+    ['in the narrow drawer', false],
+    ['in full screen', true],
+  ])('lists the view whole again when the view asks to clear its filters, still on Suggestions, %s', async (layout, expanded) => {
+    await suggestionsRead([
+      suggestion(7, 'ARCHIVE', { read: true }),
+      suggestion(8, 'INBOX', { read: true }),
+    ]);
+    fixture = await mountDrawer({ expanded });
+    await fixture.wrapper.setData({ currentFolder: emailConnectorMailBoxService.SUGGESTIONS_VIEW });
+    await toggle('unread');
+    await toggle('favorite');
+    expect(listed()).toEqual([]);
+    expect(fixture.wrapper.findComponent(suggestionsListStub).props('filtered')).toBe(true);
+    fixture.service.getEmailBox.mockClear();
+
+    fixture.wrapper.findComponent(suggestionsListStub).vm.$emit('clear-filters');
+    await flush();
+
+    expect(listed()).toEqual(['ARCHIVE:7', 'INBOX:8']);
+    expect(fixture.wrapper.vm.currentFolder).toBe(emailConnectorMailBoxService.SUGGESTIONS_VIEW);
+    expect(fixture.service.getEmailBox).not.toHaveBeenCalled();
+  });
+});
+
+describe('the Suggestions view says when its filters leave it empty, and offers to clear them (EXO-90892)', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  /**
+   * Mounts the view, empty, once its read has answered.
+   *
+   * @param {Boolean} filtered whether a chip narrows it
+   * @returns {Promise<Object>} the wrapper
+   */
+  async function mountEmptyList(filtered) {
+    await suggestionsRead([suggestion(7)]);
+    const wrapper = shallowMount(EmailConnectorMailBoxSuggestionsList, {
+      propsData: { emails: [], filtered, compact: true },
+      mocks: { $t: t },
+      stubs: { 'v-icon': true, 'v-btn': { template: '<button @click="$emit(\'click\')"><slot /></button>' } },
+    });
+    await flush();
+    return wrapper;
+  }
+
+  it('says no mail matches the filters, and asks the drawer to clear them', async () => {
+    const wrapper = await mountEmptyList(true);
+
+    expect(wrapper.find('.suggestions-email-empty').text()).toContain('emailConnector.mailBox.list.drawer.noEmail.filtered');
+    expect(wrapper.find('.suggestions-email-empty').text()).not.toContain('emailConnector.mailBox.suggestions.empty');
+    await wrapper.find('.suggestions-email-empty button').trigger('click');
+    expect(wrapper.emitted('clear-filters')).toHaveLength(1);
+    wrapper.destroy();
+  });
+
+  it('says no suggestion waits, with nothing to clear, when no filter narrows it', async () => {
+    const wrapper = await mountEmptyList(false);
+
+    expect(wrapper.find('.suggestions-email-empty').text()).toContain('emailConnector.mailBox.suggestions.empty');
+    expect(wrapper.find('.suggestions-email-empty button').exists()).toBe(false);
+    wrapper.destroy();
   });
 });
