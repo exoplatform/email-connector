@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-import { getWaitingSuggestionMails } from '../../email-connector-user-setting/js/EmailConnectorUserSettingService.js';
+import { getWaitingSuggestionEmails, getWaitingSuggestionMails } from '../../email-connector-user-setting/js/EmailConnectorUserSettingService.js';
 import { sharedMailboxOfFolder } from './EmailConnectorSharedMailboxes.js';
 
 /**
@@ -42,12 +42,15 @@ export function canCreateFilterFrom(email) {
 }
 
 // The mails with a suggestion of an assistant waiting for the user (EXO-90669), as the
-// server last answered: Message-ID -> true. Observable, so every list row follows a read
-// without being told; the platform's Vue is a global, and a context without it gets a
-// plain object.
+// server last answered: Message-ID -> how many wait on it. With them, the same mails as
+// the "Suggestions" view lists them (EXO-90851) -- one openable copy each, with its
+// count --, read together so the view and its count in the folder column never tell two
+// stories; and whether the last read failed. Observable, so every list row, the column
+// and the view follow a read without being told; the platform's Vue is a global, and a
+// context without it gets a plain object.
 const waitingSuggestions = typeof Vue !== 'undefined' && Vue.observable
-  ? Vue.observable({ mailHeaderIds: {} })
-  : { mailHeaderIds: {} };
+  ? Vue.observable({ mailHeaderIds: {}, mails: [], failed: false })
+  : { mailHeaderIds: {}, mails: [], failed: false };
 
 /** How long a read of the waiting suggestions is reused before the list reads them again, in ms. */
 const WAITING_SUGGESTIONS_TTL = 60 * 1000;
@@ -63,9 +66,10 @@ let waitingSuggestionsUnavailable = false;
 
 /**
  * Reads again which of the user's mails have a suggestion waiting for them, at most once
- * a minute unless forced: one request for the whole mailbox, whatever the rows. A read
- * that fails keeps what was known; one the server refuses (the feature off, no mailbox
- * connected, a shared mailbox) empties it and is not made again.
+ * a minute unless forced: two requests for the whole mailbox, whatever the rows -- the
+ * Message-IDs the rows are marked by, and the mails the "Suggestions" view lists
+ * (EXO-90851). A read that fails keeps what was known and says it failed; one the server
+ * refuses (the feature off, no mailbox connected) empties it and is not made again.
  *
  * @param {boolean} [force] - true to read even within the minute, after a decision
  * @returns {Promise<void>} resolved once read, or at once when not needed
@@ -83,14 +87,19 @@ export function refreshWaitingSuggestions(force) {
   // Started inside the chain, so that even a request that cannot be made at all ends in
   // the catch below rather than failing the list's rendering.
   waitingSuggestionsRead = Promise.resolve()
-    .then(() => getWaitingSuggestionMails())
-    .then(ids => {
+    .then(() => Promise.all([getWaitingSuggestionMails(), getWaitingSuggestionEmails()]))
+    .then(([ids, mails]) => {
       waitingSuggestions.mailHeaderIds = (ids || []).reduce((known, id) => ({ ...known, [id]: (known[id] || 0) + 1 }), {});
+      waitingSuggestions.mails = mails || [];
+      waitingSuggestions.failed = false;
     })
     .catch(error => {
       if (error?.status === 403 || error?.status === 404) {
         waitingSuggestionsUnavailable = true;
         waitingSuggestions.mailHeaderIds = {};
+        waitingSuggestions.mails = [];
+      } else {
+        waitingSuggestions.failed = true;
       }
     })
     .finally(() => {
@@ -101,14 +110,35 @@ export function refreshWaitingSuggestions(force) {
 }
 
 /**
- * How many suggestions wait for the user over their whole mailbox, as last read: the
- * count the folder column's "Suggestions" entry shows (EXO-90851). Reactive, as the
- * rows' markers are: it follows every read.
+ * The user's mails with a suggestion waiting, as the "Suggestions" view lists them
+ * (EXO-90851), as last read: newest first, one openable copy each, with how many
+ * suggestions wait on it. Reactive: it follows every read.
+ *
+ * @returns {Array<object>} the mails
+ */
+export function waitingSuggestionMails() {
+  return waitingSuggestions.mails;
+}
+
+/**
+ * How many suggestions wait for the user on the mails the "Suggestions" view lists, as
+ * last read: the count its entry in the folder column shows (EXO-90851). A suggestion on
+ * a mail the view cannot open -- deleted, marked as spam, out of the cache -- is not
+ * counted, so the count never promises what the view does not show. Reactive.
  *
  * @returns {number} the number of waiting suggestions, 0 when none
  */
 export function waitingSuggestionTotal() {
-  return Object.values(waitingSuggestions.mailHeaderIds).reduce((total, count) => total + count, 0);
+  return waitingSuggestions.mails.reduce((total, mail) => total + (mail.waitingCount || 0), 0);
+}
+
+/**
+ * Whether the last read of the waiting suggestions failed: the view then says so.
+ *
+ * @returns {boolean} true after a failed read, until one succeeds
+ */
+export function waitingSuggestionsReadFailed() {
+  return waitingSuggestions.failed;
 }
 
 // Whether the mailbox lists its "Suggestions" view (EXO-90851): a mail opened from it
