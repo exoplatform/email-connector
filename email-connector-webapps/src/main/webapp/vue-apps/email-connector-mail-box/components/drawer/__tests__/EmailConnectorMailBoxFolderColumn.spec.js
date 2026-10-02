@@ -25,6 +25,7 @@ import { mount, shallowMount } from '@vue/test-utils';
 import EmailConnectorMailBoxDrawer from '../EmailConnectorMailBoxDrawer.vue';
 import EmailConnectorMailBoxDrawerNavigation from '../EmailConnectorMailBoxDrawerNavigation.vue';
 import EmailConnectorMailBoxDrawerActionMenuItems from '../EmailConnectorMailBoxDrawerActionMenuItems.vue';
+import EmailConnectorMailBoxDrawerActionMenu from '../EmailConnectorMailBoxDrawerActionMenu.vue';
 import EmailConnectorMailBoxApp from '../../EmailConnectorMailBoxApp.vue';
 import EmailConnectorMailBoxDrawerNoEmail from '../EmailConnectorMailBoxDrawerNoEmail.vue';
 import EmailConnectorMailBoxDrawerContent from '../EmailConnectorMailBoxDrawerContent.vue';
@@ -128,9 +129,10 @@ function row(mailRemoteId, folder = 'INBOX', extra = {}) {
  * rows when listed.
  *
  * @param {Object} byFolder the rows of each folder, by folder key
+ * @param {Object} stubs further child components stubbed, by tag
  * @returns {Promise<Object>} {wrapper, service, teardown}
  */
-async function mountDrawer(byFolder) {
+async function mountDrawer(byFolder, stubs = {}) {
   const service = serviceStub({
     folderLabel: emailConnectorMailBoxService.folderLabel,
     folderIcon: emailConnectorMailBoxService.folderIcon,
@@ -149,7 +151,9 @@ async function mountDrawer(byFolder) {
       $emailConnectorCommonService: serviceStub({}),
       $vuetify: { breakpoint: {}, rtl: false },
     },
-    stubs: { 'exo-drawer': exoDrawerStub() },
+    // The mailbox drawer is a pinneable-drawer, which wraps exo-drawer: the same
+    // stand-in for both.
+    stubs: { 'exo-drawer': exoDrawerStub(), 'pinneable-drawer': exoDrawerStub(), ...stubs },
   });
   await flush();
   await wrapper.setData({
@@ -1218,6 +1222,34 @@ describe('going somewhere in full screen opens its first mail (EXO-90415)', () =
     jest.useRealTimers();
   });
 
+  it('reads them for a narrow drawer once its 3-dots menu opens on its categories, whose counts need them (EXO-90881)', async () => {
+    fixture = await mountDrawer({ INBOX: [row(1)] });
+    await flush();
+    fixture.wrapper.vm.$root.$emit(emailConnectorMailBoxService.CATEGORY_COUNTS_NEEDED_EVENT);
+    fixture.wrapper.vm.$root.$emit(emailConnectorMailBoxService.CATEGORY_COUNTS_NEEDED_EVENT);
+    await flush();
+    expect(fixture.service.getSubcategoryIds.mock.calls.map(([id]) => id)).toEqual([11, 12]);
+
+    // The menu as Vuetify's v-menu drives it: `input` on opening and on closing.
+    const menuStub = { name: 'v-menu', render: createElement => createElement('div') };
+    const mountMenu = propsData => shallowMount(EmailConnectorMailBoxDrawerActionMenu, {
+      propsData: { categories: CATEGORIES, ...propsData },
+      mocks: { $t: key => key },
+      stubs: { 'v-menu': menuStub },
+    });
+    const menu = mountMenu({});
+    const emit = jest.spyOn(menu.vm.$root, '$emit');
+    menu.find(menuStub).vm.$emit('input', false);
+    expect(emit).not.toHaveBeenCalled();
+    menu.find(menuStub).vm.$emit('input', true);
+    expect(emit).toHaveBeenCalledWith('email-category-counts-needed');
+    // In full screen the menu shows no category: the column asked already.
+    const wide = mountMenu({ hideViews: true });
+    const wideEmit = jest.spyOn(wide.vm.$root, '$emit');
+    wide.find(menuStub).vm.$emit('input', true);
+    expect(wideEmit).not.toHaveBeenCalled();
+  });
+
   it('opens the first mail of a category view the open mail is not in', async () => {
     fixture = await mountDrawer({ INBOX: [row(1), row(2, 'INBOX', { categoryIds: [12] })] });
     await expand(fixture);
@@ -1435,5 +1467,60 @@ describe('the folder column counts what Gmail and Outlook count (EXO-90415)', ()
     const dots = rail.findAll('v-badge').wrappers.map(badge => badge.attributes('value') === 'true');
     // Inbox and Important have unread mail; the drafts' total is no reason for a dot.
     expect(dots).toEqual([true, false, false, false, false, true, false]);
+  });
+
+  it('shows the column\'s counts in the narrow 3-dots menu, same numbers, same cap, same names (EXO-90881)', () => {
+    const translate = (key, params) => (params ? `${key}|${Object.values(params).join('|')}` : key);
+    const propsData = {
+      folderCounts: { INBOX: { count: 7, unread: true }, DRAFTS: { count: 120, unread: false }, JUNK: { count: 30, unread: true } },
+      categoryUnreadCounts: { 11: 2, 12: 0 },
+      categories: CATEGORIES,
+    };
+    const column = shallowMount(EmailConnectorMailBoxDrawerNavigation, {
+      propsData: { folders: FOLDERS, ...propsData },
+      mocks: { $t: translate, $emailConnectorMailBoxService: emailConnectorMailBoxService },
+      stubs: { 'v-tooltip': { template: '<div><slot name="activator" :on="{}" :attrs="{}" /></div>' } },
+    });
+    const menu = shallowMount(EmailConnectorMailBoxDrawerActionMenuItems, {
+      propsData: { availableFolders: FOLDERS, ...propsData },
+      mocks: { $t: translate, $emailConnectorMailBoxService: emailConnectorMailBoxService },
+    });
+
+    const columnCounts = column.findAll('v-list-item-action-text').wrappers.map(count => [count.text(), count.classes('font-weight-bold')]);
+    const menuCounts = menu.findAll('.folder-menu-count').wrappers.map(count => [count.text(), count.classes('font-weight-bold')]);
+    expect(menuCounts).toEqual([['7', true], ['99+', false], ['30', true], ['2', true]]);
+    expect(menuCounts).toEqual(columnCounts);
+    // The exact number, named as the column names it: the entry's name for a screen
+    // reader, the count's hover.
+    const menuDrafts = menu.findAll('v-list-item').at(2);
+    expect(menuDrafts.attributes('aria-label')).toBe(column.findAll('v-list-item').at(2).attributes('aria-label'));
+    expect(menuDrafts.attributes('aria-label'))
+      .toBe('emailConnector.mailBox.list.drawer.navigation.total|emailConnector.mailBox.list.drawer.folder.drafts|120');
+    expect(menu.findAll('.folder-menu-count').at(1).attributes('title')).toBe(menuDrafts.attributes('aria-label'));
+    // Sent and the user's own folder count nothing, in the menu as in the column.
+    expect(menu.vm.visibleFolders.map(folder => [folder.key, folder.count]))
+      .toEqual(column.vm.folderEntries.map(entry => [entry.folderKey, entry.count]));
+  });
+
+  it('hands the narrow menu the very counts it hands the column (EXO-90881)', async () => {
+    const actionsStub = {
+      name: 'email-connector-mail-box-drawer-actions',
+      props: { folderCounts: { type: Object, default: null }, categoryUnreadCounts: { type: Object, default: null } },
+      render: createElement => createElement('div'),
+    };
+    fixture = await mountDrawer({ INBOX: [row(1, 'INBOX', { read: false, categoryIds: [11] })] },
+      { 'email-connector-mail-box-drawer-actions': actionsStub });
+    await fixture.wrapper.setData({
+      emailBox: { emails: [row(1, 'INBOX', { read: false, categoryIds: [11] })], folders: countedFolders(), emailSyncStatus: 'SUCCESS' },
+    });
+
+    const narrow = fixture.wrapper.find('[data-slot="titleIcons"]').findComponent(actionsStub);
+    expect(narrow.props('folderCounts')).toEqual({
+      INBOX: { count: 5, unread: true },
+      DRAFTS: { count: 3, unread: false },
+      JUNK: { count: 4, unread: true },
+    });
+    expect(narrow.props('folderCounts')).toBe(fixture.wrapper.vm.folderCounts);
+    expect(narrow.props('categoryUnreadCounts')).toBe(fixture.wrapper.vm.categoryUnreadCounts);
   });
 });
