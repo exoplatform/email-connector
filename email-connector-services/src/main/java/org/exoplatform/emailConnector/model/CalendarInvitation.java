@@ -138,8 +138,9 @@ public class CalendarInvitation {
   /**
    * Whether "Add to my calendar" may be offered (EXO-90848): an add-on holds a calendar
    * for the user, the mail is in their own mailbox, the object is an invitation, a
-   * published event or one naming no method, the event is not cancelled, and the user
-   * did not decline it.
+   * published event or one naming no method, the event is not cancelled, not one of this
+   * deployment's own Agenda events (it lives in Agenda already), and the user did not
+   * decline it.
    */
   private boolean                        landable;
 
