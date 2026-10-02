@@ -16,6 +16,12 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -25,11 +31,16 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.emailConnector.model.SenderLogo;
 import org.exoplatform.emailConnector.storage.SenderLogoStorage;
+import org.exoplatform.emailConnector.utils.EmailContactUtils;
 import org.exoplatform.emailConnector.utils.SenderLogoUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -55,6 +66,13 @@ import jakarta.annotation.PreDestroy;
  * starts a fetch; the logo endpoint serves the cache and never fetches, so no caller
  * can make the server reach a domain of its choosing.
  * <p>
+ * <b>A logo URL is its reader's.</b> It carries a token binding the domain to the user
+ * it was offered to (an HMAC under a key drawn when the server starts), and the
+ * endpoint serves it to that user only: whether this server holds a domain's logo --
+ * that is, whether someone here read genuine mail from it this week -- is never
+ * answered to anyone else. A server restart, or another node of a cluster, refuses an
+ * older URL, and the avatar falls back to its other picture until the next read.
+ * <p>
  * The logo is fetched by the server, never by the browser, so a brand cannot learn that
  * its mail was opened, nor by whom. An administrator turns the whole feature off
  * ({@code EmailConnectorService#isSenderLogosEnabled}): nothing is fetched, nothing is
@@ -65,6 +83,9 @@ public class SenderLogoService {
 
   /** Where a domain's logo is served, the domain appended. */
   public static final String LOGO_PATH      = "/email-connector/rest/email-box/sender-logo/";
+
+  /** The query parameter carrying a logo URL's token. */
+  public static final String TOKEN_PARAMETER = "t";
 
   /** Message code answered as a 400 for a logo asked for something that is not a domain name. */
   public static final String INVALID_DOMAIN = "emailConnector.senderLogo.invalidDomain";
@@ -80,6 +101,11 @@ public class SenderLogoService {
 
   private static final Log   LOG            = ExoLogger.getLogger(SenderLogoService.class);
 
+  private static final String TOKEN_ALGORITHM = "HmacSHA256";
+
+  /** How many bytes of the HMAC a token keeps: 128 bits. */
+  private static final int    TOKEN_BYTES     = 16;
+
   @Autowired
   private EmailConnectorService emailConnectorService;
 
@@ -89,6 +115,8 @@ public class SenderLogoService {
   private final Set<String>     warming       = ConcurrentHashMap.newKeySet();
 
   private final ExecutorService warmPool      = warmPool();
+
+  private final byte[]          tokenKey      = newTokenKey();
 
   private Executor              warmExecutor  = warmPool;
 
@@ -100,23 +128,25 @@ public class SenderLogoService {
    * and the domain's logo is in the cache. A domain not resolved yet, or whose "no
    * logo" is older than a day, is resolved in the background and gets null this time;
    * null, too, for a domain known to have no logo, an address without a valid domain,
-   * no DMARC pass, or the feature off. Nothing is fetched on the caller's thread.
+   * no DMARC pass, a free mail provider's domain, or the feature off. Nothing is
+   * fetched on the caller's thread.
    *
    * @param address the sender's address
    * @param dmarcPassed whether the message passed DMARC for the address's domain
+   * @param username the user the URL is offered to, the only one it is served to
    * @return the logo's URL, or null for the initials
    */
-  public String logoUrlFor(String address, boolean dmarcPassed) {
-    if (!dmarcPassed) {
+  public String logoUrlFor(String address, boolean dmarcPassed, String username) {
+    if (!dmarcPassed || StringUtils.isBlank(username)) {
       return null;
     }
-    String domain = SenderLogoUtils.domainOfAddress(address);
+    String domain = brandDomainOf(address);
     if (domain == null || !emailConnectorService.isSenderLogosEnabled()) {
       return null;
     }
     SenderLogo known = senderLogoStorage.peek(domain);
     if (known != null && known.isPresent()) {
-      return LOGO_PATH + domain;
+      return LOGO_PATH + domain + "?" + TOKEN_PARAMETER + "=" + token(domain, username);
     }
     if (known == null || isStale(known)) {
       warm(domain, known != null);
@@ -125,18 +155,43 @@ public class SenderLogoService {
   }
 
   /**
-   * A domain's logo, from the cache only: the endpoint never fetches.
+   * Whether an address could be offered a logo at all -- the feature on, a valid
+   * domain, not one known to have none -- for a caller to skip the costlier checks of
+   * {@link #logoUrlFor} when it could not.
+   *
+   * @param address the sender's address
+   * @return false when no logo can be offered for it now
+   */
+  public boolean mayOffer(String address) {
+    String domain = brandDomainOf(address);
+    if (domain == null || !emailConnectorService.isSenderLogosEnabled()) {
+      return false;
+    }
+    SenderLogo known = senderLogoStorage.peek(domain);
+    return known == null || known.isPresent() || isStale(known);
+  }
+
+  /**
+   * A domain's logo, from the cache only -- the endpoint never fetches -- for the user
+   * its URL was offered to.
    *
    * @param domain the domain, as the logo URL names it
-   * @return the logo, or null when it is not cached, the domain has none, or the
-   *         feature is off
+   * @param token the URL's token
+   * @param username the user asking
+   * @return the logo, or null when the token is not this user's for this domain, it is
+   *         not cached, the domain has none, or the feature is off
    * @throws IllegalArgumentException {@link #INVALID_DOMAIN} when it is not a domain
    *           name a mail could come from
    */
-  public SenderLogo getLogo(String domain) {
+  public SenderLogo getLogo(String domain, String token, String username) {
     String normalised = SenderLogoUtils.normaliseDomain(domain);
     if (normalised == null) {
       throw new IllegalArgumentException(INVALID_DOMAIN);
+    }
+    if (StringUtils.isBlank(token) || StringUtils.isBlank(username)
+        || !MessageDigest.isEqual(token(normalised, username).getBytes(StandardCharsets.US_ASCII),
+                                  token.getBytes(StandardCharsets.US_ASCII))) {
+      return null;
     }
     if (!emailConnectorService.isSenderLogosEnabled()) {
       return null;
@@ -176,6 +231,9 @@ public class SenderLogoService {
     try {
       warmExecutor.execute(() -> {
         try {
+          if (!emailConnectorService.isSenderLogosEnabled()) {
+            return;
+          }
           if (evictFirst) {
             senderLogoStorage.evict(domain);
           }
@@ -189,6 +247,48 @@ public class SenderLogoService {
     } catch (RejectedExecutionException e) {
       warming.remove(domain);
     }
+  }
+
+  /**
+   * The domain whose brand an address's mail may show: a valid domain that is not a
+   * free mail provider's -- a person writing from gmail.com is not Google.
+   *
+   * @param address the sender's address
+   * @return the normalised domain, or null when the address has no brand to show
+   */
+  private static String brandDomainOf(String address) {
+    String domain = SenderLogoUtils.domainOfAddress(address);
+    return domain == null || EmailContactUtils.isFreemailDomain(domain) ? null : domain;
+  }
+
+  /**
+   * The token binding a domain's logo URL to a user: the first {@link #TOKEN_BYTES}
+   * bytes of an HMAC of both, URL-safe.
+   *
+   * @param domain the normalised domain
+   * @param username the user
+   * @return the token
+   */
+  String token(String domain, String username) {
+    try {
+      Mac mac = Mac.getInstance(TOKEN_ALGORITHM);
+      mac.init(new SecretKeySpec(tokenKey, TOKEN_ALGORITHM));
+      byte[] digest = mac.doFinal((domain + "\n" + username).getBytes(StandardCharsets.UTF_8));
+      return Base64.getUrlEncoder().withoutPadding().encodeToString(Arrays.copyOf(digest, TOKEN_BYTES));
+    } catch (GeneralSecurityException e) {
+      throw new IllegalStateException("No " + TOKEN_ALGORITHM + " on this JVM", e);
+    }
+  }
+
+  /**
+   * A key for the URL tokens, drawn once per server start.
+   *
+   * @return 32 random bytes
+   */
+  private static byte[] newTokenKey() {
+    byte[] key = new byte[32];
+    new SecureRandom().nextBytes(key);
+    return key;
   }
 
   /**
