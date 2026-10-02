@@ -443,6 +443,61 @@ export function isScheduledView(folder) {
   return folder === SCHEDULED_VIEW;
 }
 
+/**
+ * The key of the "Suggestions" view (EXO-90851): the user's own mails with a suggestion
+ * of an assistant waiting for them. Like the Scheduled view, no folder of the mail
+ * server: the drawer adds it to the column after the Scheduled view, only when a
+ * suggestion waits, and its mails are listed by their own endpoint.
+ */
+export const SUGGESTIONS_VIEW = 'SUGGESTIONS';
+
+/**
+ * Whether a folder key is the "Suggestions" view.
+ *
+ * @param {String} folder the folder key
+ * @returns {Boolean} true for the view
+ */
+export function isSuggestionsView(folder) {
+  return folder === SUGGESTIONS_VIEW;
+}
+
+/**
+ * Whether a folder key is one of the mailbox's views -- Scheduled, Suggestions --, listed
+ * by an endpoint of its own rather than by the folder listing: no chips, search,
+ * selection or drag there.
+ *
+ * @param {String} folder the folder key
+ * @returns {Boolean} true for a view
+ */
+export function isMailboxView(folder) {
+  return isScheduledView(folder) || isSuggestionsView(folder);
+}
+
+// The folders the Suggestions view is listed after, in the server's order
+// (EmailBoxService#buildFolderViews): it comes right after the Scheduled view, or where
+// that view would be.
+const BEFORE_SUGGESTIONS_VIEW = ['INBOX', 'SENT', 'ARCHIVE', 'DRAFTS', SCHEDULED_VIEW];
+
+/**
+ * The user's own folders with the Suggestions view among them (EXO-90851): right after the
+ * Scheduled view, counting the suggestions waiting, while one waits -- or while the view
+ * is listed, so the column keeps the entry the user stands on once the last one is
+ * decided. The server's list is never changed.
+ *
+ * @param {Array} folders the folders as the server lists them
+ * @param {Number} waiting how many suggestions wait for the user
+ * @param {Boolean} listed whether the view is listed
+ * @returns {Array} the folders, the view added when it shows
+ */
+export function withSuggestionsView(folders, waiting, listed) {
+  if (!(waiting > 0) && !listed) {
+    return folders;
+  }
+  const view = { key: SUGGESTIONS_VIEW, type: 'BUILT_IN', syncEnabled: true, count: waiting > 0 ? waiting : 0 };
+  const index = folders.reduce((last, folder, position) => (BEFORE_SUGGESTIONS_VIEW.includes(folder.key) ? position : last), -1);
+  return [...folders.slice(0, index + 1), view, ...folders.slice(index + 1)];
+}
+
 // The icon of each built-in folder; a folder of the user's own gets the plain folder.
 // Read by the 3-dots menu and the full-screen folder column alike (folderIcon), so the
 // two can never show one folder under two icons (EXO-90415).
@@ -454,6 +509,7 @@ const BUILT_IN_FOLDER_ICONS = {
   JUNK: 'fa-ban',
   TRASH: 'fa-trash',
   SCHEDULED: 'fa-clock',
+  SUGGESTIONS: 'fa-magic',
 };
 
 /**
