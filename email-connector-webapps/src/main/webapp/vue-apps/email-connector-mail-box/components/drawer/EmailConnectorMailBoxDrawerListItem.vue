@@ -88,6 +88,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         @mouseleave="avatarHover = false"
         @focusin="avatarHover = !isMobile"
         @focusout="avatarHover = false"
+        @keydown="onAvatarKeydown"
         @click="onAvatarClick">
         <v-checkbox
           v-if="showCheckbox"
@@ -983,6 +984,20 @@ export default {
     onAvatarClick() {
       if (!this.email.refreshPending) {
         this.emitSelect(!this.selected);
+      }
+    },
+    /**
+     * The avatar's keyboard counterpart of its tap: Enter or Space pressed on the avatar
+     * box itself ticks or unticks the row, as a tap does. A key pressed in the checkbox
+     * inside is the checkbox's own, and is left to it.
+     *
+     * @param {KeyboardEvent} event the keydown event
+     * @returns {void}
+     */
+    onAvatarKeydown(event) {
+      if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+        event.preventDefault();
+        this.onAvatarClick();
       }
     },
     /**
