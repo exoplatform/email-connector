@@ -76,7 +76,9 @@ import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.FolderRole;
+import org.exoplatform.emailConnector.model.HeldInvitation;
 import org.exoplatform.emailConnector.model.InvitationAnswer;
+import org.exoplatform.emailConnector.model.InvitationProbe;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.SendIdentity;
 import org.exoplatform.emailConnector.model.SendMode;
@@ -573,6 +575,143 @@ class CalendarInvitationServiceTest {
     invitation = service.getInvitation(EMAIL_ID, USER);
     assertFalse(invitation.isLandable(), "the owner's event");
     assertFalse(invitation.isRemovable());
+  }
+
+  /**
+   * An invitation the user's calendar holds already -- answered on their phone -- is
+   * shown as held, with the answer the calendar holds as the current one, its link,
+   * and nothing to add (EXO-90873). The add-on is asked about the user, their mailbox
+   * address and the event the mail is about.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anInvitationTheCalendarHoldsIsShownAsHeldWithItsAnswer() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    ArgumentCaptor<InvitationProbe> probe = ArgumentCaptor.forClass(InvitationProbe.class);
+    when(invitationLandingService.held(probe.capture())).thenReturn(new HeldInvitation(77L,
+                                                                                       "/portal/dw/agenda?eventId=77",
+                                                                                       InvitationAnswer.TENTATIVE,
+                                                                                       2));
+
+    CalendarInvitation invitation = service.getInvitation(EMAIL_ID, USER);
+
+    assertEquals(new InvitationProbe(USER, ME, "weekly-sync@google.com", null, "olivia@partner.example"), probe.getValue());
+    assertTrue(invitation.isHeld());
+    assertEquals(InvitationAnswer.TENTATIVE, invitation.getHeldResponse());
+    assertEquals("/portal/dw/agenda?eventId=77", invitation.getHeldLink());
+    assertFalse(invitation.isNewerRevision());
+    assertEquals(InvitationAnswer.TENTATIVE, invitation.getAnswer(), "the calendar's answer is the current one");
+    assertTrue(invitation.isAnswerable(), "the answer may still be changed");
+    assertFalse(invitation.isLandable(), "nothing to add");
+
+    // An answer remembered from here is older than what the calendar says now.
+    String key = CalendarInvitationService.answerKey(ME, "weekly-sync@google.com", null);
+    when(settingService.get(Context.USER.id(USER), UserEmailSettingService.EMAIL_CONNECTOR_SCOPE, key))
+                                                                                                 .thenAnswer(call -> SettingValue.create("{\"answer\":\"ACCEPTED\",\"sequence\":2,\"answeredAt\":1}"));
+    assertEquals(InvitationAnswer.TENTATIVE, service.getInvitation(EMAIL_ID, USER).getAnswer());
+
+    // A copy that says no answer leaves the one known so far, and still nothing to add.
+    when(invitationLandingService.held(any())).thenReturn(new HeldInvitation(77L, null, null, 5));
+    invitation = service.getInvitation(EMAIL_ID, USER);
+    assertTrue(invitation.isHeld());
+    assertEquals(InvitationAnswer.ACCEPTED, invitation.getAnswer());
+    assertFalse(invitation.isNewerRevision(), "the mail is older than the held copy");
+    assertFalse(invitation.isLandable());
+
+    // Nothing held, or nothing said in time: the card as it was.
+    when(invitationLandingService.held(any())).thenReturn(null);
+    invitation = service.getInvitation(EMAIL_ID, USER);
+    assertFalse(invitation.isHeld());
+    assertTrue(invitation.isLandable());
+  }
+
+  /**
+   * The organiser's newer revision of an event the calendar holds is offered as an
+   * update: the held answer is for an older revision, so it is not the current one.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aNewerRevisionOfAHeldEventIsOfferedAsAnUpdate() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    when(invitationLandingService.held(any())).thenReturn(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.DECLINED, 1));
+
+    CalendarInvitation invitation = service.getInvitation(EMAIL_ID, USER);
+
+    assertTrue(invitation.isHeld());
+    assertTrue(invitation.isNewerRevision());
+    assertEquals(InvitationAnswer.DECLINED, invitation.getHeldResponse());
+    assertNull(invitation.getAnswer(), "an answer to an older revision is not this one's");
+    assertTrue(invitation.isLandable(), "the update is offered");
+
+    ArgumentCaptor<InvitationLanding> landing = ArgumentCaptor.forClass(InvitationLanding.class);
+    givenTheLanding(landing, CalendarLanding.LANDED, "/portal/dw/agenda?eventId=77");
+    assertEquals(CalendarLanding.LANDED, service.addToCalendar(EMAIL_ID, USER).getLanding());
+    assertEquals(2, landing.getValue().sequence());
+
+    // The same revision, declined: held, declined, nothing to add.
+    when(invitationLandingService.held(any())).thenReturn(new HeldInvitation(77L, null, InvitationAnswer.DECLINED, 2));
+    invitation = service.getInvitation(EMAIL_ID, USER);
+    assertEquals(InvitationAnswer.DECLINED, invitation.getAnswer());
+    assertFalse(invitation.isLandable());
+  }
+
+  /**
+   * "Add to my calendar" clicked on a card shown before the event was answered
+   * elsewhere: the calendar holds it now, so nothing is handed over and the card is
+   * told it is already there, with its link.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void addingAnEventTheCalendarHoldsTellsItIsThere() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    when(invitationLandingService.held(any())).thenReturn(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 2));
+
+    CalendarInvitation invitation = service.addToCalendar(EMAIL_ID, USER);
+
+    assertEquals(CalendarLanding.ALREADY_HELD, invitation.getLanding());
+    assertEquals("/portal/dw/agenda?eventId=77", invitation.getLandingLink());
+    verify(invitationLandingService, never()).land(any(), any());
+    verifyNothingSent();
+  }
+
+  /**
+   * The calendar is asked only about what could be added to it: never for a shared
+   * mailbox's message, a cancellation, somebody's answer, one of this deployment's own
+   * meetings, without a calendar -- nor on an answer or a removal, whose landing says
+   * what the calendar holds afterwards.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theCalendarIsAskedOnlyAboutWhatCouldBeAdded() throws Exception {
+    service.getInvitation(EMAIL_ID, USER);
+    verify(invitationLandingService, never()).held(any());
+
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    givenTheCalendarPart("allday-cancel.ics");
+    assertTrue(service.getInvitation(EMAIL_ID, USER).isRemovable());
+    service.removeFromCalendar(EMAIL_ID, USER);
+    givenTheCalendarPartText(fixtureText("google-weekly-request.ics").replace("METHOD:REQUEST", "METHOD:REPLY"));
+    service.getInvitation(EMAIL_ID, USER);
+    try (MockedStatic<CommonsUtils> portal = mockStatic(CommonsUtils.class)) {
+      portal.when(CommonsUtils::getCurrentDomain).thenReturn("https://exo.example.test");
+      givenTheCalendarPart("agenda-own-request.ics");
+      assertTrue(service.getInvitation(EMAIL_ID, USER).isExoMeeting());
+    }
+    givenTheCalendarPart("google-weekly-request.ics");
+    captureTransmissions();
+    service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED);
+    verify(invitationLandingService, never()).held(any());
+
+    service.getInvitation(EMAIL_ID, USER);
+    verify(invitationLandingService).held(any());
+
+    givenASharedMailbox();
+    assertFalse(service.getInvitation(EMAIL_ID, USER).isHeld());
+    verify(invitationLandingService).held(any());
   }
 
   /**
