@@ -220,6 +220,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <!-- The Suggestions view (EXO-90851): its own list, no chips. -->
           <email-connector-mail-box-suggestions-list
             v-else-if="suggestionsView"
+            :emails="suggestionMails"
             :select-mode="selectMode"
             :selected-emails="selectedEmails"
             :drag-source="emailDrag"
@@ -356,6 +357,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           @loading="scheduledLoading = $event" />
         <email-connector-mail-box-suggestions-list
           v-else-if="suggestionsView"
+          :emails="suggestionMails"
           :select-mode="selectMode"
           :selected-emails="selectedEmails"
           @loading="suggestionsLoading = $event" />
@@ -1416,7 +1418,17 @@ export default {
       if (this.searchActive) {
         return this.mergedSearchResults;
       }
-      return this.suggestionsView ? waitingSuggestionMails() : this.emails;
+      return this.suggestionsView ? this.suggestionMails : this.emails;
+    },
+    /**
+     * The Suggestions view's mails (EXO-90851), as last read, less the ones an action
+     * here took out of their folder before the server says so (isOptimisticallyRemoved)
+     * -- as the folder's list and the search's hits leave theirs out (EXO-90871).
+     *
+     * @returns {Array} the mails, newest first
+     */
+    suggestionMails() {
+      return waitingSuggestionMails().filter(mail => !this.isOptimisticallyRemoved(mail));
     },
     /**
      * Whether the drawer is open, for listNavigationMixin: the arrow keys are listened
@@ -2502,22 +2514,24 @@ export default {
           });
       this.byOwnFolder(emailIdsToUpdate, folder).forEach(([ownFolder, ids]) => pushReadStatus(ids, ownFolder));
       if (unlisted.length) {
-        this.searchHitsIn(folder, new Set(unlisted)).forEach(result => this.$set(result, 'read', read));
+        this.hitsIn(folder, new Set(unlisted)).forEach(result => this.$set(result, 'read', read));
         pushReadStatus(unlisted, folder);
       }
     },
     /**
-     * The search's hits among the given messages of one folder, as the server and eXo's
-     * copy answered them (EXO-90838) -- the rows a star or a read status set on a hit is
-     * stamped on, so the hit shows it before the next search answer. The instant matches
-     * are not among them: they are read off the listed rows, stamped on their own.
+     * The rows of the lists of hits among the given messages of one folder: the search's
+     * hits as the server and eXo's copy answered them (EXO-90838), and the Suggestions
+     * view's mails as last read (EXO-90851) -- the rows a star or a read status set on a
+     * hit is stamped on, so the hit shows it before the next answer (EXO-90871). The
+     * instant matches are not among them: they are read off the listed rows, stamped on
+     * their own.
      *
      * @param {String} folder the folder the UIDs are numbered in
      * @param {Set<Number>} ids the UIDs
      * @returns {Array} the hits
      */
-    searchHitsIn(folder, ids) {
-      return [...this.searchServerResults, ...this.searchLocalResults]
+    hitsIn(folder, ids) {
+      return [...this.searchServerResults, ...this.searchLocalResults, ...waitingSuggestionMails()]
         .filter(result => (result.folder || 'INBOX') === folder && ids.has(result.mailRemoteId));
     },
     /**
@@ -2835,9 +2849,10 @@ export default {
       });
       // A server hit is a snapshot of the FLAGS as they were when the search ran, so
       // the toggled rows still have to be stamped even though hits now carry the
-      // flag -- and so is a hit of eXo's copy (EXO-90838), whose star the row offers
-      // too (EXO-90871). That folder's hits only: UIDs are per-folder.
-      this.searchHitsIn(folder, ids).forEach(result => this.$set(result, 'starred', favorite));
+      // flag -- and so are a hit of eXo's copy (EXO-90838) and a mail of the Suggestions
+      // view, whose star the row offers too (EXO-90871). That folder's hits only: UIDs
+      // are per-folder.
+      this.hitsIn(folder, ids).forEach(result => this.$set(result, 'starred', favorite));
       // And remember it, so a search answer still in flight — which left before the
       // push and therefore reports the old flag — cannot undo the stamp when it lands.
       // While the push is unacknowledged the entry is immune from pruning whatever
@@ -2998,7 +3013,21 @@ export default {
               this.forgetRefreshPendingRows(filed[index]);
             }
             this.alertOnActionFailures(failures, action);
+            this.rereadSuggestionsIfListed();
           }));
+    },
+    /**
+     * Reads the Suggestions view's mails again once an action moved a mail out of its
+     * folder, while the view is listed (EXO-90871): the row an action hid comes back
+     * under its new folder and UID when its suggestion still waits, and leaves the count
+     * when it does not -- as the folder's list is re-read after its own actions.
+     *
+     * @returns {void}
+     */
+    rereadSuggestionsIfListed() {
+      if (this.suggestionsView) {
+        refreshWaitingSuggestions(true);
+      }
     },
     /**
      * Puts trashed messages back where they came from — the user's own to Sent, the
@@ -3157,7 +3186,8 @@ export default {
       groups.forEach(([folder, ids]) =>
         this.$emailConnectorMailBoxService.archiveEmails(ids, folder)
           .then(archiveResult => this.alertOnActionFailures(archiveResult.failedArchives ?? 0, 'archive'))
-          .catch(() => this.alertOnActionFailures(ids.length, 'archive')));
+          .catch(() => this.alertOnActionFailures(ids.length, 'archive'))
+          .finally(() => this.rereadSuggestionsIfListed()));
     },
     /**
      * Moves messages into one of the user's own folders, one request per folder they
@@ -3223,6 +3253,7 @@ export default {
             return failures;
           }));
       return Promise.all(requests).then(failures => {
+        this.rereadSuggestionsIfListed();
         if (failures.every(count => count === 0)) {
           this.offerUndoMove(undoGroups, target, emailIdsToMove.length);
         }
