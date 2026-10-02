@@ -177,9 +177,11 @@ public final class SvgLogoSanitizer {
                                                             "media");
 
   /**
-   * How deep elements may nest: a logo is a few groups deep. A deeper document is
-   * refused whole, which keeps the cleaning and the serializer's recursion bounded --
-   * a few thousand nested groups, well inside the size limit, would overflow the stack.
+   * How deep kept elements may nest: a logo is a few groups deep. A document whose kept
+   * elements nest deeper is refused whole, which keeps the cleaning and the
+   * serializer's recursion bounded -- a few thousand nested groups, well inside the size
+   * limit, would overflow the stack. A dropped element goes with its whole subtree,
+   * which is never walked.
    */
   static final int                 MAX_DEPTH       = 64;
 
