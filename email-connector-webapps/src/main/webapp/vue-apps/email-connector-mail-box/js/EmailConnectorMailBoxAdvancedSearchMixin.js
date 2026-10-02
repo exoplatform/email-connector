@@ -145,7 +145,8 @@ export default {
       return {
         // No Important chip while a search shows, nor while its field is open: a category
         // view does not narrow a search, and the row keeps its width as the text comes.
-        importantCategory: this.searchActive || this.searchFieldOpen ? null : this.importantCategory,
+        // Nor on the Suggestions view, whose row offers what a search's does (EXO-90882).
+        importantCategory: this.searchActive || this.searchFieldOpen || this.suggestionsView ? null : this.importantCategory,
         categoryViewId: this.categoryViewId,
         favoriteOnly: this.favoriteOnly,
         unreadOnly: this.unreadOnly,
