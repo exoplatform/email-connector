@@ -782,6 +782,41 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<String> folders);
 
   /**
+   * {@link #summarizeThreadsByUserId} over some conversations only: what a list of
+   * search hits or of the "Suggestions" view counts its mails' conversations by
+   * (EXO-90882), so a search does not aggregate the whole mailbox to read a page of
+   * them. Never called with an empty list of thread ids -- an empty {@code IN} is not
+   * valid SQL everywhere.
+   *
+   * @param userId the mailbox owner
+   * @param threadIds the conversations, not empty
+   * @param excludedFolders the folders to leave out, the hidden ones at least
+   * @return rows of {@code [threadId, messageCount, draftCount]}, one per conversation
+   *         found
+   */
+  @Query("SELECT email.threadId, COUNT(DISTINCT COALESCE(email.mailHeaderId, email.draftLocalId)), SUM(CASE WHEN email.draftLocalId IS NULL THEN 0 ELSE 1 END) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IN :threadIds AND email.folder NOT IN :excludedFolders GROUP BY email.threadId")
+  List<Object[]> summarizeThreadsByUserIdAndThreadIds(@Param("userId")
+  String userId, @Param("threadIds")
+  Collection<String> threadIds, @Param("excludedFolders")
+  Collection<String> excludedFolders);
+
+  /**
+   * {@link #summarizeThreadsByUserIdInFolders} over some conversations only, for the
+   * same lists (EXO-90882). Never called with an empty list.
+   *
+   * @param userId the mirror's owner -- for a shared mailbox, the delegate
+   * @param threadIds the conversations, not empty
+   * @param folders the folders to count, the shared mailbox's {@code CUSTOM:<id>} keys
+   * @return rows of {@code [threadId, messageCount, draftCount]}, one per conversation
+   *         found
+   */
+  @Query("SELECT email.threadId, COUNT(DISTINCT COALESCE(email.mailHeaderId, email.draftLocalId)), SUM(CASE WHEN email.draftLocalId IS NULL THEN 0 ELSE 1 END) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IN :threadIds AND email.folder IN :folders GROUP BY email.threadId")
+  List<Object[]> summarizeThreadsByUserIdAndThreadIdsInFolders(@Param("userId")
+  String userId, @Param("threadIds")
+  Collection<String> threadIds, @Param("folders")
+  Collection<String> folders);
+
+  /**
    * Who wrote the messages of each conversation that carries an unsent draft, with
    * the date each of them first appears in it.
    * <p>
