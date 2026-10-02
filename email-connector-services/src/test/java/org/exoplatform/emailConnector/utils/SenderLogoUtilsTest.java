@@ -59,14 +59,22 @@ class SenderLogoUtilsTest {
   }
 
   /**
-   * A TXT record answered as several quoted strings is one value, joined without
-   * separator, escapes read; an unquoted one is kept.
+   * A TXT record answered in the JDK's form -- character-strings joined by single
+   * spaces, each bare, or quoted when it holds a space, a quote or a backslash, with
+   * its escapes -- is one value, the pieces joined without separator.
    */
   @Test
   void aTxtRecordIsOneValue() {
-    assertEquals("v=BIMI1; l=https://brand.example/logo.svg", SenderLogoUtils.txtValue("\"v=BIMI1; l=https://brand\" \".example/logo.svg\""));
-    assertEquals("a\"b", SenderLogoUtils.txtValue("\"a\\\"b\""));
-    assertEquals("v=DMARC1; p=reject", SenderLogoUtils.txtValue(" v=DMARC1; p=reject "));
+    assertEquals("v=BIMI1; l=https://cdn.x.example/logos/brand-logo.svg",
+                 SenderLogoUtils.txtValue("\"v=BIMI1; l=https://cdn.x.example/logos/brand-\" logo.svg"), "quoted, then bare");
+    assertEquals("v=DMARC1;p=reject;rua=mailto:d@brand.example",
+                 SenderLogoUtils.txtValue("v=DMARC1;p=re ject;rua=mailto:d@brand.example"), "two bare pieces");
+    assertEquals("v=DMARC1;p=reject; rua=mailto:d@brand.example",
+                 SenderLogoUtils.txtValue("v=DMARC1;p=reject \"; rua=mailto:d@brand.example\""), "bare, then quoted");
+    assertEquals("a\"b\\c d", SenderLogoUtils.txtValue("\"a\\\"b\\\\c d\""), "escapes");
+    assertEquals("A", SenderLogoUtils.txtValue("\"\\065\""), "a decimal escape");
+    assertEquals("v=DMARC1; p=reject", SenderLogoUtils.txtValue("\"v=DMARC1; p=reject\""));
+    assertEquals("ab", SenderLogoUtils.txtValue("a \"\" b"), "an empty string");
     assertEquals("", SenderLogoUtils.txtValue(null));
   }
 
