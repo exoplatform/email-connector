@@ -125,17 +125,28 @@ class EmailBoxReadReceiptStorageTest {
 
   /**
    * EXO-90893: the sync's DMARC pass is stored with the row and read back on the
-   * message the reader opens; a message without it reads back false.
+   * message the reader opens, and the row's sender is vouched for only when it passed
+   * and failed nothing; a message without it reads back false.
    */
   @Test
   void theDmarcPassIsStoredAndReadBack() {
     Email passing = incoming("<brand@partner.example>", MailFolder.INBOX, 13L);
     passing.getContent().setDmarcPassed(true);
     Email created = emailBoxStorage.createEmail(passing);
-    assertTrue(read(created.getId(), USER, "alice@corp.example").getContent().isDmarcPassed());
+    Email readPassing = read(created.getId(), USER, "alice@corp.example");
+    assertTrue(readPassing.getContent().isDmarcPassed());
+    assertTrue(readPassing.getSender().isDomainVerified(), "the list may show its address's logo on this row");
 
     Email unknown = emailBoxStorage.createEmail(incoming("<plain@partner.example>", MailFolder.INBOX, 14L));
-    assertFalse(read(unknown.getId(), USER, "alice@corp.example").getContent().isDmarcPassed());
+    Email readUnknown = read(unknown.getId(), USER, "alice@corp.example");
+    assertFalse(readUnknown.getContent().isDmarcPassed());
+    assertFalse(readUnknown.getSender().isDomainVerified());
+
+    Email mixed = incoming("<mixed@partner.example>", MailFolder.INBOX, 15L);
+    mixed.getContent().setDmarcPassed(true);
+    mixed.getContent().setAuthFailure(EmailSecurityUtils.AUTH_SPF);
+    Email readMixed = read(emailBoxStorage.createEmail(mixed).getId(), USER, "alice@corp.example");
+    assertFalse(readMixed.getSender().isDomainVerified(), "a failed sender check vouches for nothing");
   }
 
   /**
