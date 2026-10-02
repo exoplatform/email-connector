@@ -16,7 +16,11 @@
  */
 package org.exoplatform.emailConnector.utils;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.net.IDN;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -27,11 +31,14 @@ import java.util.regex.Pattern;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hc.client5.http.psl.PublicSuffixMatcherLoader;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
 
 /**
  * The parts of the sender brand logo (EXO-90893) that read text and bytes only: which
- * domain a logo is looked up for, what the domain's BIMI and DMARC records say, and
- * what kind of image a fetched body really is.
+ * domain a logo is looked up for, what the domain's BIMI and DMARC records say, what
+ * kind of image a fetched body really is, and which icon a home page declares.
  */
 public final class SenderLogoUtils {
 
@@ -56,6 +63,19 @@ public final class SenderLogoUtils {
    * HTML error page answered with a 200, a script, a type left to the browser's
    * guessing -- is refused before its bytes are looked at.
    */
+  /** The declared types of a home page read for the icon it declares. */
+  private static final Set<String> PAGE_TYPES          = Set.of("text/html", "application/xhtml+xml");
+
+  /**
+   * The {@code rel} tokens that declare a site's icon: {@code icon} (alone or in
+   * {@code shortcut icon}) and Apple's touch icons. {@code mask-icon}, a one-colour
+   * silhouette, is not a logo.
+   */
+  private static final Set<String> ICON_RELS           = Set.of("icon", "apple-touch-icon", "apple-touch-icon-precomposed");
+
+  /** The schemes a declared icon is fetched from; the fetcher's guard narrows them further. */
+  private static final Set<String> ICON_SCHEMES        = Set.of("https", "http");
+
   private static final Set<String> DECLARED_TYPES      = Set.of(SVG,
                                                                 PNG,
                                                                 JPEG,
@@ -287,6 +307,90 @@ public final class SenderLogoUtils {
       return false;
     }
     return DECLARED_TYPES.contains(StringUtils.substringBefore(contentType, ";").trim().toLowerCase(Locale.ROOT));
+  }
+
+  /**
+   * Whether a response's declared {@code Content-Type} is a web page's, parameters
+   * ignored: what a home page read for its declared icon must say it is.
+   *
+   * @param contentType the header value
+   * @return true for HTML or XHTML
+   */
+  public static boolean isPageDeclaredType(String contentType) {
+    if (StringUtils.isBlank(contentType)) {
+      return false;
+    }
+    return PAGE_TYPES.contains(StringUtils.substringBefore(contentType, ";").trim().toLowerCase(Locale.ROOT));
+  }
+
+  /**
+   * The icon a home page declares (EXO-90909): the first {@code <link>} whose
+   * {@code rel} holds {@code icon}, {@code apple-touch-icon} or
+   * {@code apple-touch-icon-precomposed} and whose {@code href}, resolved against the
+   * page's address (and its {@code <base>}), is an http or https URL. A {@code data:},
+   * {@code javascript:} or any other scheme is skipped. The page is parsed for that link
+   * only, by jsoup, whatever its charset: nothing else of it is read or kept.
+   *
+   * @param page the page's bytes, already bounded by the caller
+   * @param pageUrl the address the page was read from, after its redirects
+   * @return the icon's absolute URL, or null when the page declares none usable
+   */
+  public static String declaredIconUrl(byte[] page, String pageUrl) {
+    if (page == null || page.length == 0 || StringUtils.isBlank(pageUrl)) {
+      return null;
+    }
+    Document document;
+    try {
+      document = Jsoup.parse(new ByteArrayInputStream(page), null, pageUrl);
+    } catch (IOException | RuntimeException e) {
+      return null; // NOSONAR null is "no icon declared"
+    }
+    for (Element link : document.select("link[rel][href]")) {
+      if (!declaresIcon(link.attr("rel"))) {
+        continue;
+      }
+      String url = link.absUrl("href");
+      if (isFetchableIconUrl(url)) {
+        return url;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Whether a {@code rel} value holds one of the icon tokens, case ignored.
+   *
+   * @param rel the attribute's value, space-separated tokens
+   * @return true when it declares an icon
+   */
+  private static boolean declaresIcon(String rel) {
+    for (String token : StringUtils.split(rel.toLowerCase(Locale.ROOT))) {
+      if (ICON_RELS.contains(token)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether a resolved icon URL may be handed to the fetcher at all: absolute, with a
+   * host, on http or https -- never {@code data:}, {@code javascript:} or a relative
+   * URL jsoup could not resolve.
+   *
+   * @param url the resolved URL, empty when jsoup could not resolve it
+   * @return true when it may be fetched
+   */
+  private static boolean isFetchableIconUrl(String url) {
+    if (StringUtils.isBlank(url)) {
+      return false;
+    }
+    try {
+      URI uri = new URI(url);
+      return uri.getScheme() != null && ICON_SCHEMES.contains(uri.getScheme().toLowerCase(Locale.ROOT))
+          && StringUtils.isNotBlank(uri.getHost());
+    } catch (URISyntaxException e) {
+      return false;
+    }
   }
 
   /**
