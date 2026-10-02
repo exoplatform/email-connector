@@ -45,7 +45,8 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 0));
 const t = (key, params) => (params ? `${key}|${Object.values(params).join('|')}` : key);
 
 /**
- * A search hit, as the search answers it: no body, no conversation, its own excerpt.
+ * A search hit, as the search answers it for a mail outside the local copy: no content,
+ * no conversation.
  *
  * @param {Number} mailRemoteId its UID
  * @param {String} folder the folder it is numbered in
@@ -288,13 +289,19 @@ describe('the folder list\'s row as a list of hits uses it (EXO-90871)', () => {
     expect(wrapper.classes()).toContain('grey-lighten1-background-opacity-3');
   });
 
-  it('quotes a hit\'s own excerpt, nothing for a hit without one, and still says a listed body is empty', async () => {
-    wrapper = mountRow({ email: hit(5, 'ARCHIVE', { excerpt: 'around the match' }) });
-    expect(wrapper.text()).toContain('around the match');
-    expect(wrapper.text()).not.toContain('emptyEmail');
+  it('shows a hit\'s listed excerpt, attachments and conversation size (EXO-90882), nothing for a hit without them, and still says a listed body is empty', async () => {
+    const attachments = [{ id: 1, name: 'figures.xlsx' }];
+    wrapper = mountRow({ email: hit(5, 'ARCHIVE', { content: { excerpt: 'opening words', attachments }, threadCount: 3 }) });
+    expect(wrapper.text()).toContain('opening words');
+    expect(wrapper.text()).toContain('3');
+    expect(wrapper.find('email-connector-mail-box-drawer-list-item-attachments').exists()).toBe(true);
+    expect(wrapper.vm.emailAttachments).toEqual(attachments);
+    expect(wrapper.vm.threadCount).toBe(3);
 
     await wrapper.setProps({ email: hit(5, 'ARCHIVE') });
     expect(wrapper.text()).not.toContain('emptyEmail');
+    expect(wrapper.find('email-connector-mail-box-drawer-list-item-attachments').exists()).toBe(false);
+    expect(wrapper.vm.threadCount).toBe(1);
 
     await wrapper.setProps({ email: { ...listed(5), content: { excerpt: '', attachments: [] } } });
     expect(wrapper.text()).toContain('emailConnector.mailBox.list.drawer.emptyEmail');
