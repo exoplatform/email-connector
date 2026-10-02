@@ -42,14 +42,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :close-label="$t('emailConnector.mailBox.search.chip.remove', { 0: chip.label })"
         small
         @click:close="$emit('remove', chip.key)">
-        <!-- A kind of attachment's chip carries its file-type icon (EXO-90910), on a white
-             disc so the icon keeps the colour it has in the advanced search. -->
-        <v-avatar
+        <!-- A kind of attachment's chip carries its file-type icon (EXO-90910), white like
+             the chip's text: the colours belong to the advanced search's list. -->
+        <v-icon
           v-if="chip.icon"
+          class="me-1"
           color="white"
-          left>
-          <v-icon :color="chip.icon.color" x-small>{{ chip.icon.class }}</v-icon>
-        </v-avatar>
+          x-small>
+          {{ chip.icon.class }}
+        </v-icon>
         <span class="text-truncate white--text" style="max-width: 220px;">{{ chip.label }}</span>
       </v-chip>
     </div>
