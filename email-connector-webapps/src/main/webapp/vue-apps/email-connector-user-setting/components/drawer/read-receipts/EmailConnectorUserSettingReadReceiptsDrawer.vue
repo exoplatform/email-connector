@@ -41,7 +41,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </template>
         <template v-else>
           <div class="d-flex align-center">
-            <div class="text-color flex-grow-1">
+            <div class="text-color text-start flex-grow-1">
               {{ $t('UserSettings.emailConnector.readReceipt.requestByDefault') }}
             </div>
             <v-switch
