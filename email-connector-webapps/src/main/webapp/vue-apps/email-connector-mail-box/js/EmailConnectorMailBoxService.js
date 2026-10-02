@@ -1222,9 +1222,10 @@ export function completeThreadByThreadId(threadId, folder) {
  * @param {Boolean} unread when true, only unread messages come back, for the same
  *          reason: the chip is lit, so it must still be filtering
  * @param {Object} criteria the advanced search's criteria (EXO-90838), may be absent:
- *          {from, to, words, after, before, attachment, categoryIds} -- the days as
- *          yyyy-MM-dd, the first included and the last excluded; an empty one is not
- *          sent; the categories are eXo's, so only mail eXo holds can match them
+ *          {from, to, words, after, before, attachment, categoryIds, attachmentTypes,
+ *          attachmentName} -- the days as yyyy-MM-dd, the first included and the last
+ *          excluded; an empty one is not sent; the categories, and the kind and name of
+ *          an attachment, are eXo's, so only mail eXo holds can match them
  * @returns {Promise} resolves with { results, totalMatches }
  */
 export function searchEmails(query, folder, limit, favorites, unread, criteria) {
@@ -1255,7 +1256,8 @@ export function searchEmails(query, folder, limit, favorites, unread, criteria) 
  * @param {Number} limit how many hits to return (newest first)
  * @param {Boolean} favorites when true, only starred messages
  * @param {Boolean} unread when true, only unread messages
- * @param {Object} criteria {from, to, words, after, before, attachment, categoryIds}
+ * @param {Object} criteria {from, to, words, after, before, attachment, categoryIds,
+ *          attachmentTypes, attachmentName}
  * @returns {Promise} resolves with { results, totalMatches }; rejects with
  *          the response status on the error
  */
@@ -1308,6 +1310,12 @@ function searchParams(query, folder, limit, favorites, unread, criteria) {
   });
   if (criteria?.attachment) {
     params.append('attachment', 'true');
+    // What the attachment must be (EXO-90910): one parameter per kind, and its name.
+    (criteria.attachmentTypes || []).forEach(type => params.append('attachmentTypes', type));
+    const attachmentName = (criteria.attachmentName || '').trim();
+    if (attachmentName) {
+      params.append('attachmentName', attachmentName);
+    }
   }
   // The categories eXo filed the mail under, one parameter each (EXO-90888).
   (criteria?.categoryIds || []).forEach(id => params.append('categoryIds', id));

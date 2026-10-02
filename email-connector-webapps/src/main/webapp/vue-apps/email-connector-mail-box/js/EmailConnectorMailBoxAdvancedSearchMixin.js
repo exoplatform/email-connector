@@ -53,10 +53,14 @@ const LOCAL_PAGE_SIZE = 20;
 // The key of a category's chip, before the category's id (EXO-90888).
 const CATEGORY_CHIP_PREFIX = 'category:';
 
+// The key of an attachment kind's chip, before the kind's key (EXO-90910).
+const ATTACHMENT_TYPE_CHIP_PREFIX = 'attachmentType:';
+
 export default {
   data: () => ({
     // The advanced criteria, beside the search box's text: {from, to, words, after,
-    // before, attachment, folder, categoryIds}; folder null searches the folder shown.
+    // before, attachment, folder, categoryIds, attachmentTypes, attachmentName}; folder
+    // null searches the folder shown.
     searchCriteria: emptySearchCriteria(),
     // The search row: whether its field replaces the chips, and its text.
     searchFieldOpen: false,
@@ -209,6 +213,15 @@ export default {
       }
       if (criteria.attachment) {
         chips.push({ key: 'attachment', label: this.$t('emailConnector.mailBox.search.chip.attachment') });
+        // What the attachment must be (EXO-90910): one chip per kind, by its translated
+        // name, and one for the file name.
+        (criteria.attachmentTypes || []).forEach(type => chips.push({
+          key: `${ATTACHMENT_TYPE_CHIP_PREFIX}${type}`,
+          label: this.$t(`emailConnector.mailBox.search.advanced.attachmentType.${type}`),
+        }));
+        if ((criteria.attachmentName || '').trim()) {
+          chips.push({ key: 'attachmentName', label: this.$t('emailConnector.mailBox.search.chip.attachmentName', { 0: criteria.attachmentName.trim() }) });
+        }
       }
       // One chip per category, by its name (EXO-90888); one the mailbox no longer lists
       // keeps a chip all the same, so it can be taken off.
@@ -308,12 +321,26 @@ export default {
     /**
      * Takes one criterion off the search -- a chip's close button -- and searches again.
      *
-     * @param {String} key the criterion: from, to, words, after, before, attachment,
+     * @param {String} key the criterion: from, to, words, after, before, attachment --
+     *          which takes the kinds and the file name of the attachment along --
+     *          attachmentName, attachmentType:<key> for one of the kinds,
      *          folder, category:<id> for one of the categories, or the row's unread or
      *          favorites shown on the line
      * @returns {void}
      */
     removeSearchCriterion(key) {
+      if (key?.startsWith(ATTACHMENT_TYPE_CHIP_PREFIX)) {
+        const type = key.substring(ATTACHMENT_TYPE_CHIP_PREFIX.length);
+        this.searchCriteria = { ...this.searchCriteria, attachmentTypes: (this.searchCriteria.attachmentTypes || []).filter(candidate => candidate !== type) };
+        this.rerunSearch();
+        return;
+      }
+      if (key === 'attachment') {
+        // The kinds and the name are asked of an attachment: without one, they go too.
+        this.searchCriteria = { ...this.searchCriteria, attachment: false, attachmentTypes: [], attachmentName: '' };
+        this.rerunSearch();
+        return;
+      }
       if (key?.startsWith(CATEGORY_CHIP_PREFIX)) {
         const id = Number(key.substring(CATEGORY_CHIP_PREFIX.length));
         this.searchCriteria = { ...this.searchCriteria, categoryIds: (this.searchCriteria.categoryIds || []).filter(categoryId => categoryId !== id) };
