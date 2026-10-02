@@ -167,6 +167,8 @@ public class EmailAttachmentSearchDAOTest {
     persistAttachment(image, "1", "contract-photo", "image/heic");
     EmailBoxEntity archive = persistEmail(USERNAME, MailFolder.INBOX, 5L);
     persistAttachment(archive, "1", "contract.zip", "application/zip");
+    EmailBoxEntity video = persistEmail(USERNAME, MailFolder.INBOX, 7L);
+    persistAttachment(video, "1", "Demo.MKV", "application/octet-stream");
     persistAttachment(persistEmail("bob", MailFolder.INBOX, 6L), "1", "bobs.pdf", "application/pdf");
     entityManager.clear();
     EmailBoxStorage storage = new EmailBoxStorage();
@@ -193,6 +195,12 @@ public class EmailAttachmentSearchDAOTest {
     assertEquals(Set.of(pdfByName.getId(), image.getId(), archive.getId()),
                  storage.getEmailIdsWithMatchingAttachmentsInFolders(USERNAME, List.of(MailFolder.INBOX), Set.of(), "contract"),
                  "a name with no kind: any kind");
+    assertEquals(Set.of(video.getId()),
+                 storage.getEmailIdsWithMatchingAttachmentsInFolders(USERNAME,
+                                                                     List.of(MailFolder.INBOX),
+                                                                     EnumSet.of(SearchAttachmentType.VIDEO),
+                                                                     null),
+                 "a video by its extension");
     assertEquals(Set.of(),
                  storage.getEmailIdsWithMatchingAttachmentsInFolders(USERNAME, List.of(), Set.of(SearchAttachmentType.PDF), null),
                  "no folder, nothing read");
