@@ -157,6 +157,21 @@ class SenderLogoFetcherTest {
   }
 
   /**
+   * A BIMI logo too deeply nested to clean is refused, and the domain falls back to its
+   * icon, then to "no logo" -- an answer, never an error escaping the resolution.
+   */
+  @Test
+  void aTooDeepBimiLogoEndsAsAnAnswer() {
+    bimi("brand.example", url("cdn.example", "/logo.svg"));
+    txt.put("_dmarc.brand.example", List.of("v=DMARC1; p=reject"));
+    String deep = "<svg xmlns=\"http://www.w3.org/2000/svg\">" + "<g>".repeat(5000) + "</g>".repeat(5000) + "</svg>";
+    answers.put("/logo.svg", ok(SenderLogoUtils.SVG, deep.getBytes(StandardCharsets.UTF_8)));
+    answers.put("/favicon.ico", ok(SenderLogoUtils.SVG, deep.getBytes(StandardCharsets.UTF_8)));
+
+    assertFalse(fetcher.resolve("brand.example").isPresent());
+  }
+
+  /**
    * A subdomain without records of its own is judged by its organisational domain's:
    * the BIMI record, and the DMARC subdomain policy.
    */
