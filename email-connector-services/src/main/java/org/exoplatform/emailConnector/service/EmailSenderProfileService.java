@@ -16,6 +16,9 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -28,6 +31,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.exoplatform.emailConnector.model.ConnectedMailboxOwners;
 import org.exoplatform.emailConnector.model.SenderAddressOwner;
+import org.exoplatform.emailConnector.model.ViewerAddress;
+import org.exoplatform.emailConnector.model.ViewerContactPhoto;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
@@ -60,6 +65,15 @@ import jakarta.annotation.PreDestroy;
  * them only to a user holding mail from it: the reader's message, or, in a batch, a
  * message of the asking user's mailbox. An account address names its user to anybody,
  * as {@code /contacts/suggest} does.
+ * <p>
+ * The picture shown for an address is, in this order (EXO-90908): the platform user's
+ * own photo; the photo of the viewing user's own contact at that address -- an
+ * address book synced over CardDAV, or a photo they set by hand
+ * ({@link EmailContactService#getContactPhotoUrls(String, Collection)}); the platform's
+ * generated picture of a user with no photo of their own; and nothing, the client then
+ * drawing the coloured initials. Contacts are per user, so the contact step is kept per
+ * viewer ({@link #CONTACT_PHOTO_TTL_MS}), while the platform step is kept per address
+ * for everybody.
  */
 @Service
 public class EmailSenderProfileService {
@@ -83,6 +97,16 @@ public class EmailSenderProfileService {
   /** How long the connected mailboxes' owners are kept before they are walked again, in ms. */
   static final long           MAILBOX_OWNERS_TTL_MS = 10L * 60 * 1000;
 
+  /**
+   * How long the picture a viewer's own contact carries for an address, or that none
+   * does, is kept, in ms: short, since the viewer edits their contacts and the sync
+   * rewrites them, and a contact gone answers its photo URL with a 404.
+   */
+  static final long           CONTACT_PHOTO_TTL_MS  = 60L * 1000;
+
+  /** How many viewer and address pairs are kept at most; past it the cache starts over. */
+  static final int            CONTACT_PHOTO_CACHE_MAX = 10000;
+
   /** How often a directory that cannot be read is logged at most, in ms: once, not per address. */
   static final long           FAILURE_LOG_INTERVAL_MS = 60L * 1000;
 
@@ -100,8 +124,15 @@ public class EmailSenderProfileService {
   @Autowired
   private EmailBoxStorage         emailBoxStorage;
 
+  @Autowired
+  private EmailContactService     emailContactService;
+
   // The owner found for each normalized address.
   private final Map<String, SenderAddressOwner> owners = new ConcurrentHashMap<>();
+
+  // What each viewer's own contacts answer for each normalized address: the viewer is
+  // part of the key, contacts being per user.
+  private final Map<ViewerAddress, ViewerContactPhoto> contactPhotos = new ConcurrentHashMap<>();
 
   private final Object             mailboxOwnersLock = new Object();
 
@@ -110,21 +141,26 @@ public class EmailSenderProfileService {
 
   private volatile long               lastFailureLoggedAt;
 
+  private volatile long               lastContactFailureLoggedAt;
+
   /**
    * Has the reader's sender resolution go through this service, its matching and its
-   * cache.
+   * caches: the platform user, then the reading user's own contact.
    */
   @PostConstruct
   public void register() {
     EmailConnectorUtils.setSenderProfileResolver(this::getSenderProfile);
+    EmailConnectorUtils.setContactPhotoResolver(this::getContactPhotoUrl);
   }
 
   /**
-   * Hands the reader's sender resolution back to the plain account lookup.
+   * Hands the reader's sender resolution back to the plain account lookup, with no
+   * contact picture.
    */
   @PreDestroy
   public void unregister() {
     EmailConnectorUtils.setSenderProfileResolver(null);
+    EmailConnectorUtils.setContactPhotoResolver(null);
   }
 
   /**
@@ -155,18 +191,47 @@ public class EmailSenderProfileService {
   }
 
   /**
-   * The profile pictures of the platform users behind a set of addresses: the senders
-   * of the mail list's rows on screen, in one request.
+   * The picture of a viewing user's own contact at an address, for a message they read
+   * whose sender has no platform photo (EXO-90908).
+   *
+   * @param viewer the reading user, whose contacts alone are read
+   * @param address the address, as the mail names it
+   * @return the URL of the contact's picture, or null when none of the viewer's
+   *         contacts there has one
+   */
+  @ContainerTransactional
+  public String getContactPhotoUrl(String viewer, String address) {
+    return resolveContactPhotoUrl(viewer, address);
+  }
+
+  /**
+   * {@link #getContactPhotoUrl(String, String)}'s work, with the container its caller set.
+   *
+   * @param viewer the reading user, whose contacts alone are read
+   * @param address the address, as the mail names it
+   * @return the URL of the contact's picture, or null
+   */
+  String resolveContactPhotoUrl(String viewer, String address) {
+    String key = EmailContactUtils.normalizeAddress(address);
+    return key == null ? null : contactPhotosOf(viewer, List.of(key)).get(key);
+  }
+
+  /**
+   * The pictures of the senders of the mail list's rows on screen, in one request: the
+   * platform user's own photo, else the asking user's own contact's, else the platform's
+   * generated picture of a user with none.
    * <p>
-   * An address no platform user holds is left out: the list draws its coloured
-   * initials itself, as the server draws them for the reader. A connected mailbox's
-   * address is answered only when the asking user's mailbox holds mail from it.
+   * An address with none of these is left out: the list draws its coloured initials
+   * itself, as the server draws them for the reader. A connected mailbox's address
+   * names its owner only when the asking user's mailbox holds mail from it. The
+   * contacts read are the asking user's alone, in one query for the addresses the
+   * platform answered no photo for.
    *
    * @param addresses the addresses, at most {@link #AVATARS_MAX_ADDRESSES}; blank,
    *          malformed and repeated ones are skipped
    * @param username the asking user
-   * @return the picture's URL by normalized address, for the addresses a platform user
-   *         holds; empty for none
+   * @return the picture's URL by normalized address, for the addresses that have one;
+   *         empty for none
    * @throws IllegalArgumentException {@link #AVATARS_TOO_MANY} past the cap
    */
   @ContainerTransactional
@@ -179,7 +244,7 @@ public class EmailSenderProfileService {
    *
    * @param addresses the addresses, at most {@link #AVATARS_MAX_ADDRESSES}
    * @param username the asking user
-   * @return the picture's URL by normalized address, for the addresses a platform user holds
+   * @return the picture's URL by normalized address, for the addresses that have one
    * @throws IllegalArgumentException {@link #AVATARS_TOO_MANY} past the cap
    */
   Map<String, String> resolveAvatars(List<String> addresses, String username) {
@@ -197,17 +262,90 @@ public class EmailSenderProfileService {
       }
     }
     Map<String, String> avatars = new LinkedHashMap<>();
+    // The addresses with no platform photo, with the platform's generated picture of
+    // their user, null for no user: the next steps are asked for these only.
+    Map<String, String> withoutPhoto = new LinkedHashMap<>();
     for (String key : keys) {
       SenderAddressOwner owner = ownerOf(key);
-      if (owner.username() == null || owner.mailbox() && !emailBoxStorage.hasMailFrom(username, key)) {
-        continue;
+      Profile profile = null;
+      if (owner.username() != null && (!owner.mailbox() || emailBoxStorage.hasMailFrom(username, key))) {
+        profile = profileOf(owner.username());
       }
-      Profile profile = profileOf(owner.username());
-      if (profile != null && StringUtils.isNotBlank(profile.getAvatarUrl())) {
-        avatars.put(key, profile.getAvatarUrl());
+      String platformPicture = profile == null ? null : StringUtils.trimToNull(profile.getAvatarUrl());
+      if (platformPicture != null && !profile.isDefaultAvatar()) {
+        avatars.put(key, platformPicture);
+      } else {
+        withoutPhoto.put(key, platformPicture);
       }
     }
+    if (!withoutPhoto.isEmpty()) {
+      Map<String, String> contactPictures = contactPhotosOf(username, withoutPhoto.keySet());
+      withoutPhoto.forEach((key, platformPicture) -> {
+        String picture = contactPictures.get(key);
+        // A sender's brand logo (EXO-90893) belongs here: after the viewer's contact,
+        // before the platform's generated picture and the client's initials.
+        if (picture == null) {
+          picture = platformPicture;
+        }
+        if (picture != null) {
+          avatars.put(key, picture);
+        }
+      });
+    }
     return avatars;
+  }
+
+  /**
+   * The pictures a viewer's own contacts carry for a set of addresses, from the
+   * viewer's cache while fresh, the others read in one query. A store that could not
+   * be read is not remembered as holding nothing.
+   *
+   * @param viewer the viewing user, whose contacts alone are read
+   * @param keys the normalized addresses
+   * @return the picture's URL by normalized address, for the addresses one of the
+   *         viewer's contacts with a picture holds
+   */
+  private Map<String, String> contactPhotosOf(String viewer, Collection<String> keys) {
+    if (StringUtils.isBlank(viewer) || keys.isEmpty()) {
+      return Map.of();
+    }
+    long now = System.currentTimeMillis();
+    Map<String, String> pictures = new HashMap<>();
+    List<String> unknown = new ArrayList<>();
+    for (String key : keys) {
+      ViewerContactPhoto cached = contactPhotos.get(new ViewerAddress(viewer, key));
+      if (cached != null && cached.isFresh(now, CONTACT_PHOTO_TTL_MS)) {
+        if (cached.photoUrl() != null) {
+          pictures.put(key, cached.photoUrl());
+        }
+      } else {
+        unknown.add(key);
+      }
+    }
+    if (unknown.isEmpty()) {
+      return pictures;
+    }
+    Map<String, String> read;
+    try {
+      read = emailContactService.getContactPhotoUrls(viewer, unknown);
+    } catch (RuntimeException e) {
+      if (now - lastContactFailureLoggedAt >= FAILURE_LOG_INTERVAL_MS) {
+        lastContactFailureLoggedAt = now;
+        LOG.warn("Cannot read the contacts' pictures of a sender address; shown without them this time", e);
+      }
+      return pictures;
+    }
+    if (contactPhotos.size() + unknown.size() > CONTACT_PHOTO_CACHE_MAX) {
+      contactPhotos.clear();
+    }
+    for (String key : unknown) {
+      String url = read.get(key);
+      contactPhotos.put(new ViewerAddress(viewer, key), new ViewerContactPhoto(url, now));
+      if (url != null) {
+        pictures.put(key, url);
+      }
+    }
+    return pictures;
   }
 
   /**
