@@ -22,9 +22,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.exoplatform.emailConnector.model.ConnectedMailboxOwners;
 import org.exoplatform.emailConnector.model.SenderAddressOwner;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
@@ -103,9 +105,8 @@ public class EmailSenderProfileService {
 
   private final Object             mailboxOwnersLock = new Object();
 
-  private volatile Map<String, String> mailboxOwners;
-
-  private volatile long               mailboxOwnersReadAt;
+  // The connected mailboxes' owners as last walked, with when: one immutable snapshot.
+  private final AtomicReference<ConnectedMailboxOwners> mailboxOwners = new AtomicReference<>();
 
   private volatile long               lastFailureLoggedAt;
 
@@ -297,24 +298,25 @@ public class EmailSenderProfileService {
    * @return the eXo login by normalized mailbox address
    */
   private Map<String, String> connectedMailboxOwners() {
-    Map<String, String> known = mailboxOwners;
-    if (known != null && System.currentTimeMillis() - mailboxOwnersReadAt < MAILBOX_OWNERS_TTL_MS) {
-      return known;
+    ConnectedMailboxOwners known = mailboxOwners.get();
+    if (known != null && known.isFresh(System.currentTimeMillis(), MAILBOX_OWNERS_TTL_MS)) {
+      return known.owners();
     }
     synchronized (mailboxOwnersLock) {
       long now = System.currentTimeMillis();
-      if (mailboxOwners != null && now - mailboxOwnersReadAt < MAILBOX_OWNERS_TTL_MS) {
-        return mailboxOwners;
+      known = mailboxOwners.get();
+      if (known != null && known.isFresh(now, MAILBOX_OWNERS_TTL_MS)) {
+        return known.owners();
       }
+      Map<String, String> owners;
       try {
-        known = userEmailSettingService.getConnectedMailboxOwners();
+        owners = Map.copyOf(userEmailSettingService.getConnectedMailboxOwners());
       } catch (RuntimeException e) {
         LOG.warn("Cannot read the connected mailboxes; senders are matched on their account address only", e);
-        known = Map.of();
+        owners = Map.of();
       }
-      mailboxOwners = known;
-      mailboxOwnersReadAt = now;
-      return known;
+      mailboxOwners.set(new ConnectedMailboxOwners(owners, now));
+      return owners;
     }
   }
 
