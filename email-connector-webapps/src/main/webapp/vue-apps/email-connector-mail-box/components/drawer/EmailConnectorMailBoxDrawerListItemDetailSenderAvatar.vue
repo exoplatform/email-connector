@@ -40,7 +40,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { avatarColor, personLabel, senderAvatarInitials } from '../../js/EmailRecipientDisplay.js';
-import { isSenderLogoUrl, isSenderRowVerified, rememberSenderAvatar, senderAvatarUrl, unwatchSenderAvatar, watchSenderAvatar } from '../../js/EmailConnectorSenderAvatars.js';
+import { isSenderLogoUrl, isSenderRowVerified, rememberSenderAvatar, requestPendingSenderLogo, senderAvatarUrl, unwatchSenderAvatar, watchSenderAvatar } from '../../js/EmailConnectorSenderAvatars.js';
 
 export default {
   props: {
@@ -147,6 +147,15 @@ export default {
       return (!this.person && this.email?.sender?.logoUrl) || this.shown?.avatarUrl || null;
     },
     /**
+     * The address of a sender whose brand logo the reader's server was still looking up
+     * (EXO-90909), asked for once the reader shows it.
+     *
+     * @returns {String} the address, or null
+     */
+    pendingLogoAddress() {
+      return (!this.person && this.email?.sender?.logoPending && this.email.sender.address) || null;
+    },
+    /**
      * The name the initials and their colour are read off: the name, else the address
      * -- the label the server draws its own initials from.
      *
@@ -191,6 +200,21 @@ export default {
       handler(url) {
         if (url) {
           rememberSenderAvatar(this.shown.address, url);
+        }
+      },
+    },
+    /**
+     * Asks once for the logo of a sender the reader's server was still looking up: the
+     * word that it was found may have come before this reader did (EXO-90909). After
+     * learntUrl, which records the reader's own answer first.
+     *
+     * @returns {void}
+     */
+    pendingLogoAddress: {
+      immediate: true,
+      handler(address) {
+        if (address) {
+          requestPendingSenderLogo(address);
         }
       },
     },
