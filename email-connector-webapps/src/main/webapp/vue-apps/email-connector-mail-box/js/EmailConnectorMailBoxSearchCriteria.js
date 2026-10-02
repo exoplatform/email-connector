@@ -49,7 +49,8 @@ const SEARCH_FOLDER_PATTERN = /^(INBOX|SENT|ARCHIVE|CUSTOM:\d{1,18})$/;
 const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 // The categories a search asks for in the address (EXO-90888): comma-separated ids, at
-// most twenty -- the mailbox has a handful -- each a safe integer.
+// most twenty -- the server's EmailBoxService.SEARCH_MAX_CATEGORIES, which refuses more --
+// each a safe integer.
 const CATEGORY_IDS_PATTERN = /^\d{1,15}(,\d{1,15}){0,19}$/;
 
 // Whether this page's address got openEmailBox=true from a search, rather than from
