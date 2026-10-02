@@ -775,7 +775,10 @@ public class EmailBoxRest {
       criteria.setFavoritesOnly(favorites);
       criteria.setAttachmentsOnly(attachment);
       criteria.setSinceDays(sinceDays);
-      return emailBoxService.searchEmails(request.getRemoteUser(), criteria, folder, limit);
+      EmailSearchResultPage page = emailBoxService.searchEmails(request.getRemoteUser(), criteria, folder, limit);
+      // Each hit in the local copy drawn as the folder list's row draws it (EXO-90882).
+      emailBoxService.decorateListedRows(request.getRemoteUser(), page.getResults());
+      return page;
     } catch (DelegationRevokedException e) {
       // The shared mailbox searched is gone, which the drawer answers by leaving it.
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
@@ -860,7 +863,10 @@ public class EmailBoxRest {
       criteria.setFavoritesOnly(favorites);
       criteria.setAttachmentsOnly(attachment);
       criteria.setSinceDays(sinceDays);
-      return emailBoxService.searchCachedFolder(request.getRemoteUser(), criteria, folder, limit);
+      EmailSearchResultPage page = emailBoxService.searchCachedFolder(request.getRemoteUser(), criteria, folder, limit);
+      // Each hit drawn as the folder list's row draws it (EXO-90882).
+      emailBoxService.decorateListedRows(request.getRemoteUser(), page.getResults());
+      return page;
     } catch (DelegationRevokedException e) {
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {

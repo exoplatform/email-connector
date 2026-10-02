@@ -23,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.hamcrest.Matchers.hasKey;
+import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -31,6 +33,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -102,6 +105,7 @@ import org.exoplatform.emailConnector.model.ScheduledEmail;
 import org.exoplatform.emailConnector.model.UndoableSend;
 import org.exoplatform.emailConnector.model.ScheduledSendStatus;
 import org.exoplatform.emailConnector.model.EmailAttachment;
+import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailSearchCriteria;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
@@ -391,6 +395,53 @@ public class EmailBoxRestTest {
     EmailSearchCriteria expected = new EmailSearchCriteria();
     expected.setQuery("report");
     assertEquals(expected, sent.getValue());
+  }
+
+  /**
+   * EXO-90882 -- the mail drawer's two searches, of the mail server and of eXo's copy,
+   * have their hits given for the caller what the folder list's row carries, and answer
+   * it: the content and the conversation's size of a hit given them, nothing at all of
+   * the fields of a hit left as it came -- so it does not erase what a listed row of the
+   * same mail shows. The unified search's read is left as it is.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void theDrawersSearchesGiveTheirHitsTheListedRowsData() throws Exception {
+    EmailSearchResult cached = new EmailSearchResult(41L, "INBOX", "Budget", null, new Date(), false, false, true, null, 7L);
+    EmailSearchResult notCached = new EmailSearchResult(42L, "INBOX", "Budget too", null, new Date(), false, false, false, null, null);
+    List<EmailSearchResult> hits = List.of(cached, notCached);
+    when(emailBoxService.searchEmails(anyString(), any(EmailSearchCriteria.class), anyString(), anyInt()))
+                                                                                                .thenReturn(new EmailSearchResultPage(hits, 2));
+    when(emailBoxService.searchCachedFolder(anyString(), any(EmailSearchCriteria.class), anyString(), anyInt()))
+                                                                                                      .thenReturn(new EmailSearchResultPage(hits, 2));
+    EmailAttachment attachment = new EmailAttachment();
+    attachment.setName("figures.xlsx");
+    doAnswer(invocation -> {
+      List<EmailSearchResult> rows = invocation.getArgument(1);
+      rows.get(0).setContent(new EmailContent(null, "The figures", List.of(attachment)));
+      rows.get(0).setThreadCount(4);
+      rows.get(0).setThreadHasDraft(false);
+      return null;
+    }).when(emailBoxService).decorateListedRows(eq(SIMPLE_USER), any());
+
+    for (String path : List.of("/search", "/search/local")) {
+      mockMvc.perform(get(EMAIL_BOX_PATH + path).param("query", "budget").with(testSimpleUser()))
+             .andExpect(status().isOk())
+             .andExpect(jsonPath("$.results[0].content.excerpt").value("The figures"))
+             .andExpect(jsonPath("$.results[0].content.attachments[0].name").value("figures.xlsx"))
+             .andExpect(jsonPath("$.results[0].threadCount").value(4))
+             .andExpect(jsonPath("$.results[0].threadHasDraft").value(false))
+             .andExpect(jsonPath("$.results[1].subject").value("Budget too"))
+             .andExpect(jsonPath("$.results[1]", not(hasKey("content"))))
+             .andExpect(jsonPath("$.results[1]", not(hasKey("threadCount"))))
+             .andExpect(jsonPath("$.results[1]", not(hasKey("threadHasDraft"))));
+    }
+    verify(emailBoxService, times(2)).decorateListedRows(SIMPLE_USER, hits);
+
+    when(emailBoxService.searchCachedEmails(SIMPLE_USER, "budget", false, 5)).thenReturn(new EmailSearchResultPage(hits, 2));
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search/cached?q=budget").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailBoxService, times(2)).decorateListedRows(anyString(), any());
   }
 
   @Test
