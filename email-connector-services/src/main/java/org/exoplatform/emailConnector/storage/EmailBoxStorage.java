@@ -1664,6 +1664,56 @@ public class EmailBoxStorage {
   }
 
   /**
+   * The owner's cached copies of some messages, by their Message-IDs, outside the given
+   * folders, as light rows: id, folder, Message-ID, UID, subject, sender, date, read and
+   * starred, nothing else -- what the mailbox's "Suggestions" view lists (EXO-90851).
+   * Drafts are never among them. One query, whatever the number of Message-IDs.
+   *
+   * @param userId the mailbox owner, whose rows only are read
+   * @param mailHeaderIds the Message-IDs; nothing is read when there is none
+   * @param excludedFolders the folders left out, not empty
+   * @return every copy found, newest first
+   */
+  public List<Email> getListedEmailsByMailHeaderIds(String userId, Collection<String> mailHeaderIds, Collection<String> excludedFolders) {
+    if (StringUtils.isBlank(userId) || mailHeaderIds == null || mailHeaderIds.isEmpty()) {
+      return List.of();
+    }
+    return emailBoxDao.findListedByUserIdAndMailHeaderIds(userId, mailHeaderIds, excludedFolders)
+                      .stream()
+                      .map(EmailBoxStorage::toListedEmail)
+                      .toList();
+  }
+
+  /**
+   * A light listed row out of the projection {@code [id, folder, mailHeaderId,
+   * mailRemoteId, subject, sender, receivedDate, read, starred]}. The sender column is
+   * {@code name,address}: the address is what follows the last comma, so a name that
+   * holds one stays whole.
+   *
+   * @param row the projected row
+   * @return the row as an email carrying those fields only
+   */
+  @SneakyThrows
+  private static Email toListedEmail(Object[] row) {
+    Email email = new Email();
+    email.setId((Long) row[0]);
+    email.setFolder((String) row[1]);
+    email.setMailHeaderId((String) row[2]);
+    email.setMailRemoteId((Long) row[3]);
+    email.setSubject((String) row[4]);
+    String sender = (String) row[5];
+    if (StringUtils.isNotBlank(sender)) {
+      int comma = sender.lastIndexOf(',');
+      String name = comma > 0 ? StringUtils.trimToNull(sender.substring(0, comma)) : null;
+      email.setSender(EmailConnectorUtils.getEmailSender(new InternetAddress(sender.substring(comma + 1).trim(), name), false));
+    }
+    email.setReceivedDate((Date) row[6]);
+    email.setRead(Boolean.TRUE.equals(row[7]));
+    email.setStarred(Boolean.TRUE.equals(row[8]));
+    return email;
+  }
+
+  /**
    * Light starred rows out of the key projection {@code [id, folder, mailHeaderId, mailRemoteId]}.
    *
    * @param rows the projected rows
