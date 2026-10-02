@@ -23,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -237,6 +239,31 @@ public class EmailBoxDAOTest {
     assertEquals(1, rows.size());
     assertEquals(8L, rows.get(0)[0]);
     assertEquals(inInbox, rows.get(0)[1]);
+  }
+
+  /**
+   * EXO-90888 -- the (UID, id) pairs a server search narrowed to categories starts from,
+   * run on HSQLDB: every cached message of THAT folder of THAT user, each with its own
+   * row's id -- never another folder's, never another user's, and never a draft that
+   * has no UID on the server yet.
+   */
+  @Test
+  void theCachedIdsOfAFolderAreItsOwnersMessagesWithAUid() {
+    Long first = persistEmail(40L, MailFolder.INBOX, "a", Boolean.FALSE);
+    Long second = persistEmail(41L, MailFolder.INBOX, "b", Boolean.FALSE);
+    persistEmail(44L, MailFolder.SENT, "c", Boolean.FALSE);
+    EmailBoxEntity someoneElses = entityManager.find(EmailBoxEntity.class, persistEmail(42L, MailFolder.INBOX, "d", Boolean.FALSE));
+    someoneElses.setUserId("bob");
+    EmailBoxEntity unsentDraft = entityManager.find(EmailBoxEntity.class, persistEmail(43L, MailFolder.INBOX, "e", Boolean.FALSE));
+    unsentDraft.setMailRemoteId(null);
+    entityManager.flush();
+    entityManager.clear();
+
+    Map<Long, Long> idsByUid = emailBoxDAO.findCachedIdsByUserIdAndFolder(USERNAME, MailFolder.INBOX)
+                                          .stream()
+                                          .collect(Collectors.toMap(row -> (Long) row[0], row -> (Long) row[1]));
+
+    assertEquals(Map.of(40L, first, 41L, second), idsByUid);
   }
 
   /**
