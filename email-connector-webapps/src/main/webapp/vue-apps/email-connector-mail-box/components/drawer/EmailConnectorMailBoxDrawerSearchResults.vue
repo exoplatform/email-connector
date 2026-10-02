@@ -25,14 +25,23 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       class="px-4 pt-2 pb-1 caption text-light-color">
       {{ statusLine }}
     </div>
+    <!-- Each hit is the folder list's own row (EXO-90871): its star, its selection and
+         bulk actions, its categories, its drag onto a folder, alone in its conversation,
+         keyed and lit by folder and UID, naming the folder it was found in, and opened
+         by this list -- an uncached hit is pulled in first (open-result). -->
     <template v-if="hasResults">
-      <email-connector-mail-box-drawer-search-result-item
+      <email-connector-mail-box-drawer-list-item
         v-for="result in results"
         :key="`${result.folder}-${result.mailRemoteId}`"
-        :result="result"
+        :email="result"
+        :emails="results"
         :row-key="rowKey(result)"
-        :opened="rowKey(result) === openedKey"
-        :draggable-hit="draggableHits"
+        :opened-key="openedKey"
+        :select-mode="selectMode"
+        :selected-emails="selectedEmails"
+        :expanded="expanded"
+        :drag-source="dragSource"
+        show-folder
         @open="$emit('open-result', result)" />
     </template>
     <div
@@ -71,10 +80,26 @@ export default {
       type: String,
       default: null,
     },
-    // Whether the hits may be dragged onto the folder column: in full screen (EXO-90421).
-    draggableHits: {
+    // Whether the list sits in the full-screen layout: its hits are then lit as the
+    // reader's and dragged onto the folder column (EXO-90421), as the folder list's rows.
+    expanded: {
       type: Boolean,
       default: false,
+    },
+    // Whether the rows are being selected, and the selection's keys (folder:uid), as the
+    // folder list takes them (EXO-90871).
+    selectMode: {
+      type: Boolean,
+      default: false,
+    },
+    selectedEmails: {
+      type: Array,
+      default: () => [],
+    },
+    // The mail being dragged from the list, for its hits to fade (EXO-90421).
+    dragSource: {
+      type: Object,
+      default: null,
     },
     // The full server-side match count, to say 'showing 20 of 1,234'.
     totalMatches: {
