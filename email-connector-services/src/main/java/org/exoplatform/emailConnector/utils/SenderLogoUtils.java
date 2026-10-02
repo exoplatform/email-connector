@@ -328,7 +328,7 @@ public final class SenderLogoUtils {
    */
   private static boolean looksLikeSvg(byte[] data) {
     String head = new String(data, 0, Math.min(data.length, SVG_SNIFF_LENGTH), StandardCharsets.UTF_8);
-    head = StringUtils.removeStart(head, "﻿").stripLeading().toLowerCase(Locale.ROOT);
+    head = StringUtils.removeStart(head, "\uFEFF").stripLeading().toLowerCase(Locale.ROOT);
     return (head.startsWith("<?xml") || head.startsWith("<svg") || head.startsWith("<!--")) && head.contains("<svg");
   }
 
