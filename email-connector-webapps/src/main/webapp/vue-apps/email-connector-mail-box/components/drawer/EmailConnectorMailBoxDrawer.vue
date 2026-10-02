@@ -247,7 +247,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :indeterminate="indeterminate"
               :drag-source="emailDrag"
               expanded
-              @update:selected-emails="selectedEmails = $event" />
+              @update:selected-emails="setSelectedEmails" />
             <!-- Not before the list has answered: expanding before the first load
                  must not flash "No email in Inbox". -->
             <email-connector-mail-box-drawer-no-email
@@ -386,7 +386,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :indeterminate="indeterminate"
               :sync-in-progress="syncInProgress"
               :webmail-url="webmailUrl"
-              @update:selected-emails="selectedEmails = $event" />
+              @update:selected-emails="setSelectedEmails" />
             <!-- A custom folder is a recent-activity mirror, not a copy, and the list says
                  so rather than letting an older message look lost. -->
             <div
@@ -1035,7 +1035,7 @@ export default {
         }
       }
       else {
-        this.selectedEmails = this.selectedEmails.filter(selected => selected !== key);
+        this.setSelectedEmails(this.selectedEmails.filter(selected => selected !== key));
       }
     });
     this.$root.$on('synchronize-in-progress', () => {
@@ -2987,13 +2987,61 @@ export default {
         }
       });
     },
-    // "Select several" from the ⋮ menu: enter the same multi-select mode a row
-    // checkbox starts, with nothing selected yet.
+    /**
+     * "Select several" from the ⋮ menu: enters the multi-select mode a row's checkbox
+     * starts, with one row already ticked (EXO-90891) -- the row of the mail the reader
+     * shows, else the first row of the list on screen. Nothing over a list with no row
+     * to tick: a select mode with nothing selected is one it would end at once.
+     *
+     * @returns {void}
+     */
     onEnterSelectMode() {
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return;
       }
-      this.selectMode = true;
+      const keys = this.selectModeStartKeys();
+      if (keys.length) {
+        this.selectedEmails = keys;
+        this.selectMode = true;
+      }
+    },
+    /**
+     * The selection keys of the row the menu's "Select several" ticks: as that row's
+     * checkbox would tick it -- a conversation of the folder's list by its messages in
+     * the row's folder, a search hit or a Suggestions mail alone. The reader's row in
+     * full screen, else the first row listed that the server has listed already.
+     *
+     * @returns {Array<String>} the keys, empty when no row can be ticked
+     */
+    selectModeStartKeys() {
+      const readerEmail = this.expanded && !this.selectEmailPlaceHolder ? this.email : null;
+      const sameMail = (row, mail) => !!mail && row.mailRemoteId === mail.mailRemoteId
+        && (row.folder || 'INBOX') === (mail.folder || 'INBOX');
+      let rows;
+      if (this.searchActive || this.suggestionsView) {
+        const hits = this.listedEmails.filter(hit => !hit.refreshPending);
+        const hit = hits.find(candidate => sameMail(candidate, readerEmail)) || hits[0];
+        rows = hit ? [hit] : [];
+      } else {
+        const threads = this.$emailConnectorMailBoxService.groupEmailsByThread(this.emails)
+          .filter(thread => !thread.latest.refreshPending);
+        const thread = threads.find(candidate => candidate.emails.some(message => sameMail(message, readerEmail))) || threads[0];
+        rows = thread ? this.$emailConnectorMailBoxService.threadRowsInFolder(thread.latest, thread) : [];
+      }
+      return rows.map(selectionKey);
+    },
+    /**
+     * Sets what is selected, and ends the select mode once nothing is (EXO-90891): the
+     * last row unticked, or the select-all row cleared, give the rows their avatars back.
+     *
+     * @param {Array<String>} keys the selection keys
+     * @returns {void}
+     */
+    setSelectedEmails(keys) {
+      this.selectedEmails = keys;
+      if (!keys.length) {
+        this.selectMode = false;
+      }
     },
     /**
      * Patches the favorite flag on every copy this drawer holds: the cached folder
