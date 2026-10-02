@@ -150,156 +150,55 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="error--text">fa-times-circle</v-icon>
       </v-btn>
     </template>
-    <template v-else>
-      <v-btn
-        v-if="canUpdateEmailsReadStatus(false)"
-        @click="updateEmailsReadStatus(false)"
-        outlined
-        class="btn btn-primary font-weight-bold">
-        <v-icon
-          size="16"
-          class="pe-3"
-          color="primary">
-          fa-mail-bulk
-        </v-icon>
-        {{ $t('emailConnector.mailBox.list.drawer.detail.unread.label') }}
-      </v-btn>
-      <v-btn
-        v-if="canUpdateEmailsReadStatus(true)"
-        @click="updateEmailsReadStatus(true)"
-        outlined
-        class="btn btn-primary font-weight-bold">
-        <v-icon
-          size="16"
-          class="pe-3"
-          color="primary">
-          fa-envelope-open-text
-        </v-icon>
-        {{ $t('emailConnector.mailBox.list.drawer.detail.read.label') }}
-      </v-btn>
-      <v-btn
-        v-if="canArchiveSelection"
-        @click="archiveEmails()"
-        outlined
-        class="btn btn-primary font-weight-bold">
-        <v-icon
-          size="16"
-          class="pe-3"
-          color="primary">
-          fa-archive
-        </v-icon>
-        {{ $t('emailConnector.mailBox.list.drawer.detail.archive.label') }}
-      </v-btn>
-      <v-btn
-        v-if="canMarkSelectionAsJunk"
-        @click="markAsJunk()"
-        outlined
-        class="btn btn-primary font-weight-bold">
-        <v-icon
-          size="16"
-          class="pe-3"
-          color="primary">
-          fa-ban
-        </v-icon>
-        {{ $t('emailConnector.mailBox.list.drawer.detail.markJunk.label') }}
-      </v-btn>
-      <span
-        v-if="canOfferMove"
-        :title="moveTitle"
-        class="d-inline-flex valign-middle">
+    <!-- The selection panel's actions, as flat tiles: an icon above a short label, all
+         one width, on one row -- or wrapped evenly (3 + 3) when the pane is narrow --
+         and the destructive one last, in the error colour. The full wording rides the
+         aria label and the tooltip. -->
+    <div
+      v-else
+      ref="tiles"
+      :style="tilesStyle"
+      class="mx-auto">
+      <div
+        v-for="tile in tiles"
+        :key="tile.key"
+        :title="tile.title"
+        class="d-flex">
         <v-btn
-          :disabled="!canMoveSelection"
-          @click="moveEmails()"
-          outlined
-          class="btn btn-primary font-weight-bold">
-          <v-icon
-            size="16"
-            class="pe-3"
-            color="primary">
-            fa-folder-open
-          </v-icon>
-          {{ $t('emailConnector.mailBox.list.drawer.detail.moveTo.label') }}
+          :aria-label="tile.title"
+          :disabled="tile.disabled"
+          :loading="tile.loading"
+          :color="tile.danger ? 'error' : null"
+          height="64"
+          class="flex-grow-1 text-none px-1"
+          text
+          @click="tile.action()">
+          <div class="d-flex flex-column align-center text-truncate">
+            <v-icon
+              :class="tile.danger ? 'error--text' : 'icon-default-color'"
+              size="20">
+              {{ tile.icon }}
+            </v-icon>
+            <span
+              :class="{ 'error--text': tile.danger }"
+              class="caption mt-1 text-truncate">
+              {{ tile.label }}
+            </span>
+          </div>
         </v-btn>
-      </span>
-      <v-btn
-        v-if="canDownloadSelection"
-        :loading="downloadingZip"
-        @click="downloadSelection()"
-        outlined
-        class="btn btn-primary font-weight-bold">
-        <v-icon
-          size="16"
-          class="pe-3"
-          color="primary">
-          fa-file-archive
-        </v-icon>
-        {{ $t('emailConnector.mailBox.export.zip') }}
-      </v-btn>
-      <v-btn
-        v-if="canDeleteSelection"
-        @click="deleteEmails()"
-        outlined
-        class="btn error font-weight-bold">
-        <v-icon size="16" class="error--text pe-3">fa-trash</v-icon>
-        <span class="error--text"> {{ $t('emailConnector.mailBox.list.drawer.detail.delete.label') }} </span>
-      </v-btn>
-      <v-btn
-        v-if="canDiscardSelection"
-        @click="discardDrafts()"
-        outlined
-        class="btn error font-weight-bold">
-        <v-icon size="16" class="error--text pe-3">fa-trash</v-icon>
-        <span class="error--text"> {{ $t('emailConnector.mailBox.list.drawer.detail.discard.label') }} </span>
-      </v-btn>
-      <v-btn
-        v-if="canApplyNotJunk"
-        @click="restoreFromJunk()"
-        outlined
-        class="btn btn-primary font-weight-bold">
-        <v-icon
-          size="16"
-          class="pe-3"
-          color="primary">
-          fa-check-circle
-        </v-icon>
-        {{ $t('emailConnector.mailBox.list.drawer.detail.notJunk.label') }}
-      </v-btn>
-      <v-btn
-        v-if="canApplyJunkActions"
-        @click="deleteEmails()"
-        outlined
-        class="btn error font-weight-bold">
-        <v-icon size="16" class="error--text pe-3">fa-trash</v-icon>
-        <span class="error--text"> {{ $t('emailConnector.mailBox.list.drawer.detail.delete.label') }} </span>
-      </v-btn>
-      <v-btn
-        v-if="canApplyTrashActions"
-        @click="restoreEmails()"
-        outlined
-        class="btn btn-primary font-weight-bold">
-        <v-icon
-          size="16"
-          class="pe-3"
-          color="primary">
-          fa-trash-restore
-        </v-icon>
-        {{ $t('emailConnector.mailBox.list.drawer.detail.restore.label') }}
-      </v-btn>
-      <v-btn
-        v-if="canApplyTrashActions"
-        @click="purgeEmails()"
-        outlined
-        class="btn error font-weight-bold">
-        <v-icon size="16" class="error--text pe-3">fa-times-circle</v-icon>
-        <span class="error--text"> {{ $t('emailConnector.mailBox.list.drawer.detail.purge.label') }} </span>
-      </v-btn>
-    </template>
+      </div>
+    </div>
   </div>
 </template>
 
 <script>
 import { parseSelectionKey, selectionByFolder, selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
 import { canDownloadSelection, downloadSelectionZip, exportErrorKey } from '../../js/EmailConnectorMailTransfer.js';
+
+// The narrowest a selection tile may be before the row wraps, and the widest it grows.
+const TILE_MIN_WIDTH_PX = 92;
+
+const TILE_MAX_WIDTH_PX = 120;
 
 export default {
   props: {
@@ -371,6 +270,9 @@ export default {
   data() {
     return {
       downloadingZip: false,
+      // The selection panel's width, measured, for how many tiles go on a row.
+      tilesWidth: 0,
+      tilesObserver: null,
     };
   },
   computed: {
@@ -580,6 +482,66 @@ export default {
       return this.canOfferMove && this.selectionByFolder.length === 1;
     },
     /**
+     * The selection panel's actions, in the order shown: the filing ones, then the
+     * destructive ones last. Each carries its icon, its short label, its full wording
+     * (aria label and tooltip), whether it is in the error colour, and its action; the
+     * rules deciding which apply are the toolbar's own.
+     *
+     * @returns {Array<Object>} the tiles
+     */
+    tiles() {
+      const tile = (key, icon, shortKey, fullKey, action, extra = {}) => ({
+        key,
+        icon,
+        label: this.$t(`emailConnector.mailBox.list.drawer.multiSelect.tile.${shortKey}`),
+        title: this.$t(fullKey),
+        action,
+        danger: false,
+        disabled: false,
+        loading: false,
+        ...extra,
+      });
+      const detail = 'emailConnector.mailBox.list.drawer.detail';
+      return [
+        this.canUpdateEmailsReadStatus(false) && tile('unread', 'fa-mail-bulk', 'markUnread', `${detail}.unread.label`, () => this.updateEmailsReadStatus(false)),
+        this.canUpdateEmailsReadStatus(true) && tile('read', 'fa-envelope-open-text', 'markRead', `${detail}.read.label`, () => this.updateEmailsReadStatus(true)),
+        this.canArchiveSelection && tile('archive', 'fa-archive', 'archive', `${detail}.archive.label`, () => this.archiveEmails()),
+        this.canMarkSelectionAsJunk && tile('junk', 'fa-ban', 'markSpam', `${detail}.markJunk.label`, () => this.markAsJunk()),
+        this.canApplyNotJunk && tile('notJunk', 'fa-check-circle', 'notSpam', `${detail}.notJunk.label`, () => this.restoreFromJunk()),
+        this.canApplyTrashActions && tile('restore', 'fa-trash-restore', 'restore', `${detail}.restore.label`, () => this.restoreEmails()),
+        this.canOfferMove && Object.assign(tile('move', 'fa-folder-open', 'moveTo', `${detail}.moveTo.label`, () => this.moveEmails(),
+          { disabled: !this.canMoveSelection }), { title: this.moveTitle }),
+        this.canDownloadSelection && tile('zip', 'fa-file-archive', 'downloadZip', 'emailConnector.mailBox.export.zip', () => this.downloadSelection(),
+          { loading: this.downloadingZip }),
+        this.canDiscardSelection && tile('discard', 'fa-trash', 'discard', `${detail}.discard.label`, () => this.discardDrafts(), { danger: true }),
+        (this.canDeleteSelection || this.canApplyJunkActions) && tile('delete', 'fa-trash', 'delete', `${detail}.delete.label`, () => this.deleteEmails(),
+          { danger: true }),
+        this.canApplyTrashActions && tile('purge', 'fa-times-circle', 'purge', `${detail}.purge.label`, () => this.purgeEmails(), { danger: true }),
+      ].filter(Boolean);
+    },
+    /**
+     * The tiles' grid: one row of equal columns when the pane is wide enough, else two
+     * even rows (3 + 3), else three -- never a ragged last row of one.
+     *
+     * @returns {Object} the inline grid style
+     */
+    tilesStyle() {
+      const count = this.tiles.length || 1;
+      let columns = count;
+      if (this.tilesWidth && this.tilesWidth < count * TILE_MIN_WIDTH_PX) {
+        columns = Math.ceil(count / 2);
+        if (this.tilesWidth < columns * TILE_MIN_WIDTH_PX) {
+          columns = Math.ceil(count / 3);
+        }
+      }
+      return {
+        display: 'grid',
+        gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+        gap: '4px',
+        maxWidth: `${count * TILE_MAX_WIDTH_PX}px`,
+      };
+    },
+    /**
      * Whether the selection can be downloaded as a .zip (EXO-90845): no draft in it.
      *
      * @returns {Boolean} true when the download is offered
@@ -639,6 +601,18 @@ export default {
   },
   created() {
     this.$root.$on('open-webmail', this.openWebmail);
+  },
+  mounted() {
+    // The selection tiles follow the pane's width, not the window's: the pane is a
+    // drawer or a column of the full-screen mailbox.
+    const tiles = this.$refs.tiles;
+    if (tiles && typeof window.ResizeObserver === 'function') {
+      this.tilesObserver = new window.ResizeObserver(entries => this.tilesWidth = entries[0]?.contentRect?.width || 0);
+      this.tilesObserver.observe(tiles.parentElement || tiles);
+    }
+  },
+  beforeDestroy() {
+    this.tilesObserver?.disconnect();
   },
   methods: {
     /**
