@@ -144,10 +144,12 @@ public final class SenderLogoUtils {
   }
 
   /**
-   * One TXT record as a single string. The DNS lookup answers a record made of several
-   * character-strings as their quoted forms separated by spaces; they are one value,
-   * concatenated without separator (as for SPF, RFC 7208 §3.3). A record answered
-   * unquoted is kept as it is.
+   * One TXT record as a single string. A record is made of character-strings, which are
+   * one value concatenated without separator (as for SPF, RFC 7208 §3.3). The JDK's DNS
+   * lookup answers them joined by single spaces, each one bare, or quoted when it holds
+   * a space, a quote or a backslash or is empty -- with {@code \\}, {@code \"} and
+   * {@code \DDD} (a decimal byte) escapes inside the quotes. Each is read back and
+   * the pieces are joined.
    *
    * @param raw the record as the lookup answered it
    * @return the record's value
@@ -157,23 +159,54 @@ public final class SenderLogoUtils {
       return "";
     }
     String value = raw.trim();
-    if (!value.startsWith("\"")) {
-      return value;
-    }
     StringBuilder joined = new StringBuilder();
-    boolean quoted = false;
-    for (int i = 0; i < value.length(); i++) {
+    int i = 0;
+    while (i < value.length()) {
       char c = value.charAt(i);
-      if (c == '"') {
-        quoted = !quoted;
-      } else if (c == '\\' && quoted && i + 1 < value.length()) {
-        joined.append(value.charAt(++i));
-      } else if (quoted) {
-        joined.append(c);
+      if (c == ' ') {
+        i++;
+      } else if (c == '"') {
+        i = readQuoted(value, i + 1, joined);
+      } else {
+        int end = value.indexOf(' ', i);
+        end = end < 0 ? value.length() : end;
+        joined.append(value, i, end);
+        i = end;
       }
     }
     return joined.toString();
   }
+
+  /**
+   * Reads one quoted character-string, its escapes resolved.
+   *
+   * @param value the record as answered
+   * @param start the index just after the opening quote
+   * @param joined where the string's characters are appended
+   * @return the index just after the closing quote, or the end of the record
+   */
+  private static int readQuoted(String value, int start, StringBuilder joined) {
+    int i = start;
+    while (i < value.length()) {
+      char c = value.charAt(i);
+      if (c == '"') {
+        return i + 1;
+      }
+      if (c == '\\' && i + 3 < value.length() && Character.isDigit(value.charAt(i + 1)) && Character.isDigit(value.charAt(i + 2))
+          && Character.isDigit(value.charAt(i + 3))) {
+        joined.append((char) Integer.parseInt(value.substring(i + 1, i + 4)));
+        i += 4;
+      } else if (c == '\\' && i + 1 < value.length()) {
+        joined.append(value.charAt(i + 1));
+        i += 2;
+      } else {
+        joined.append(c);
+        i++;
+      }
+    }
+    return i;
+  }
+
 
   /**
    * What a domain's BIMI records say about its logo.
