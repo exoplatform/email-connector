@@ -218,10 +218,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :signal="scheduledViewSignal"
             compact
             @loading="scheduledLoading = $event" />
-          <!-- The Suggestions view (EXO-90851): its own list, no chips. -->
+          <!-- The Suggestions view (EXO-90851): its own list, no chips. Its row of the
+               mail the reader shows is lit, and the arrow keys walk it, as the search
+               results (EXO-90875). -->
           <email-connector-mail-box-suggestions-list
             v-else-if="suggestionsView"
+            ref="expandedSuggestionsList"
             :emails="suggestionMails"
+            :reader-key="openedSearchKey"
             :select-mode="selectMode"
             :selected-emails="selectedEmails"
             :drag-source="emailDrag"
@@ -347,7 +351,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <email-connector-mail-box-drawer-thread-content
             v-else
             :email="email"
-            :emails="emails"
+            :emails="readerEmails"
             expanded-drawer
             :defer-thread-read="autoOpenReadPending"
             @thread-context="threadContext = $event"
@@ -360,6 +364,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           @loading="scheduledLoading = $event" />
         <email-connector-mail-box-suggestions-list
           v-else-if="suggestionsView"
+          ref="suggestionsList"
           :emails="suggestionMails"
           :select-mode="selectMode"
           :selected-emails="selectedEmails"
@@ -945,7 +950,7 @@ export default {
     // picked outside the list is.
     this.onOpenSuggestedEmail = opening => {
       if (this.emailBoxDrawer) {
-        this.openMailFromOutside(opening);
+        this.openSuggestedEmail(opening);
       }
     };
     this.$root.$on('open-suggested-email', this.onOpenSuggestedEmail);
@@ -1403,12 +1408,29 @@ export default {
     },
     /**
      * The listed messages, for the arrow keys and for the reader moving on after an
-     * action (listNavigationMixin).
+     * action (listNavigationMixin): the search's hits, the Suggestions view's mails
+     * (EXO-90875), the folder's rows otherwise -- the list on screen. A mail of the
+     * Suggestions view is opened pinned (openMailFromOutside), so the reader does not
+     * move on after an action there: it shows the placeholder.
      *
      * @returns {Array} the listed messages
      */
     navigationEmails() {
-      return this.searchActive ? this.mergedSearchResults : this.emails;
+      return this.listedEmails;
+    },
+    /**
+     * The rows the reader looks the opened mail's conversation up in: the Suggestions
+     * view's mails while it is listed (EXO-90875), the folder's rows otherwise. A mail of
+     * the Suggestions view is then read as its conversation, by the thread id its row
+     * carries, as a row of the folder's list is -- not by the opened copy's own, which
+     * can be out of date: the browser may answer the copy from its cache (a 304 on an
+     * eTag that does not follow the row), with the thread id and the row id of a row
+     * since replaced.
+     *
+     * @returns {Array} the rows
+     */
+    readerEmails() {
+      return this.suggestionsView ? this.suggestionMails : this.emails;
     },
     /**
      * The rows the list on screen holds, for the bulk actions bar and the selection's
@@ -1473,13 +1495,14 @@ export default {
     },
     /**
      * Everything a pending first-mail opening waits on, in one value to watch: the
-     * list's rows, the search's, and whether either is still loading.
+     * list's rows, the search's, the Suggestions view's (EXO-90875), and whether any of
+     * them is still loading.
      *
      * @returns {String} a value that changes whenever one of them does
      */
     autoSelectSignal() {
-      return [this.emails.length, this.mergedSearchResults.length, this.loading,
-        this.syncInProgress, this.searchServerRunning].join('|');
+      return [this.emails.length, this.mergedSearchResults.length, this.suggestionsView && this.suggestionMails.length,
+        this.loading, this.syncInProgress, this.searchServerRunning, this.suggestionsLoading].join('|');
     },
     emails() {
       let emails = this.emailBox?.emails || [];
@@ -1858,10 +1881,14 @@ export default {
      * nothing, it assumed the inbox -- and every hit that was not a cached inbox
      * message opened as an empty reader titled "(no subject)".
      *
-     * @param {Object} opening what to open: {mailRemoteId, folder, cached}
+     * @param {Object} opening what to open: {mailRemoteId, folder, cached}, and the rows
+     *   of the list it was picked in (emails), which the mail drawer is handed in its
+     *   place -- the Suggestions view's (EXO-90875)
+     * @param {Object} options {automatic}: whether the user did not ask for this mail,
+     *   which is then not counted as opened (see listNavigationMixin)
      * @returns {Promise} resolved once the message is on screen
      */
-    async openMailFromOutside(opening) {
+    async openMailFromOutside(opening, options = {}) {
       // No folder means the inbox, and anything that does not say otherwise is
       // already cached: that is the Favorites drawer, whose mails are cached rows of
       // any folder, sent with their folder.
@@ -1888,7 +1915,9 @@ export default {
           }
         }
         if (this.expanded && this.emailBoxDrawer) {
-          const opened = await this.$emailConnectorMailBoxService.getEmailByRemoteId(hit.mailRemoteId, hit.folder);
+          const opened = options.automatic
+            ? await this.$emailConnectorMailBoxService.getEmailByRemoteId(hit.mailRemoteId, hit.folder, { broadcast: false })
+            : await this.$emailConnectorMailBoxService.getEmailByRemoteId(hit.mailRemoteId, hit.folder);
           if (request !== this.emailRequest) {
             return;
           }
@@ -1896,7 +1925,7 @@ export default {
           this.selectEmailPlaceHolder = false;
           this.$root.$emit('set-opened', hit.mailRemoteId);
         } else {
-          this.$root.$emit('open-email-detail-drawer', hit.mailRemoteId, [hit], this.syncInProgress, this.webmailUrl, true, !this.emailBoxDrawer, hit.folder);
+          this.$root.$emit('open-email-detail-drawer', hit.mailRemoteId, opening.emails || [hit], this.syncInProgress, this.webmailUrl, true, !this.emailBoxDrawer, hit.folder);
         }
       } catch (error) {
         // An opening superseded meanwhile is not the user's any more: no toast for it.
@@ -1917,6 +1946,24 @@ export default {
           this.releaseEmailRequest();
         }
       }
+    },
+    /**
+     * Opens a mail of the Suggestions view (EXO-90851) as a mail picked outside the list
+     * is (openMailFromOutside), handing the reader the view's rows (EXO-90875): the
+     * mail drawer reads its conversation by the thread id its row carries, as the
+     * full-screen reader does (readerEmails).
+     *
+     * @param {Object} mail the view's row, or {mailRemoteId, folder} of one
+     * @param {Object} options {automatic}: whether the user did not ask for this mail
+     * @returns {Promise} resolved once the message is on screen
+     */
+    openSuggestedEmail(mail, options = {}) {
+      return this.openMailFromOutside({
+        mailRemoteId: mail.mailRemoteId,
+        folder: mail.folder,
+        cached: true,
+        emails: this.suggestionMails,
+      }, options);
     },
     /**
      * Expands this drawer on the mail the mail drawer was showing -- the mail drawer's
@@ -2331,14 +2378,15 @@ export default {
       }
     },
     /**
-     * The rows the list shows, for listNavigationMixin: one per hit in a search, the
+     * The rows the list shows, for listNavigationMixin: one per hit in a search, one per
+     * mail in the Suggestions view, keyed alike by folder and UID (EXO-90875), the
      * folder's conversations otherwise.
      *
      * @param {Array} rows the listed messages
      * @returns {Array} the rows
      */
     navigationEntriesOf(rows) {
-      return this.searchActive ? searchRows(rows) : threadRows(rows);
+      return this.searchActive || this.suggestionsView ? searchRows(rows) : threadRows(rows);
     },
     /**
      * Whether an action here took a message out of the listing before the server says
@@ -4243,6 +4291,10 @@ export default {
         emails = this.mergedSearchResults;
       } else if (scheduled) {
         emails = [email];
+      } else if (this.suggestionsView) {
+        // The view's rows, which the mail drawer reads the conversation's thread id
+        // off, as the full-screen reader did (EXO-90875).
+        emails = this.suggestionMails;
       }
       const threadKey = !this.searchActive && !scheduled && this.openedEmailRowKey();
       this.rowToRefocus = threadKey
@@ -4268,7 +4320,8 @@ export default {
     /**
      * Opens the first mail of the list on screen in the full-screen reader, when the
      * reader has nothing to show: the folder's first conversation (with its filters and
-     * view applied, as listed), or the first search hit while a search is running.
+     * view applied, as listed), the first search hit while a search is running, or the
+     * Suggestions view's first mail while it is listed (EXO-90875).
      * <p>
      * A mail already open stays open, and so does a multi-selection. A list still on
      * its way -- the drawer's own load, a synchronization filling an empty mailbox, a
@@ -4296,6 +4349,17 @@ export default {
         }
         return;
       }
+      // The Suggestions view's first mail, as a folder's first conversation
+      // (EXO-90875): waited for while the view reads what waits.
+      if (this.suggestionsView) {
+        const firstMail = firstOpenableThread(searchRows(this.suggestionMails));
+        if (firstMail) {
+          this.openAutomatically(firstMail.latest);
+        } else {
+          this.autoSelectPending = this.loading || this.suggestionsLoading;
+        }
+        return;
+      }
       const firstThread = firstOpenableThread(threadRows(this.emails));
       if (firstThread) {
         this.openAutomatically(firstThread.latest);
@@ -4304,8 +4368,9 @@ export default {
       }
     },
     /**
-     * Opens a listed message -- a search hit while a search runs -- in the full-screen
-     * reader and lights its row, as a click on the row does (see the list item's
+     * Opens a listed message -- a search hit while a search runs, a mail of the
+     * Suggestions view while it is listed -- in the full-screen reader and lights its
+     * row, as a click on the row does (see the list item's
      * openDetail). An automatic opening (options.automatic) leaves its read to
      * listNavigationMixin.
      *
@@ -4316,6 +4381,10 @@ export default {
     openListedEmail(row, options = {}) {
       if (this.searchActive) {
         return this.openSearchResult(row, options);
+      }
+      // A mail of the Suggestions view, as a click on its row opens it (EXO-90875).
+      if (this.suggestionsView) {
+        return this.openSuggestedEmail(row, options);
       }
       this.$root.$emit('set-opened', row.mailRemoteId);
       return Promise.resolve(this.openEmailDetailContent(row.mailRemoteId, row.folder || 'INBOX', options)).catch(() => null);
@@ -4328,6 +4397,9 @@ export default {
     navigationList() {
       if (this.searchActive) {
         return (this.expanded ? this.$refs.expandedSearchResults : this.$refs.searchResults) || null;
+      }
+      if (this.suggestionsView) {
+        return (this.expanded ? this.$refs.expandedSuggestionsList : this.$refs.suggestionsList) || null;
       }
       return (this.expanded ? this.$refs.expandedListContent : this.$refs.listContent) || null;
     },

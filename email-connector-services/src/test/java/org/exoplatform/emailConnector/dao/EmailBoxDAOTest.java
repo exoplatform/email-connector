@@ -279,7 +279,8 @@ public class EmailBoxDAOTest {
   /**
    * The listed read of the "Suggestions" view (EXO-90851), run by the engine: the owner's
    * copies carrying one of the Message-IDs, outside the excluded folders, never a draft,
-   * newest first, as the nine columns it projects -- the sender column as stored.
+   * newest first, as the ten columns it projects -- the sender column as stored, the
+   * conversation id last (EXO-90875).
    */
   @Test
   void theListedReadByMessageIdsIsScopedNewestFirstAndLeavesOutExcludedFoldersAndDrafts() {
@@ -293,6 +294,7 @@ public class EmailBoxDAOTest {
     olderRow.setReceivedDate(new Date(1_000L));
     olderRow.setSubject("Older");
     olderRow.setRead(true);
+    olderRow.setThreadId("<thread@host>");
     EmailBoxEntity newerRow = entityManager.find(EmailBoxEntity.class, newer);
     newerRow.setReceivedDate(new Date(2_000L));
     newerRow.setStarred(true);
@@ -316,6 +318,7 @@ public class EmailBoxDAOTest {
     assertEquals(1_000L, ((Date) olderProjected[6]).getTime());
     assertEquals(Boolean.TRUE, olderProjected[7]);
     assertEquals(Boolean.FALSE, olderProjected[8]);
+    assertEquals("<thread@host>", olderProjected[9], "the conversation the reader reads it by (EXO-90875)");
     assertEquals(Boolean.FALSE, rows.get(0)[7]);
     assertEquals(Boolean.TRUE, rows.get(0)[8]);
   }
