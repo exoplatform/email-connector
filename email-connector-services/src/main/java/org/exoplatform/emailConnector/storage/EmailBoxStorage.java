@@ -1584,6 +1584,25 @@ public class EmailBoxStorage {
   }
 
   /**
+   * Whether a mailbox holds mail sent from an address, in any folder (EXO-90891).
+   *
+   * @param userId the mailbox owner
+   * @param address the sender's address
+   * @return true when one of the owner's cached messages was sent from it
+   */
+  public boolean hasMailFrom(String userId, String address) {
+    String key = StringUtils.trim(address);
+    if (StringUtils.isBlank(userId) || StringUtils.isEmpty(key)) {
+      return false;
+    }
+    key = key.toLowerCase(Locale.ROOT);
+    String escaped = key.replace(LIKE_ESCAPE, LIKE_ESCAPE + LIKE_ESCAPE)
+                        .replace("%", LIKE_ESCAPE + "%")
+                        .replace("_", LIKE_ESCAPE + "_");
+    return !emailBoxDao.findOneIdBySenderAddress(userId, "%," + escaped, key).isEmpty();
+  }
+
+  /**
    * Maps a cached row to what a search reads: its keys, subject, date, flags, raw body
    * and sender, and its To and Cc recipients when asked -- never its attachments.
    *
