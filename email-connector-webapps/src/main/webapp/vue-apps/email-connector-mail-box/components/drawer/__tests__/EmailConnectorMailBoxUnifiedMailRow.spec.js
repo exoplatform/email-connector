@@ -385,6 +385,8 @@ describe('the folder list\'s row as a list of hits uses it (EXO-90871)', () => {
 describe('the mailbox drawer gives its bars the rows on screen and ends a search\'s selection with it (EXO-90871)', () => {
   let wrapper;
   let service;
+  let alerts;
+  const onAlert = event => alerts.push(event.detail);
 
   /**
    * Mounts the mailbox drawer listing INBOX:5 and INBOX:6, with ARCHIVE:5 among the
@@ -400,7 +402,11 @@ describe('the mailbox drawer gives its bars the rows on screen and ends a search
       updateEmailsFavoriteStatus: jest.fn(() => Promise.resolve({ failedUpdates: 0 })),
       updateEmailsReadStatus: jest.fn(() => Promise.resolve({ failedUpdates: 0 })),
       deleteEmails: jest.fn(() => Promise.resolve({ failedDeletions: 0 })),
+      moveEmails: jest.fn(() => Promise.resolve({ failedMoves: 0 })),
+      undoMoveEmails: jest.fn(() => Promise.resolve({ failedUndos: 0 })),
     });
+    alerts = [];
+    document.addEventListener('alert-message', onAlert);
     wrapper = shallowMount(EmailConnectorMailBoxDrawer, {
       mocks: {
         $t: t,
@@ -417,6 +423,7 @@ describe('the mailbox drawer gives its bars the rows on screen and ends a search
   }
 
   afterEach(() => {
+    document.removeEventListener('alert-message', onAlert);
     wrapper?.vm.stopAutoRefresh();
     wrapper?.destroy();
     jest.restoreAllMocks();
@@ -464,6 +471,23 @@ describe('the mailbox drawer gives its bars the rows on screen and ends a search
     expect(mails.map(mail => [mail.starred, mail.read])).toEqual([[true, true], [false, false]]);
     expect(service.updateEmailsFavoriteStatus).toHaveBeenCalledWith([5], true, 'ARCHIVE');
     expect(service.updateEmailsReadStatus).toHaveBeenCalledWith([5], true, 'ARCHIVE');
+    // The read state the toggle started from was known off the row: the folder's unread
+    // count moves at once, as for a listed row.
+    expect(wrapper.vm.unreadAdjustments).toEqual({ ARCHIVE: -1 });
+  });
+
+  it('offers the Undo of a Suggestions mail moved, named by its own Message-ID, as the inbox does', async () => {
+    await mountDrawer();
+    await suggestionsRead([hit(7, 'ARCHIVE', { mailHeaderId: '<7@host>', waitingCount: 1 })]);
+    await wrapper.setData({ currentFolder: emailConnectorMailBoxService.SUGGESTIONS_VIEW });
+
+    await wrapper.vm.moveEmails([7], 'CUSTOM:1', 'ARCHIVE');
+    await flush();
+
+    expect(service.moveEmails).toHaveBeenCalledWith([7], 'ARCHIVE', 'CUSTOM:1');
+    expect(alerts.map(alert => typeof alert.alertLinkCallback)).toEqual(['function']);
+    await alerts[0].alertLinkCallback();
+    expect(service.undoMoveEmails).toHaveBeenCalledWith(['<7@host>'], 'CUSTOM:1', 'ARCHIVE');
   });
 
   it('takes a Suggestions mail acted on out of the view at once, and reads the view again once the server answered', async () => {
