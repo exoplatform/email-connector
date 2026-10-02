@@ -391,6 +391,7 @@ public class EmailFilterProposalServiceTest {
     assertEquals(MailFolder.INBOX, mails.get(1).getFolder());
     assertEquals(newestA.getMailRemoteId(), mails.get(1).getMailRemoteId());
     assertEquals("<a@x>", mails.get(1).getMailHeaderId());
+    assertEquals("<thread-12>", mails.get(1).getThreadId(), "the conversation the reader reads it by (EXO-90875)");
     assertEquals("Subject 12", mails.get(1).getSubject());
     assertEquals(new Date(200), mails.get(1).getReceivedDate());
     assertEquals(true, mails.get(1).isRead());
@@ -776,6 +777,7 @@ public class EmailFilterProposalServiceTest {
     email.setMailRemoteId(id + 1000);
     email.setFolder(folder);
     email.setMailHeaderId(mailHeaderId);
+    email.setThreadId("<thread-" + id + ">");
     email.setSubject("Subject " + id);
     email.setReceivedDate(new Date(received));
     email.setRead(received < 250);

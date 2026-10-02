@@ -227,6 +227,27 @@ export function searchRows(results) {
 }
 
 /**
+ * Gives one row of a list of hits the keyboard focus and brings it into view: how the
+ * search results and the Suggestions view, which render every row, reveal the row the
+ * arrow keys went to (EXO-90414, EXO-90875).
+ *
+ * @param {Element} container the list's element
+ * @param {String} key the row's key (searchRows' threadId)
+ * @returns {void}
+ */
+export function focusKeyedRow(container, key) {
+  const row = Array.from(container?.querySelectorAll?.('[data-thread-key]') || [])
+    .find(element => element.getAttribute('data-thread-key') === String(key));
+  if (!row) {
+    return;
+  }
+  row.focus({ preventScroll: true });
+  if (row.scrollIntoView) {
+    row.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+/**
  * The behaviour of the drawer that shows the mail list beside the reader -- the mailbox
  * drawer, whose full screen is the only one since EXO-90415 (the mail drawer hands its
  * mail over to it rather than widening itself).

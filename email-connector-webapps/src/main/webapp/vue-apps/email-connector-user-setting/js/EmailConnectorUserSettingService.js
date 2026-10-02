@@ -917,7 +917,7 @@ export function getWaitingSuggestionMails() {
  * mailbox's "Suggestions" view lists them (EXO-90851): one cached copy per mail, newest
  * first, shaped like a search hit, with how many suggestions wait on it.
  *
- * @returns {Promise<object[]>} the mails: {emailId, mailRemoteId, folder, mailHeaderId,
+ * @returns {Promise<object[]>} the mails: {emailId, mailRemoteId, folder, mailHeaderId, threadId,
  *   subject, sender, receivedDate, read, starred, cached, waitingCount}
  */
 export function getWaitingSuggestionEmails() {
