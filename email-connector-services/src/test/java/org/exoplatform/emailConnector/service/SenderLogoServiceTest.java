@@ -17,6 +17,8 @@
 package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -29,6 +31,7 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.util.ArrayList;
@@ -36,6 +39,7 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -50,6 +54,7 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.emailConnector.model.SenderLogo;
+import org.exoplatform.emailConnector.model.SenderLogoOffer;
 import org.exoplatform.emailConnector.storage.SenderLogoStorage;
 import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
 
@@ -74,6 +79,9 @@ class SenderLogoServiceTest {
 
   @Mock
   private SettingService        settingService;
+
+  @Mock
+  private SenderLogoWebSocketService senderLogoWebSocketService;
 
   /** The global settings, as the platform would keep them for every node. */
   private final Map<String, String> settings = new HashMap<>();
@@ -332,6 +340,85 @@ class SenderLogoServiceTest {
       settings.put(invocation.getArgument(2), String.valueOf(((SettingValue<?>) invocation.getArgument(3)).getValue()));
       return null;
     }).when(service).set(eq(Context.GLOBAL), eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE), anyString(), any());
+  }
+
+  /**
+   * EXO-90909 -- the users refused a domain's logo while it was resolved are told when
+   * it is found, they alone and once: not a user waiting for another domain, not
+   * anybody when the domain has none, and nobody again for a logo already cached.
+   */
+  @Test
+  void aFoundLogoIsToldToTheUsersWaitingForItOnly() {
+    when(emailConnectorService.isSenderLogosEnabled()).thenReturn(true);
+    assertEquals(new SenderLogoOffer(null, true), service.offerFor("news@brand.example", true, USER));
+    assertEquals(new SenderLogoOffer(null, true), service.offerFor("info@brand.example", true, "sam"));
+    assertEquals(new SenderLogoOffer(null, true), service.offerFor("hello@plain.example", true, "tom"));
+    assertEquals(SenderLogoOffer.NONE, service.offerFor("news@brand.example", false, "eve"), "no DMARC pass, no wait");
+    assertEquals(2, queued.size());
+
+    when(senderLogoStorage.getLogo("brand.example")).thenReturn(LOGO);
+    queued.remove(0).run();
+    verify(senderLogoWebSocketService).logoFound("brand.example", Set.of(USER, "sam"));
+
+    when(senderLogoStorage.getLogo("plain.example")).thenReturn(SenderLogo.none(System.currentTimeMillis()));
+    queued.remove(0).run();
+    verify(senderLogoWebSocketService, never()).logoFound(eq("plain.example"), any());
+
+    when(senderLogoStorage.peek("brand.example")).thenReturn(LOGO);
+    SenderLogoOffer cached = service.offerFor("news@brand.example", true, USER);
+    assertFalse(cached.pending());
+    assertTrue(cached.url().startsWith(SenderLogoService.LOGO_PATH + "brand.example?t="));
+    assertEquals(List.of(), queued, "a cached logo starts no resolution, and tells nobody");
+  }
+
+  /**
+   * EXO-90909 -- a user asking while the domain is already being resolved is told by
+   * that resolution; one asking after it ended starts another, which finds the logo
+   * cached and tells them; nobody is told twice by one resolution.
+   */
+  @Test
+  void aLateWaiterIsToldByTheNextResolution() {
+    when(emailConnectorService.isSenderLogosEnabled()).thenReturn(true);
+    when(senderLogoStorage.getLogo("brand.example")).thenReturn(LOGO);
+    service.offerFor("news@brand.example", true, USER);
+    assertTrue(service.offerFor("news@brand.example", true, "sam").pending(), "already resolving: told by it");
+    assertEquals(1, queued.size());
+    queued.remove(0).run();
+    verify(senderLogoWebSocketService).logoFound("brand.example", Set.of(USER, "sam"));
+
+    assertTrue(service.offerFor("news@brand.example", true, "tom").pending(), "the cache not seen yet by this read");
+    queued.remove(0).run();
+    verify(senderLogoWebSocketService).logoFound("brand.example", Set.of("tom"));
+  }
+
+  /**
+   * EXO-90909 -- nobody is told when the resolution was dropped (a full queue), nor
+   * when the feature was switched off before it ran; and past {@link
+   * SenderLogoService#MAX_WAITERS} users a domain's wait is not offered.
+   */
+  @Test
+  void nobodyIsToldOfADroppedOrSwitchedOffResolution() {
+    when(emailConnectorService.isSenderLogosEnabled()).thenReturn(true);
+    service.setWarmExecutor(runnable -> {
+      throw new java.util.concurrent.RejectedExecutionException("full");
+    });
+    assertFalse(service.offerFor("news@brand.example", true, USER).pending(), "dropped: nobody will be told");
+
+    service.setWarmExecutor(queued::add);
+    for (int i = 0; i < SenderLogoService.MAX_WAITERS; i++) {
+      assertTrue(service.offerFor("news@brand.example", true, "user" + i).pending());
+    }
+    assertFalse(service.offerFor("news@brand.example", true, "one-too-many").pending());
+    assertTrue(service.offerFor("news@brand.example", true, "user0").pending(), "already waiting");
+    when(emailConnectorService.isSenderLogosEnabled()).thenReturn(false);
+    queued.remove(0).run();
+    verifyNoInteractions(senderLogoWebSocketService);
+
+    when(emailConnectorService.isSenderLogosEnabled()).thenReturn(true);
+    when(senderLogoStorage.getLogo("brand.example")).thenReturn(LOGO);
+    service.offerFor("news@brand.example", true, USER);
+    queued.remove(0).run();
+    verify(senderLogoWebSocketService).logoFound("brand.example", Set.of(USER));
   }
 
   /**
