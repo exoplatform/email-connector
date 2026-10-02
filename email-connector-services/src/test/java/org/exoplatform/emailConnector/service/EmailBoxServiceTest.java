@@ -15708,6 +15708,38 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90888 -- a category named twice counts once, and each category's subtree is
+   * read once per search, the roots' included; past {@code SEARCH_MAX_CATEGORIES}
+   * distinct categories a search is refused before the tree is read.
+   */
+  @Test
+  void aCategoryIsExpandedOnceAndASearchNamesABoundedNumberOfThem() {
+    mockCategoryIdSetting("emailImportantCategory", "11");
+    when(categoryService.getSubcategoryIds(11L, 0, -1, -1)).thenReturn(List.of(12L));
+    when(categoryService.getSubcategoryIds(12L, 0, -1, -1)).thenReturn(List.of());
+
+    assertEquals(Set.of(11L, 12L), emailBoxService.searchCategoryIds(withCategories(11L, 11L, 12L, 12L)));
+
+    verify(categoryService, times(1)).getSubcategoryIds(11L, 0, -1, -1);
+    verify(categoryService, times(1)).getSubcategoryIds(12L, 0, -1, -1);
+    Long[] oneRepeated = java.util.Collections.nCopies(EmailBoxService.SEARCH_MAX_CATEGORIES + 1, 11L).toArray(Long[]::new);
+    assertEquals(Set.of(11L, 12L),
+                 emailBoxService.searchCategoryIds(withCategories(oneRepeated)),
+                 "the bound counts distinct categories, not repeats");
+    Long[] tooMany = LongStream.rangeClosed(1, EmailBoxService.SEARCH_MAX_CATEGORIES + 1L).boxed().toArray(Long[]::new);
+    clearInvocations(categoryService);
+    assertEquals("emailConnector.search.tooManyCategories",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchCategoryIds(withCategories(tooMany))).getMessage());
+    verifyNoInteractions(categoryService);
+    Long[] atTheBound = LongStream.rangeClosed(1, EmailBoxService.SEARCH_MAX_CATEGORIES).boxed().toArray(Long[]::new);
+    assertEquals("emailConnector.search.invalidCategory",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchCategoryIds(withCategories(atTheBound))).getMessage(),
+                 "at the bound, the ids are checked, not counted");
+  }
+
+  /**
    * Criteria naming some categories, and nothing else.
    *
    * @param categoryIds the categories
