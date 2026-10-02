@@ -41,7 +41,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         class="warning--text me-2 mt-1 flex-shrink-0">
         fas fa-exclamation-triangle
       </v-icon>
-      <div class="text-caption text-color">
+      <div :style="TEXT_BLOCK_STYLE" class="text-caption text-color text-start">
         <div class="font-weight-bold">{{ $t('emailConnector.mailBox.security.warning.title') }}</div>
         <div
           v-for="(warning, index) in warnings"
@@ -61,14 +61,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         class="primary--text me-2 mt-1 flex-shrink-0">
         fas fa-image
       </v-icon>
-      <div :class="wide ? 'd-flex align-center flex-grow-1' : 'flex-grow-1'">
-        <div :class="wide ? 'text-caption text-color text-wrap flex-grow-1 me-2' : 'text-caption text-color text-wrap'">
+      <!-- The text takes the flexible space and starts right after the icon; the actions,
+           one or two, sit at the end of the line when wide and under the text when
+           narrow. The platform's core.css gives the align-center class text-align:
+           center, so the line is centred vertically by an inline style instead, and the
+           text blocks set their own start alignment. -->
+      <div
+        :class="wide ? 'd-flex' : ''"
+        :style="wide ? WIDE_LINE_STYLE : TEXT_BLOCK_STYLE"
+        class="flex-grow-1">
+        <div
+          :class="wide ? 'me-2' : ''"
+          :style="TEXT_BLOCK_STYLE"
+          class="text-caption text-color text-wrap text-start">
           {{ $t('emailConnector.mailBox.remoteContent.blocked') }}
         </div>
-        <div :class="wide ? 'd-flex flex-shrink-0' : 'd-flex flex-wrap'">
+        <div :class="wide ? 'd-flex flex-shrink-0 ms-auto' : 'd-flex flex-wrap justify-start'">
           <v-btn
             :disabled="loading || busy"
-            class="mail-remote-content-show text-caption px-0 me-4"
+            class="mail-remote-content-show text-caption px-0"
             color="primary"
             text
             x-small
@@ -78,7 +89,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-btn
             v-if="senderAddress && !hasWarnings"
             :disabled="loading || busy"
-            class="mail-remote-content-trust text-caption px-0"
+            class="mail-remote-content-trust text-caption px-0 ms-4"
             color="primary"
             text
             x-small
@@ -97,6 +108,16 @@ const PRIMARY_COLOR = 'var(--allPagesPrimaryColor, #3f8487)';
 
 /** The platform's warning colour (platform-ui's @warningColor), the accent of the reasons. */
 const WARNING_COLOR = '#ffb441';
+
+/**
+ * A text block of a notice: it takes the flexible space of its line, may shrink below
+ * its content's width so long words wrap, and reads from the start whatever alignment
+ * the surrounding page sets.
+ */
+const TEXT_BLOCK_STYLE = { flex: '1 1 auto', minWidth: 0, textAlign: 'start' };
+
+/** The wide line of the images notice: a text block whose text and actions are centred vertically. */
+const WIDE_LINE_STYLE = { ...TEXT_BLOCK_STYLE, alignItems: 'center' };
 
 /** The platform's light border colour, as its border-color class reads it. */
 const BORDER_COLOR = 'var(--allPagesBtnBorder, var(--allPagesGreyColor, #e1e8ee))';
@@ -129,6 +150,8 @@ export default {
     busy: false,
     PRIMARY_COLOR,
     WARNING_COLOR,
+    TEXT_BLOCK_STYLE,
+    WIDE_LINE_STYLE,
   }),
   computed: {
     /**
