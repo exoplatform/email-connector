@@ -208,6 +208,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :select-mode="selectMode"
             :selected-emails="selectedEmails"
             :drag-source="emailDrag"
+            :folders="folders"
             expanded
             @open-result="openSearchResult"
             @search-server="searchWholeMailbox" />
@@ -224,6 +225,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :select-mode="selectMode"
             :selected-emails="selectedEmails"
             :drag-source="emailDrag"
+            :folders="folders"
             compact
             @loading="suggestionsLoading = $event" />
           <template v-else>
@@ -323,6 +325,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :scanned="searchScanned"
             :select-mode="selectMode"
             :selected-emails="selectedEmails"
+            :folders="folders"
             @open-result="openSearchResult"
             @search-server="searchWholeMailbox" />
         </template>
@@ -360,6 +363,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :emails="suggestionMails"
           :select-mode="selectMode"
           :selected-emails="selectedEmails"
+          :folders="folders"
           @loading="suggestionsLoading = $event" />
         <template v-else>
           <template v-if="hasEmails">
