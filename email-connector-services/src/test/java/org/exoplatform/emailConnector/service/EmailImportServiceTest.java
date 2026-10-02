@@ -398,6 +398,34 @@ class EmailImportServiceTest {
   }
 
   /**
+   * A run's directory is deleted entry by entry: one entry that cannot be deleted keeps
+   * no other on disk.
+   *
+   * @throws Exception when the files cannot be written
+   */
+  @Test
+  void anEntryThatCannotBeDeletedKeepsNoOther() throws Exception {
+    org.junit.jupiter.api.Assumptions.assumeTrue(java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+    Path directory = EmailImportService.createPrivateDirectory();
+    Path locked = Files.createDirectory(directory.resolve("locked"));
+    Files.writeString(locked.resolve("kept"), "x");
+    Files.writeString(directory.resolve("000"), "a");
+    Files.writeString(directory.resolve("001"), "b");
+    Files.setPosixFilePermissions(locked, java.nio.file.attribute.PosixFilePermissions.fromString("r-x------"));
+    try {
+      EmailImportService.deleteQuietly(directory);
+
+      assertFalse(Files.exists(directory.resolve("000")));
+      assertFalse(Files.exists(directory.resolve("001")));
+      assertTrue(Files.exists(locked.resolve("kept")));
+    } finally {
+      Files.setPosixFilePermissions(locked, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"));
+      EmailImportService.deleteQuietly(directory);
+    }
+    assertFalse(Files.exists(directory));
+  }
+
+  /**
    * A run taken but never started -- the threads shut down under it -- leaves no
    * directory behind.
    *
