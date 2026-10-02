@@ -276,10 +276,7 @@ class EmailSenderProfileServiceTest {
     lenient().when(senderLogoService.mayOffer(anyString())).thenReturn(true);
     lenient().when(emailBoxStorage.hasVerifiedMailFrom(anyString(), anyString())).thenReturn(true);
     lenient().when(senderLogoService.logoUrlFor(anyString(), org.mockito.ArgumentMatchers.anyBoolean(), anyString())).thenReturn(logo);
-    lenient().when(emailContactService.getContactPhotoUrls(any(), any())).thenReturn(Map.of());
-    when(emailContactService.getContactPhotoUrls("viewer", List.of("ann@brand.example", "carl@brand.example")))
-                                                                                                            .thenReturn(Map.of("ann@brand.example",
-                                                                                                                               "ann-contact"));
+    when(emailContactService.getContactPhotoUrls(eq("viewer"), any())).thenReturn(Map.of("ann@brand.example", "ann-contact"));
     accounts.put("carl@brand.example", "carl");
     defaultAvatarUser("carl", "carl-generated");
 
