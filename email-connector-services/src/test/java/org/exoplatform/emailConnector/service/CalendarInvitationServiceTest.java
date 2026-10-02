@@ -541,6 +541,24 @@ class CalendarInvitationServiceTest {
     assertFalse(invitation.isLandable(), "a cancelled event is not added");
     assertTrue(invitation.isRemovable());
 
+    // One of this deployment's own Agenda events lives in Agenda already: never
+    // added from the mail, whatever the method, and the two recognitions -- the
+    // reader's by link, the calendar add-on's by UID -- agree on it.
+    try (MockedStatic<CommonsUtils> portal = mockStatic(CommonsUtils.class)) {
+      portal.when(CommonsUtils::getCurrentDomain).thenReturn("https://exo.example.test");
+      for (String fixture : List.of("agenda-own-publish.ics", "agenda-own-request.ics")) {
+        givenTheCalendarPart(fixture);
+        invitation = service.getInvitation(EMAIL_ID, USER);
+        assertTrue(invitation.isExoMeeting(), fixture);
+        assertFalse(invitation.isLandable(), fixture + ": in Agenda already");
+        assertFalse(invitation.isRemovable(), fixture);
+        assertEquals(CalendarInvitationService.NOT_LANDABLE,
+                     assertThrows(IllegalArgumentException.class, () -> service.addToCalendar(EMAIL_ID, USER)).getMessage(),
+                     fixture);
+      }
+    }
+    verify(invitationLandingService, never()).land(any(), any());
+
     // An attendee's REPLY, a COUNTER: they speak to an organiser, not to a calendar.
     givenTheCalendarPartText(fixtureText("google-weekly-request.ics").replace("METHOD:REQUEST", "METHOD:REPLY"));
     invitation = service.getInvitation(EMAIL_ID, USER);
