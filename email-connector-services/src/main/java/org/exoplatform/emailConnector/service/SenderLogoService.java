@@ -138,7 +138,10 @@ public class SenderLogoService {
 
   private final ExecutorService warmPool      = warmPool();
 
-  private final int             epoch         = new SecureRandom().nextInt();
+  /** The one generator drawing this service's random values: the epoch and, once, the token key. */
+  private static final SecureRandom RANDOM    = new SecureRandom();
+
+  private final int             epoch         = RANDOM.nextInt();
 
   private final AtomicLong      resolutions   = new AtomicLong();
 
@@ -351,7 +354,7 @@ public class SenderLogoService {
     byte[] key = storedTokenKey();
     if (key == null) {
       byte[] drawn = new byte[TOKEN_KEY_BYTES];
-      new SecureRandom().nextBytes(drawn);
+      RANDOM.nextBytes(drawn);
       settingService.set(Context.GLOBAL,
                          EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
                          TOKEN_KEY_SETTING,
