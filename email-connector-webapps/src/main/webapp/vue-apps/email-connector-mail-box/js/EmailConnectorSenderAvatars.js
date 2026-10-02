@@ -145,29 +145,33 @@ function sendQueued() {
 }
 
 /**
- * Asks the server for one batch of pictures, and keeps every address's answer.
+ * Asks the server for one batch of pictures, and keeps every address's answer. A failed
+ * request keeps nothing: the addresses are asked again by the next avatar of them
+ * watched.
  *
  * @param {Array<string>} addresses - the normalized addresses, at most MAX_AVATAR_BATCH
- * @returns {Promise<void>} resolved once the answers are kept
+ * @returns {void}
  */
 function askFor(addresses) {
   addresses.forEach(address => asking.add(address));
-  return fetch('/email-connector/rest/contacts/avatars', {
+  fetch('/email-connector/rest/contacts/avatars', {
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
     method: 'POST',
     body: JSON.stringify(addresses),
-  }).then(resp => (resp?.ok ? resp.json() : null))
-    .catch(() => null)
-    .then(found => {
-      addresses.forEach(address => {
-        asking.delete(address);
-        if (found) {
-          answers.set(address, found[address] || null);
-        }
-      });
-      answersState().version++;
-    });
+  }).then(resp => {
+    if (!resp?.ok) {
+      throw new Error(`Avatars not answered: ${resp?.status}`);
+    }
+    return resp.json();
+  }).then(found => {
+    addresses.forEach(address => answers.set(address, found?.[address] || null));
+  }).catch(() => {
+    // Initials meanwhile; nothing kept, so the next avatar of them asks again.
+  }).finally(() => {
+    addresses.forEach(address => asking.delete(address));
+    answersState().version++;
+  });
 }
 
 /**
