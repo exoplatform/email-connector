@@ -16,14 +16,18 @@
  */
 package org.exoplatform.emailConnector.rest;
 
+import static org.hamcrest.Matchers.hasKey;
+import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -64,6 +68,8 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
+import org.exoplatform.emailConnector.model.EmailAttachment;
+import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailFilter;
 import org.exoplatform.emailConnector.model.EmailFilterMatch;
 import org.exoplatform.emailConnector.model.EmailFilterProposal;
@@ -73,6 +79,7 @@ import org.exoplatform.emailConnector.model.FilterPreview;
 import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerRulesSettings;
+import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailFilterProposalService;
 import org.exoplatform.emailConnector.service.EmailFilterService;
 import org.exoplatform.emailConnector.service.EmailServerRuleService;
@@ -120,6 +127,9 @@ public class EmailFilterRestTest {
 
   @MockitoBean
   private EmailFilterProposalService emailFilterProposalService;
+
+  @MockitoBean
+  private EmailBoxService            emailBoxService;
 
   @Autowired
   private SecurityFilterChain    filterChain;
@@ -486,8 +496,10 @@ public class EmailFilterRestTest {
 
   /**
    * The Suggestions view's mails (EXO-90851) answer the service's rows for the caller, the
-   * session's user, with the delegation the request names; the refusal of a delegation is
-   * a 403 and a feature off a 404.
+   * session's user, with the delegation the request names, each given for that user what
+   * the folder list's row carries (EXO-90882) -- the content, the conversation's size --
+   * which the answer carries; the refusal of a delegation is a 403 and a feature off a
+   * 404.
    */
   @Test
   void getWaitingEmailsAnswersTheCallersRowsOrEveryRefusal() throws Exception {
@@ -496,7 +508,18 @@ public class EmailFilterRestTest {
     mail.setMailRemoteId(40L);
     mail.setFolder("INBOX");
     mail.setWaitingCount(2);
-    when(emailFilterProposalService.getWaitingEmails(eq(SIMPLE_USER), isNull())).thenReturn(List.of(mail));
+    EmailWaitingSuggestionMail notGiven = new EmailWaitingSuggestionMail();
+    notGiven.setEmailId(5L);
+    when(emailFilterProposalService.getWaitingEmails(eq(SIMPLE_USER), isNull())).thenReturn(List.of(mail, notGiven));
+    EmailAttachment attachment = new EmailAttachment();
+    attachment.setName("budget.pdf");
+    doAnswer(invocation -> {
+      List<EmailWaitingSuggestionMail> rows = invocation.getArgument(1);
+      rows.get(0).setContent(new EmailContent(null, "The figures", List.of(attachment)));
+      rows.get(0).setThreadCount(3);
+      rows.get(0).setThreadHasDraft(true);
+      return null;
+    }).when(emailBoxService).decorateListedRows(eq(SIMPLE_USER), any());
 
     mockMvc.perform(get(FILTERS_PATH + "/proposals/waiting/emails").with(testSimpleUser()))
            .andExpect(status().isOk())
@@ -504,7 +527,16 @@ public class EmailFilterRestTest {
            .andExpect(jsonPath("$[0].mailRemoteId").value(40))
            .andExpect(jsonPath("$[0].folder").value("INBOX"))
            .andExpect(jsonPath("$[0].cached").value(true))
-           .andExpect(jsonPath("$[0].waitingCount").value(2));
+           .andExpect(jsonPath("$[0].waitingCount").value(2))
+           .andExpect(jsonPath("$[0].content.excerpt").value("The figures"))
+           .andExpect(jsonPath("$[0].content.attachments[0].name").value("budget.pdf"))
+           .andExpect(jsonPath("$[0].threadCount").value(3))
+           .andExpect(jsonPath("$[0].threadHasDraft").value(true))
+           .andExpect(jsonPath("$[1].emailId").value(5))
+           .andExpect(jsonPath("$[1]", not(hasKey("content"))))
+           .andExpect(jsonPath("$[1]", not(hasKey("threadCount"))))
+           .andExpect(jsonPath("$[1]", not(hasKey("threadHasDraft"))));
+    verify(emailBoxService).decorateListedRows(SIMPLE_USER, List.of(mail, notGiven));
 
     doThrow(new IllegalAccessException("emailConnector.rules.ownMailboxOnly")).when(emailFilterProposalService)
                                                                                .getWaitingEmails(SIMPLE_USER, 9L);
