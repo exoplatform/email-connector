@@ -207,9 +207,11 @@ document.addEventListener('open-email-shared-with-me', () => {
 /*
  * Opens the mailbox on one of its built-in folders or views, from anywhere in the
  * platform: the web notification of a scheduled mail uses it to open the Scheduled
- * view (EXO-90434), or Sent for a mail that went out without its owner copy (EXO-90595).
+ * view (EXO-90434), or Sent for a mail that went out without its owner copy (EXO-90595);
+ * the waiting-suggestions digest to open the Suggestions view (EXO-90851).
  *
- * detail: {folder} -- the folder key, SCHEDULED for the Scheduled view.
+ * detail: {folder} -- the folder key, SCHEDULED for the Scheduled view, SUGGESTIONS for
+ * the Suggestions view.
  */
 document.addEventListener('open-email-box-folder', event => {
   const folder = event?.detail?.folder;
@@ -276,9 +278,10 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
       opening = search;
     } else if (mailbox) {
       opening.mailbox = mailbox;
-    } else if (!opening.mailRemoteId && /^(INBOX|SENT|ARCHIVE|ALL_MAIL|TRASH|JUNK|CUSTOM:\d{1,18})$/.test(urlParams.get('folder') || '')) {
+    } else if (!opening.mailRemoteId && /^(INBOX|SENT|ARCHIVE|ALL_MAIL|TRASH|JUNK|SUGGESTIONS|CUSTOM:\d{1,18})$/.test(urlParams.get('folder') || '')) {
       // folder=<key> alone opens that folder: the link a mail filter's notification
-      // carries by mail and push when it names no mail (EXO-90654).
+      // carries by mail and push when it names no mail (EXO-90654), and SUGGESTIONS the
+      // Suggestions view, the link of the waiting-suggestions digest (EXO-90851).
       opening.folder = urlParams.get('folder');
     }
     window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, opening));
