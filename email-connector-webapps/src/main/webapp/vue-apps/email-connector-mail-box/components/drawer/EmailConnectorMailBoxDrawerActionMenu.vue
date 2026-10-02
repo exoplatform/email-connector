@@ -27,7 +27,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       close-on-content-click
       offset-y
       left
-      bottom>
+      bottom
+      @input="onMenuToggled">
       <template #activator="{ on, attrs }">
         <v-btn
           v-bind="attrs"
@@ -49,6 +50,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :namespace-folders="namespaceFolders"
         :categories="categories"
         :category-view-id="categoryViewId"
+        :folder-counts="folderCounts"
+        :category-unread-counts="categoryUnreadCounts"
         :sync-in-progress="syncInProgress"
         :has-webmail-access="hasWebmailAccess"
         :hide-views="hideViews"
@@ -58,6 +61,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { CATEGORY_COUNTS_NEEDED_EVENT } from '../../js/EmailConnectorMailBoxService.js';
+
 export default {
   props: {
     currentFolder: {
@@ -86,6 +91,15 @@ export default {
       type: [Number, String],
       default: null,
     },
+    // The counts the folders and categories show, the full-screen column's (EXO-90881).
+    folderCounts: {
+      type: Object,
+      default: () => ({}),
+    },
+    categoryUnreadCounts: {
+      type: Object,
+      default: () => ({}),
+    },
     syncInProgress: {
       type: Boolean,
       default: false,
@@ -110,6 +124,20 @@ export default {
     webmailUrl: {
       type: String,
       default: null,
+    },
+  },
+  methods: {
+    /**
+     * Asks the drawer for what the categories' counts need, the menu opening on them:
+     * their subcategories, read once (EXO-90881).
+     *
+     * @param {Boolean} open whether the menu is now open
+     * @returns {void}
+     */
+    onMenuToggled(open) {
+      if (open && !this.hideViews && this.categories.length) {
+        this.$root.$emit(CATEGORY_COUNTS_NEEDED_EVENT);
+      }
     },
   },
 };

@@ -171,13 +171,12 @@ export default {
       // a collapsed one's folders left out.
       return visibleFolderRows(buildFolderTree(this.folders, this.namespaceFolders || this.folders), this.expandableCollapsed).map(row => {
         const folder = row.folder;
-        const counted = this.folderCounts[folder.key];
-        const count = counted?.count > 0 ? counted.count : 0;
+        const { count, unread, attention } = this.$emailConnectorMailBoxService.folderCountOf(this.folderCounts, folder.key);
         const label = row.showPath ? row.pathLabel
           : this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this));
         return { ...this.buildEntry(`folder:${folder.key}`, this.$emailConnectorMailBoxService.folderIcon(folder),
-          label, count, !!(count && counted.unread),
-          () => this.switchFolder(folder.key), !!counted?.attention), folderKey: folder.key, depth: row.depth,
+          label, count, unread,
+          () => this.switchFolder(folder.key), attention), folderKey: folder.key, depth: row.depth,
         // A label only cannot be clicked, so it never collapses: its folders always show.
         hasChildren: row.hasChildren && folder.readable !== false, labelOnly: folder.readable === false };
       });
@@ -196,7 +195,7 @@ export default {
     /** @returns {Array} the categories, each with its unread mail */
     categoryEntries() {
       return this.categories.map(category => {
-        const count = this.categoryUnreadCounts[category.id] > 0 ? this.categoryUnreadCounts[category.id] : 0;
+        const count = this.$emailConnectorMailBoxService.categoryCountOf(this.categoryUnreadCounts, category.id);
         return { ...this.buildEntry(`category:${category.id}`, category.icon || 'fa-tag', category.name, count, count > 0,
           () => this.openCategoryView(category.id)), categoryId: category.id };
       });
@@ -228,11 +227,7 @@ export default {
      * @returns {Object} the entry
      */
     buildEntry(value, icon, label, count, unread, select, attention = false) {
-      const key = unread ? 'emailConnector.mailBox.list.drawer.navigation.unread' : 'emailConnector.mailBox.list.drawer.navigation.total';
-      let described = count ? this.$t(key, { 0: label, 1: count }) : label;
-      if (attention) {
-        described = this.$t('emailConnector.mailBox.list.drawer.navigation.attention', { 0: described });
-      }
+      const described = this.$emailConnectorMailBoxService.countDescription(this.$t.bind(this), label, count, unread, attention);
       return { value, icon, label, count, unread, select, attention, ariaLabel: described, tooltip: described };
     },
     /**
