@@ -1686,9 +1686,9 @@ public class EmailBoxStorage {
 
   /**
    * A light listed row out of the projection {@code [id, folder, mailHeaderId,
-   * mailRemoteId, subject, sender, receivedDate, read, starred]}, the sender read
-   * through {@link #splitStoredPerson} as {@link #toLightSender} reads it: named by its
-   * address when the column carries no name.
+   * mailRemoteId, subject, sender, receivedDate, read, starred, threadId]}, the sender
+   * read through {@link #splitStoredPerson} as {@link #toLightSender} reads it: named by
+   * its address when the column carries no name.
    *
    * @param row the projected row
    * @return the row as an email carrying those fields only
@@ -1708,6 +1708,7 @@ public class EmailBoxStorage {
     email.setReceivedDate((Date) row[6]);
     email.setRead(Boolean.TRUE.equals(row[7]));
     email.setStarred(Boolean.TRUE.equals(row[8]));
+    email.setThreadId((String) row[9]);
     return email;
   }
 
