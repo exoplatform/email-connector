@@ -158,8 +158,10 @@ public class CalendarInvitationService {
 
   /**
    * The event cannot be added to, or removed from, the user's calendar from here: no
-   * add-on holds a calendar for them, the mail is a shared mailbox's, or the message is
-   * not the kind asked -- a cancellation to add, an invitation to remove.
+   * add-on holds a calendar for them, the mail is a shared mailbox's, the event is one
+   * of this deployment's own Agenda events (it lives in Agenda already), or the message
+   * is not the kind asked -- somebody's answer or a cancellation to add, an invitation to
+   * remove.
    */
   public static final String  NOT_LANDABLE            = "emailConnector.invitation.notLandable";
 
