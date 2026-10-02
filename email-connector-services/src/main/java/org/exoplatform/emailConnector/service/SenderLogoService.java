@@ -322,8 +322,11 @@ public class SenderLogoService {
    * <p>
    * The waiting users are taken only once the domain has left {@link #warming}: a user
    * remembered before that is told by this resolution, and one remembered after it
-   * starts a resolution of their own, which finds the logo cached and tells them. None
-   * is left behind, and nothing is kept for a domain no resolution runs for.
+   * starts a resolution of their own, which finds the logo cached and tells them. A
+   * resolution that found none leaves the users to a resolution started meanwhile, if
+   * any; a user joining in the instant between the two may still be told only at their
+   * next read -- the push is best effort. Nothing is kept for a domain no resolution
+   * runs for.
    *
    * @param domain the normalised domain
    * @param evictFirst whether a stale "no logo" answer is forgotten first
@@ -352,9 +355,13 @@ public class SenderLogoService {
           LOG.debug("The logo of a sender domain could not be resolved", e);
         } finally {
           warming.remove(domain);
-          Set<String> told = waiters.remove(domain);
-          if (found && told != null) {
-            senderLogoWebSocketService.logoFound(domain, told);
+          if (found) {
+            Set<String> told = waiters.remove(domain);
+            if (told != null) {
+              senderLogoWebSocketService.logoFound(domain, told);
+            }
+          } else if (!warming.contains(domain)) {
+            waiters.remove(domain);
           }
         }
       });
