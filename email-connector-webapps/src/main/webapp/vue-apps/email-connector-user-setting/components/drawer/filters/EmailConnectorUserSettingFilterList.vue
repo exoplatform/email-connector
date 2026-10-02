@@ -318,7 +318,9 @@ export default {
       if (this.suggestionCounts[item.id]) {
         lines.push(this.suggestionLine(this.suggestionCounts[item.id]));
       }
-      return this.expanded && lines.length > 1 ? [lines.join(' · ')] : lines;
+      return this.expanded && lines.length > 1
+        ? [this.$t('UserSettings.emailConnector.filters.exo.stats', { 0: lines[0], 1: lines[1] })]
+        : lines;
     },
     /**
      * Reads eXo's filters; a deployment that switched them off is told to the drawer,
