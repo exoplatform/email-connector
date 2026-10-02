@@ -406,6 +406,34 @@ describe('a category picked on a view lists the inbox narrowed to it, as picked 
     expect(listed()).toEqual([3]);
   });
 
+  it('from a search under the lit category: picking it again lists it, the search ended, not the whole inbox', async () => {
+    await onView('INBOX');
+    fixture.wrapper.vm.openCategoryView(IMPORTANT.id);
+    await flush();
+    await flush();
+    await fixture.wrapper.setData({ searchTerm: 'mail' });
+
+    fixture.wrapper.vm.openCategoryView(IMPORTANT.id);
+    await flush();
+    await flush();
+
+    expect(fixture.wrapper.vm.searchActive).toBe(false);
+    expect(fixture.wrapper.vm.categoryViewId).toBe(IMPORTANT.id);
+    expect(listed()).toEqual([2]);
+  });
+
+  it('lists the category itself and opens its first mail when its expansion fails', async () => {
+    await onView(emailConnectorMailBoxService.SUGGESTIONS_VIEW, { subcategoryIds: () => Promise.reject(new Error('down')) });
+
+    fixture.wrapper.vm.openCategoryView(INVITATION.id);
+    await flush();
+    await flush();
+    await flush();
+
+    expect(listed()).toEqual([3]);
+    expect(readerOpenings(fixture)).toEqual([[3, 'INBOX', { broadcast: false }]]);
+  });
+
   it('opens no mail of the inbox before the category is expanded, when its expansion lands after the inbox', async () => {
     let expand;
     await onView(emailConnectorMailBoxService.SUGGESTIONS_VIEW, {
