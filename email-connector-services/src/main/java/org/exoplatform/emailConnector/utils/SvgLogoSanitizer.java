@@ -176,6 +176,13 @@ public final class SvgLogoSanitizer {
                                                             "type",
                                                             "media");
 
+  /**
+   * How deep elements may nest: a logo is a few groups deep. A deeper document is
+   * refused whole, which keeps the cleaning and the serializer's recursion bounded --
+   * a few thousand nested groups, well inside the size limit, would overflow the stack.
+   */
+  static final int                 MAX_DEPTH       = 64;
+
   /** A {@code url(...)} reference, quoted or not. */
   private static final Pattern     URL_REFERENCE   = Pattern.compile("url\\(\\s*['\"]?([^)'\"]*)['\"]?\\s*\\)",
                                                                      Pattern.CASE_INSENSITIVE);
@@ -189,7 +196,8 @@ public final class SvgLogoSanitizer {
    * @param svg the document's bytes, as fetched
    * @return the cleaned document, UTF-8, or null when it is not an SVG document this
    *         accepts (not well-formed, a document type declaration, a root other than
-   *         {@code svg} in the SVG namespace)
+   *         {@code svg} in the SVG namespace, elements nested deeper than
+   *         {@link #MAX_DEPTH})
    */
   public static byte[] sanitize(byte[] svg) {
     if (svg == null || svg.length == 0) {
@@ -201,7 +209,9 @@ public final class SvgLogoSanitizer {
       if (root == null || !SVG_NS.equals(root.getNamespaceURI()) || !"svg".equals(root.getLocalName())) {
         return null; // NOSONAR as above
       }
-      clean(root);
+      if (!clean(root, 1)) {
+        return null; // NOSONAR as above
+      }
       return serialize(document);
     } catch (Exception e) {
       LOG.debug("An SVG logo was refused: {}", e.getClass().getSimpleName());
@@ -237,8 +247,14 @@ public final class SvgLogoSanitizer {
    * cleaned or removed with its subtree.
    *
    * @param element the element
+   * @param depth its depth, the root being 1
+   * @return false when an element kept sits deeper than {@link #MAX_DEPTH}: the
+   *         document is refused
    */
-  private static void clean(Element element) {
+  private static boolean clean(Element element, int depth) {
+    if (depth > MAX_DEPTH) {
+      return false;
+    }
     cleanAttributes(element);
     List<Node> children = new ArrayList<>();
     NodeList nodes = element.getChildNodes();
@@ -251,7 +267,9 @@ public final class SvgLogoSanitizer {
       case Node.ELEMENT_NODE -> {
         Element childElement = (Element) child;
         if (!styleElement && SVG_NS.equals(childElement.getNamespaceURI()) && ELEMENTS.contains(childElement.getLocalName())) {
-          clean(childElement);
+          if (!clean(childElement, depth + 1)) {
+            return false;
+          }
         } else {
           element.removeChild(child);
         }
@@ -264,6 +282,7 @@ public final class SvgLogoSanitizer {
       default -> element.removeChild(child);
       }
     }
+    return true;
   }
 
   /**
