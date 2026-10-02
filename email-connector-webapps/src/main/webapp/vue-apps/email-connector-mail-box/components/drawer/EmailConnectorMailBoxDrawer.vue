@@ -50,9 +50,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :own-address="ownAddress"
           :own-unread-count="ownInboxUnread"
           @switch="onSwitchMailbox" />
-        <span v-else class="text-body">
-          {{ title }}
-        </span>
+        <!-- In selection mode the count is the select-all row's alone, above the list:
+             the header keeps its room for the back arrow and the actions. -->
+        <span v-else></span>
       </div>
       <div v-else>
         <span></span>
@@ -86,9 +86,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :own-address="ownAddress"
           :own-unread-count="ownInboxUnread"
           @switch="onSwitchMailbox" />
-        <span v-else class="text-body">
-          {{ title }}
-        </span>
+        <span v-else></span>
         <email-connector-mail-box-drawer-actions
           :emails="emails"
           class="d-flex align-center"
@@ -1139,13 +1137,8 @@ export default {
       return this.emailBox?.emailSyncStatus === 'BLOCKED';
     },
     title() {
-      if (!this.selectMode) {
-        const title = this.$t('emailConnector.mailBox.list.drawer.title');
-        return this.titleSuffix ? `${title} · ${this.titleSuffix}` : title;
-      }
-      return `${this.selectedEmails.length} ${this.selectedEmails.length === 1 ?
-        this.$t('emailConnector.mailBox.list.drawer.emailSelected') :
-        this.$t('emailConnector.mailBox.list.drawer.emailsSelected')}`;
+      const title = this.$t('emailConnector.mailBox.list.drawer.title');
+      return this.titleSuffix ? `${title} · ${this.titleSuffix}` : title;
     },
     indeterminate() {
       return this.selectedEmails.length > 0 && this.selectedEmails.length < this.emails.length; 
