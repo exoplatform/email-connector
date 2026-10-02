@@ -50,6 +50,14 @@ public class EmailSender {
   private boolean domainVerified;
 
   /**
+   * Whether the reader offered no brand logo only because the domain's is still being
+   * looked up for the reading user (EXO-90909): the page is told over the WebSocket when
+   * it is found, and may then show the logo its avatar cache gets for the address. Set
+   * by the reader's decoration only, under the same conditions as {@code logoUrl}.
+   */
+  private boolean logoPending;
+
+  /**
    * A sender without a brand logo.
    *
    * @param name the name to show
@@ -58,6 +66,6 @@ public class EmailSender {
    * @param profileUrl the platform profile, or null
    */
   public EmailSender(String name, String address, String avatarUrl, String profileUrl) {
-    this(name, address, avatarUrl, profileUrl, null, false);
+    this(name, address, avatarUrl, profileUrl, null, false, false);
   }
 }
