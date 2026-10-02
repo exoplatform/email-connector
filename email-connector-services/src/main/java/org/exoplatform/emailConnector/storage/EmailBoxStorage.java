@@ -1793,6 +1793,42 @@ public class EmailBoxStorage {
   }
 
   /**
+   * {@link #getThreadSummaries(String, String, List)} over some conversations only, and
+   * without the draft's participants, which only a draft row reads: what a list of
+   * search hits or of the "Suggestions" view counts its mails' conversations by
+   * (EXO-90882). One query, whatever the number of conversations.
+   *
+   * @param userId the mailbox owner
+   * @param threadIds the conversations; nothing is read when there is none
+   * @param alsoExcluded the folders to leave out beside the hidden ones
+   * @return the summaries found, by thread id
+   */
+  public Map<String, ThreadSummary> getThreadSummariesOf(String userId, Collection<String> threadIds, List<String> alsoExcluded) {
+    if (threadIds == null || threadIds.isEmpty()) {
+      return new HashMap<>();
+    }
+    List<String> excluded = new ArrayList<>(MailFolder.HIDDEN_FOLDERS);
+    excluded.addAll(alsoExcluded == null ? List.of() : alsoExcluded);
+    return summarize(emailBoxDao.summarizeThreadsByUserIdAndThreadIds(userId, threadIds, excluded), Map.of());
+  }
+
+  /**
+   * {@link #getMailboxThreadSummaries} over some conversations only, for the same lists
+   * (EXO-90882).
+   *
+   * @param userId the delegate whose mirror it is
+   * @param folders the shared mailbox's folder keys
+   * @param threadIds the conversations
+   * @return the summaries found, by thread id
+   */
+  public Map<String, ThreadSummary> getMailboxThreadSummariesOf(String userId, List<String> folders, Collection<String> threadIds) {
+    if (folders == null || folders.isEmpty() || threadIds == null || threadIds.isEmpty()) {
+      return new HashMap<>();
+    }
+    return summarize(emailBoxDao.summarizeThreadsByUserIdAndThreadIdsInFolders(userId, threadIds, folders), Map.of());
+  }
+
+  /**
    * Turns the grouped rows into summaries.
    *
    * @param rows {@code [threadId, messageCount, draftCount]} rows

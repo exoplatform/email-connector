@@ -721,12 +721,12 @@ public class EmailBoxRest {
    * @param folder folder to search: INBOX, SENT or ARCHIVE, or CUSTOM:&lt;id&gt; for a
    * folder of a mailbox shared with the caller
    * @param limit maximum number of hits to return (newest first)
-   * @return the email search result page
+   * @return the email search result page, each hit in eXo's copy carrying what the folder list shows of it
    */
   @GetMapping("/search")
   @Secured("users")
   @Operation(summary = "Searches the mailbox on the server", method = "GET",
-             description = "Runs an IMAP SEARCH over the remote folder (INBOX by default), so it finds mail anywhere in the mailbox, not just the locally-cached window. Returns the newest hits (uid, folder, subject, sender, date, read flag, cached flag) plus the total match count. At least one criterion (query, from, to, words, unread, favorites, attachment, sinceDays, after or before) is required; all of them are combined. A folder of a mailbox shared with the caller (CUSTOM:<id>) is searched in the caller's copy of it instead, never on the server: its recent window only, while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read.")
+             description = "Runs an IMAP SEARCH over the remote folder (INBOX by default), so it finds mail anywhere in the mailbox, not just the locally-cached window. Returns the newest hits (uid, folder, subject, sender, date, read flag, cached flag) plus the total match count. A hit in the copy kept in eXo also carries what the mailbox's folder list shows of it: content (its excerpt and attachments, never its body), and, once its conversation is counted, threadCount and threadHasDraft; a hit outside the copy carries none of these three fields. At least one criterion (query, from, to, words, unread, favorites, attachment, sinceDays, after or before) is required; all of them are combined. A folder of a mailbox shared with the caller (CUSTOM:<id>) is searched in the caller's copy of it instead, never on the server: its recent window only, while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request: a folder that cannot be searched (emailConnector.folder.notBrowsable) -- which is also the answer for a folder of a share whose folders were already removed -- no search criterion (emailConnector.search.criteriaRequired), a day that is not yyyy-MM-dd (emailConnector.search.invalidDate) or a before day not after the after day (emailConnector.search.invalidDateRange)"),
       @ApiResponse(responseCode = "403", description = "Forbidden operation"),
@@ -810,12 +810,12 @@ public class EmailBoxRest {
    * @param folder folder to search: INBOX, SENT or ARCHIVE, or CUSTOM:&lt;id&gt; for a
    * folder of a mailbox shared with the caller
    * @param limit maximum number of hits to return (newest first)
-   * @return the email search result page
+   * @return the email search result page, each hit in eXo's copy carrying what the folder list shows of it
    */
   @GetMapping("/search/local")
   @Secured("users")
   @Operation(summary = "Searches one folder in the copy of the mailbox kept in eXo", method = "GET",
-             description = "Filters the messages of one folder that this add-on holds locally -- the newest of each folder, as the synchronization keeps them -- with the same criteria as /search, never touching the mail server. Returns the newest hits and the total match count. At least one criterion is required; all of them are combined. The folder is INBOX, SENT or ARCHIVE, or a folder of a mailbox shared with the caller while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read. The attachment criterion is the attachments eXo holds for a message.")
+             description = "Filters the messages of one folder that this add-on holds locally -- the newest of each folder, as the synchronization keeps them -- with the same criteria as /search, never touching the mail server. Returns the newest hits and the total match count, each with what the mailbox's folder list shows of it: content (its excerpt and attachments, never its body) and, once its conversation is counted, threadCount and threadHasDraft. At least one criterion is required; all of them are combined. The folder is INBOX, SENT or ARCHIVE, or a folder of a mailbox shared with the caller while the share is accepted, never its owner's Trash or Spam nor a folder the caller may not read. The attachment criterion is the attachments eXo holds for a message.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request: a folder that cannot be searched (emailConnector.folder.notBrowsable), no search criterion (emailConnector.search.criteriaRequired), a day that is not yyyy-MM-dd (emailConnector.search.invalidDate) or a before day not after the after day (emailConnector.search.invalidDateRange)"),
       @ApiResponse(responseCode = "403", description = "Forbidden operation"),
