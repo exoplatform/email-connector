@@ -204,23 +204,31 @@ describe('the Suggestions view renders the folder list\'s row for each mail (EXO
   });
 
   /**
-   * Mounts the view over the waiting suggestions, read first: the mails read are observed
-   * through the platform's Vue global, which a unit test has none of, so the view is
-   * mounted on what the read brought rather than told of it.
+   * Mounts the view over the mails the drawer hands it, and lets its own read of the
+   * waiting suggestions land.
    *
-   * @param {Object} props the view's props
+   * @param {Object} props the view's props, the mails unless given
    * @returns {Promise<Wrapper>} the view, loaded
    */
   async function mountView(props = {}) {
-    await refreshWaitingSuggestions(true);
     wrapper = shallowMount(EmailConnectorMailBoxSuggestionsList, {
-      propsData: props,
+      propsData: { emails: mails, ...props },
       mocks: { $t: t },
       stubs: { 'email-connector-mail-box-drawer-list-item': rowStub },
     });
     await flush();
     return wrapper;
   }
+
+  it('renders the mails the drawer hands it, not the last read on its own: the drawer leaves out the ones acted on', async () => {
+    await refreshWaitingSuggestions(true);
+    await mountView({ emails: [mails[1]] });
+
+    expect(wrapper.findAllComponents(rowStub).wrappers.map(row => row.props('rowKey'))).toEqual(['INBOX:8']);
+    await wrapper.setProps({ emails: [] });
+    expect(wrapper.findAllComponents(rowStub).length).toBe(0);
+    expect(wrapper.find('.suggestions-email-empty').exists()).toBe(true);
+  });
 
   it('hands each row the mail, its key by folder and UID, the folder to name, the selection and the drag', async () => {
     const dragSource = { folder: 'ARCHIVE', ids: [7] };
@@ -390,6 +398,8 @@ describe('the mailbox drawer gives its bars the rows on screen and ends a search
       isReadOnlyFolder: emailConnectorMailBoxService.isReadOnlyFolder,
       getAvailableEmailCategories: jest.fn(() => Promise.resolve([])),
       updateEmailsFavoriteStatus: jest.fn(() => Promise.resolve({ failedUpdates: 0 })),
+      updateEmailsReadStatus: jest.fn(() => Promise.resolve({ failedUpdates: 0 })),
+      deleteEmails: jest.fn(() => Promise.resolve({ failedDeletions: 0 })),
     });
     wrapper = shallowMount(EmailConnectorMailBoxDrawer, {
       mocks: {
@@ -419,28 +429,62 @@ describe('the mailbox drawer gives its bars the rows on screen and ends a search
     await wrapper.setData({ searchTerm: 'nothing listed matches', searchServerResults: [hit(5, 'ARCHIVE')] });
     expect(wrapper.vm.listedEmails.map(row => `${row.folder}:${row.mailRemoteId}`)).toEqual(['ARCHIVE:5']);
 
-    const mails = [hit(7, 'ARCHIVE', { mailHeaderId: '<7@host>', waitingCount: 1 })];
-    jest.spyOn(userSettingService, 'getWaitingSuggestionMails').mockResolvedValue(['<7@host>']);
-    jest.spyOn(userSettingService, 'getWaitingSuggestionEmails').mockResolvedValue(mails);
+    const mails = await suggestionsRead([hit(7, 'ARCHIVE', { mailHeaderId: '<7@host>', waitingCount: 1 })]);
     wrapper.vm.clearSearch();
     await wrapper.setData({ currentFolder: emailConnectorMailBoxService.SUGGESTIONS_VIEW });
-    await mountView();
     expect(wrapper.vm.listedEmails).toEqual(mails);
   });
 
   /**
-   * Reads the waiting suggestions as the Suggestions view does on opening.
+   * Has the waiting suggestions read answer the given mails, and reads them, as the
+   * Suggestions view does on opening.
    *
-   * @returns {Promise<void>} resolved once read
+   * @param {Array} mails the mails with a suggestion waiting
+   * @returns {Promise<Array>} the mails, read
    */
-  async function mountView() {
-    const view = shallowMount(EmailConnectorMailBoxSuggestionsList, {
-      mocks: { $t: t },
-      stubs: { 'email-connector-mail-box-drawer-list-item': true },
-    });
-    await flush();
-    view.destroy();
+  async function suggestionsRead(mails) {
+    jest.spyOn(userSettingService, 'getWaitingSuggestionMails').mockResolvedValue(mails.map(mail => mail.mailHeaderId));
+    jest.spyOn(userSettingService, 'getWaitingSuggestionEmails').mockResolvedValue(mails);
+    await refreshWaitingSuggestions(true);
+    return mails;
   }
+
+  it('stamps a star and a read status set on a Suggestions mail on its row, in its folder, never on a twin', async () => {
+    await mountDrawer();
+    const mails = await suggestionsRead([
+      hit(5, 'ARCHIVE', { mailHeaderId: '<a5@host>', waitingCount: 1, read: false }),
+      hit(5, 'INBOX', { mailHeaderId: '<5@host>', waitingCount: 1, read: false }),
+    ]);
+    await wrapper.setData({ currentFolder: emailConnectorMailBoxService.SUGGESTIONS_VIEW });
+
+    wrapper.vm.$root.$emit('update-email-favorite-status', true, [5], 'ARCHIVE');
+    wrapper.vm.$root.$emit('update-email-read-status', true, [5], 'ARCHIVE');
+    await flush();
+
+    expect(mails.map(mail => [mail.starred, mail.read])).toEqual([[true, true], [false, false]]);
+    expect(service.updateEmailsFavoriteStatus).toHaveBeenCalledWith([5], true, 'ARCHIVE');
+    expect(service.updateEmailsReadStatus).toHaveBeenCalledWith([5], true, 'ARCHIVE');
+  });
+
+  it('takes a Suggestions mail acted on out of the view at once, and reads the view again once the server answered', async () => {
+    await mountDrawer();
+    await suggestionsRead([
+      hit(7, 'ARCHIVE', { mailHeaderId: '<7@host>', waitingCount: 1 }),
+      hit(8, 'INBOX', { mailHeaderId: '<8@host>', waitingCount: 1 }),
+    ]);
+    await wrapper.setData({ currentFolder: emailConnectorMailBoxService.SUGGESTIONS_VIEW });
+    const readsBefore = userSettingService.getWaitingSuggestionEmails.mock.calls.length;
+
+    wrapper.vm.$root.$emit('delete-email', [7], 'ARCHIVE');
+
+    const keys = rows => rows.map(row => `${row.folder}:${row.mailRemoteId}`);
+    expect(keys(wrapper.vm.suggestionMails)).toEqual(['INBOX:8']);
+    expect(keys(wrapper.vm.listedEmails)).toEqual(['INBOX:8']);
+    expect(userSettingService.getWaitingSuggestionEmails.mock.calls.length).toBe(readsBefore);
+    await flush();
+    expect(service.deleteEmails).toHaveBeenCalledWith([7], 'ARCHIVE', true);
+    expect(userSettingService.getWaitingSuggestionEmails.mock.calls.length).toBe(readsBefore + 1);
+  });
 
   it('ends a selection made among the hits when the search ends, and leaves one made in the list when no search ran', async () => {
     await mountDrawer();
