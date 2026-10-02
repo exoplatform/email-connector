@@ -41,6 +41,7 @@ import org.springframework.stereotype.Service;
 import org.exoplatform.emailConnector.model.SenderLogo;
 import org.exoplatform.emailConnector.storage.SenderLogoStorage;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
+import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
 import org.exoplatform.emailConnector.utils.SenderLogoUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -128,8 +129,10 @@ public class SenderLogoService {
    * and the domain's logo is in the cache. A domain not resolved yet, or whose "no
    * logo" is older than a day, is resolved in the background and gets null this time;
    * null, too, for a domain known to have no logo, an address without a valid domain,
-   * no DMARC pass, a free mail provider's domain, or the feature off. Nothing is
-   * fetched on the caller's thread.
+   * no DMARC pass, a free mail provider's domain, the feature off, or no mail server
+   * named as trusted ({@code EmailSecurityUtils#TRUSTED_AUTHSERV_IDS_PROPERTY}: a pass
+   * stored before it was unset is not believed either). Nothing is fetched on the
+   * caller's thread.
    *
    * @param address the sender's address
    * @param dmarcPassed whether the message passed DMARC for the address's domain
@@ -137,7 +140,7 @@ public class SenderLogoService {
    * @return the logo's URL, or null for the initials
    */
   public String logoUrlFor(String address, boolean dmarcPassed, String username) {
-    if (!dmarcPassed || StringUtils.isBlank(username)) {
+    if (!dmarcPassed || StringUtils.isBlank(username) || !trustConfigured()) {
       return null;
     }
     String domain = brandDomainOf(address);
@@ -155,14 +158,18 @@ public class SenderLogoService {
   }
 
   /**
-   * Whether an address could be offered a logo at all -- the feature on, a valid
-   * domain, not one known to have none -- for a caller to skip the costlier checks of
-   * {@link #logoUrlFor} when it could not.
+   * Whether an address could be offered a logo at all -- a mail server named as
+   * trusted for its sender checks, the feature on, a valid domain, not one known to
+   * have none -- for a caller to skip the costlier checks of {@link #logoUrlFor} when it
+   * could not.
    *
    * @param address the sender's address
    * @return false when no logo can be offered for it now
    */
   public boolean mayOffer(String address) {
+    if (!trustConfigured()) {
+      return false;
+    }
     String domain = brandDomainOf(address);
     if (domain == null || !emailConnectorService.isSenderLogosEnabled()) {
       return false;
@@ -247,6 +254,16 @@ public class SenderLogoService {
     } catch (RejectedExecutionException e) {
       warming.remove(domain);
     }
+  }
+
+  /**
+   * Whether the deployment names the mail servers whose DMARC verdict is believed:
+   * without one, no logo is ever offered, and nothing is looked up for one.
+   *
+   * @return true when at least one is named
+   */
+  private static boolean trustConfigured() {
+    return !EmailSecurityUtils.trustedAuthservIds().isEmpty();
   }
 
   /**
