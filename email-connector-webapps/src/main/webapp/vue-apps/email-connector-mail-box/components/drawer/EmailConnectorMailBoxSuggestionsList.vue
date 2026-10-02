@@ -43,6 +43,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :selected-emails="selectedEmails"
         :expanded="compact"
         :drag-source="dragSource"
+        :folders="folders"
         show-folder
         @open="open(mail)" />
     </div>
@@ -92,6 +93,11 @@ export default {
     dragSource: {
       type: Object,
       default: null,
+    },
+    // The mailbox's folders, for each mail to name the one it sits in.
+    folders: {
+      type: Array,
+      default: () => [],
     },
   },
   data: () => ({
