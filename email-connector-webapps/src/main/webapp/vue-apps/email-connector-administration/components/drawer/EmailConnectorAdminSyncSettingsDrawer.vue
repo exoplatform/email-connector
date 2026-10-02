@@ -168,6 +168,23 @@ do not, because turning one off only stops a READ (see their subtitles).
               @change="onSharedMailboxSentCopyChange" />
           </v-list-item-action>
         </v-list-item>
+        <v-list-item dense class="px-0 height-auto mt-6">
+          <v-list-item-content class="py-0">
+            <v-list-item-title>
+              {{ $t('emailConnector.admin.syncSettings.senderLogos.title') }}
+            </v-list-item-title>
+            <v-list-item-subtitle class="text-wrap text-light-color">
+              {{ $t('emailConnector.admin.syncSettings.senderLogos.subtitle') }}
+            </v-list-item-subtitle>
+          </v-list-item-content>
+          <v-list-item-action class="my-0">
+            <v-switch
+              :input-value="senderLogosEnabled"
+              :loading="savingSenderLogos"
+              :disabled="savingSenderLogos"
+              @change="onSenderLogosChange" />
+          </v-list-item-action>
+        </v-list-item>
         <!-- Writing mail in a shared mailbox owner's name depends on the mail server, and is
              declared in the server's properties rather than here: one help line says so. -->
         <div class="caption text-light-color text-wrap mt-6 email-connector-send-identity-help">
@@ -223,6 +240,8 @@ export default {
       sharedMailboxSentCopyShown: true,
       savingSharedMailboxSentCopy: false,
       queuedSharedMailboxSentCopy: null,
+      senderLogosEnabled: true,
+      savingSenderLogos: false,
     };
   },
   created() {
@@ -285,6 +304,8 @@ export default {
           this.sharedMailboxSentCopyEnabled = enabled;
           this.sharedMailboxSentCopyShown = enabled;
         });
+      this.$emailConnectorAdministrationService.getSenderLogosEnabled()
+        .then(enabled => this.senderLogosEnabled = enabled);
     },
     /**
      * Opens the confirmation before applying a cache size change — every
@@ -435,6 +456,20 @@ export default {
             this.onSharedMailboxSentCopyChange(queued);
           }
         });
+    },
+    /**
+     * Saves the switch of the senders' brand logos on change (EXO-90893). Off, the
+     * server fetches nothing more and senders keep their initials.
+     *
+     * @param {Boolean} enabled the new switch value
+     * @returns {void}
+     */
+    onSenderLogosChange(enabled) {
+      this.savingSenderLogos = true;
+      this.$emailConnectorAdministrationService.updateSenderLogosEnabled(enabled)
+        .then(() => this.senderLogosEnabled = enabled)
+        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error'))
+        .finally(() => this.savingSenderLogos = false);
     },
   },
 };
