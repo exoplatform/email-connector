@@ -22,6 +22,7 @@ import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -29,6 +30,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.TimeUnit;
 
 import javax.crypto.Mac;
@@ -119,6 +121,10 @@ public class SenderLogoService {
 
   private final byte[]          tokenKey      = newTokenKey();
 
+  private final int             epoch         = new SecureRandom().nextInt();
+
+  private final AtomicLong      resolutions   = new AtomicLong();
+
   private Executor              warmExecutor  = warmPool;
 
   /**
@@ -208,6 +214,22 @@ public class SenderLogoService {
   }
 
   /**
+   * A value that changes whenever a logo offer could: at each server start (the URL
+   * tokens' key is drawn anew), when the switch or the trusted mail servers change, and
+   * each time a domain's resolution ends. The reader's cache validators fold it in, so
+   * a copy cached before a logo was resolved, or carrying a URL a restart made stale,
+   * is not confirmed as current.
+   *
+   * @return the fingerprint
+   */
+  public int offerFingerprint() {
+    if (!trustConfigured()) {
+      return 0;
+    }
+    return Objects.hash(epoch, emailConnectorService.isSenderLogosEnabled(), EmailSecurityUtils.trustedAuthservIds(), resolutions.get());
+  }
+
+  /**
    * Stops the background resolutions.
    */
   @PreDestroy
@@ -245,6 +267,7 @@ public class SenderLogoService {
             senderLogoStorage.evict(domain);
           }
           senderLogoStorage.getLogo(domain);
+          resolutions.incrementAndGet();
         } catch (RuntimeException e) {
           LOG.debug("The logo of a sender domain could not be resolved", e);
         } finally {

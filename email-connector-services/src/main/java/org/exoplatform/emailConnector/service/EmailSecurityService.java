@@ -176,16 +176,18 @@ public class EmailSecurityService {
   }
 
   /**
-   * A short value that changes whenever the user's remote-content choices change, for
-   * the reader's cache validators: a copy cached with images blocked must not be
-   * confirmed as current once the user trusted its sender or switched blocking off.
+   * A short value that changes whenever what {@link #decorate} would give a message
+   * changes, for the reader's cache validators: a copy cached with images blocked must
+   * not be confirmed as current once the user trusted its sender or switched blocking
+   * off (EXO-90841), nor a copy cached without its sender's brand logo once the logo
+   * was resolved, or with a logo URL a restart or the switch made stale (EXO-90893).
    *
    * @param username the user
    * @return the fingerprint of the choices
    */
   public int settingsFingerprint(String username) {
     RemoteContentSettings settings = getSettings(username);
-    return Objects.hash(settings.isBlockRemoteContent(), settings.getTrustedSenders());
+    return Objects.hash(settings.isBlockRemoteContent(), settings.getTrustedSenders(), senderLogoService.offerFingerprint());
   }
 
   /**
