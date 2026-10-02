@@ -42,8 +42,22 @@ const URL_PARAMS = {
 };
 
 // The kinds of attachment a search can ask for (EXO-90910), by the keys the server
-// defines them under (SearchAttachmentType), in the order the drawer offers them.
-export const ATTACHMENT_TYPES = ['PDF', 'DOCUMENT', 'SPREADSHEET', 'PRESENTATION', 'IMAGE', 'ARCHIVE'];
+// defines them under (SearchAttachmentType), in the order the drawer offers them: the
+// documents app's "Type of file" filter's (DocumentAdvancedFilterDrawer.vue), Archive,
+// which mail carries and Drive does not filter on, last.
+export const ATTACHMENT_TYPES = ['DOCUMENT', 'SPREADSHEET', 'PRESENTATION', 'PDF', 'IMAGE', 'VIDEO', 'ARCHIVE'];
+
+// The MIME type whose icon stands for each kind, as the documents app's filter picks its
+// icons from its own map (getAttachmentIcon holds the same map).
+export const ATTACHMENT_TYPE_ICON_MIME_TYPES = {
+  DOCUMENT: 'application/msword',
+  SPREADSHEET: 'officedocument.spreadsheetml.sheet',
+  PRESENTATION: 'application/vnd.ms-powerpoint',
+  PDF: 'application/pdf',
+  IMAGE: 'image/png',
+  VIDEO: 'video/mpeg',
+  ARCHIVE: 'application/zip',
+};
 
 // The longest "file name contains" text: the server's
 // EmailBoxService.SEARCH_MAX_ATTACHMENT_NAME_LENGTH, which refuses a longer one.
