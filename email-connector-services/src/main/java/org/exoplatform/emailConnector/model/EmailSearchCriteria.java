@@ -74,6 +74,16 @@ public class EmailSearchCriteria {
   // other category refused with emailConnector.search.invalidCategory.
   private List<Long> categoryIds;
 
+  // Only the messages with an attachment of one of these kinds (EXO-90910): keys of
+  // SearchAttachmentType, an unknown one refused with
+  // emailConnector.search.invalidAttachmentType. Implies an attachment.
+  private List<String> attachmentTypes;
+
+  // Only the messages with an attachment whose name contains this text, case ignored
+  // (EXO-90910); longer than EmailBoxService.SEARCH_MAX_ATTACHMENT_NAME_LENGTH refused
+  // with emailConnector.search.attachmentNameTooLong. Implies an attachment.
+  private String     attachmentName;
+
   /**
    * Whether at least one criterion is set: a search with none would list the whole
    * folder, which is what the folder's own list is for.
@@ -83,6 +93,16 @@ public class EmailSearchCriteria {
   public boolean hasCriterion() {
     return StringUtils.isNotBlank(query) || StringUtils.isNotBlank(from) || StringUtils.isNotBlank(to)
         || StringUtils.isNotBlank(words) || unreadOnly || favoritesOnly || attachmentsOnly || sinceDays != null
-        || after != null || before != null || categoryIds != null && !categoryIds.isEmpty();
+        || after != null || before != null || categoryIds != null && !categoryIds.isEmpty() || hasAttachmentFileCriterion();
+  }
+
+  /**
+   * Whether the search asks something of the attachments themselves -- their kind or
+   * their name (EXO-90910) -- rather than only that there is one.
+   *
+   * @return true when a kind or a name fragment is set
+   */
+  public boolean hasAttachmentFileCriterion() {
+    return attachmentTypes != null && !attachmentTypes.isEmpty() || StringUtils.isNotBlank(attachmentName);
   }
 }
