@@ -18,24 +18,31 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <!-- The "Suggestions" view (EXO-90851), in place of a folder's list: the user's own
        mails with a suggestion of an assistant waiting for them, newest first, from their
        own endpoint, read with the waiting suggestions (refreshWaitingSuggestions), which
-       the folder column counts from. Each one is drawn and opened as a search hit is --
-       it may sit in any folder --, and its Automations panel shows open, ready to approve
-       or reject (isSuggestionsViewListed). No loading bar of its own: the drawer's header
-       bar shows what it waits on (the loading event), as for the Scheduled view. -->
+       the folder column counts from. Each one is the folder list's own row (EXO-90871)
+       -- star, selection, categories, drag, the count of its waiting suggestions --,
+       alone in its conversation, keyed by folder and UID since it may sit in any folder,
+       which the row names; opened as a search hit is, and its Automations panel shows
+       open, ready to approve or reject (isSuggestionsViewListed). No loading bar of its
+       own: the drawer's header bar shows what it waits on (the loading event), as for
+       the Scheduled view. -->
   <div class="suggestions-email-list">
     <div
       v-if="items.length"
       :aria-label="$t('emailConnector.mailBox.list.drawer.folder.suggestions')"
       role="group">
-      <template v-for="(mail, index) in items">
-        <v-divider v-if="index > 0" :key="`divider-${keyOf(mail)}`" />
-        <email-connector-mail-box-drawer-search-result-item
-          :key="keyOf(mail)"
-          :result="mail"
-          :row-key="keyOf(mail)"
-          :opened="openedKey === keyOf(mail)"
-          @open="open(mail)" />
-      </template>
+      <email-connector-mail-box-drawer-list-item
+        v-for="mail in items"
+        :key="keyOf(mail)"
+        :email="mail"
+        :emails="items"
+        :row-key="keyOf(mail)"
+        :opened-key="openedKey"
+        :select-mode="selectMode"
+        :selected-emails="selectedEmails"
+        :expanded="compact"
+        :drag-source="dragSource"
+        show-folder
+        @open="open(mail)" />
     </div>
     <div
       v-if="loaded && !items.length"
@@ -54,10 +61,27 @@ import { refreshWaitingSuggestions, setSuggestionsViewListed, waitingSuggestionM
 
 export default {
   props: {
-    // Whether it sits in the full-screen list column rather than in the narrow drawer.
+    // Whether it sits in the full-screen list column rather than in the narrow drawer:
+    // its rows are then the full-screen rows, lit as the reader's and dragged onto the
+    // folder column.
     compact: {
       type: Boolean,
       default: false,
+    },
+    // Whether the rows are being selected, and the selection's keys (folder:uid), as the
+    // folder list takes them (EXO-90871).
+    selectMode: {
+      type: Boolean,
+      default: false,
+    },
+    selectedEmails: {
+      type: Array,
+      default: () => [],
+    },
+    // The mail being dragged from the list, for its rows to fade (EXO-90421).
+    dragSource: {
+      type: Object,
+      default: null,
     },
   },
   data: () => ({
