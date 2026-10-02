@@ -21,12 +21,12 @@ package org.exoplatform.emailConnector.exception;
  * connect another connector than the designated one.
  * <p>
  * An {@link IllegalAccessException}, so it is answered with <b>403</b> as every refusal
- * of this kind; its own type lets the REST layer put its message code in the response,
- * for the interface to say why, without doing so for the other refusals.
+ * of this kind; its own type lets the REST layer carry its message code in the response
+ * body, which it does for no other refusal.
  */
 public class ManagedConnectionLockedException extends IllegalAccessException {
 
-  /** The message code the interface translates. */
+  /** The message code of the refusal, carried in the 403 body. */
   public static final String MESSAGE_CODE     = "emailConnector.managed.connectionLocked";
 
   private static final long  serialVersionUID = 1L;
