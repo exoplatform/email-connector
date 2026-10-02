@@ -42,6 +42,14 @@ public class EmailSender {
   private String logoUrl;
 
   /**
+   * Whether the receiving server's sender check vouches for this message's domain
+   * (EXO-90893): it passed DMARC and failed nothing. Read from the stored row, for the
+   * mail list, which may show the brand logo the page learnt for the address on this
+   * row only; never a reason to trust anything else.
+   */
+  private boolean domainVerified;
+
+  /**
    * A sender without a brand logo.
    *
    * @param name the name to show
@@ -50,6 +58,6 @@ public class EmailSender {
    * @param profileUrl the platform profile, or null
    */
   public EmailSender(String name, String address, String avatarUrl, String profileUrl) {
-    this(name, address, avatarUrl, profileUrl, null);
+    this(name, address, avatarUrl, profileUrl, null, false);
   }
 }
