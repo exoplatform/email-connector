@@ -21,9 +21,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        ways to load them. Dressed like the assistant card above the mail: a thin frame in
        the platform's border colour with a thicker accent on the reading-start side (the
        warning colour for the reasons, the primary colour for the images), in secondary
-       text size so it reads as a notice. Wide (the full-screen reader), each notice is
-       one line with its links at the end; narrow (the drawer), the links wrap under the
-       text. The reasons quote what the message presents as text, never as markup.
+       text size and tight padding so it reads as a light notice. The images notice is one
+       line with its links at the end when the pane is wide enough, its links under the
+       text otherwise. The reasons quote what the message presents as text, never as markup.
        "Always show" is not offered on a message that looks suspicious. Inline style for
        the accent because this webapp's webpack has no CSS loader. -->
   <div
@@ -34,7 +34,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-if="hasWarnings"
       :style="frameStyle(WARNING_COLOR)"
       :class="{ 'mb-2': remoteContentBlocked }"
-      class="mail-security-warning d-flex align-start px-3 py-2"
+      class="mail-security-warning d-flex align-start px-2 py-1"
       role="alert">
       <v-icon
         size="14"
@@ -54,29 +54,31 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <div
       v-if="remoteContentBlocked"
       :style="frameStyle(PRIMARY_COLOR)"
-      class="mail-remote-content-banner d-flex align-start px-3 py-2"
+      class="mail-remote-content-banner d-flex align-start px-2 py-1"
       role="status">
       <v-icon
         size="14"
         class="primary--text me-2 mt-1 flex-shrink-0">
         fas fa-image
       </v-icon>
-      <!-- The text takes the flexible space and starts right after the icon; the actions,
-           one or two, sit at the end of the line when wide and under the text when
-           narrow. The platform's core.css gives the align-center class text-align:
-           center, so the line is centred vertically by an inline style instead, and the
-           text blocks set their own start alignment. -->
+      <!-- The text and the actions share one line when the reading pane has room for
+           both; when it has not, the actions wrap under the text, which then takes the
+           whole line. The text grows to push the actions to the end of a shared line and
+           never shrinks below a readable width before they wrap. The platform's core.css
+           gives the align-center class text-align: center, so the line is centred
+           vertically by an inline style instead, and the text sets its own start
+           alignment. -->
       <div
-        :class="wide ? 'd-flex' : ''"
-        :style="wide ? WIDE_LINE_STYLE : TEXT_BLOCK_STYLE"
-        class="flex-grow-1">
+        :style="LINE_STYLE"
+        class="d-flex flex-wrap flex-grow-1">
         <div
-          :class="wide ? 'me-2' : ''"
-          :style="TEXT_BLOCK_STYLE"
+          :style="MESSAGE_STYLE"
           class="text-caption text-color text-wrap text-start">
           {{ $t('emailConnector.mailBox.remoteContent.blocked') }}
         </div>
-        <div :class="wide ? 'd-flex flex-shrink-0 ms-auto' : 'd-flex flex-wrap justify-start'">
+        <div
+          :style="ACTIONS_STYLE"
+          class="d-flex flex-wrap">
           <v-btn
             :disabled="loading || busy"
             class="mail-remote-content-show text-caption px-0"
@@ -89,7 +91,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-btn
             v-if="senderAddress && !hasWarnings"
             :disabled="loading || busy"
-            class="mail-remote-content-trust text-caption px-0 ms-4"
+            class="mail-remote-content-trust text-caption px-0"
             color="primary"
             text
             x-small
@@ -116,8 +118,24 @@ const WARNING_COLOR = '#ffb441';
  */
 const TEXT_BLOCK_STYLE = { flex: '1 1 auto', minWidth: 0, textAlign: 'start' };
 
-/** The wide line of the images notice: a text block whose text and actions are centred vertically. */
-const WIDE_LINE_STYLE = { ...TEXT_BLOCK_STYLE, alignItems: 'center' };
+/**
+ * The line of the images notice: it takes the flexible space after the icon, centres its
+ * text and actions vertically, and puts a gap between the text and actions that share it.
+ */
+const LINE_STYLE = { minWidth: 0, alignItems: 'center', columnGap: '8px' };
+
+/**
+ * The text of the images notice: it grows to fill its line and keeps a readable width,
+ * below which the actions wrap under it rather than squeezing it into a narrow column.
+ */
+const MESSAGE_STYLE = { flex: '1 1 14em', minWidth: 0, textAlign: 'start' };
+
+/**
+ * The actions of the images notice: as wide as their labels on a shared line, and, once
+ * wrapped under the text, free to shrink so a pane narrower than both labels puts the
+ * second under the first.
+ */
+const ACTIONS_STYLE = { flex: '0 1 auto', minWidth: 0, columnGap: '16px' };
 
 /** The platform's light border colour, as its border-color class reads it. */
 const BORDER_COLOR = 'var(--allPagesBtnBorder, var(--allPagesGreyColor, #e1e8ee))';
@@ -140,18 +158,15 @@ export default {
       type: Boolean,
       default: false,
     },
-    // Whether the reader is wide (the full-screen reader): each notice is then one line.
-    wide: {
-      type: Boolean,
-      default: false,
-    },
   },
   data: () => ({
     busy: false,
     PRIMARY_COLOR,
     WARNING_COLOR,
     TEXT_BLOCK_STYLE,
-    WIDE_LINE_STYLE,
+    LINE_STYLE,
+    MESSAGE_STYLE,
+    ACTIONS_STYLE,
   }),
   computed: {
     /**
