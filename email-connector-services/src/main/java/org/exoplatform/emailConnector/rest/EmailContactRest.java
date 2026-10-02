@@ -200,17 +200,19 @@ public class EmailContactRest {
   }
 
   /**
-   * Gets the profile pictures of the platform users behind a set of addresses: the
-   * senders of the mail list's rows on screen, asked for in one request (EXO-90891).
+   * Gets the pictures of the senders behind a set of addresses: the senders of the
+   * mail list's rows on screen, asked for in one request (EXO-90891). A platform user's
+   * own photo, else the photo of the caller's own contact at the address (EXO-90908),
+   * else the platform's generated picture of a user with none.
    *
-   * @param request the caller's request, for the acting user
+   * @param request the caller's request, for the acting user, whose contacts alone are read
    * @param addresses the addresses, at most {@link EmailSenderProfileService#AVATARS_MAX_ADDRESSES}
-   * @return the picture's URL by normalized address, for the addresses a platform user holds
+   * @return the picture's URL by normalized address, for the addresses that have one
    */
   @PostMapping("/avatars")
   @Secured("users")
-  @Operation(summary = "Gets the profile pictures of the platform users behind a set of addresses", method = "POST",
-             description = "The picture the mail reader shows for each sender, for the rows of the mail list on screen at once. An address belongs to a platform user when it is their account's address, whatever its case, or the address of the mailbox they connected - the latter answered only when the caller's own mailbox holds mail from it. One no enabled user holds is left out of the answer, and the list draws its coloured initials itself. Blank, malformed and repeated addresses are skipped. More than 50 addresses answer 400.")
+  @Operation(summary = "Gets the pictures of the senders behind a set of addresses", method = "POST",
+             description = "The picture the mail reader shows for each sender, for the rows of the mail list on screen at once: the platform user's own photo, else the photo of the caller's own contact at that address, else the platform's generated picture of a user with none. An address belongs to a platform user when it is their account's address, whatever its case, or the address of the mailbox they connected - the latter answered only when the caller's own mailbox holds mail from it. Only the caller's own contacts are read, never another user's, and a contact photo's URL is answered to the contact's owner only. An address with no picture is left out of the answer, and the list draws its coloured initials itself. Blank, malformed and repeated addresses are skipped. More than 50 addresses answer 400.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "More addresses than one request takes"),
       @ApiResponse(responseCode = "403", description = "Not signed in"), })

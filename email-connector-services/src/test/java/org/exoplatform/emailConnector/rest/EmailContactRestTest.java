@@ -344,6 +344,33 @@ public class EmailContactRestTest {
            .andExpect(jsonPath("$['ann@client.org']").doesNotExist());
   }
 
+  /**
+   * The contacts the avatars read are the caller's own (EXO-90908): the batch names no
+   * user, the service is handed the authenticated caller, and another user asking for
+   * the same addresses gets their own answer, never the first caller's contact photo.
+   */
+  @Test
+  void avatarsReadTheCallersOwnContactsOnly() throws Exception {
+    String contactPhoto = "/email-connector/rest/contacts/7/photo?v=1700000000000";
+    when(emailSenderProfileService.getAvatars(List.of("ann@client.org"), SIMPLE_USER)).thenReturn(Map.of("ann@client.org", contactPhoto));
+    when(emailSenderProfileService.getAvatars(List.of("ann@client.org"), "mallory")).thenReturn(Map.of());
+
+    mockMvc.perform(post(CONTACTS_PATH + "/avatars").with(testSimpleUser())
+                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                    .content("[\"ann@client.org\"]"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$['ann@client.org']").value(contactPhoto));
+    mockMvc.perform(post(CONTACTS_PATH + "/avatars?username=" + SIMPLE_USER).with(user("mallory").password("password")
+                                                                                                  .authorities(new SimpleGrantedAuthority("users")))
+                                                                           .contentType(MediaType.APPLICATION_JSON)
+                                                                           .content("[\"ann@client.org\"]"))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$['ann@client.org']").doesNotExist());
+
+    verify(emailSenderProfileService).getAvatars(List.of("ann@client.org"), SIMPLE_USER);
+    verify(emailSenderProfileService).getAvatars(List.of("ann@client.org"), "mallory");
+  }
+
   /** Past the cap the service refuses, and the caller reads a 400 naming why. */
   @Test
   void platformAvatarsPastTheCapAnswerBadRequest() throws Exception {
