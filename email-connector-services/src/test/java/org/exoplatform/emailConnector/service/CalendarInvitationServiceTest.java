@@ -680,8 +680,7 @@ class CalendarInvitationServiceTest {
   /**
    * The calendar is asked only about what could be added to it: never for a shared
    * mailbox's message, a cancellation, somebody's answer, one of this deployment's own
-   * meetings, without a calendar -- nor on an answer or a removal, whose landing says
-   * what the calendar holds afterwards.
+   * meetings, without a calendar -- nor on a removal.
    *
    * @throws Exception never
    */
@@ -701,17 +700,60 @@ class CalendarInvitationServiceTest {
       givenTheCalendarPart("agenda-own-request.ics");
       assertTrue(service.getInvitation(EMAIL_ID, USER).isExoMeeting());
     }
-    givenTheCalendarPart("google-weekly-request.ics");
-    captureTransmissions();
-    service.respond(EMAIL_ID, USER, InvitationAnswer.ACCEPTED);
     verify(invitationLandingService, never()).held(any());
 
+    givenTheCalendarPart("google-weekly-request.ics");
     service.getInvitation(EMAIL_ID, USER);
     verify(invitationLandingService).held(any());
 
     givenASharedMailbox();
     assertFalse(service.getInvitation(EMAIL_ID, USER).isHeld());
     verify(invitationLandingService).held(any());
+  }
+
+  /**
+   * A published event naming no organiser is held as it was added: a higher SEQUENCE
+   * is no update anybody may make, so nothing is offered (the add-ons refuse it).
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aPublishedEventWithoutOrganiserIsNoNewerRevision() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    givenTheCalendarPartText(fixtureText("google-weekly-request.ics").replace("METHOD:REQUEST", "METHOD:PUBLISH")
+                                                                     .replace("ORGANIZER;CN=Olivia Organizer:mailto:olivia@partner.example\r\n", "")
+                                                                     .replace("ORGANIZER;CN=Olivia Organizer:mailto:olivia@partner.example\n", ""));
+    when(invitationLandingService.held(any())).thenReturn(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", null, 0));
+
+    CalendarInvitation invitation = service.getInvitation(EMAIL_ID, USER);
+
+    assertNull(invitation.getOrganizer());
+    assertTrue(invitation.isHeld());
+    assertFalse(invitation.isNewerRevision(), "nobody may update it");
+    assertFalse(invitation.isLandable());
+  }
+
+  /**
+   * An answer whose landing fails leaves the card with what the calendar held before
+   * it: still held, nothing to add.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anAnswerWhoseLandingFailedKeepsWhatTheCalendarHeld() throws Exception {
+    when(invitationLandingService.holdsCalendarFor(USER)).thenReturn(true);
+    when(invitationLandingService.held(any())).thenReturn(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.ACCEPTED, 2));
+    captureTransmissions();
+    ArgumentCaptor<InvitationLanding> landing = ArgumentCaptor.forClass(InvitationLanding.class);
+    givenTheLanding(landing, CalendarLanding.FAILED, null);
+
+    CalendarInvitation invitation = service.respond(EMAIL_ID, USER, InvitationAnswer.TENTATIVE);
+
+    assertEquals(CalendarLanding.FAILED, invitation.getLanding());
+    assertEquals(InvitationAnswer.TENTATIVE, invitation.getAnswer());
+    assertTrue(invitation.isHeld());
+    assertEquals("/portal/dw/agenda?eventId=77", invitation.getHeldLink());
+    assertFalse(invitation.isLandable(), "the calendar holds it: nothing to add");
   }
 
   /**
