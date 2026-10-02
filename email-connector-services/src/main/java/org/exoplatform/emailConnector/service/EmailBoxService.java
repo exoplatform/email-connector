@@ -1044,6 +1044,11 @@ public class EmailBoxService {
   @Autowired
   private EmailFolderService      emailFolderService;
 
+  // Fills in the DMARC verdict of mail cached before it was recorded, from a folder's
+  // opening (EXO-90909); its runs read the headers through readAuthenticationResults.
+  @Autowired
+  private EmailDmarcVerdictBackfillService emailDmarcVerdictBackfillService;
+
   // The shared mailboxes this user reads, their folders and the rights the server grants
   // them there. Two uses here and they are different in kind: the delegated branch of the
   // sync asks it WHICH folders to pull, and every write path asks it WHETHER the caller
@@ -4352,6 +4357,7 @@ public class EmailBoxService {
     // Unconditional because it costs nothing for an own folder (no query at all) and
     // because forgetting it at one call site is how a share silently stops updating.
     emailDelegationService.touchActivity(username, folder);
+    boolean sharedFolder = false;
     if (MailFolder.isCustom(folder)) {
       // A custom key is browsable by shape; whether THIS user has that folder is the
       // registry's answer, and a key it does not know is a 400 -- never a listing of
@@ -4360,11 +4366,19 @@ public class EmailBoxService {
       // refreshCustomFolderIfStale): the complement of the per-cycle budget that keeps
       // the routine sync from checking every folder every period.
       EmailFolder opened = emailFolderService.getFolderByKey(username, folder);
+      sharedFolder = opened.getDelegationId() != null;
       if (opened.getDelegationId() == null) {
         refreshCustomFolderIfStale(username, userEmailSetting, opened);
       } else {
         refreshDelegatedFolderIfStale(username, userEmailSetting, opened);
       }
+    }
+    if (!sharedFolder) {
+      // Mail cached before its DMARC verdict was recorded gets it in the background,
+      // a screen at a time, so the list can offer its sender's logo (EXO-90909); the
+      // listing never waits for it. Never a folder shared with the user: the headers
+      // are read from their own mailbox.
+      emailDmarcVerdictBackfillService.schedule(username, folder, rows -> readAuthenticationResults(username, folder, rows));
     }
     List<Email> emails;
     if (starredOnly) {
@@ -6598,6 +6612,67 @@ public class EmailBoxService {
       }
     } finally {
       closeQuietly(folder, null, username);
+    }
+  }
+
+  /**
+   * The {@code Authentication-Results} header of cached messages of one of the user's
+   * own folders (EXO-90909), for their DMARC verdict to be filled in: the folder opened
+   * read-only, the messages found by UID and that header fetched with their Message-ID
+   * in one command ({@code BODY.PEEK[HEADER.FIELDS (...)]}), nothing else of them read
+   * and nothing marked read. Called by {@link EmailDmarcVerdictBackfillService} only,
+   * on its own thread, for the folder the user just opened.
+   *
+   * @param username the mailbox owner
+   * @param folder the folder's key, never a folder shared with the user
+   * @param rows the cached rows: UID and Message-ID
+   * @return the header's values by UID, an empty array for a message carrying none;
+   *         a message the server no longer holds under its UID, or holds another
+   *         message under, is left out, as is every message of a folder the mailbox
+   *         no longer has
+   * @throws IllegalAccessException when the user may not use their mailbox
+   * @throws IllegalStateException when the mail server could not be read
+   */
+  Map<Long, String[]> readAuthenticationResults(String username, String folder, List<Email> rows) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = requireConnectable(username, USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE);
+    Map<Long, String[]> headers = new HashMap<>();
+    if (rows == null || rows.isEmpty()) {
+      return headers;
+    }
+    Map<Long, Email> byUid = new HashMap<>();
+    rows.forEach(row -> byUid.put(row.getMailRemoteId(), row));
+    Store store = null;
+    Folder remote = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      remote = resolveCachedFolder(store, folder, username);
+      if (!(remote instanceof UIDFolder uidFolder)) {
+        return headers;
+      }
+      remote.open(Folder.READ_ONLY);
+      Message[] found = Arrays.stream(uidFolder.getMessagesByUID(byUid.keySet().stream().mapToLong(Long::longValue).toArray()))
+                              .filter(Objects::nonNull)
+                              .toArray(Message[]::new);
+      if (found.length == 0) {
+        return headers;
+      }
+      FetchProfile profile = new FetchProfile();
+      profile.add(UIDFolder.FetchProfileItem.UID);
+      profile.add(EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS);
+      profile.add(HEADER_MESSAGE_ID);
+      remote.fetch(found, profile);
+      for (Message message : found) {
+        Email row = byUid.get(uidFolder.getUID(message));
+        if (row != null && message instanceof MimeMessage mimeMessage && !message.isExpunged() && isCachedMessage(row, mimeMessage)) {
+          String[] values = message.getHeader(EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS);
+          headers.put(row.getMailRemoteId(), values == null ? new String[0] : values);
+        }
+      }
+      return headers;
+    } catch (MessagingException | ConnectorCredentialsException | RuntimeException e) {
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username), e);
+    } finally {
+      closeQuietly(remote, store, username);
     }
   }
 

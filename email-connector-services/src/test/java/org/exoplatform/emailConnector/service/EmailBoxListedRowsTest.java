@@ -133,6 +133,9 @@ class EmailBoxListedRowsTest {
   @MockitoBean
   private EmailDelegationService    emailDelegationService;
 
+  @MockitoBean
+  private EmailDmarcVerdictBackfillService emailDmarcVerdictBackfillService;
+
   @Autowired
   private EmailBoxService           emailBoxService;
 
