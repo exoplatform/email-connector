@@ -913,6 +913,18 @@ export function getWaitingSuggestionMails() {
 }
 
 /**
+ * The user's own mails with a suggestion of an assistant still waiting for them, as the
+ * mailbox's "Suggestions" view lists them (EXO-90851): one cached copy per mail, newest
+ * first, shaped like a search hit, with how many suggestions wait on it.
+ *
+ * @returns {Promise<object[]>} the mails: {emailId, mailRemoteId, folder, mailHeaderId,
+ *   subject, sender, receivedDate, read, starred, cached, waitingCount}
+ */
+export function getWaitingSuggestionEmails() {
+  return filterRequest('/proposals/waiting/emails', 'GET', null, 'Error when reading the mails with waiting suggestions');
+}
+
+/**
  * Undoes what a rule did to a mail: one action, or every one.
  *
  * @param {number} matchId - the match

@@ -75,6 +75,7 @@ import EmailConnectorReadReceiptBanner from './components/drawer/EmailConnectorR
 import EmailConnectorSecurityBanner from './components/drawer/EmailConnectorSecurityBanner.vue';
 import EmailConnectorMailBoxScheduledList from './components/drawer/EmailConnectorMailBoxScheduledList.vue';
 import EmailConnectorMailBoxScheduledListItem from './components/drawer/EmailConnectorMailBoxScheduledListItem.vue';
+import EmailConnectorMailBoxSuggestionsList from './components/drawer/EmailConnectorMailBoxSuggestionsList.vue';
 import EmailConnectorMailBoxSwitcher from './components/drawer/EmailConnectorMailBoxSwitcher.vue';
 import EmailConnectorSharedMailboxBand from './components/drawer/EmailConnectorSharedMailboxBand.vue';
 import EmailConnectorAbsenceBand from './components/drawer/EmailConnectorAbsenceBand.vue';
@@ -150,6 +151,7 @@ const components = {
   'email-connector-security-banner': EmailConnectorSecurityBanner,
   'email-connector-mail-box-scheduled-list': EmailConnectorMailBoxScheduledList,
   'email-connector-mail-box-scheduled-list-item': EmailConnectorMailBoxScheduledListItem,
+  'email-connector-mail-box-suggestions-list': EmailConnectorMailBoxSuggestionsList,
 };
 
 for (const key in components) {

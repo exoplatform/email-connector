@@ -24,7 +24,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     allow-expand
     :drawer-width="drawerWidth"
     @expand-updated="updateExpand"
-    :loading="loading || syncInProgress || (searchActive && (searchServerRunning || searchLocalRunning)) || readerLoading || scheduledLoading || (loadingEmail && readerPartial)"
+    :loading="loading || syncInProgress || (searchActive && (searchServerRunning || searchLocalRunning)) || readerLoading || scheduledLoading || suggestionsLoading || (loadingEmail && readerPartial)"
     :confirm-close="activeDownload"
     :go-back-button="canGoBack"
     :confirm-close-labels="{
@@ -216,6 +216,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :signal="scheduledViewSignal"
             compact
             @loading="scheduledLoading = $event" />
+          <!-- The Suggestions view (EXO-90851): its own list, no chips. -->
+          <email-connector-mail-box-suggestions-list
+            v-else-if="suggestionsView"
+            compact
+            @loading="suggestionsLoading = $event" />
           <template v-else>
             <email-connector-mail-box-drawer-content
               v-if="hasEmails"
@@ -343,6 +348,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           v-else-if="scheduledView"
           :signal="scheduledViewSignal"
           @loading="scheduledLoading = $event" />
+        <email-connector-mail-box-suggestions-list
+          v-else-if="suggestionsView"
+          @loading="suggestionsLoading = $event" />
         <template v-else>
           <template v-if="hasEmails">
             <email-connector-mail-box-drawer-content
@@ -371,13 +379,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
-import { LIST_TOP_ROW_HEIGHT, SCHEDULED_VIEW, isScheduledView, SHARED_INBOX_TYPE, SHARED_FOLDER_TYPE, canMarkReadIn, isDestructiveActionConfirmed,
+import { LIST_TOP_ROW_HEIGHT, SCHEDULED_VIEW, isScheduledView, SUGGESTIONS_VIEW, isSuggestionsView, isMailboxView, withSuggestionsView, SHARED_INBOX_TYPE, SHARED_FOLDER_TYPE, canMarkReadIn, isDestructiveActionConfirmed,
   loadSharedMailboxes, setCurrentSharedMailbox, sharedMailboxById, sharedMailboxOfFolder, sharedMailboxState } from '../../js/EmailConnectorMailBoxService.js';
 import listNavigationMixin, { firstOpenableThread, searchRows, threadIndexOf, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
 import emailDragMixin from '../../js/EmailConnectorMailBoxEmailDragMixin.js';
 import columnWidthsMixin, { DEFAULT_LIST_WIDTH_PX } from '../../js/EmailConnectorMailBoxColumnWidths.js';
 import advancedSearchMixin from '../../js/EmailConnectorMailBoxAdvancedSearchMixin.js';
 import { listedRowMatches } from '../../js/EmailConnectorMailBoxSearchCriteria.js';
+import { refreshWaitingSuggestions, waitingSuggestionTotal } from '../../js/EmailConnectorMailFilters.js';
 
 // The drawer's width in its narrow layout: exo-drawer's own default, which is also the
 // full-screen list's default width.
@@ -399,11 +408,12 @@ const NAVIGATION_RAIL_BELOW_WIDTH_PX = 1440;
 // server's \Seen alone, at the next load.
 const UNREAD_COUNTED_FOLDERS = ['INBOX', 'JUNK'];
 
-const TOTAL_COUNTED_FOLDERS = ['DRAFTS', SCHEDULED_VIEW];
+const TOTAL_COUNTED_FOLDERS = ['DRAFTS', SCHEDULED_VIEW, SUGGESTIONS_VIEW];
 
 // The folders the mailbox may be opened on from outside it: the built-ins, the Scheduled
-// view among them -- the scheduled-mail failure notification opens it (EXO-90434).
-const OPENABLE_FOLDERS = ['INBOX', 'SENT', 'ARCHIVE', 'DRAFTS', 'TRASH', 'JUNK', SCHEDULED_VIEW];
+// view among them -- the scheduled-mail failure notification opens it (EXO-90434) --, and
+// the Suggestions view, which the waiting-suggestions notification opens (EXO-90851).
+const OPENABLE_FOLDERS = ['INBOX', 'SENT', 'ARCHIVE', 'DRAFTS', 'TRASH', 'JUNK', SCHEDULED_VIEW, SUGGESTIONS_VIEW];
 // The key of a favorite toggled here: a UID names a message within one folder only.
 const favoriteKey = (folder, mailRemoteId) => `${folder || 'INBOX'}/${mailRemoteId}`;
 
@@ -597,6 +607,8 @@ export default {
       // The Scheduled view's list is waiting on the server (EXO-90434): relayed to this
       // drawer's header bar, the only loading bar there is (EXO-90412).
       scheduledLoading: false,
+      // The same for the Suggestions view's list (EXO-90851).
+      suggestionsLoading: false,
       // A mail opened from outside the mailbox (the global Favorites drawer) is
       // pinned open: it is legitimately absent from the listed window, and a list
       // reload must not take the reader back from the user. Cleared as soon as they
@@ -915,6 +927,14 @@ export default {
     };
     this.$root.$on('open-email-thread-content', this.onOpenEmailThreadContent);
     this.$root.$on('scheduled-email-updated', this.onScheduledEmailUpdated);
+    // A row of the Suggestions view (EXO-90851): a mail of any folder, opened as a mail
+    // picked outside the list is.
+    this.onOpenSuggestedEmail = opening => {
+      if (this.emailBoxDrawer) {
+        this.openMailFromOutside(opening);
+      }
+    };
+    this.$root.$on('open-suggested-email', this.onOpenSuggestedEmail);
     // The mail drawer's expand button: the one full-screen layout is this drawer's, so
     // expanding a mail opened over the list hands the mail over and expands HERE, with
     // that mail open -- the mail drawer then closes itself (EXO-90415).
@@ -1024,6 +1044,7 @@ export default {
     this.$root.$off('apply-email-favorite-status', this.applyEmailsFavoriteStatus);
     this.$root.$off('open-email-thread-content', this.onOpenEmailThreadContent);
     this.$root.$off('scheduled-email-updated', this.onScheduledEmailUpdated);
+    this.$root.$off('open-suggested-email', this.onOpenSuggestedEmail);
     this.$root.$off('expand-mail-box-on-email', this.onExpandMailBoxOnEmail);
     FOLDERS_CHANGED_EVENTS.forEach(event => this.$root.$off(event, this.onFoldersChanged));
     document.removeEventListener(BADGE_UPDATED_EVENT, this.onUnreadBadgeUpdated);
@@ -1061,7 +1082,8 @@ export default {
           .filter(folder => folder.readable || holdsReadableFolder(folder, shared))
           .map(sharedFolderView));
       }
-      return this.emailBox?.folders || [{ key: 'INBOX', type: 'BUILT_IN', syncEnabled: true }];
+      return withSuggestionsView(this.emailBox?.folders || [{ key: 'INBOX', type: 'BUILT_IN', syncEnabled: true }],
+        waitingSuggestionTotal(), isSuggestionsView(this.currentFolder));
     },
     /**
      * Every folder of the mailbox listed, offered or not: the user's own, or in a shared
@@ -1275,6 +1297,15 @@ export default {
      */
     scheduledView() {
       return isScheduledView(this.currentFolder);
+    },
+    /**
+     * Whether the Suggestions view is listed (EXO-90851): its own list replaces the
+     * folder's, with no chips, search, selection or drag, as the Scheduled view's does.
+     *
+     * @returns {Boolean} true on the Suggestions view
+     */
+    suggestionsView() {
+      return isSuggestionsView(this.currentFolder);
     },
     /**
      * What the Scheduled view's list watches to re-read itself: the view's count and
@@ -1995,7 +2026,8 @@ export default {
       this.syncSearchUrl();
     },
     /**
-     * Whether a folder has a search: not the Scheduled view (EXO-90434), and not the
+     * Whether a folder has a search: not a view -- Scheduled (EXO-90434), Suggestions
+     * (EXO-90851) --, and not the
      * owner's Trash or Spam in a shared mailbox (EXO-90590) -- the server searches
      * neither, as the platform's search leaves them out. Any other folder of a shared
      * mailbox is searched in the copy of it kept here; the user's own folders are
@@ -2005,7 +2037,7 @@ export default {
      * @returns {Boolean} true when the search box searches it
      */
     isFolderSearchable(folder) {
-      if (isScheduledView(folder)) {
+      if (isMailboxView(folder)) {
         return false;
       }
       const role = this.$emailConnectorMailBoxService.sharedFolderRole(folder);
@@ -3582,15 +3614,16 @@ export default {
       const wasSyncing = this.syncInProgress;
       const folder = this.currentFolder;
       const favoriteOnly = this.favoriteOnly;
-      // The Scheduled view is no folder the listing serves (EXO-90434): its mails come
-      // from their own endpoint, read by its list. What the listing carries besides the
-      // rows -- the folders, the sync status, the webmail -- is still wanted, and read
-      // with the Drafts, whose rows are then left out.
-      const scheduled = isScheduledView(folder);
+      // The Scheduled view is no folder the listing serves (EXO-90434), nor the
+      // Suggestions view (EXO-90851): their mails come from their own endpoints, read by
+      // their lists. What the listing carries besides the rows -- the folders, the sync
+      // status, the webmail -- is still wanted, and read with the Drafts, whose rows are
+      // then left out.
+      const mailboxView = isMailboxView(folder);
       const sharedMailbox = this.currentSharedMailbox;
       let emailBox;
       try {
-        emailBox = await this.$emailConnectorMailBoxService.getEmailBox(scheduled ? 'DRAFTS' : folder, !scheduled && favoriteOnly);
+        emailBox = await this.$emailConnectorMailBoxService.getEmailBox(mailboxView ? 'DRAFTS' : folder, !mailboxView && favoriteOnly);
       } catch (e) {
         if (await this.leftUnavailableSharedMailbox(sharedMailbox)) {
           return;
@@ -3600,7 +3633,13 @@ export default {
       if (folder !== this.currentFolder || favoriteOnly !== this.favoriteOnly) {
         return;
       }
-      this.emailBox = scheduled ? { ...emailBox, emails: [] } : emailBox;
+      this.emailBox = mailboxView ? { ...emailBox, emails: [] } : emailBox;
+      // Which of the user's own mails have a suggestion waiting: the Suggestions view's
+      // entry and count in the column (EXO-90851), read at most once a minute. Not in a
+      // mailbox somebody shared with the user, where no rule of theirs runs.
+      if (!sharedMailbox) {
+        refreshWaitingSuggestions();
+      }
       this.countMailboxUnread(sharedMailbox, favoriteOnly);
       // The folder list's unread counts are the server's again, the reads made here
       // included.
