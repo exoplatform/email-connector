@@ -312,6 +312,9 @@ class EmailBoxMailTransferTest {
     when(inbox.getUID(a)).thenReturn(11L);
     when(inbox.getUID(other)).thenReturn(12L);
     when(inbox.getUID(d)).thenReturn(14L);
+    lenient().when(a.getHeader("Message-ID")).thenReturn(new String[] { "<a@x>" });
+    lenient().when(other.getHeader("Message-ID")).thenReturn(new String[] { "<other@x>" });
+    lenient().when(d.getHeader("Message-ID")).thenReturn(new String[] { "<d@x>" });
     String[] header = { "mx.example.com; dmarc=pass header.from=brand.example" };
     when(a.getHeader(EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS)).thenReturn(header);
 
@@ -335,6 +338,9 @@ class EmailBoxMailTransferTest {
     verify(a, never()).writeTo(any());
     verify(a, never()).getContent();
     verify(a, never()).setFlag(any(), anyBoolean());
+    // The Message-ID is read from the header fetched, never through the envelope.
+    verify(a, never()).getMessageID();
+    verify(other, never()).getMessageID();
     verify(store).close();
   }
 

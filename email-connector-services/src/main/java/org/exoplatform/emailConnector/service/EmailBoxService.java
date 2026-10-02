@@ -6663,7 +6663,12 @@ public class EmailBoxService {
       remote.fetch(found, profile);
       for (Message message : found) {
         Email row = byUid.get(uidFolder.getUID(message));
-        if (row != null && message instanceof MimeMessage mimeMessage && !message.isExpunged() && isCachedMessage(row, mimeMessage)) {
+        // The Message-ID from the header just fetched, never getMessageID(), which reads
+        // the envelope: one more round trip per message.
+        String[] remoteIds = message.getHeader(HEADER_MESSAGE_ID);
+        String remoteId = remoteIds == null || remoteIds.length == 0 ? null : remoteIds[0];
+        if (row != null && !message.isExpunged() && (StringUtils.isBlank(row.getMailHeaderId()) || StringUtils.isBlank(remoteId)
+            || sameMessageId(remoteId, row.getMailHeaderId()))) {
           String[] values = message.getHeader(EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS);
           headers.put(row.getMailRemoteId(), values == null ? new String[0] : values);
         }
