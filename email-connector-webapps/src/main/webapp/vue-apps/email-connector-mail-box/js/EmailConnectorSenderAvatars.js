@@ -39,9 +39,10 @@ export const MAX_AVATAR_BATCH = 50;
 const BATCH_DELAY_MS = 50;
 
 // The answers, by normalized address: a URL, or null for an address with no picture
-// (no platform photo, no contact of the viewer's with one). An address whose request failed is not kept: drawn with initials, it is asked
-// again by the next avatar of it watched -- a row drawn again, or showing that sender
-// anew -- not by the one already asked for, which is watched no more.
+// (no platform photo, no contact of the viewer's with one). An address whose request
+// failed is not kept: drawn with initials, it is asked again by the next avatar of it
+// watched -- a row drawn again, or showing that sender anew -- not by the one already
+// asked for, which is watched no more.
 const answers = new Map();
 
 // Read by every avatar showing a picture, bumped on every answer: a Map is not
