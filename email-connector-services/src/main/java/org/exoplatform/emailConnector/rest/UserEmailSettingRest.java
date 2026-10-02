@@ -46,6 +46,7 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.ForwardingRefusedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
+import org.exoplatform.emailConnector.exception.ManagedConnectionLockedException;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
@@ -143,7 +144,8 @@ public class UserEmailSettingRest {
           + "only when it answered. Refuses a provider that expects the user to type credentials.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Connected"),
       @ApiResponse(responseCode = "400", description = "The provider expects the user to supply something"),
-      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation; emailConnector.managed.connectionLocked "
+          + "when managed mode keeps the caller on another connector"),
       @ApiResponse(responseCode = "500", description = "The mailbox refused the service account, or no credentials provider "
           + "of the connector's name is registered") })
   public void connectThroughProvider(HttpServletRequest request,
@@ -152,6 +154,8 @@ public class UserEmailSettingRest {
                                      long emailConnectorId) {
     try {
       userEmailSettingService.connectThroughProvider(emailConnectorId, request.getRemoteUser());
+    } catch (ManagedConnectionLockedException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
@@ -184,6 +188,8 @@ public class UserEmailSettingRest {
                                       UserEmailSetting userEmailSetting) {
     try {
       userEmailSettingService.connectUserEmailSetting(userEmailSetting, request.getRemoteUser(), broadcast);
+    } catch (ManagedConnectionLockedException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
@@ -202,7 +208,7 @@ public class UserEmailSettingRest {
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public UserEmailSetting getUserEmailSetting(HttpServletRequest request) {
-    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(request.getRemoteUser());
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSettingWithManagedMode(request.getRemoteUser());
     // The decoded password never leaves the server (EXO-90610): passwordStored tells
     // the screen there is one to keep, and a blank password on the next PUT keeps it.
     userEmailSetting.setEmailPassword(null);
@@ -448,7 +454,9 @@ public class UserEmailSettingRest {
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public void deleteUserEmailSetting(HttpServletRequest request) {
     try {
-      userEmailSettingService.deleteUserEmailSetting(request.getRemoteUser());
+      userEmailSettingService.disconnectUserEmailSetting(request.getRemoteUser());
+    } catch (ManagedConnectionLockedException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }

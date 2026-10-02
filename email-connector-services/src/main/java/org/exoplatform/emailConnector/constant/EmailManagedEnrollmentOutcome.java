@@ -17,9 +17,9 @@
 package org.exoplatform.emailConnector.constant;
 
 /**
- * What a login-time enrolment attempt came to: one value per branch of the three
+ * What a login-time enrolment attempt came to: one value per branch of the
  * rules of {@code EmailManagedEnrollmentService} and their failures.
  */
 public enum EmailManagedEnrollmentOutcome {
-  NOT_MANAGED, ALREADY_CONFIGURED, ATTACHED, REFUSED, FAILED, DETACHED
+  NOT_MANAGED, ALREADY_CONFIGURED, ATTACHED, SWITCHED, REFUSED, FAILED, DETACHED
 }

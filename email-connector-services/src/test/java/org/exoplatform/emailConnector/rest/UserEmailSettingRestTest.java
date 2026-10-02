@@ -67,6 +67,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import org.exoplatform.emailConnector.exception.ManagedConnectionLockedException;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
@@ -209,11 +210,52 @@ public class UserEmailSettingRestTest {
   void deleteUserEmailSetting() throws Exception {
     ResultActions response = mockMvc.perform(delete(USER_EMAIL_SETTING_PATH).with(testSimpleUser()));
     response.andExpect(status().isOk());
+    verify(userEmailSettingService).disconnectUserEmailSetting(SIMPLE_USER);
+    verify(userEmailSettingService, never()).deleteUserEmailSetting(anyString());
+  }
+
+  /**
+   * EXO-90836. A governed user's disconnection, typed connection and one-click
+   * connection elsewhere answer 403 with the code the interface translates.
+   */
+  @Test
+  void aGovernedUsersConnectionChangesAnswer403WithTheirCode() throws Exception {
+    doThrow(new ManagedConnectionLockedException()).when(userEmailSettingService).disconnectUserEmailSetting(SIMPLE_USER);
+    doThrow(new ManagedConnectionLockedException()).when(userEmailSettingService)
+                                                    .connectUserEmailSetting(any(), eq(SIMPLE_USER), eq(false));
+    doThrow(new ManagedConnectionLockedException()).when(userEmailSettingService).connectThroughProvider(3L, SIMPLE_USER);
+
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH).with(testSimpleUser()))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason(ManagedConnectionLockedException.MESSAGE_CODE));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "?broadcast=false").with(testSimpleUser())
+                                                                     .content(asJsonString(userEmailSetting()))
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason(ManagedConnectionLockedException.MESSAGE_CODE));
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/connect?emailConnectorId=3").with(testSimpleUser()))
+           .andExpect(status().isForbidden())
+           .andExpect(status().reason(ManagedConnectionLockedException.MESSAGE_CODE));
+  }
+
+  /** EXO-90836. The settings read says whether managed mode keeps the user, and on which connector. */
+  @Test
+  void theSettingsReadSaysWhetherManagedModeKeepsTheUser() throws Exception {
+    UserEmailSetting stored = userEmailSetting();
+    stored.setManaged(true);
+    stored.setManagedConnectorId(7L);
+    when(userEmailSettingService.getUserEmailSettingWithManagedMode(SIMPLE_USER)).thenReturn(stored);
+
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH).with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.managed").value(true))
+           .andExpect(jsonPath("$.managedConnectorId").value(7));
   }
 
   @Test
   void getUserEmailSetting() throws Exception {
-    when(userEmailSettingService.getUserEmailSetting(SIMPLE_USER)).thenReturn(new UserEmailSetting());
+    when(userEmailSettingService.getUserEmailSettingWithManagedMode(SIMPLE_USER)).thenReturn(new UserEmailSetting());
     ResultActions response = mockMvc.perform(get(USER_EMAIL_SETTING_PATH).with(testSimpleUser()));
     response.andExpect(status().isOk());
   }
@@ -226,7 +268,7 @@ public class UserEmailSettingRestTest {
   void theSettingsReadNeverSendsThePasswordBack() throws Exception {
     UserEmailSetting stored = userEmailSetting();
     stored.setPasswordStored(true);
-    when(userEmailSettingService.getUserEmailSetting(SIMPLE_USER)).thenReturn(stored);
+    when(userEmailSettingService.getUserEmailSettingWithManagedMode(SIMPLE_USER)).thenReturn(stored);
 
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH).with(testSimpleUser()))
            .andExpect(status().isOk())

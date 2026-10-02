@@ -109,6 +109,26 @@ export function resetAndResyncMailbox() {
   });
 }
 
+/**
+ * Asks the server to synchronize the user's mailbox now. Resolves once the request is
+ * accepted; the setting's sync status then says when it runs and ends.
+ *
+ * @returns {Promise} resolves once the synchronization is requested
+ */
+export function synchronizeEmailBox() {
+  return fetch('/email-connector/rest/email-box/synchronization', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when synchronizing email box');
+    }
+  });
+}
+
 export function getAvailableEmailCategories() {
   return fetch('/email-connector/rest/email-box/categories/available', {
     headers: {

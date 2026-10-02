@@ -53,6 +53,7 @@ import javax.mail.MessagingException;
 import javax.mail.Session;
 import javax.mail.Store;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -72,6 +73,7 @@ import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.emailConnector.entity.UserEmailSettingEntity;
 import org.exoplatform.emailConnector.event.ContactBookReleaseEvent;
 import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
+import org.exoplatform.emailConnector.exception.ManagedConnectionLockedException;
 import org.exoplatform.emailConnector.event.EmailBoxSyncEvent;
 import org.exoplatform.emailConnector.event.EmailNotificationPreferencesChangedEvent;
 import org.exoplatform.emailConnector.model.ContactPublishQueue;
@@ -123,8 +125,23 @@ public class UserEmailSettingServiceTest {
   @MockitoBean
   private EmailCredentialsResolver  emailCredentialsResolver;
 
+  @MockitoBean
+  private EmailManagedModeService   emailManagedModeService;
+
   @Autowired
   private UserEmailSettingService   userEmailSettingService;
+
+  /**
+   * Managed mode governs nobody unless a test says so. Stated, because a mocked
+   * {@code Long} answers 0, not null: left alone, every user would be governed by
+   * connector 0.
+   */
+  @BeforeEach
+  @SneakyThrows
+  void managedModeGovernsNobodyByDefault() {
+    when(emailManagedModeService.checkUserMayChangeConnection(anyString(), any())).thenReturn(null);
+    when(emailManagedModeService.designatedConnectorFor(anyString())).thenReturn(null);
+  }
 
   @Test
   @SneakyThrows
@@ -1625,5 +1642,183 @@ public class UserEmailSettingServiceTest {
       verify(store, times(1)).connect();
       verify(emailCredentialsResolver, never()).invalidate(any(), any(), any(), any());
     }
+  }
+  /**
+   * EXO-90836. A user managed mode governs cannot disconnect: nothing is removed, no
+   * cleanup is announced.
+   */
+  @Test
+  @SneakyThrows
+  void aGovernedUserCannotDisconnect() {
+    doThrow(new ManagedConnectionLockedException()).when(emailManagedModeService).checkUserMayChangeConnection(TEST_USER, null);
+
+    assertThrows(ManagedConnectionLockedException.class, () -> userEmailSettingService.disconnectUserEmailSetting(TEST_USER));
+
+    verify(settingService, never()).remove(any(Context.class), any(Scope.class), anyString());
+    verifyNoInteractions(eventPublisher, emailSignatureService);
+  }
+
+  /**
+   * EXO-90836. Any other user's disconnection goes through, the guard asked with no
+   * target connector.
+   */
+  @Test
+  @SneakyThrows
+  void anUngovernedUserDisconnects() {
+    userEmailSettingService.disconnectUserEmailSetting(TEST_USER);
+
+    verify(emailManagedModeService).checkUserMayChangeConnection(TEST_USER, null);
+    verify(settingService).remove(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY));
+    verify(emailSignatureService).deleteEmailSignature(TEST_USER);
+  }
+
+  /**
+   * EXO-90836. A governed user cannot connect with typed credentials, whatever the
+   * connector: the refusal comes before the mail server is asked and nothing is stored.
+   */
+  @Test
+  @SneakyThrows
+  void aGovernedUserCannotConnectWithTypedCredentials() {
+    doThrow(new ManagedConnectionLockedException()).when(emailManagedModeService).checkUserMayChangeConnection(TEST_USER, null);
+    UserEmailSetting posted = new UserEmailSetting();
+    posted.setEmailConnectorId("1");
+    posted.setEmailAddress("eric@own.example.org");
+    posted.setEmailPassword("secret");
+
+    assertThrows(ManagedConnectionLockedException.class,
+                 () -> userEmailSettingService.connectUserEmailSetting(posted, TEST_USER, true));
+
+    verifyNoInteractions(featureService, emailConnectorService, eventPublisher);
+    verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+  }
+
+  /**
+   * EXO-90836. A governed user's one-click connect to another connector is refused
+   * before anything is asked.
+   */
+  @Test
+  @SneakyThrows
+  void aGovernedUserCannotConnectAnotherConnector() {
+    doThrow(new ManagedConnectionLockedException()).when(emailManagedModeService).checkUserMayChangeConnection(TEST_USER, 1L);
+
+    assertThrows(ManagedConnectionLockedException.class, () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    verifyNoInteractions(featureService, emailConnectorService, emailCredentialsResolver, eventPublisher);
+  }
+
+  /**
+   * EXO-90836. A governed user's own one-click connect to the designated connector is
+   * marked as made by managed mode, as the login-time attachment is.
+   */
+  @Test
+  @SneakyThrows
+  void aGovernedUsersConnectionToTheDesignatedConnectorIsMarked() {
+    when(emailManagedModeService.checkUserMayChangeConnection(TEST_USER, 1L)).thenReturn(1L);
+
+    connectThroughTheProvider(() -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    ArgumentCaptor<SettingValue> mark = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class),
+                               eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE),
+                               eq(UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY),
+                               mark.capture());
+    assertEquals("true", mark.getValue().getValue());
+  }
+
+  /**
+   * EXO-90836. The switch at login replaces a connection on another, active connector -
+   * the very case the one-mailbox rule refuses a user - records the designated mailbox,
+   * marks it, and announces the account cleanup, since the account changed.
+   */
+  @Test
+  @SneakyThrows
+  void aSwitchReplacesAConnectionOnAnotherActiveConnector() {
+    EmailConnector other = emailConnector();
+    other.setId(2L);
+    when(emailConnectorService.getEmailConnector(2L)).thenReturn(other);
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY)))
+        .thenAnswer(invocation -> SettingValue.create("{\"emailConnectorId\":\"2\",\"emailAddress\":\"eric@own.example.org\"}"));
+
+    connectThroughTheProvider(() -> assertTrue(userEmailSettingService.switchThroughProvider(1L, TEST_USER)));
+
+    ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class),
+                               any(Scope.class),
+                               eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY),
+                               stored.capture());
+    String document = String.valueOf(stored.getValue().getValue());
+    assertTrue(document, document.contains("eric@bm.example.org"));
+    assertTrue(document, document.contains("\"emailConnectorId\":\"1\""));
+    verify(settingService).set(any(Context.class),
+                               any(Scope.class),
+                               eq(UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY),
+                               any(SettingValue.class));
+    verify(eventPublisher).publishEvent(any(EmailBoxCleanupEvent.class));
+    // The one-mailbox rule is the plain connect's: that path refuses this user.
+    assertFalse(userEmailSettingService.canConnect(1L, TEST_USER));
+  }
+
+  /**
+   * EXO-90836. A switch whose designated mailbox refuses writes nothing: the previous
+   * connection stays as it was.
+   */
+  @Test
+  @SneakyThrows
+  void aRefusedSwitchKeepsThePreviousConnection() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
+    when(emailCredentialsResolver.targetAccount(1L, "bluemind-sudo", TEST_USER)).thenReturn("eric@bm.example.org");
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any()))
+        .thenReturn(mock(Authenticator.class));
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+      doThrow(new MessagingException("refused")).when(store).connect();
+
+      assertThrows(IllegalStateException.class, () -> userEmailSettingService.switchThroughProvider(1L, TEST_USER));
+
+      verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any());
+      verify(settingService, never()).remove(any(Context.class), any(Scope.class), anyString());
+      verifyNoInteractions(eventPublisher);
+    }
+  }
+
+  /**
+   * EXO-90836. A switch finds the designated connector already stored by the time of
+   * the write - a concurrent switch of the same user - and writes nothing.
+   */
+  @Test
+  @SneakyThrows
+  void aSwitchToTheConnectorAlreadyStoredWritesNothing() {
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY)))
+        .thenAnswer(invocation -> SettingValue.create("{\"emailConnectorId\":\"1\",\"emailAddress\":\"eric@bm.example.org\"}"));
+
+    connectThroughTheProvider(() -> assertFalse(userEmailSettingService.switchThroughProvider(1L, TEST_USER)));
+
+    verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any());
+  }
+
+  /**
+   * EXO-90836. The user's own screens read whether managed mode keeps them on a
+   * connector, and which; a user it does not govern reads neither.
+   */
+  @Test
+  void theScreensReadWhetherManagedModeKeepsTheUser() {
+    when(emailManagedModeService.designatedConnectorFor(TEST_USER)).thenReturn(7L);
+
+    UserEmailSetting managed = userEmailSettingService.getUserEmailSettingWithManagedMode(TEST_USER);
+
+    assertTrue(managed.isManaged());
+    assertEquals(7L, managed.getManagedConnectorId());
+
+    when(emailManagedModeService.designatedConnectorFor(TEST_USER)).thenReturn(null);
+
+    UserEmailSetting free = userEmailSettingService.getUserEmailSettingWithManagedMode(TEST_USER);
+
+    assertFalse(free.isManaged());
+    assertNull(free.getManagedConnectorId());
   }
 }
