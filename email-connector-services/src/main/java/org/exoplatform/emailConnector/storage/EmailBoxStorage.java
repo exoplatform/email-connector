@@ -1601,6 +1601,27 @@ public class EmailBoxStorage {
                         .replace("_", LIKE_ESCAPE + "_");
     return !emailBoxDao.findOneIdBySenderAddress(userId, "%," + escaped, key).isEmpty();
   }
+  /**
+   * Whether a mailbox holds mail sent from an address that passed DMARC for its domain
+   * and failed no sender check, in any folder (EXO-90893): the condition for the mail
+   * list to be offered that address's brand logo.
+   *
+   * @param userId the mailbox owner
+   * @param address the sender's address
+   * @return true when one of the owner's cached messages from it was vouched for
+   */
+  public boolean hasVerifiedMailFrom(String userId, String address) {
+    String key = StringUtils.trim(address);
+    if (StringUtils.isBlank(userId) || StringUtils.isEmpty(key)) {
+      return false;
+    }
+    key = key.toLowerCase(Locale.ROOT);
+    String escaped = key.replace(LIKE_ESCAPE, LIKE_ESCAPE + LIKE_ESCAPE)
+                        .replace("%", LIKE_ESCAPE + "%")
+                        .replace("_", LIKE_ESCAPE + "_");
+    return !emailBoxDao.findOneVerifiedIdBySenderAddress(userId, "%," + escaped, key).isEmpty();
+  }
+
 
   /**
    * Maps a cached row to what a search reads: its keys, subject, date, flags, raw body
@@ -2685,6 +2706,11 @@ public class EmailBoxStorage {
                               false, null, null, false, null, null, null,
                               // The draft's mailbox (EXO-90595) and name (EXO-90584), set by name below.
                               null, null, null);
+      if (email.getSender() != null) {
+        // The row's own verdict, for the list (EXO-90893): a brand logo the page learnt
+        // for this address is shown on a row that passed DMARC and failed nothing only.
+        email.getSender().setDomainVerified(content.isDmarcPassed() && StringUtils.isBlank(content.getAuthFailure()));
+      }
       email.setReadReceiptRequested(emailBoxEntity.isReadReceiptRequested());
       email.setReadReceiptTo(emailBoxEntity.getReadReceiptTo());
       email.setReadReceiptState(emailBoxEntity.getReadReceiptState());
