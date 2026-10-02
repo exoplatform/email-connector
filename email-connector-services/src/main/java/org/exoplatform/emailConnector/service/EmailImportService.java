@@ -174,6 +174,9 @@ public class EmailImportService {
   // A run's directory: this server's user alone may list, read and write it.
   private static final Set<PosixFilePermission> OWNER_ONLY = PosixFilePermissions.fromString("rwx------");
 
+  // The name of an import run's thread, numbered.
+  private static final String      THREAD_NAME_PREFIX      = "email-import-run-";
+
   private static final AtomicInteger THREADS             = new AtomicInteger();
 
   private final Set<String>        importingUsers          = ConcurrentHashMap.newKeySet();
@@ -183,7 +186,7 @@ public class EmailImportService {
   // per-user guard bounds the threads to the users importing at once.
   private final ExecutorService    importExecutor          = Executors.newCachedThreadPool(runnable -> {
                                                              Thread thread = new Thread(runnable,
-                                                                                        "email-import-"
+                                                                                        THREAD_NAME_PREFIX
                                                                                             + THREADS.incrementAndGet());
                                                              thread.setDaemon(true);
                                                              return thread;
