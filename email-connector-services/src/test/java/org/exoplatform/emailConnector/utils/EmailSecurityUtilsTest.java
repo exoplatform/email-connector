@@ -38,6 +38,9 @@ import org.exoplatform.emailConnector.model.EmailSecurityWarningType;
  */
 class EmailSecurityUtilsTest {
 
+  /** Every mail server's header believed. */
+  private static final Set<String> ANY = Set.of(EmailSecurityUtils.ANY_AUTHSERV_ID);
+
   /**
    * DMARC failing warns whatever else passed; DMARC passing, or any DKIM pass, keeps
    * quiet; SPF warns on a hard fail only, DKIM on a failure with SPF not passing.
@@ -118,25 +121,32 @@ class EmailSecurityUtilsTest {
     assertFalse(passed("mx.example.com; dkim=pass header.d=brand.example"));
     assertFalse(EmailSecurityUtils.dmarcPassed(new String[] { "mx.example.com; spf=pass", "forged.example; dmarc=pass" },
                                                "news@brand.example",
-                                               Set.of()),
+                                               ANY),
                 "a lower header vouches for nothing");
-    assertFalse(EmailSecurityUtils.dmarcPassed(null, "news@brand.example", Set.of()));
-    assertFalse(EmailSecurityUtils.dmarcPassed(new String[] { " " }, "news@brand.example", Set.of()));
-    assertFalse(EmailSecurityUtils.dmarcPassed(new String[] { "mx.example.com; dmarc=pass" }, null, Set.of()));
-    assertFalse(EmailSecurityUtils.dmarcPassed(new String[] { "mx.example.com; dmarc=pass" }, "no-domain", Set.of()));
+    assertFalse(EmailSecurityUtils.dmarcPassed(null, "news@brand.example", ANY));
+    assertFalse(EmailSecurityUtils.dmarcPassed(new String[] { " " }, "news@brand.example", ANY));
+    assertFalse(EmailSecurityUtils.dmarcPassed(new String[] { "mx.example.com; dmarc=pass" }, null, ANY));
+    assertFalse(EmailSecurityUtils.dmarcPassed(new String[] { "mx.example.com; dmarc=pass" }, "no-domain", ANY));
   }
 
   /**
-   * EXO-90893 -- once the deployment names the authserv-ids of its mail servers, a
-   * header written by any other server vouches for nothing, whatever it says; an empty
-   * list believes the top header.
+   * EXO-90893 -- a pass is believed only from a mail server the deployment names: none
+   * named believes none, a named one believes its own header only, and {@code *}
+   * believes the top header whoever wrote it. A header naming no server (Microsoft 365
+   * opens with a result) is believed under {@code *} only.
    */
   @Test
   void aDmarcPassNeedsATrustedServerWhenTheDeploymentNamesOne() {
     String[] header = { "mx.example.com 1; dmarc=pass header.from=brand.example" };
     assertTrue(EmailSecurityUtils.dmarcPassed(header, "news@brand.example", Set.of("mx.example.com")));
     assertFalse(EmailSecurityUtils.dmarcPassed(header, "news@brand.example", Set.of("imap.corp.example")));
-    assertTrue(EmailSecurityUtils.dmarcPassed(header, "news@brand.example", Set.of()));
+    assertFalse(EmailSecurityUtils.dmarcPassed(header, "news@brand.example", Set.of()), "none named, none believed");
+    assertFalse(EmailSecurityUtils.dmarcPassed(header, "news@brand.example", null));
+    assertTrue(EmailSecurityUtils.dmarcPassed(header, "news@brand.example", ANY));
+    String[] microsoft = { "spf=pass (sender IP is 1.2.3.4) smtp.mailfrom=brand.example; dkim=pass header.d=brand.example;"
+        + "dmarc=pass action=none header.from=brand.example;compauth=pass reason=100" };
+    assertTrue(EmailSecurityUtils.dmarcPassed(microsoft, "news@brand.example", ANY));
+    assertFalse(EmailSecurityUtils.dmarcPassed(microsoft, "news@brand.example", Set.of("spf=pass")));
     System.setProperty(EmailSecurityUtils.TRUSTED_AUTHSERV_IDS_PROPERTY, " MX.example.com , imap.corp.example,");
     try {
       assertEquals(Set.of("mx.example.com", "imap.corp.example"), EmailSecurityUtils.trustedAuthservIds());
@@ -153,7 +163,7 @@ class EmailSecurityUtilsTest {
    * @return whether DMARC passed for brand.example
    */
   private static boolean passed(String header) {
-    return EmailSecurityUtils.dmarcPassed(new String[] { header }, "news@brand.example", Set.of());
+    return EmailSecurityUtils.dmarcPassed(new String[] { header }, "news@brand.example", ANY);
   }
 
   /**
