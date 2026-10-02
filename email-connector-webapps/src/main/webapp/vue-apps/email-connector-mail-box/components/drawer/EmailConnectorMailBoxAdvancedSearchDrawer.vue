@@ -178,25 +178,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               v-for="option in attachmentTypeOptions"
               :key="option.value"
               class="ps-2">
-              <v-list-item-action class="me-2 ms-0 my-0">
+              <v-list-item-action class="me-2 ms-0 my-0 align-self-center">
                 <v-checkbox
                   v-model="criteria.attachmentTypes"
                   :value="option.value"
                   :aria-label="option.text"
                   :ripple="false"
-                  class="ma-auto"
+                  class="ma-0 pa-0"
                   dense
                   hide-details />
               </v-list-item-action>
               <v-list-item-content>
-                <v-row class="ma-auto pa-0">
+                <v-row class="ma-0 pa-0 flex-nowrap" style="align-items: center;">
                   <v-icon
                     :size="16"
-                    :color="option.icon.color"
-                    class="my-auto">
+                    :color="option.icon.color">
                     {{ option.icon.class }}
                   </v-icon>
-                  <div class="px-2 my-auto pt-1">{{ option.text }}</div>
+                  <div class="px-2 text-start">{{ option.text }}</div>
                 </v-row>
               </v-list-item-content>
             </v-list-item>
