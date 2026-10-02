@@ -18,8 +18,11 @@ package org.exoplatform.emailConnector.service;
 
 import java.time.Clock;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -32,10 +35,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailFilterMatch;
 import org.exoplatform.emailConnector.model.EmailFilterProposal;
 import org.exoplatform.emailConnector.model.EmailFilterSuggestionCounts;
+import org.exoplatform.emailConnector.model.EmailWaitingSuggestionMail;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.plugin.EmailFilterAgentHandler;
+import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailFilterProposalStorage;
 import org.exoplatform.emailConnector.storage.EmailFilterStorage;
 import org.exoplatform.services.log.ExoLogger;
@@ -138,6 +145,12 @@ public class EmailFilterProposalService {
 
   @Autowired
   private EmailFilterSuggestionDigest             suggestionDigest;
+
+  @Autowired
+  private EmailBoxStorage                         emailBoxStorage;
+
+  @Autowired
+  private EmailDelegationService                  emailDelegationService;
 
   private Clock                                   clock                = Clock.systemUTC();
 
@@ -282,6 +295,42 @@ public class EmailFilterProposalService {
   public List<String> getWaitingMails(String username, Long delegationId) throws ObjectNotFoundException, IllegalAccessException {
     emailFilterService.checkOwnMailbox(username, delegationId);
     return emailFilterProposalStorage.getWaitingMailHeaderIds(username, new Date(clock.millis()));
+  }
+
+  /**
+   * The caller's mails with a suggestion still waiting for them, as the mailbox's
+   * "Suggestions" view lists them (EXO-90851): one cached copy per message, newest first,
+   * with how many suggestions wait on it. The copy is one the user can open from a list:
+   * never in Trash, Spam, All Mail or Drafts, nor in a mailbox somebody shared with them
+   * -- the folders the Favorites leave out, for the same reasons. A message with no such
+   * copy cached is not listed. Of the caller's own mailbox only; two reads, whatever the
+   * number of mails, which the mailbox's pending cap bounds.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @return the mails, newest first
+   * @throws ObjectNotFoundException when the feature is off or no mailbox is connected
+   * @throws IllegalAccessException when the request comes from someone else's mailbox, or
+   *           the caller may not use their connector
+   */
+  public List<EmailWaitingSuggestionMail> getWaitingEmails(String username, Long delegationId) throws ObjectNotFoundException,
+                                                                                               IllegalAccessException {
+    emailFilterService.checkOwnMailbox(username, delegationId);
+    Map<String, Integer> waiting = new HashMap<>();
+    emailFilterProposalStorage.getWaitingMailHeaderIds(username, new Date(clock.millis()))
+                              .stream()
+                              .filter(StringUtils::isNotBlank)
+                              .forEach(mailHeaderId -> waiting.merge(mailHeaderId, 1, Integer::sum));
+    if (waiting.isEmpty()) {
+      return List.of();
+    }
+    List<String> excludedFolders = MailFolder.notFavoritedFolders(emailDelegationService.getDelegatedFolderKeys(username));
+    Map<String, EmailWaitingSuggestionMail> listed = new LinkedHashMap<>();
+    for (Email email : emailBoxStorage.getListedEmailsByMailHeaderIds(username, waiting.keySet(), excludedFolders)) {
+      // Newest copy first: a message filed in two folders is listed once, by its newest.
+      listed.computeIfAbsent(email.getMailHeaderId(), mailHeaderId -> waitingMail(email, waiting.get(mailHeaderId)));
+    }
+    return new ArrayList<>(listed.values());
   }
 
   /**
@@ -443,6 +492,28 @@ public class EmailFilterProposalService {
   private long countWaiting(String username) {
     emailFilterProposalStorage.expireDue(username, new Date(clock.millis()));
     return emailFilterProposalStorage.countByStatus(username, EmailFilterProposal.PROPOSED);
+  }
+
+  /**
+   * One row of the "Suggestions" view, out of a cached copy of the mail.
+   *
+   * @param email the cached copy, as the light listed read gives it
+   * @param waitingCount how many suggestions wait on the mail
+   * @return the row
+   */
+  private static EmailWaitingSuggestionMail waitingMail(Email email, int waitingCount) {
+    EmailWaitingSuggestionMail mail = new EmailWaitingSuggestionMail();
+    mail.setEmailId(email.getId());
+    mail.setMailRemoteId(email.getMailRemoteId());
+    mail.setFolder(email.getFolder());
+    mail.setMailHeaderId(email.getMailHeaderId());
+    mail.setSubject(email.getSubject());
+    mail.setSender(email.getSender());
+    mail.setReceivedDate(email.getReceivedDate());
+    mail.setRead(email.isRead());
+    mail.setStarred(email.isStarred());
+    mail.setWaitingCount(waitingCount);
+    return mail;
   }
 
   /**
