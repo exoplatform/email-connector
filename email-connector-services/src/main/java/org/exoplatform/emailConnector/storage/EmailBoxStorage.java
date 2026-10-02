@@ -26,6 +26,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -1164,6 +1165,54 @@ public class EmailBoxStorage {
       ids.putIfAbsent((Long) row[0], (Long) row[1]);
     }
     return ids;
+  }
+
+  /**
+   * Every message eXo holds in a folder of the user's with its IMAP UID, each with its
+   * row's local id (EXO-90888): what a search of the mail server narrowed to categories
+   * starts from, the categories being eXo's links on these rows. One projection read.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @return the folder's cached local ids by UID, empty when none
+   */
+  public Map<Long, Long> getCachedFolderEmailIds(String userId, String folder) {
+    Map<Long, Long> ids = new HashMap<>();
+    for (Object[] row : emailBoxDao.findCachedIdsByUserIdAndFolder(userId, folder)) {
+      // As in getCachedEmailIds: were a UID cached twice, either row names that message.
+      ids.putIfAbsent((Long) row[0], (Long) row[1]);
+    }
+    return ids;
+  }
+
+  /**
+   * Of some cached messages, the ones eXo filed under at least one of some categories
+   * (EXO-90888): what a search narrowed to categories keeps. The links are read in
+   * batches of {@link #CATEGORY_LOOKUP_SLICE} ids, one lookup each, as
+   * {@link #getUnreadInboxCategoryIds} reads them -- never one lookup per message.
+   *
+   * @param emailIds the messages' local ids
+   * @param categoryIds the categories, each already expanded to its subcategories
+   * @return the ids of the messages linked to one of them, empty when none
+   */
+  public Set<Long> getEmailIdsInCategories(Collection<Long> emailIds, Set<Long> categoryIds) {
+    if (emailIds == null || emailIds.isEmpty() || categoryIds == null || categoryIds.isEmpty()) {
+      return Set.of();
+    }
+    List<Long> ids = List.copyOf(new LinkedHashSet<>(emailIds));
+    Set<Long> inCategories = new HashSet<>();
+    for (int from = 0; from < ids.size(); from += CATEGORY_LOOKUP_SLICE) {
+      List<Long> slice = ids.subList(from, Math.min(from + CATEGORY_LOOKUP_SLICE, ids.size()));
+      Map<String, List<Long>> linked = categoryLinkService.getLinkedIds(EmailCategoryPlugin.OBJECT_TYPE,
+                                                                        slice.stream().map(String::valueOf).toList());
+      if (linked == null) {
+        continue;
+      }
+      slice.stream()
+           .filter(id -> linked.getOrDefault(String.valueOf(id), List.of()).stream().anyMatch(categoryIds::contains))
+           .forEach(inCategories::add);
+    }
+    return inCategories;
   }
 
   /**
