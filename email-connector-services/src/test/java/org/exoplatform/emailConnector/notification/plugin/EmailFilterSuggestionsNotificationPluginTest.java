@@ -108,7 +108,8 @@ class EmailFilterSuggestionsNotificationPluginTest {
   }
 
   /**
-   * The digest says the count, one or many, and opens the mailbox.
+   * The digest says the count, one or many, and opens the mailbox on its "Suggestions"
+   * view, by the folder= deep link the webapp reads (EXO-90851).
    */
   @Test
   void theDigestSaysHowManyWait() {
@@ -117,7 +118,7 @@ class EmailFilterSuggestionsNotificationPluginTest {
     assertEquals("4 suggestions waiting", many.getValueOwnerParameter(NotificationConstants.CONTENT));
     assertEquals("4", many.getValueOwnerParameter(NotificationConstants.SUGGESTION_COUNT));
     assertEquals("Mail assistant", many.getValueOwnerParameter(NotificationConstants.TITLE));
-    assertEquals(MAILBOX, many.getValueOwnerParameter(NotificationConstants.LINK));
+    assertEquals(MAILBOX + "&folder=SUGGESTIONS", many.getValueOwnerParameter(NotificationConstants.LINK));
     assertEquals("1 suggestion waiting", plugin.buildNotification(context("1")).getValueOwnerParameter(NotificationConstants.CONTENT));
   }
 
