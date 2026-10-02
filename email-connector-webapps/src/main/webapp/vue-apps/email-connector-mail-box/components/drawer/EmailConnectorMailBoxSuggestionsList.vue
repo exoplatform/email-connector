@@ -18,23 +18,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <!-- The "Suggestions" view (EXO-90851), in place of a folder's list: the user's own
        mails with a suggestion of an assistant waiting for them, newest first, from their
        own endpoint, read with the waiting suggestions (refreshWaitingSuggestions), which
-       the folder column counts from. Each one is the folder list's own row (EXO-90871)
-       -- star, selection, categories, drag, the count of its waiting suggestions --,
-       alone in its conversation, keyed by folder and UID since it may sit in any folder,
-       which the row names; opened as a search hit is, and its Automations panel shows
-       open, ready to approve or reject (isSuggestionsViewListed). No loading bar of its
-       own: the drawer's header bar shows what it waits on (the loading event), as for
-       the Scheduled view. -->
+       the folder column counts from, and handed over by the drawer (emails), which
+       leaves out the mails an action here took out of their folder and stamps a star or
+       a read status on them (EXO-90871). Each one is the folder list's own row -- star,
+       selection, categories, drag, the count of its waiting suggestions --, alone in its
+       conversation, keyed by folder and UID since it may sit in any folder, which the row
+       names; opened as a search hit is, and its Automations panel shows open, ready to
+       approve or reject (isSuggestionsViewListed). No loading bar of its own: the
+       drawer's header bar shows what it waits on (the loading event), as for the
+       Scheduled view. -->
   <div class="suggestions-email-list">
     <div
-      v-if="items.length"
+      v-if="emails.length"
       :aria-label="$t('emailConnector.mailBox.list.drawer.folder.suggestions')"
       role="group">
       <email-connector-mail-box-drawer-list-item
-        v-for="mail in items"
+        v-for="mail in emails"
         :key="keyOf(mail)"
         :email="mail"
-        :emails="items"
+        :emails="emails"
         :row-key="keyOf(mail)"
         :opened-key="openedKey"
         :select-mode="selectMode"
@@ -45,7 +47,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         @open="open(mail)" />
     </div>
     <div
-      v-if="loaded && !items.length"
+      v-if="loaded && !emails.length"
       :class="compact ? 'pt-10' : 'pt-16'"
       class="text-center px-4 suggestions-email-empty">
       <v-icon :size="compact ? 32 : 60" class="icon-default-color">fa-magic</v-icon>
@@ -57,10 +59,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-import { refreshWaitingSuggestions, setSuggestionsViewListed, waitingSuggestionMails, waitingSuggestionsReadFailed } from '../../js/EmailConnectorMailFilters.js';
+import { refreshWaitingSuggestions, setSuggestionsViewListed, waitingSuggestionsReadFailed } from '../../js/EmailConnectorMailFilters.js';
 
 export default {
   props: {
+    // The view's mails, newest first, as the drawer reads them off the last read of the
+    // waiting suggestions (its suggestionMails) -- the read the folder column's count
+    // comes from too, so the two always agree, and which follows every read: a decision
+    // taken in a mail's panel, a new run of an assistant, a suggestion expired.
+    emails: {
+      type: Array,
+      default: () => [],
+    },
     // Whether it sits in the full-screen list column rather than in the narrow drawer:
     // its rows are then the full-screen rows, lit as the reader's and dragged onto the
     // folder column.
@@ -90,19 +100,6 @@ export default {
     // The mail the reader was opened on from this view, by its folder and UID.
     openedKey: null,
   }),
-  computed: {
-    /**
-     * The view's mails, as the last read of the waiting suggestions gave them -- the read
-     * the folder column's count comes from too, so the two always agree. It follows every
-     * read: a decision taken in a mail's panel, a new run of an assistant, a suggestion
-     * expired.
-     *
-     * @returns {Array} the mails, newest first
-     */
-    items() {
-      return waitingSuggestionMails();
-    },
-  },
   watch: {
     loading: {
       immediate: true,

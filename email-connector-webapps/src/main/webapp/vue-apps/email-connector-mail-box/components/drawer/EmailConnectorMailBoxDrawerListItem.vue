@@ -379,9 +379,11 @@ export default {
     /**
      * The line under the subject: the opening words of the message's body, or that the
      * body is empty. A hit of a search or of the Suggestions view carries no body
-     * (EXO-90871): a search hit read from the local copy quotes its own excerpt, the text
-     * around what was searched for; a hit found on the mail server, envelope-only, has
-     * nothing to quote, which is not the same as an empty body -- the line is left out.
+     * (EXO-90871): it quotes the excerpt it carries, when it carries one -- the text
+     * around what was searched for, which a hit of the platform's search quotes and which
+     * neither of the mailbox's own searches, envelope-only on the server and in eXo's
+     * copy alike, gives today --, and has nothing to quote otherwise, which is not the
+     * same as an empty body: the line is left out.
      *
      * @returns {String} the line, or an empty string for none
      */
