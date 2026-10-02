@@ -28,6 +28,9 @@ import EmailConnectorMailBoxDrawer from '../EmailConnectorMailBoxDrawer.vue';
 import EmailConnectorMailBoxDrawerListItem from '../EmailConnectorMailBoxDrawerListItem.vue';
 import EmailConnectorMailBoxDrawerSearchResults from '../EmailConnectorMailBoxDrawerSearchResults.vue';
 import EmailConnectorMailBoxSuggestionsList from '../EmailConnectorMailBoxSuggestionsList.vue';
+import EmailConnectorMailBoxDrawerListItemDetailSenderAvatar from '../EmailConnectorMailBoxDrawerListItemDetailSenderAvatar.vue';
+import { MAX_AVATAR_BATCH, rememberSenderAvatar, requestSenderAvatar, resetSenderAvatars, senderAvatarUrl, watchSenderAvatar } from '../../../js/EmailConnectorSenderAvatars.js';
+import { avatarColor } from '../../../js/EmailRecipientDisplay.js';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
 import { refreshWaitingSuggestions } from '../../../js/EmailConnectorMailFilters.js';
 import * as userSettingService from '../../../../email-connector-user-setting/js/EmailConnectorUserSettingService.js';
@@ -130,9 +133,10 @@ function serviceStub(overrides) {
  *
  * @param {Object} props the row's props
  * @param {Object} listeners what the list listens to on the row
+ * @param {Boolean} phone whether the screen is a phone's (no hover)
  * @returns {Wrapper} the row
  */
-function mountRow(props, listeners = {}) {
+function mountRow(props, listeners = {}, phone = false) {
   const localVue = createLocalVue();
   localVue.directive('touch', {});
   localVue.directive('touch-hold', {});
@@ -143,7 +147,7 @@ function mountRow(props, listeners = {}) {
     mocks: {
       $t: t,
       $emailConnectorMailBoxService: { ...emailConnectorMailBoxService, formatDateString: () => 'today' },
-      $vuetify: { breakpoint: { smAndDown: false } },
+      $vuetify: { breakpoint: { smAndDown: phone } },
     },
   });
 }
@@ -592,5 +596,333 @@ describe('the mailbox drawer gives its bars the rows on screen and ends a search
     expect(wrapper.vm.searchLocalResults[0].starred).toBe(true);
     expect(wrapper.vm.emails.map(email => email.starred)).toEqual([false, false]);
     expect(service.updateEmailsFavoriteStatus).toHaveBeenCalledWith([5, 6], true, 'ARCHIVE');
+  });
+});
+
+describe('the row\'s sender avatar is its checkbox (EXO-90891)', () => {
+  let wrapper;
+
+  afterEach(() => wrapper?.destroy());
+
+  const avatarOf = row => row.find('.row-avatar email-connector-mail-box-drawer-list-item-detail-sender-avatar');
+  const checkboxOf = row => row.find('.row-avatar v-checkbox');
+
+  it('shows the sender\'s avatar on the left, 32 px, top-aligned, and no checkbox column', () => {
+    wrapper = mountRow({ email: hit(5, 'ARCHIVE'), rowKey: 'ARCHIVE:5', expanded: true });
+
+    const box = wrapper.find('.row-avatar');
+    expect(box.attributes('style')).toContain('width: 32px');
+    expect(box.attributes('style')).toContain('height: 32px');
+    expect(box.classes()).toEqual(expect.arrayContaining(['align-self-start', 'flex-shrink-0']));
+    // First in the row, before the text block.
+    expect(box.element.parentElement.firstElementChild).toBe(box.element);
+    expect(avatarOf(wrapper).attributes('size')).toBe('32');
+    expect(wrapper.vm.avatarPerson).toBeNull();
+    expect(wrapper.findAll('v-checkbox').length).toBe(0);
+  });
+
+  it('turns into the checkbox while hovered or focused, labelled, and back', async () => {
+    wrapper = mountRow({ email: hit(5, 'ARCHIVE'), rowKey: 'ARCHIVE:5', expanded: true });
+
+    await wrapper.trigger('mouseenter');
+    expect(avatarOf(wrapper).exists()).toBe(false);
+    expect(checkboxOf(wrapper).attributes('aria-label')).toBe('emailConnector.mailBox.list.drawer.selectRow|Alice|ARCHIVE 5');
+    await wrapper.trigger('mouseleave');
+    expect(checkboxOf(wrapper).exists()).toBe(false);
+    expect(avatarOf(wrapper).exists()).toBe(true);
+
+    await wrapper.trigger('focusin');
+    expect(checkboxOf(wrapper).exists()).toBe(true);
+    await wrapper.trigger('focusout');
+    expect(checkboxOf(wrapper).exists()).toBe(false);
+  });
+
+  it('keeps the checkbox the keyboard focus is on when the pointer leaves, and while the focus moves inside the row', async () => {
+    wrapper = mountRow({ email: hit(5, 'ARCHIVE'), rowKey: 'ARCHIVE:5', expanded: true }, {}, false);
+    document.body.appendChild(wrapper.element);
+
+    await wrapper.trigger('focusin');
+    await wrapper.trigger('mouseenter');
+    await wrapper.trigger('mouseleave');
+    expect(checkboxOf(wrapper).exists()).toBe(true);
+
+    await wrapper.trigger('focusout', { relatedTarget: wrapper.find('[data-thread-key]').element });
+    expect(checkboxOf(wrapper).exists()).toBe(true);
+
+    await wrapper.trigger('focusout', { relatedTarget: document.body });
+    expect(checkboxOf(wrapper).exists()).toBe(false);
+    wrapper.element.remove();
+  });
+
+  it('gives a clicked row its avatar back once the pointer leaves: the focus a click brings is not the keyboard\'s', async () => {
+    wrapper = mountRow({ email: hit(5, 'ARCHIVE'), rowKey: 'ARCHIVE:5', expanded: true });
+
+    await wrapper.trigger('mouseenter');
+    await wrapper.trigger('mousedown');
+    await wrapper.trigger('focusin');
+    expect(checkboxOf(wrapper).exists()).toBe(true);
+    await wrapper.trigger('mouseleave');
+    expect(checkboxOf(wrapper).exists()).toBe(false);
+    expect(avatarOf(wrapper).exists()).toBe(true);
+
+    // A press that focused nothing is forgotten when the pointer leaves: the keyboard
+    // coming in afterwards still keeps the checkbox.
+    await wrapper.trigger('focusout', { relatedTarget: document.body });
+    await wrapper.trigger('mouseenter');
+    await wrapper.find('.row-avatar').trigger('mousedown');
+    await wrapper.trigger('mouseleave');
+    await wrapper.trigger('focusin');
+    await wrapper.trigger('mouseenter');
+    await wrapper.trigger('mouseleave');
+    expect(checkboxOf(wrapper).exists()).toBe(true);
+
+    // A click that moved no focus is over once released: the keyboard's focus that
+    // follows, pointer still on the row, keeps the checkbox when the pointer leaves.
+    await wrapper.trigger('focusout', { relatedTarget: document.body });
+    await wrapper.trigger('mouseenter');
+    await wrapper.trigger('mousedown');
+    await wrapper.trigger('mouseup');
+    await wrapper.trigger('focusin');
+    await wrapper.trigger('mouseleave');
+    expect(checkboxOf(wrapper).exists()).toBe(true);
+  });
+
+  it('forgets a press that started a drag, which no release follows', async () => {
+    wrapper = mountRow({ email: hit(5, 'ARCHIVE'), rowKey: 'ARCHIVE:5', expanded: true });
+    wrapper.vm.$root.$emit = jest.fn();
+
+    await wrapper.trigger('mouseenter');
+    await wrapper.trigger('mousedown');
+    wrapper.vm.onDragEnd();
+    await wrapper.trigger('mouseenter');
+    await wrapper.trigger('focusin');
+    await wrapper.trigger('mouseleave');
+    expect(checkboxOf(wrapper).exists()).toBe(true);
+  });
+
+  it('is a checkbox on every row in select mode, ticked as the row is, and ticking it selects the row', async () => {
+    wrapper = mountRow({ email: hit(5, 'ARCHIVE'), rowKey: 'ARCHIVE:5', selectMode: true, selectedEmails: ['ARCHIVE:5'] });
+    const emit = jest.fn();
+    wrapper.vm.$root.$emit = emit;
+
+    expect(avatarOf(wrapper).exists()).toBe(false);
+    expect(checkboxOf(wrapper).attributes('input-value')).toBe('true');
+    await wrapper.setProps({ selectedEmails: [] });
+    expect(checkboxOf(wrapper).attributes('input-value')).toBeUndefined();
+
+    wrapper.vm.onSelectChange(true);
+    expect(emit).toHaveBeenCalledWith('select-email', expect.objectContaining({ emailId: 5, folder: 'ARCHIVE', selected: true }));
+    // The row keeps its place: no padding of its own for the select mode.
+    expect(wrapper.classes()).toContain('ps-4');
+  });
+
+  it('keeps a row the server has not listed yet out of the selection', async () => {
+    wrapper = mountRow({ email: hit(5, 'ARCHIVE', { refreshPending: true }), selectMode: true });
+    const emit = jest.fn();
+    wrapper.vm.$root.$emit = emit;
+
+    expect(checkboxOf(wrapper).attributes('disabled')).toBe('true');
+    await wrapper.find('.row-avatar').trigger('click');
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('on a phone, with no hover, a tap on the avatar ticks the row and enters select mode', async () => {
+    wrapper = mountRow({ email: hit(5, 'ARCHIVE'), rowKey: 'ARCHIVE:5' }, {}, true);
+    const emit = jest.fn();
+    wrapper.vm.$root.$emit = emit;
+
+    await wrapper.trigger('mouseenter');
+    expect(avatarOf(wrapper).exists()).toBe(true);
+
+    await wrapper.find('.row-avatar').trigger('click');
+    expect(emit).toHaveBeenCalledWith('select-email', expect.objectContaining({ emailId: 5, folder: 'ARCHIVE', selected: true }));
+  });
+
+  it('draws a draft after the first person of its conversation, as its first line names it; a draft answering nothing after its sender', () => {
+    const draft = { ...listed(5), folder: 'DRAFTS', draftLocalId: 'local-1', threadParticipants: ['Véronika', 'Bob'] };
+    wrapper = mountRow({ email: draft });
+    expect(wrapper.vm.avatarPerson).toEqual({ name: 'Véronika' });
+    wrapper.destroy();
+
+    wrapper = mountRow({ email: { ...draft, threadParticipants: [] } });
+    expect(wrapper.vm.avatarPerson).toBeNull();
+  });
+});
+
+describe('the sender avatar draws the reader\'s initials and the page\'s cached picture (EXO-90891)', () => {
+  let wrapper;
+  let requests;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    // The platform's Vue is a global, which the avatar cache's answers are observed by.
+    global.Vue = Vue;
+    resetSenderAvatars();
+    requests = [];
+    global.fetch = jest.fn((url, options) => {
+      const addresses = JSON.parse(options.body);
+      requests.push(addresses);
+      const answer = {};
+      addresses.filter(address => address.endsWith('@example.org')).forEach(address => {
+        answer[address] = `/portal/rest/v1/social/users/${address}/avatar`;
+      });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(answer) });
+    });
+  });
+
+  afterEach(() => {
+    wrapper?.destroy();
+    wrapper = null;
+    resetSenderAvatars();
+    delete global.fetch;
+    delete global.IntersectionObserver;
+    delete global.Vue;
+    jest.useRealTimers();
+  });
+
+  /**
+   * Lets the gathered addresses leave, and their answers land.
+   *
+   * @returns {Promise<void>} resolved once they have
+   */
+  async function answered() {
+    jest.advanceTimersByTime(100);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
+  /**
+   * Mounts the avatar.
+   *
+   * @param {Object} props its props
+   * @returns {Wrapper} the avatar
+   */
+  function mountAvatar(props) {
+    return shallowMount(EmailConnectorMailBoxDrawerListItemDetailSenderAvatar, { propsData: props });
+  }
+
+  it('asks once, in one request, for the addresses asked within one moment, whatever their case', async () => {
+    requestSenderAvatar('Bob@Example.org');
+    requestSenderAvatar(' bob@example.org ');
+    requestSenderAvatar('ann@client.org');
+    requestSenderAvatar('not an address');
+    expect(requests).toEqual([]);
+
+    await answered();
+    expect(requests).toEqual([['bob@example.org', 'ann@client.org']]);
+    expect(senderAvatarUrl('BOB@example.org')).toBe('/portal/rest/v1/social/users/bob@example.org/avatar');
+    expect(senderAvatarUrl('ann@client.org')).toBeNull();
+
+    // Known, a picture or none: never asked again.
+    requestSenderAvatar('bob@example.org');
+    requestSenderAvatar('ann@client.org');
+    await answered();
+    expect(requests.length).toBe(1);
+  });
+
+  it('splits what it gathered at the server\'s cap', async () => {
+    for (let i = 0; i < MAX_AVATAR_BATCH + 1; i++) {
+      requestSenderAvatar(`user${i}@client.org`);
+    }
+    await answered();
+    expect(requests.map(batch => batch.length)).toEqual([MAX_AVATAR_BATCH, 1]);
+  });
+
+  it('keeps nothing of a failed request: initials meanwhile, asked again the next time', async () => {
+    const answer = global.fetch;
+    global.fetch = jest.fn(() => Promise.reject(new Error('down')));
+    requestSenderAvatar('bob@example.org');
+    await answered();
+    expect(senderAvatarUrl('bob@example.org')).toBeNull();
+    global.fetch = jest.fn(() => Promise.resolve({ ok: false }));
+    requestSenderAvatar('bob@example.org');
+    await answered();
+
+    global.fetch = answer;
+    requestSenderAvatar('bob@example.org');
+    await answered();
+    expect(requests).toEqual([['bob@example.org']]);
+    expect(senderAvatarUrl('bob@example.org')).toBe('/portal/rest/v1/social/users/bob@example.org/avatar');
+  });
+
+  it('takes what the reader learnt of a sender: a photo, or the generated initials meaning there is none', async () => {
+    rememberSenderAvatar('bob@example.org', '/portal/rest/v1/social/users/12/avatar');
+    rememberSenderAvatar('ann@client.org', 'data:image/png;base64,AAAA');
+    requestSenderAvatar('bob@example.org');
+    requestSenderAvatar('ann@client.org');
+    await answered();
+
+    expect(requests).toEqual([]);
+    expect(senderAvatarUrl('bob@example.org')).toBe('/portal/rest/v1/social/users/12/avatar');
+    expect(senderAvatarUrl('ann@client.org')).toBeNull();
+  });
+
+  it('asks for an avatar off screen only once it comes into view', async () => {
+    const observed = [];
+    let onIntersect = null;
+    global.IntersectionObserver = class {
+      constructor(callback) {
+        onIntersect = callback;
+      }
+      observe(element) {
+        observed.push(element);
+      }
+      unobserve(element) {
+        observed.splice(observed.indexOf(element), 1);
+      }
+      disconnect() {
+        observed.length = 0;
+      }
+    };
+    const element = document.createElement('div');
+    watchSenderAvatar(element, 'bob@example.org');
+    await answered();
+    expect(requests).toEqual([]);
+    expect(observed).toEqual([element]);
+    // Leaving the screen, or reported off it, asks nothing either.
+    onIntersect([{ target: element, isIntersecting: false }]);
+    await answered();
+    expect(requests).toEqual([]);
+
+    onIntersect([{ target: element, isIntersecting: true }]);
+    await answered();
+    expect(requests).toEqual([['bob@example.org']]);
+    expect(observed).toEqual([]);
+  });
+
+  it('draws the reader\'s coloured initials until the page knows a photo, then the photo', async () => {
+    wrapper = mountAvatar({ email: hit(5, 'INBOX', { sender: { name: 'Gina Carter', address: 'gina@example.org' } }), size: 32 });
+
+    expect(wrapper.text()).toBe('GC');
+    expect(wrapper.find('span').classes()).toContain('caption');
+    expect(wrapper.attributes('color')).toBe(avatarColor('Gina Carter'));
+    expect(wrapper.find('img').exists()).toBe(false);
+
+    await answered();
+    expect(wrapper.find('img').attributes('src')).toBe('/portal/rest/v1/social/users/gina@example.org/avatar');
+    expect(requests).toEqual([['gina@example.org']]);
+  });
+
+  it('draws an outsider\'s initials as the server does -- an address alone is one word -- and asks for no picture of a message that carries one', async () => {
+    wrapper = mountAvatar({ email: hit(5, 'INBOX', { sender: { address: 'john.doe@client.org' } }) });
+    expect(wrapper.text()).toBe('J');
+    await answered();
+    expect(wrapper.find('img').exists()).toBe(false);
+    wrapper.destroy();
+
+    wrapper = mountAvatar({ email: hit(5, 'INBOX', { sender: { name: 'Ann', address: 'ann@example.org', avatarUrl: 'data:image/png;base64,AAAA' } }) });
+    await answered();
+    expect(requests).toEqual([['john.doe@client.org']]);
+    expect(wrapper.find('img').attributes('src')).toBe('data:image/png;base64,AAAA');
+  });
+
+  it('draws the person asked for instead of the sender, by name alone', async () => {
+    wrapper = mountAvatar({ email: hit(5, 'DRAFTS'), person: { name: 'Véronika Smith' }, size: 32 });
+    await answered();
+    expect(wrapper.text()).toBe('VS');
+    expect(requests).toEqual([]);
   });
 });

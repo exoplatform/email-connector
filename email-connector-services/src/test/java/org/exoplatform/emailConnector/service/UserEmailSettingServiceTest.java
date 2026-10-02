@@ -44,6 +44,7 @@ import java.lang.reflect.UndeclaredThrowableException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Properties;
 
 import javax.crypto.BadPaddingException;
@@ -1113,6 +1114,27 @@ public class UserEmailSettingServiceTest {
         .thenReturn(null);
 
     assertEquals(List.of("alice"), userEmailSettingService.getUserEmailSettingsByEmailConnectorId(3L));
+    verifyNoInteractions(codecInitializer, emailConnectorService);
+  }
+
+  /**
+   * The connected mailboxes' owners, by normalized address, read from the documents
+   * alone: an address two users connected names neither, a disconnected document and an
+   * unreadable one name nobody (EXO-90891).
+   */
+  @Test
+  void theConnectedMailboxesNameTheirOwnersButNeverAShared() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(), anyInt(), anyInt()))
+        .thenReturn(List.of(Context.USER.id("alice"), Context.USER.id("bob"), Context.USER.id("carol"),
+                            Context.USER.id("dan"), Context.USER.id("eve"), Context.USER.id("fay")));
+    storedDocument("alice", "{\"emailConnectorId\":\"3\",\"emailAddress\":\" Alice.Private@Gmail.com \",\"emailPassword\":\"cipher\"}");
+    storedDocument("bob", "{\"emailConnectorId\":\"3\",\"emailAddress\":\"team@acme.org\"}");
+    storedDocument("carol", "{\"emailConnectorId\":\"4\",\"emailAddress\":\"TEAM@acme.org\"}");
+    storedDocument("dan", "{\"emailAddress\":\"dan@acme.org\"}");
+    storedDocument("eve", "{not json");
+    storedDocument("fay", "{\"emailConnectorId\":\"3\",\"emailAddress\":\"fay@acme.org\"}");
+
+    assertEquals(Map.of("alice.private@gmail.com", "alice", "fay@acme.org", "fay"), userEmailSettingService.getConnectedMailboxOwners());
     verifyNoInteractions(codecInitializer, emailConnectorService);
   }
 
