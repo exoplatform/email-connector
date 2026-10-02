@@ -28,6 +28,12 @@
  * screen asks nothing: a shared IntersectionObserver hands an address over only once
  * its avatar is in view. The reader, which reads a whole message with its sender's
  * picture, fills the same cache (rememberSenderAvatar).
+ *
+ * A brand logo the server had not resolved yet when an address was answered arrives
+ * later, pushed over the WebSocket (EXO-90909): "this domain has a logo now"
+ * (refreshSenderDomain) or "these rows of yours passed DMARC" (markSenderRowsVerified).
+ * Neither carries a URL -- each is bound to its reader -- so the addresses concerned
+ * that were answered none are asked again, and every avatar of them redraws.
  */
 /**
  * The most addresses one request carries: EmailSenderProfileService.AVATARS_MAX_ADDRESSES
@@ -51,6 +57,19 @@ export const SENDER_LOGO_PATH = '/email-connector/rest/email-box/sender-logo/';
 export function isSenderLogoUrl(url) {
   return !!url && url.startsWith(SENDER_LOGO_PATH);
 }
+
+/**
+ * The document event a page receives when a domain's brand logo was found
+ * (EXO-90909): SenderLogoWebSocketService.LOGO_FOUND_EVENT, detail.message.domain.
+ */
+export const SENDER_LOGO_FOUND_EVENT = 'emailConnector.senderLogo.found';
+
+/**
+ * The document event a page receives when rows of its user's mailbox got their DMARC
+ * verdict and passed (EXO-90909): SenderLogoWebSocketService.ROWS_VERIFIED_EVENT,
+ * detail.message.ids and detail.message.addresses.
+ */
+export const SENDER_ROWS_VERIFIED_EVENT = 'emailConnector.senderLogo.rowsVerified';
 
 /** How long the addresses asked for are gathered before they leave, in ms. */
 const BATCH_DELAY_MS = 50;
@@ -83,6 +102,13 @@ function answersState() {
 // The addresses waiting for the next request, and the ones a request is out for.
 const queued = new Set();
 const asking = new Set();
+// The addresses whose request was out when the server said their logo may now be
+// offered: an answer of none landing for them is asked again (EXO-90909).
+const stale = new Set();
+
+// The rows the server said passed DMARC after they were listed (EXO-90909), by id: the
+// list shows their address's brand logo, as on a row listed verified.
+const verifiedRows = new Set();
 let batchTimer = null;
 
 // The avatars watched for coming into view, element -> address.
@@ -194,9 +220,79 @@ function askFor(addresses) {
   }).catch(() => {
     // Initials meanwhile; nothing kept, so the next avatar of them asks again.
   }).finally(() => {
-    addresses.forEach(address => asking.delete(address));
+    addresses.forEach(address => {
+      asking.delete(address);
+      if (stale.delete(address)) {
+        askAgainIfNone(address);
+      }
+    });
     answersState().version++;
   });
+}
+
+/**
+ * Asks again for an address answered none -- the server may offer its brand logo now
+ * --, or, while its request is out, once that answer lands. A picture already known
+ * stays: a person's photo comes before a logo, and a logo needs no asking.
+ *
+ * @param {string} key - the normalized address
+ * @returns {void}
+ */
+function askAgainIfNone(key) {
+  if (asking.has(key)) {
+    stale.add(key);
+  } else if (answers.has(key) && answers.get(key) === null) {
+    answers.delete(key);
+    requestSenderAvatar(key);
+  }
+}
+
+/**
+ * The server found a domain's brand logo (EXO-90909): every address of that domain the
+ * page was answered none for is asked again, its avatars redrawn with the logo the
+ * answer brings. Nothing is asked for an address the page never showed.
+ *
+ * @param {string} domain - the domain, as the server normalizes it
+ * @returns {void}
+ */
+export function refreshSenderDomain(domain) {
+  const suffix = `@${(domain || '').trim().toLowerCase()}`;
+  if (suffix.length < 2) {
+    return;
+  }
+  Array.from(answers.keys()).concat(Array.from(asking))
+    .filter(key => key.endsWith(suffix))
+    .forEach(askAgainIfNone);
+}
+
+/**
+ * The server filled in the DMARC verdict of rows listed before it knew it, and these
+ * passed (EXO-90909): the rows show their address's brand logo from now on, and their
+ * addresses answered none are asked again.
+ *
+ * @param {Array<number>} ids - the rows' ids
+ * @param {Array<string>} addresses - the rows' sender addresses
+ * @returns {void}
+ */
+export function markSenderRowsVerified(ids, addresses) {
+  (ids || []).forEach(id => verifiedRows.add(id));
+  (addresses || []).map(keyOf).filter(key => key).forEach(askAgainIfNone);
+  answersState().version++;
+}
+
+/**
+ * Whether the server said a row passed DMARC after it was listed (EXO-90909). Reactive,
+ * like the answers.
+ *
+ * @param {number} id - the row's id
+ * @returns {boolean} true when it did
+ */
+export function isSenderRowVerified(id) {
+  // Read for the dependency: a verdict landing bumps it.
+  if (answersState().version < 0) {
+    return false;
+  }
+  return id != null && verifiedRows.has(id);
 }
 
 /**
@@ -261,6 +357,8 @@ export function resetSenderAvatars() {
   answers.clear();
   queued.clear();
   asking.clear();
+  stale.clear();
+  verifiedRows.clear();
   watched.clear();
   clearTimeout(batchTimer);
   batchTimer = null;

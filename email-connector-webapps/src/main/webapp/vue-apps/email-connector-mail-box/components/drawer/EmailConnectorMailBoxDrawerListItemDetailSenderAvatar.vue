@@ -40,7 +40,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { avatarColor, personLabel, senderAvatarInitials } from '../../js/EmailRecipientDisplay.js';
-import { isSenderLogoUrl, rememberSenderAvatar, senderAvatarUrl, unwatchSenderAvatar, watchSenderAvatar } from '../../js/EmailConnectorSenderAvatars.js';
+import { isSenderLogoUrl, isSenderRowVerified, rememberSenderAvatar, senderAvatarUrl, unwatchSenderAvatar, watchSenderAvatar } from '../../js/EmailConnectorSenderAvatars.js';
 
 export default {
   props: {
@@ -105,8 +105,11 @@ export default {
     /**
      * The sender's brand logo (EXO-90893), unless it failed to load: the one the
      * reader's server offered for this message, else the one the page's cache holds for
-     * the address, shown on a row the server vouched for only -- a spoofed mail from the
-     * same address keeps its initials. Never for a draft row's people.
+     * the address, shown on a row the server vouched for only -- listed so, or said so
+     * since (EXO-90909) -- so a spoofed mail from the same address keeps its initials.
+     * A message the reader's server would have offered the logo for, had it been
+     * resolved ({@code logoPending}), shows the one the cache gets once the server says
+     * it was found (EXO-90909). Never for a draft row's people.
      *
      * @returns {String} the URL, or null
      */
@@ -118,7 +121,12 @@ export default {
       if (sender?.logoUrl) {
         return sender.logoUrl;
       }
-      return sender?.domainVerified && isSenderLogoUrl(this.cachedUrl) ? this.cachedUrl : null;
+      if (sender?.logoPending) {
+        const learnt = senderAvatarUrl(sender.address);
+        return isSenderLogoUrl(learnt) ? learnt : null;
+      }
+      const verified = sender?.domainVerified || isSenderRowVerified(this.email?.id);
+      return verified && isSenderLogoUrl(this.cachedUrl) ? this.cachedUrl : null;
     },
     /**
      * What the avatar draws: a person's photo, else the brand logo, else the server's

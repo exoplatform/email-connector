@@ -22,6 +22,7 @@ import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -44,6 +45,7 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.emailConnector.model.SenderLogo;
+import org.exoplatform.emailConnector.model.SenderLogoOffer;
 import org.exoplatform.emailConnector.storage.SenderLogoStorage;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
 import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
@@ -68,7 +70,11 @@ import jakarta.annotation.PreDestroy;
  * the cache ({@link SenderLogoStorage}); a domain not resolved yet is handed to a small
  * background pool ({@link #WARM_THREADS} threads, {@link #WARM_QUEUE} waiting domains,
  * the rest dropped and offered again at the next read) and its sender keeps the
- * initials until then. Only a stored message that passed DMARC -- opened in the
+ * initials until then. The users it was refused to meanwhile are remembered (at most
+ * {@link #MAX_WAITERS} a domain) and, when a logo is found, told over the WebSocket
+ * ({@link SenderLogoWebSocketService}) -- they alone, and only that the domain has one
+ * now: each page then asks for its own URL again, so the avatar switches in place
+ * (EXO-90909). Only a stored message that passed DMARC -- opened in the
  * reader, or listed on a row in view of its recipient -- ever starts a fetch; the logo
  * endpoint serves the cache and never fetches, so no caller
  * can make the server reach a domain of its choosing.
@@ -112,6 +118,9 @@ public class SenderLogoService {
   /** How many domains may wait for a background resolution; past it they are dropped. */
   static final int           WARM_QUEUE     = 100;
 
+  /** The most users told of one domain's logo; the others see it at their next read. */
+  static final int           MAX_WAITERS    = 200;
+
   /** The global setting holding the URL tokens' key, base64. */
   static final String         TOKEN_KEY_SETTING = "senderLogoTokenKey";
 
@@ -134,7 +143,13 @@ public class SenderLogoService {
   @Autowired
   private SettingService        settingService;
 
+  @Autowired
+  private SenderLogoWebSocketService senderLogoWebSocketService;
+
   private final Set<String>     warming       = ConcurrentHashMap.newKeySet();
+
+  /** The users refused a domain's logo while it is resolved, to tell when it is found. */
+  private final Map<String, Set<String>> waiters = new ConcurrentHashMap<>();
 
   private final ExecutorService warmPool      = warmPool();
 
@@ -166,21 +181,38 @@ public class SenderLogoService {
    * @return the logo's URL, or null for the initials
    */
   public String logoUrlFor(String address, boolean dmarcPassed, String username) {
+    return offerFor(address, dmarcPassed, username).url();
+  }
+
+  /**
+   * What {@link #logoUrlFor} offers, and whether a logo not cached yet is being resolved
+   * for this user (EXO-90909): such a user is told over the WebSocket when it is found,
+   * so that a page can wait for that word instead of keeping the initials.
+   *
+   * @param address the sender's address
+   * @param dmarcPassed whether the message passed DMARC for the address's domain
+   * @param username the user the URL is offered to, the only one it is served to
+   * @return the offer; never null
+   */
+  public SenderLogoOffer offerFor(String address, boolean dmarcPassed, String username) {
     if (!dmarcPassed || StringUtils.isBlank(username) || !trustConfigured()) {
-      return null;
+      return SenderLogoOffer.NONE;
     }
     String domain = brandDomainOf(address);
     if (domain == null || !emailConnectorService.isSenderLogosEnabled()) {
-      return null;
+      return SenderLogoOffer.NONE;
     }
     SenderLogo known = senderLogoStorage.peek(domain);
     if (known != null && known.isPresent()) {
-      return LOGO_PATH + domain + "?" + TOKEN_PARAMETER + "=" + token(domain, username);
+      return new SenderLogoOffer(LOGO_PATH + domain + "?" + TOKEN_PARAMETER + "=" + token(domain, username), false);
     }
     if (known == null || isStale(known)) {
-      warm(domain, known != null);
+      // Remembered BEFORE the resolution is asked for: a resolution finishing in
+      // between still finds this user among those it tells (see warm).
+      boolean waiting = await(domain, username);
+      return new SenderLogoOffer(null, warm(domain, known != null) && waiting);
     }
-    return null;
+    return SenderLogoOffer.NONE;
   }
 
   /**
@@ -267,18 +299,43 @@ public class SenderLogoService {
   }
 
   /**
+   * Remembers a user refused a domain's logo while it is resolved, up to
+   * {@link #MAX_WAITERS} a domain.
+   *
+   * @param domain the normalised domain
+   * @param username the user
+   * @return true when the user will be told
+   */
+  private boolean await(String domain, String username) {
+    boolean[] added = new boolean[1];
+    waiters.compute(domain, (key, users) -> {
+      Set<String> waiting = users == null ? ConcurrentHashMap.newKeySet() : users;
+      added[0] = waiting.contains(username) || waiting.size() < MAX_WAITERS && waiting.add(username);
+      return waiting;
+    });
+    return added[0];
+  }
+
+  /**
    * Resolves a domain in the background, once at a time per domain, dropping it when
-   * the pool's queue is full.
+   * the pool's queue is full; when it finds a logo, tells the users waiting for it.
+   * <p>
+   * The waiting users are taken only once the domain has left {@link #warming}: a user
+   * remembered before that is told by this resolution, and one remembered after it
+   * starts a resolution of their own, which finds the logo cached and tells them. None
+   * is left behind, and nothing is kept for a domain no resolution runs for.
    *
    * @param domain the normalised domain
    * @param evictFirst whether a stale "no logo" answer is forgotten first
+   * @return true when the domain is being resolved, by this call or an earlier one
    */
-  private void warm(String domain, boolean evictFirst) {
+  private boolean warm(String domain, boolean evictFirst) {
     if (!warming.add(domain)) {
-      return;
+      return true;
     }
     try {
       warmExecutor.execute(() -> {
+        boolean found = false;
         try {
           if (!emailConnectorService.isSenderLogosEnabled()) {
             return;
@@ -289,15 +346,23 @@ public class SenderLogoService {
           if (senderLogoStorage.getLogo(domain).isPresent()) {
             // Only a logo changes what a reader is offered; a "none" leaves it null.
             resolutions.incrementAndGet();
+            found = true;
           }
         } catch (RuntimeException e) {
           LOG.debug("The logo of a sender domain could not be resolved", e);
         } finally {
           warming.remove(domain);
+          Set<String> told = waiters.remove(domain);
+          if (found && told != null) {
+            senderLogoWebSocketService.logoFound(domain, told);
+          }
         }
       });
+      return true;
     } catch (RejectedExecutionException e) {
       warming.remove(domain);
+      waiters.remove(domain);
+      return false;
     }
   }
 
