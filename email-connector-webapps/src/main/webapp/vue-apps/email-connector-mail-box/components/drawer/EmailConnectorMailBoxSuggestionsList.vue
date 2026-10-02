@@ -106,9 +106,11 @@ export default {
     // the arrow keys (EXO-90875) --, its row is lit, and no row is while the placeholder
     // is up, as the search results light theirs. Not given in the narrow drawer, whose
     // reader is the mail drawer.
+    // No default: left unset, the prop reads as not given, which is what tells the
+    // narrow drawer from a full-screen reader showing nothing (null).
+    // eslint-disable-next-line vue/require-default-prop
     readerKey: {
       type: String,
-      default: undefined,
     },
   },
   data: () => ({
@@ -125,7 +127,7 @@ export default {
      * @returns {String} the row's key, or null
      */
     litKey() {
-      return this.readerKey === undefined ? this.openedKey : this.readerKey;
+      return typeof this.readerKey === 'undefined' ? this.openedKey : this.readerKey;
     },
   },
   watch: {
