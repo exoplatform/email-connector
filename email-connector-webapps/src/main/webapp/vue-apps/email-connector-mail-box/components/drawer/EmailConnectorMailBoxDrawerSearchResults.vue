@@ -41,6 +41,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :selected-emails="selectedEmails"
         :expanded="expanded"
         :drag-source="dragSource"
+        :folders="folders"
         show-folder
         @open="$emit('open-result', result)" />
     </template>
@@ -100,6 +101,11 @@ export default {
     dragSource: {
       type: Object,
       default: null,
+    },
+    // The mailbox's folders, for each hit to name the one it was found in.
+    folders: {
+      type: Array,
+      default: () => [],
     },
     // The full server-side match count, to say 'showing 20 of 1,234'.
     totalMatches: {
