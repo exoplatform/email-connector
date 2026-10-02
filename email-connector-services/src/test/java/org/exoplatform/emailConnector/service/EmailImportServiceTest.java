@@ -376,6 +376,28 @@ class EmailImportServiceTest {
   }
 
   /**
+   * A run's directory, in the temporary directory every user of the machine shares, is
+   * this server's user's alone: no one else may list, read or write the mail it holds.
+   *
+   * @throws Exception when the directory cannot be created
+   */
+  @Test
+  void aRunsDirectoryIsTheServersUsersAlone() throws Exception {
+    Path directory = EmailImportService.createPrivateDirectory();
+    try {
+      assertTrue(directory.getFileName().toString().startsWith(EmailImportService.WORK_DIR_PREFIX));
+      if (java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+        assertEquals(java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"),
+                     Files.getPosixFilePermissions(directory));
+      } else {
+        assertTrue(directory.toFile().canRead() && directory.toFile().canWrite());
+      }
+    } finally {
+      Files.delete(directory);
+    }
+  }
+
+  /**
    * A run taken but never started -- the threads shut down under it -- leaves no
    * directory behind.
    *
