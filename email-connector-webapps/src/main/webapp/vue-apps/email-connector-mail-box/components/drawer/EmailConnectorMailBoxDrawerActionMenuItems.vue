@@ -283,7 +283,8 @@ export default {
      * full-screen folder column reads too. The ORDER of the list is the server's: inbox,
      * Sent, Archive, Drafts, then the two hidden folders (Spam before Trash the way
      * every mail client orders them), then the user's own -- see
-     * EmailBoxService#buildFolderViews.
+     * EmailBoxService#buildFolderViews --, with the Suggestions view the drawer adds after
+     * the Scheduled one (withSuggestionsView, EXO-90851).
      *
      * @returns {Array} the folder descriptors to display
      */
