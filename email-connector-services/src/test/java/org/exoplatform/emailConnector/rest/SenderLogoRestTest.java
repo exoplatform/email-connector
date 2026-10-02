@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.rest;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -95,9 +96,9 @@ class SenderLogoRestTest {
   @Test
   void anAuthenticatedUserGetsTheLogo() throws Exception {
     byte[] svg = SVG.getBytes(StandardCharsets.UTF_8);
-    when(senderLogoService.getLogo("brand.example")).thenReturn(new SenderLogo(svg, SenderLogoUtils.SVG, SenderLogo.SOURCE_BIMI, 1L));
+    when(senderLogoService.getLogo("brand.example", "tok", "simple")).thenReturn(new SenderLogo(svg, SenderLogoUtils.SVG, SenderLogo.SOURCE_BIMI, 1L));
 
-    mockMvc.perform(get(PATH + "brand.example").with(testSimpleUser()))
+    mockMvc.perform(get(PATH + "brand.example").param("t", "tok").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(header().string(HttpHeaders.CONTENT_TYPE, SenderLogoUtils.SVG))
            .andExpect(header().string("X-Content-Type-Options", "nosniff"))
@@ -109,14 +110,17 @@ class SenderLogoRestTest {
   }
 
   /**
-   * No logo is a 404, and a path that is no domain a 400 with its message code.
+   * No logo -- none cached, or a token that is not the caller's -- is a 404, and a path
+   * that is no domain a 400 with its message code; the caller and the token reach the
+   * service as sent.
    *
    * @throws Exception when the request cannot be performed
    */
   @Test
   void eachAnswerKeepsItsStatus() throws Exception {
-    mockMvc.perform(get(PATH + "plain.example").with(testSimpleUser())).andExpect(status().isNotFound());
-    when(senderLogoService.getLogo("localhost")).thenThrow(new IllegalArgumentException(SenderLogoService.INVALID_DOMAIN));
+    mockMvc.perform(get(PATH + "plain.example").param("t", "tok").with(testSimpleUser())).andExpect(status().isNotFound());
+    verify(senderLogoService).getLogo("plain.example", "tok", "simple");
+    when(senderLogoService.getLogo("localhost", null, "simple")).thenThrow(new IllegalArgumentException(SenderLogoService.INVALID_DOMAIN));
     mockMvc.perform(get(PATH + "localhost").with(testSimpleUser())).andExpect(status().isBadRequest());
   }
 
@@ -129,7 +133,7 @@ class SenderLogoRestTest {
   @Test
   void anAnonymousCallerIsRefused() throws Exception {
     mockMvc.perform(get(PATH + "brand.example")).andExpect(status().is4xxClientError());
-    verify(senderLogoService, never()).getLogo(anyString());
+    verify(senderLogoService, never()).getLogo(anyString(), any(), any());
   }
 
   /**
