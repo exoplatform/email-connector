@@ -27,6 +27,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 // starred criteria as they are the list's.
 
 import {
+  ATTACHMENT_TYPE_ICON_MIME_TYPES,
   TEXT_CRITERIA,
   clearSearchFromUrl,
   emptySearchCriteria,
@@ -214,10 +215,11 @@ export default {
       if (criteria.attachment) {
         chips.push({ key: 'attachment', label: this.$t('emailConnector.mailBox.search.chip.attachment') });
         // What the attachment must be (EXO-90910): one chip per kind, by its translated
-        // name, and one for the file name.
+        // name and with the drawer's file-type icon, and one for the file name.
         (criteria.attachmentTypes || []).forEach(type => chips.push({
           key: `${ATTACHMENT_TYPE_CHIP_PREFIX}${type}`,
           label: this.$t(`emailConnector.mailBox.search.advanced.attachmentType.${type}`),
+          icon: this.$emailConnectorMailBoxService.getAttachmentIcon(ATTACHMENT_TYPE_ICON_MIME_TYPES[type] || ''),
         }));
         if ((criteria.attachmentName || '').trim()) {
           chips.push({ key: 'attachmentName', label: this.$t('emailConnector.mailBox.search.chip.attachmentName', { 0: criteria.attachmentName.trim() }) });
