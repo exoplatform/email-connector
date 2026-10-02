@@ -72,8 +72,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         'min-width': `${minWidth}px`,
       }">
       <!-- The sender's avatar, which is also the row's checkbox (EXO-90891): the
-           checkbox takes its place while the row is hovered or holds the keyboard focus,
-           and on every row in select mode (showCheckbox). On a phone, with no hover, a tap
+           checkbox takes its place while the row is hovered (in the narrow drawer, the
+           avatar itself) or holds the keyboard focus, and on every row in select mode
+           (showCheckbox). On a phone, with no hover, a tap
            on the avatar ticks the row and enters select mode. The box keeps its size
            whichever shows, so the row never shifts under the pointer. The checkbox is
            disabled as well as unclickable for a row the server has not listed yet
@@ -83,6 +84,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div
         class="row-avatar d-flex align-center justify-center align-self-start flex-shrink-0 me-4"
         style="width: 32px; height: 32px;"
+        @mouseenter="avatarHover = !isMobile"
+        @mouseleave="avatarHover = false"
+        @focusin="avatarHover = !isMobile"
+        @focusout="avatarHover = false"
         @click="onAvatarClick">
         <v-checkbox
           v-if="showCheckbox"
@@ -273,6 +278,9 @@ export default {
       isFocused: false,
       // Whether a press of the pointer is what brings the focus in, not the keyboard.
       pointerDown: false,
+      // Whether the pointer is over the avatar itself: what turns it into the checkbox in
+      // the narrow drawer, where the row's hover alone left a row looking avatar-less.
+      avatarHover: false,
       absolute: false,
       left: 0,
       startEvent: null,
@@ -551,13 +559,16 @@ export default {
       return this.isDraft && this.threadParticipants.length ? { name: this.threadParticipants[0] } : null;
     },
     /**
-     * Whether the avatar shows as the row's checkbox: in select mode, while the row is
-     * hovered, and while it holds the keyboard focus (neither set on a phone).
+     * Whether the avatar shows as the row's checkbox: in select mode, while the row
+     * holds the keyboard focus, and under the pointer -- anywhere on the row in full
+     * screen, on the avatar itself in the narrow drawer, where a row hovered for
+     * reading would otherwise lose its avatar. Neither pointer nor focus counts on a
+     * phone.
      *
      * @returns {Boolean} true when the checkbox shows
      */
     showCheckbox() {
-      return this.selectMode || this.isHover || this.isFocused;
+      return this.selectMode || this.isFocused || (this.expanded ? this.isHover : this.avatarHover);
     },
     /**
      * What the row's checkbox is called, for screen readers.

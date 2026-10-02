@@ -178,7 +178,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <div class="d-flex flex-column align-center text-truncate">
             <v-icon
               :class="tile.danger ? 'error--text' : 'icon-default-color'"
-              size="20">
+              size="32">
               {{ tile.icon }}
             </v-icon>
             <span
