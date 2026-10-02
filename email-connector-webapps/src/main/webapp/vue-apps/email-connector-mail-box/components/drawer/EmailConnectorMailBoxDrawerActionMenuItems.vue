@@ -58,7 +58,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             {{ folder.label }}
           </span>
           <!-- The Scheduled view's count, in the warning colour when one of its mails was
-               not sent (EXO-90434). -->
+               not sent (EXO-90434); the Suggestions view's, the suggestions waiting
+               (EXO-90851). -->
           <span
             v-if="folder.count"
             :class="folder.attention ? 'warning--text font-weight-bold' : 'text-sub-title'"
@@ -141,9 +142,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </span>
     </v-list-item>
     <!-- Select mode: multi-select rows to read/archive/delete in bulk. Not in the
-         Scheduled view, whose mails are acted on one at a time (EXO-90434). -->
+         Scheduled view, whose mails are acted on one at a time (EXO-90434), nor in the
+         Suggestions view, whose mails are decided in their own panel (EXO-90851). -->
     <v-list-item
-      v-if="!scheduledView"
+      v-if="!mailboxView"
       class="height-auto"
       @click="enterSelectMode()">
       <v-sheet
@@ -294,6 +296,7 @@ export default {
       return visibleFolderRows(buildFolderTree(this.availableFolders, this.namespaceFolders || this.availableFolders), collapsed).map(row => {
         const folder = row.folder;
         const scheduled = this.$emailConnectorMailBoxService.isScheduledView(folder.key);
+        const counted = scheduled || this.$emailConnectorMailBoxService.isSuggestionsView(folder.key);
         return {
           key: folder.key,
           depth: row.depth,
@@ -303,19 +306,21 @@ export default {
           icon: this.$emailConnectorMailBoxService.folderIcon(folder),
           label: row.showPath ? row.pathLabel : this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)),
           // Counted in the menu only for the Scheduled view, which is listed only when it
-          // holds something and says when one of its mails needs the user (EXO-90434).
-          count: scheduled ? folder.count || 0 : 0,
+          // holds something and says when one of its mails needs the user (EXO-90434), and
+          // for the Suggestions view, listed while a suggestion waits (EXO-90851).
+          count: counted ? folder.count || 0 : 0,
           attention: scheduled && !!folder.attention,
         };
       });
     },
     /**
-     * Whether the Scheduled view is listed: no multi-selection there.
+     * Whether one of the mailbox's views is listed -- Scheduled, Suggestions --: no
+     * multi-selection there.
      *
-     * @returns {Boolean} true on the Scheduled view
+     * @returns {Boolean} true on a view
      */
-    scheduledView() {
-      return this.$emailConnectorMailBoxService.isScheduledView(this.currentFolder);
+    mailboxView() {
+      return this.$emailConnectorMailBoxService.isMailboxView(this.currentFolder);
     },
     /**
      * Whether the FOLDERS section scrolls in its own bounded pane -- Benjamin's
