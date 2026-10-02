@@ -52,6 +52,10 @@ class SenderLogoUtilsTest {
     assertNull(SenderLogoUtils.domainOfAddress(null));
     assertEquals("brand.example", SenderLogoUtils.organisationalDomain("news.mail.brand.example"));
     assertEquals("brand.co.uk", SenderLogoUtils.organisationalDomain("news.brand.co.uk"));
+    assertEquals("tenant.herokuapp.com", SenderLogoUtils.organisationalDomain("tenant.herokuapp.com"), "a private suffix's tenant is its own");
+    assertEquals("tenant.herokuapp.com", SenderLogoUtils.organisationalDomain("mail.tenant.herokuapp.com"));
+    assertEquals("brand.com.au", SenderLogoUtils.organisationalDomain("news.brand.com.au"));
+    assertEquals("co.uk", SenderLogoUtils.organisationalDomain("co.uk"), "a public suffix is its own");
   }
 
   /**
