@@ -28,6 +28,7 @@ import org.springframework.security.access.annotation.Secured;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -39,16 +40,18 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 
+import jakarta.servlet.http.HttpServletRequest;
+
 /**
  * Serves the senders' brand logos (EXO-90893), fetched and cleaned by the server, so
  * that the browser never contacts the brand.
  * <p>
- * <b>Who may ask.</b> Any authenticated user, for any domain. A logo is a brand's
- * public image, the same for every reader, so serving it reveals nothing about anyone's
- * mail. The endpoint serves the server's cache and nothing else: it never fetches, so
- * no caller can make the server reach a domain of its choosing; only a message that
- * passed DMARC, opened by its recipient, has a logo resolved
- * ({@code SenderLogoService#logoUrlFor}).
+ * <b>Who may ask.</b> The authenticated user a logo URL was offered to: the URL
+ * carries a token binding the domain to that user ({@code SenderLogoService}), so a
+ * logo is never served to anyone else, and whether this server holds a domain's logo
+ * -- whether someone here read genuine mail from it -- is never answered. The endpoint
+ * serves the server's cache and nothing else: it never fetches, so no caller can make
+ * the server reach a domain of its choosing.
  * <p>
  * <b>How it is served.</b> As the type read from the image's own bytes (an SVG only
  * once sanitised), never sniffed again by the browser ({@code nosniff}), with a
@@ -71,7 +74,9 @@ public class SenderLogoRest {
   /**
    * A domain's brand logo.
    *
+   * @param request the caller's request, for the acting user
    * @param domain the domain, as the URL offered by the reader names it
+   * @param token the URL's token, binding it to the user it was offered to
    * @return the image
    */
   @GetMapping("/{domain:.+}")
@@ -79,13 +84,17 @@ public class SenderLogoRest {
   @Operation(summary = "Gets the brand logo of a mail domain", method = "GET", description = "This returns the logo the domain publishes (BIMI), else its site's icon, as the server fetched, checked and cached it; it never fetches")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Not a domain name"),
-      @ApiResponse(responseCode = "404", description = "No logo cached for the domain, or brand logos are switched off") })
-  public ResponseEntity<byte[]> getSenderLogo(@Parameter(description = "The mail domain", required = true)
+      @ApiResponse(responseCode = "404", description = "No logo cached for the domain, a token that is not the caller's, or brand logos are switched off") })
+  public ResponseEntity<byte[]> getSenderLogo(HttpServletRequest request,
+                                              @Parameter(description = "The mail domain", required = true)
                                               @PathVariable("domain")
-                                              String domain) {
+                                              String domain,
+                                              @Parameter(description = "The token of the URL offered to the caller")
+                                              @RequestParam(value = SenderLogoService.TOKEN_PARAMETER, required = false)
+                                              String token) {
     SenderLogo logo;
     try {
-      logo = senderLogoService.getLogo(domain);
+      logo = senderLogoService.getLogo(domain, token, request.getRemoteUser());
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
