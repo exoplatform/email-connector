@@ -48,9 +48,13 @@ public final class EmailSecurityUtils {
   /**
    * The authserv-ids, comma-separated, of the mail servers whose
    * {@code Authentication-Results} header is believed when it says a message passed
-   * DMARC (EXO-90893); unset or empty to believe the top header whoever wrote it.
+   * DMARC (EXO-90893), or {@code *} for any; unset or empty to believe none, which
+   * leaves every sender with initials.
    */
   public static final String   TRUSTED_AUTHSERV_IDS_PROPERTY = "email.connector.security.trustedAuthservIds";
+
+  /** The {@link #TRUSTED_AUTHSERV_IDS_PROPERTY} value that believes the top header whoever wrote it. */
+  public static final String   ANY_AUTHSERV_ID               = "*";
 
   /** A DMARC failure: the sender's domain disowns the message. */
   public static final String   AUTH_DMARC                    = "DMARC";
@@ -186,26 +190,32 @@ public final class EmailSecurityUtils {
    * Read from the first {@code Authentication-Results} header only, as
    * {@link #authenticationFailure} reads it. It holds when that header carries a
    * {@code dmarc=pass} whose {@code header.from} (when it names one) is the
-   * {@code From} domain, and no {@code dmarc=fail}. Unlike a failure, a pass is
-   * something a sender could forge when the receiving server writes no header of its
-   * own; a deployment whose mail server's authserv-id is known names it in
-   * {@code trustedAuthservIds}, and then a header written by any other server vouches
-   * for nothing.
+   * {@code From} domain, and no {@code dmarc=fail}.
+   * <p>
+   * Unlike a failure, a pass is something a sender can forge: when the receiving
+   * server writes no header of its own, the sender's is the top one, and it would lend
+   * a spoofed mail the brand's logo. So a pass is believed only from a mail server the
+   * deployment names by its authserv-id ({@link #TRUSTED_AUTHSERV_IDS_PROPERTY}):
+   * none named, none believed. {@link #ANY_AUTHSERV_ID} believes the top header
+   * whoever wrote it, for a deployment that knows its server always writes one. A
+   * header that opens with a result rather than an authserv-id, as Microsoft 365
+   * writes it, names no server and is believed under {@link #ANY_AUTHSERV_ID} only.
    *
    * @param headerValues the header's values, top first, as the message carries them
    * @param fromAddress the message's {@code From} address
-   * @param trustedAuthservIds the authserv-ids whose header is believed, lower-cased;
-   *          empty to believe the top header whoever wrote it
+   * @param trustedAuthservIds the authserv-ids whose header is believed, lower-cased,
+   *          or {@link #ANY_AUTHSERV_ID}; empty to believe none
    * @return true when DMARC passed for the {@code From} domain
    */
   public static boolean dmarcPassed(String[] headerValues, String fromAddress, Set<String> trustedAuthservIds) {
     String fromDomain = StringUtils.isBlank(fromAddress) ? null : StringUtils.substringAfterLast(fromAddress.trim(), "@");
     String[] parts = topHeaderParts(headerValues);
-    if (parts.length == 0 || StringUtils.isBlank(fromDomain)) {
+    if (parts.length == 0 || StringUtils.isBlank(fromDomain) || trustedAuthservIds == null || trustedAuthservIds.isEmpty()) {
       return false;
     }
-    if (trustedAuthservIds != null && !trustedAuthservIds.isEmpty()) {
-      String authservId = StringUtils.substringBefore(parts[0].trim(), " ");
+    if (!trustedAuthservIds.contains(ANY_AUTHSERV_ID)) {
+      String first = parts[0].trim();
+      String authservId = RESULT.matcher(first).find() ? "" : StringUtils.substringBefore(first, " ");
       if (!trustedAuthservIds.contains(authservId)) {
         return false;
       }
