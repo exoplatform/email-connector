@@ -35,6 +35,23 @@
  */
 export const MAX_AVATAR_BATCH = 50;
 
+/**
+ * Where the server serves a sender's brand logo (EXO-90893): SenderLogoService.LOGO_PATH.
+ * An answer under it is a brand logo, earned by the address's genuine mail, not a
+ * person's photo: the list shows it on that address's verified rows only.
+ */
+export const SENDER_LOGO_PATH = '/email-connector/rest/email-box/sender-logo/';
+
+/**
+ * Whether a picture is a sender's brand logo rather than a person's photo.
+ *
+ * @param {string} url - the picture's URL
+ * @returns {boolean} true for a brand logo
+ */
+export function isSenderLogoUrl(url) {
+  return !!url && url.startsWith(SENDER_LOGO_PATH);
+}
+
 /** How long the addresses asked for are gathered before they leave, in ms. */
 const BATCH_DELAY_MS = 50;
 
