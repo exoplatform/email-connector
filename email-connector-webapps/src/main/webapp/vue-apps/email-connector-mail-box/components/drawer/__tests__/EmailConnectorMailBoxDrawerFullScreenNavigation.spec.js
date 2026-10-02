@@ -28,7 +28,6 @@ import { AUTO_OPEN_MARK_READ_DELAY_MS, KEY_OPEN_DELAY_MS } from '../../../js/Ema
 import EmailConnectorMailBoxDrawerSearchResults from '../EmailConnectorMailBoxDrawerSearchResults.vue';
 import EmailConnectorMailBoxMoveToFolderDrawer from '../EmailConnectorMailBoxMoveToFolderDrawer.vue';
 import EmailConnectorMailBoxDrawerListItem from '../EmailConnectorMailBoxDrawerListItem.vue';
-import EmailConnectorMailBoxDrawerSearchResultItem from '../EmailConnectorMailBoxDrawerSearchResultItem.vue';
 import EmailConnectorMailBoxDrawerThreadContent from '../EmailConnectorMailBoxDrawerThreadContent.vue';
 
 const FOLDERS = [
@@ -1051,10 +1050,10 @@ describe('the arrow keys and the next mail after an action work on search result
       propsData: { results, openedKey: 'INBOX:2' },
       mocks: { $t: key => key },
       stubs: {
-        'email-connector-mail-box-drawer-search-result-item': {
-          props: ['rowKey', 'opened'],
+        'email-connector-mail-box-drawer-list-item': {
+          props: ['rowKey', 'openedKey'],
           render(createElement) {
-            return createElement('div', { attrs: { tabindex: '0', 'data-thread-key': this.rowKey, 'data-opened': String(this.opened) } });
+            return createElement('div', { attrs: { tabindex: '0', 'data-thread-key': this.rowKey, 'data-opened': String(this.openedKey === this.rowKey) } });
           },
         },
       },
@@ -1371,18 +1370,27 @@ describe('the row the arrow keys focus is lit, without the browser\'s focus ring
     }
   });
 
-  it('on a search hit', async () => {
-    wrapper = shallowMount(EmailConnectorMailBoxDrawerSearchResultItem, {
+  it('on a search hit, the folder list\'s row keyed by folder and UID (EXO-90871)', async () => {
+    const localVue = createLocalVue();
+    localVue.directive('touch', {});
+    localVue.directive('touch-hold', {});
+    wrapper = shallowMount(EmailConnectorMailBoxDrawerListItem, {
+      localVue,
       attachTo: document.body,
-      propsData: { result: row(4), rowKey: 'INBOX:4' },
-      mocks: { $t: key => key, $emailConnectorMailBoxService: { ...emailConnectorMailBoxService, formatDateString: () => 'today' } },
+      propsData: { email: row(4), rowKey: 'INBOX:4' },
+      mocks: {
+        $t: key => key,
+        $emailConnectorMailBoxService: { ...emailConnectorMailBoxService, formatDateString: () => 'today' },
+        $vuetify: { breakpoint: { smAndDown: false } },
+      },
     });
+    const focusable = wrapper.find('[data-thread-key="INBOX:4"]');
 
-    wrapper.element.focus();
+    focusable.element.focus();
     await wrapper.vm.$nextTick();
 
-    expect(document.activeElement).toBe(wrapper.element);
-    expect(wrapper.element.style.outline).toBe('none');
+    expect(document.activeElement).toBe(focusable.element);
+    expect(focusable.element.style.outline).toBe('none');
     expect(wrapper.classes()).toContain('light-grey-background-color');
   });
 });

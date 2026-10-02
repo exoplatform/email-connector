@@ -23,7 +23,6 @@ import {
   canDropOn,
   dragLabel,
   dragPayloadOfRow,
-  dragPayloadOfSearchHit,
   draggedRowCount,
   folderDropAction,
   hasDragPayload,
@@ -124,16 +123,16 @@ describe('what a dragged row carries (EXO-90421)', () => {
     expect(dragPayloadOfRow({ email })).toBeNull();
   });
 
-  it('a search hit carries itself in the folder the server found it, and not out of Trash or Spam', () => {
-    expect(dragPayloadOfSearchHit({ mailRemoteId: 4, folder: 'ARCHIVE' })).toEqual({ folder: 'ARCHIVE', ids: [4] });
-    expect(dragPayloadOfSearchHit({ mailRemoteId: 4 })).toEqual({ folder: 'INBOX', ids: [4] });
-    expect(dragPayloadOfSearchHit({ mailRemoteId: 4, folder: 'TRASH' })).toBeNull();
-    expect(dragPayloadOfSearchHit({ mailRemoteId: 4, folder: 'JUNK' })).toBeNull();
-    expect(dragPayloadOfSearchHit({ mailRemoteId: 4, folder: 'DRAFTS' })).toBeNull();
+  it('a search hit, a row alone in its conversation, carries itself in the folder the server found it, and not out of Trash or Spam', () => {
+    expect(dragPayloadOfRow({ email: { mailRemoteId: 4, folder: 'ARCHIVE' } })).toEqual({ folder: 'ARCHIVE', ids: [4] });
+    expect(dragPayloadOfRow({ email: { mailRemoteId: 4 } })).toEqual({ folder: 'INBOX', ids: [4] });
+    expect(dragPayloadOfRow({ email: { mailRemoteId: 4, folder: 'TRASH' } })).toBeNull();
+    expect(dragPayloadOfRow({ email: { mailRemoteId: 4, folder: 'JUNK' } })).toBeNull();
+    expect(dragPayloadOfRow({ email: { mailRemoteId: 4, folder: 'DRAFTS' } })).toBeNull();
   });
 
   it('an All Mail hit is not dragged: the server moves nothing out of it and categorizes nothing in it', () => {
-    expect(dragPayloadOfSearchHit({ mailRemoteId: 4, folder: 'ALL_MAIL' })).toBeNull();
+    expect(dragPayloadOfRow({ email: { mailRemoteId: 4, folder: 'ALL_MAIL' } })).toBeNull();
   });
 });
 

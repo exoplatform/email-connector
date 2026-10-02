@@ -167,7 +167,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                   class="primary white--text rounded-pill px-2 me-2 flex-shrink-0 caption font-weight-bold">{{ waitingSuggestionCount }}</span>
                 <span class="text-truncate">{{ subject }}</span>
               </v-list-item-subtitle>
-              <v-list-item-subtitle v-text="excerpt" />
+              <v-list-item-subtitle
+                v-if="excerpt"
+                v-text="excerpt" />
               <!-- The shared mailbox a draft was written in (EXO-90595), as the Scheduled
                    view names it; nothing for the user's own. -->
               <v-list-item-subtitle
@@ -183,6 +185,29 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 {{ draftMailboxLabel }}
               </v-list-item-subtitle>
             </v-list-item-content>
+            <!-- What a list gathering several folders' mails says of a row (EXO-90871) --
+                 a search's hits, the Suggestions view: the folder the mail sits in, and a
+                 cloud for a hit outside the local copy, fetched when opened. Native titles,
+                 as the count above: this list streams thousands of rows. -->
+            <v-list-item-action
+              v-if="folderName || notCached"
+              class="my-0 ms-2 flex-row align-center flex-shrink-0">
+              <v-chip
+                v-if="folderName"
+                :title="folderName"
+                class="row-folder"
+                x-small
+                outlined>
+                {{ folderName }}
+              </v-chip>
+              <v-icon
+                v-if="notCached"
+                :title="$t('emailConnector.mailBox.search.notCached')"
+                size="14"
+                class="text-light-color ms-1 row-not-cached">
+                fa-cloud-download-alt
+              </v-icon>
+            </v-list-item-action>
             <email-connector-mail-box-drawer-list-item-action-menu
               v-if="!selectMode && !isMobile"
               :style="{
@@ -251,8 +276,9 @@ export default {
       type: Boolean,
       default: false,
     },
+    // The UID the list last opened (set-opened), as the server numbers it.
     openedEmailId: {
-      type: String,
+      type: [Number, String],
       default: null,
     },
     // The message the full-screen reader shows beside the list; none in the narrow
@@ -269,6 +295,25 @@ export default {
     dragSource: {
       type: Object,
       default: null,
+    },
+    // The key the list walks and lights the row by (data-thread-key), when it is not
+    // the conversation's own (EXO-90871): a list of hits -- a search's, the Suggestions
+    // view's -- keys each by folder and UID, a UID numbering a message within its folder
+    // only. Null for a row of a folder's list, keyed by its conversation.
+    rowKey: {
+      type: String,
+      default: null,
+    },
+    // The key of the row the reader shows, as rowKey keys it: a row keyed by rowKey is
+    // lit by that key, never by its UID alone, which another folder's hit may share.
+    openedKey: {
+      type: String,
+      default: null,
+    },
+    // Whether to name the folder the row sits in: a list gathering several folders' mails.
+    showFolder: {
+      type: Boolean,
+      default: false,
     },
   },
   computed: {
@@ -331,8 +376,45 @@ export default {
       }
       return this.email.content?.attachments || [];
     },
+    /**
+     * The line under the subject: the opening words of the message's body, or that the
+     * body is empty. A hit of a search or of the Suggestions view carries no body
+     * (EXO-90871): a search hit read from the local copy quotes its own excerpt, the text
+     * around what was searched for; a hit found on the mail server, envelope-only, has
+     * nothing to quote, which is not the same as an empty body -- the line is left out.
+     *
+     * @returns {String} the line, or an empty string for none
+     */
     excerpt() {
-      return this.email.content?.excerpt || this.$t('emailConnector.mailBox.list.drawer.emptyEmail');
+      if (this.email.content) {
+        return this.email.content.excerpt || this.$t('emailConnector.mailBox.list.drawer.emptyEmail');
+      }
+      return this.email.excerpt || '';
+    },
+    /**
+     * Whether the row is a search hit outside the local copy, pulled in when opened: a
+     * hit says so itself; a listed row, always in the copy, says nothing.
+     *
+     * @returns {Boolean} true for a hit not yet in the copy
+     */
+    notCached() {
+      return this.email.cached === false;
+    },
+    /**
+     * The folder the row sits in, named as the folder column names it, when the list
+     * asked for it (showFolder): read off the folders the drawer last listed, which it
+     * leaves on the root for the bars and the rows; the key itself when the folder is
+     * unknown to it.
+     *
+     * @returns {String} the folder's name, or an empty string when not asked for
+     */
+    folderName() {
+      if (!this.showFolder) {
+        return '';
+      }
+      const key = this.email.folder || 'INBOX';
+      const folder = (this.$root.mailFolders || []).find(candidate => candidate.key === key);
+      return folder ? this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)) : key;
     },
     subject() {
       return this.email.subject || this.$t('emailConnector.mailBox.list.drawer.noSubject');
@@ -347,7 +429,7 @@ export default {
      * @returns {String} the key
      */
     threadKey() {
-      return String(this.thread ? this.thread.threadId : this.email.mailRemoteId);
+      return this.rowKey || String(this.thread ? this.thread.threadId : this.email.mailRemoteId);
     },
     threadCount() {
       return this.thread ? this.thread.count : 1;
@@ -390,7 +472,17 @@ export default {
     // rather than to how a draft's is. The server leaves the owner out; nothing here
     // has to know their address.
     participants() {
-      return this.isDraft ? this.threadParticipants.join(', ') : this.email.sender.name;
+      return this.isDraft ? this.threadParticipants.join(', ') : this.senderName;
+    },
+    /**
+     * Who sent the message: by name, by address for a sender with none, nothing for a
+     * row that names none -- a hit is read with what the search or the server gave of
+     * it (EXO-90871).
+     *
+     * @returns {String} the sender's name
+     */
+    senderName() {
+      return this.email.sender?.name || this.email.sender?.address || '';
     },
     // Server-stamped, read off the thread the grouping built or off the lone row,
     // exactly like the draft flag beside it.
@@ -531,7 +623,17 @@ export default {
     selectionKeys() {
       return this.$emailConnectorMailBoxService.threadRowsInFolder(this.email, this.thread).map(selectionKey);
     },
+    /**
+     * Whether the reader opened on this row, to light it: by the list's key when the row
+     * is keyed by one (rowKey) -- a hit of another folder may share the UID --, by the
+     * UID the list last opened otherwise.
+     *
+     * @returns {Boolean} true when it did
+     */
     opened() {
+      if (this.rowKey) {
+        return this.openedKey === this.rowKey;
+      }
       return this.openedEmailId === this.email.mailRemoteId;
     },
     /**
@@ -540,6 +642,9 @@ export default {
      * @returns {Boolean} true when it does
      */
     inReader() {
+      if (this.rowKey) {
+        return this.opened;
+      }
       return this.readerEmailId != null && this.threadIds.includes(this.readerEmailId);
     },
     backgroundClass() {
@@ -561,7 +666,7 @@ export default {
       if (this.isDraft) {
         return `Open unsent draft about ${this.subject}`;
       }
-      return `Open email from ${this.email.sender.name} about ${this.email.subject}`;
+      return `Open email from ${this.senderName} about ${this.email.subject}`;
     },
   },
   methods: {
@@ -599,9 +704,21 @@ export default {
       this.$root.$emit('update-email-favorite-status', !this.threadFavorite,
         this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread), this.email.folder || 'INBOX');
     },
+    /**
+     * Opens the row: ticks it in select mode; else hands the opening to the list when it
+     * listens for it (EXO-90871) -- a search opens a hit its own way, pulling one outside
+     * the local copy in first, the Suggestions view as a mail picked outside the list --;
+     * else opens the draft, or the message in the reader beside the list or in the mail
+     * drawer.
+     *
+     * @returns {void}
+     */
     openDetail() {
       if (this.selectMode) {
         this.emitSelect(!this.selected);
+      }
+      else if (this.$listeners.open) {
+        this.$emit('open');
       }
       else if (this.isDraft) {
         this.openDraft();
