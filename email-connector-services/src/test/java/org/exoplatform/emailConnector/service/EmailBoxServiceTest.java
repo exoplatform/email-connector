@@ -349,6 +349,9 @@ public class EmailBoxServiceTest {
   @MockitoBean
   private EmailDelegationService  emailDelegationService;
 
+  @MockitoBean
+  private EmailDmarcVerdictBackfillService emailDmarcVerdictBackfillService;
+
   @Autowired
   private EmailBoxService         emailBoxService;
 
@@ -606,6 +609,12 @@ public class EmailBoxServiceTest {
     emailBoxService.getEmailBox(TEST_USER);
     verify(userEmailSettingService, times(2)).getUserEmailSetting(TEST_USER);
     verify(emailBoxStorage).getEmails(TEST_USER, "INBOX");
+    // EXO-90909: the user's own folder is handed to the DMARC verdict fill, once the
+    // access is checked, with a reader of the user's own mailbox; a refused listing
+    // hands nothing.
+    ArgumentCaptor<AuthenticationResultsReader> reader = ArgumentCaptor.forClass(AuthenticationResultsReader.class);
+    verify(emailDmarcVerdictBackfillService).schedule(eq(TEST_USER), eq("INBOX"), reader.capture());
+    assertEquals(Map.of(), reader.getValue().read(List.of()));
   }
 
   /**
@@ -11879,6 +11888,8 @@ public class EmailBoxServiceTest {
     stale.setLastSyncDate(new Date());
     emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5");
     verify(userEmailSettingService, times(1)).connect(anyString(), anyString());
+    // A custom folder of the user's own is handed to the DMARC verdict fill (EXO-90909).
+    verify(emailDmarcVerdictBackfillService, times(2)).schedule(eq(TEST_USER), eq("CUSTOM:5"), any());
   }
 
   /**
@@ -14645,6 +14656,9 @@ public class EmailBoxServiceTest {
     verify(shared).open(Folder.READ_ONLY);
     verify(emailFolderStorage).replaceNotifiedUid(TEST_USER, 8L, 10L, 12L);
     verify(emailFolderStorage, never()).advanceNotifiedUid(anyString(), anyLong(), anyLong(), anyLong());
+    // A folder shared with the user is never handed to the DMARC verdict fill
+    // (EXO-90909): its headers are not in the user's own mailbox.
+    verify(emailDmarcVerdictBackfillService, never()).schedule(anyString(), anyString(), any());
   }
 
   /**
