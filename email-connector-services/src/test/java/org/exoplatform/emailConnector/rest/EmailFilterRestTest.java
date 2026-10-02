@@ -67,6 +67,7 @@ import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.EmailFilter;
 import org.exoplatform.emailConnector.model.EmailFilterMatch;
 import org.exoplatform.emailConnector.model.EmailFilterProposal;
+import org.exoplatform.emailConnector.model.EmailWaitingSuggestionMail;
 import org.exoplatform.emailConnector.model.FilterApplyReport;
 import org.exoplatform.emailConnector.model.FilterPreview;
 import org.exoplatform.emailConnector.model.ServerRule;
@@ -481,6 +482,38 @@ public class EmailFilterRestTest {
     mockMvc.perform(get(FILTERS_PATH + "/proposals/waiting").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$[0]").value("<m1@acme.com>"));
+  }
+
+  /**
+   * The Suggestions view's mails (EXO-90851) answer the service's rows for the caller, the
+   * session's user, with the delegation the request names; the refusal of a delegation is
+   * a 403 and a feature off a 404.
+   */
+  @Test
+  void getWaitingEmailsAnswersTheCallersRowsOrEveryRefusal() throws Exception {
+    EmailWaitingSuggestionMail mail = new EmailWaitingSuggestionMail();
+    mail.setEmailId(4L);
+    mail.setMailRemoteId(40L);
+    mail.setFolder("INBOX");
+    mail.setWaitingCount(2);
+    when(emailFilterProposalService.getWaitingEmails(eq(SIMPLE_USER), isNull())).thenReturn(List.of(mail));
+
+    mockMvc.perform(get(FILTERS_PATH + "/proposals/waiting/emails").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$[0].emailId").value(4))
+           .andExpect(jsonPath("$[0].mailRemoteId").value(40))
+           .andExpect(jsonPath("$[0].folder").value("INBOX"))
+           .andExpect(jsonPath("$[0].cached").value(true))
+           .andExpect(jsonPath("$[0].waitingCount").value(2));
+
+    doThrow(new IllegalAccessException("emailConnector.rules.ownMailboxOnly")).when(emailFilterProposalService)
+                                                                               .getWaitingEmails(SIMPLE_USER, 9L);
+    mockMvc.perform(get(FILTERS_PATH + "/proposals/waiting/emails?delegationId=9").with(testSimpleUser()))
+           .andExpect(status().isForbidden());
+
+    doThrow(new ObjectNotFoundException(EmailFilterService.DISABLED)).when(emailFilterProposalService)
+                                                                    .getWaitingEmails(eq(SIMPLE_USER), isNull());
+    mockMvc.perform(get(FILTERS_PATH + "/proposals/waiting/emails").with(testSimpleUser())).andExpect(status().isNotFound());
   }
 
   /**
