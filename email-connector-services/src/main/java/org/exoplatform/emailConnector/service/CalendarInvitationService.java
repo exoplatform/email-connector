@@ -261,9 +261,9 @@ public class CalendarInvitationService {
       throw new IllegalArgumentException(INVALID_ANSWER);
     }
     Email email = ownedEmail(emailId, username);
-    // Not asked whether the calendar holds it: the landing that follows the answer
-    // says what the calendar holds then.
-    ParsedInvitation parsed = read(email, username, false);
+    // Asked whether the calendar holds it: a landing that fails after the answer
+    // leaves the card with what the calendar held before.
+    ParsedInvitation parsed = read(email, username, true);
     CalendarInvitation invitation = parsed.invitation();
     if (invitation.isCancelled()) {
       throw new IllegalArgumentException(CANCELLED);
@@ -315,7 +315,8 @@ public class CalendarInvitationService {
     // What the reader offers was computed before this answer existed: said
     // again with it, as a later read would -- nothing to add after a decline,
     // the offer back after an acceptance that follows one.
-    invitation.setLandable(delegation == null && addable(invitation) && invitationLandingService.holdsCalendarFor(username));
+    invitation.setLandable(delegation == null && addable(invitation) && (!invitation.isHeld() || invitation.isNewerRevision())
+        && invitationLandingService.holdsCalendarFor(username));
     if (delegation == null) {
       land(username, parsed, answer);
     }
@@ -569,7 +570,9 @@ public class CalendarInvitationService {
 
   /**
    * Tells the invitation what the user's calendar holds of it: that it holds it, where,
-   * with which answer, and whether the mail is the organiser's newer revision. The held
+   * with which answer, and whether the mail is the organiser's newer revision -- only a
+   * mail naming an organiser is one: the add-ons let nobody else update an event, and a
+   * published event naming none is held as it was added. The held
    * answer becomes the user's current one unless the mail is newer than the held copy:
    * it is what the calendar, and every client of it, says the user answered last -- on
    * their phone, say, after answering from here.
@@ -584,7 +587,8 @@ public class CalendarInvitationService {
     invitation.setHeld(true);
     invitation.setHeldLink(held.link());
     invitation.setHeldResponse(held.answer());
-    boolean newer = invitation.getSequence() > held.sequence();
+    boolean newer = invitation.getOrganizer() != null && StringUtils.isNotBlank(invitation.getOrganizer().getAddress())
+        && invitation.getSequence() > held.sequence();
     invitation.setNewerRevision(newer);
     if (!newer && held.answer() != null) {
       invitation.setAnswer(held.answer());
