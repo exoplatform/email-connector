@@ -1061,7 +1061,10 @@ describe('the reading pane of a selection says how many mails its tiles act on (
     });
     const count = wrapper.find('.multi-select-count');
     expect(count.text()).toBe('emailConnector.mailBox.list.drawer.multiSelect.selectedOne');
-    expect(count.classes()).toEqual(expect.arrayContaining(['font-weight-bold', 'text-center']));
+    expect(count.classes()).toEqual(expect.arrayContaining(['font-weight-bold', 'text-center', 'text-h6']));
+    // Above the actions' row, out of the flow, so the row stays at the pane's vertical centre.
+    expect(count.attributes('style')).toContain('position: absolute');
+    expect(count.attributes('style')).toContain('bottom: 100%');
     expect(count.element.nextElementSibling.tagName.toLowerCase()).toBe('email-connector-mail-box-drawer-actions');
     expect(wrapper.classes()).toEqual(expect.arrayContaining(['flex-column', 'align-center', 'justify-center']));
 
