@@ -44,6 +44,7 @@ import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.RemoteContentSettings;
 import org.exoplatform.emailConnector.model.SanitizedEmailBody;
+import org.exoplatform.emailConnector.model.SenderLogoOffer;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
 import org.exoplatform.emailConnector.utils.EmailHtmlSanitizer;
@@ -264,7 +265,11 @@ public class EmailSecurityService {
     if (ownMessage || !warnings.isEmpty() || sender == null || sender.getAvatarUrl() == null || sender.getProfileUrl() != null) {
       return;
     }
-    sender.setLogoUrl(senderLogoService.logoUrlFor(sender.getAddress(), email.getContent().isDmarcPassed(), username));
+    SenderLogoOffer offer = senderLogoService.offerFor(sender.getAddress(), email.getContent().isDmarcPassed(), username);
+    sender.setLogoUrl(offer.url());
+    // A logo still being looked up for this reader: the page is told when it is found
+    // (EXO-90909), and shows it in place.
+    sender.setLogoPending(offer.pending());
   }
 
   /**
