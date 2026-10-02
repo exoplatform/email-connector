@@ -359,6 +359,49 @@ public class EmailBoxThreadSummaryDAOTest {
   }
 
   /**
+   * EXO-90882 -- the summary of some conversations only, what a list of search hits or of
+   * the Suggestions view counts its mails by: the conversations named and no other, each
+   * counted exactly as the whole mailbox's summary counts it -- its draft included, its
+   * copy in a hidden folder left out --, and never another user's rows under the same
+   * conversation id. The shared mailbox's variant counts inside its folders only.
+   */
+  @Test
+  void someConversationsAreSummarisedAsTheWholeMailboxSummarisesThem() {
+    persist(mail("<a1@example.org>", MailFolder.INBOX, 1L, "thread-a"));
+    persist(mail("<a2@example.org>", MailFolder.SENT, 2L, "thread-a"));
+    persist(draft("<a3@example.org>", "draft-a", "thread-a"));
+    persist(mail("<b1@example.org>", MailFolder.INBOX, 3L, "thread-b"));
+    persist(mail("<c1@example.org>", MailFolder.ARCHIVE, 4L, "thread-c"));
+    persist(mail("<c2@example.org>", MailFolder.TRASH, 5L, "thread-c"));
+    persist(mail("<s1@example.org>", "CUSTOM:16", 6L, "thread-a"));
+    persist(mail("<s2@example.org>", "CUSTOM:16", 8L, "thread-d"));
+    EmailBoxEntity othersRow = mail("<o1@example.org>", MailFolder.INBOX, 7L, "thread-c");
+    othersRow.setUserId("bob");
+    persist(othersRow);
+
+    Map<String, Object[]> some = new HashMap<>();
+    for (Object[] row : emailBoxDAO.summarizeThreadsByUserIdAndThreadIds(USERNAME,
+                                                                         List.of("thread-a", "thread-c", "thread-unknown"),
+                                                                         List.of(MailFolder.TRASH, MailFolder.JUNK, "CUSTOM:16"))) {
+      some.put((String) row[0], row);
+    }
+    assertEquals(2, some.size(), "the conversations named and found, no other");
+    assertEquals(3, count(some.get("thread-a")), "the mail, the answer and the draft, not the shared mailbox's copy");
+    assertTrue(hasDraft(some.get("thread-a")));
+    assertEquals(1, count(some.get("thread-c")), "neither the trashed copy nor another user's row");
+    assertFalse(hasDraft(some.get("thread-c")));
+    assertEquals(4, count(summaryOf("thread-a")), "the whole mailbox's summary, which keeps the shared copy, still says four");
+
+    List<Object[]> inShared = emailBoxDAO.summarizeThreadsByUserIdAndThreadIdsInFolders(USERNAME,
+                                                                                         List.of("thread-a", "thread-b"),
+                                                                                         List.of("CUSTOM:16"));
+    assertEquals(1, inShared.size(), "only the conversations named that the shared mailbox holds");
+    assertEquals("thread-a", inShared.get(0)[0]);
+    assertEquals(1, count(inShared.get(0)), "its own message only");
+    assertFalse(hasDraft(inShared.get(0)), "no draft of the delegate's");
+  }
+
+  /**
    * Persists a row and flushes it, so what the aggregate reads is what the database
    * holds rather than what the persistence context is still keeping to itself.
    *
