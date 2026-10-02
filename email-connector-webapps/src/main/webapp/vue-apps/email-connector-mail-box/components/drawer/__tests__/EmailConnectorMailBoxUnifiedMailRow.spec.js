@@ -97,6 +97,7 @@ const rowStub = {
     expanded: Boolean,
     dragSource: Object,
     showFolder: Boolean,
+    folders: Array,
   },
   render(createElement) {
     return createElement('div', {
@@ -127,12 +128,10 @@ function serviceStub(overrides) {
  * Mounts the folder list's row alone.
  *
  * @param {Object} props the row's props
- * @param {Object} root fields of the root the row reads (mailFolders), there before the
- *   row is drawn, as the drawer leaves them
  * @param {Object} listeners what the list listens to on the row
  * @returns {Wrapper} the row
  */
-function mountRow(props, root = {}, listeners = {}) {
+function mountRow(props, listeners = {}) {
   const localVue = createLocalVue();
   localVue.directive('touch', {});
   localVue.directive('touch-hold', {});
@@ -140,7 +139,6 @@ function mountRow(props, root = {}, listeners = {}) {
     localVue,
     propsData: props,
     listeners,
-    parentComponent: { data: () => ({ ...root }) },
     mocks: {
       $t: t,
       $emailConnectorMailBoxService: { ...emailConnectorMailBoxService, formatDateString: () => 'today' },
@@ -158,7 +156,7 @@ describe('the search results render the folder list\'s row for each hit (EXO-908
     const results = [hit(5, 'ARCHIVE'), hit(5, 'INBOX')];
     const dragSource = { folder: 'INBOX', ids: [5] };
     wrapper = shallowMount(EmailConnectorMailBoxDrawerSearchResults, {
-      propsData: { results, openedKey: 'ARCHIVE:5', selectMode: true, selectedEmails: ['ARCHIVE:5'], expanded: true, dragSource },
+      propsData: { results, openedKey: 'ARCHIVE:5', selectMode: true, selectedEmails: ['ARCHIVE:5'], expanded: true, dragSource, folders: FOLDERS },
       mocks: { $t: t },
       stubs: { 'email-connector-mail-box-drawer-list-item': rowStub },
     });
@@ -167,7 +165,7 @@ describe('the search results render the folder list\'s row for each hit (EXO-908
     expect(rows.map(row => row.props('rowKey'))).toEqual(['ARCHIVE:5', 'INBOX:5']);
     expect(rows.map(row => row.props('email'))).toEqual(results);
     rows.forEach(row => {
-      expect(row.props()).toMatchObject({ emails: results, openedKey: 'ARCHIVE:5', selectMode: true, selectedEmails: ['ARCHIVE:5'], expanded: true, dragSource, showFolder: true });
+      expect(row.props()).toMatchObject({ emails: results, openedKey: 'ARCHIVE:5', selectMode: true, selectedEmails: ['ARCHIVE:5'], expanded: true, dragSource, showFolder: true, folders: FOLDERS });
     });
     // The light row's own props are gone with it.
     expect(wrapper.vm.$options.props.draggableHits).toBeUndefined();
@@ -232,12 +230,12 @@ describe('the Suggestions view renders the folder list\'s row for each mail (EXO
 
   it('hands each row the mail, its key by folder and UID, the folder to name, the selection and the drag', async () => {
     const dragSource = { folder: 'ARCHIVE', ids: [7] };
-    await mountView({ compact: true, selectMode: true, selectedEmails: ['INBOX:8'], dragSource });
+    await mountView({ compact: true, selectMode: true, selectedEmails: ['INBOX:8'], dragSource, folders: FOLDERS });
 
     const rows = wrapper.findAllComponents(rowStub).wrappers;
     expect(rows.map(row => row.props('rowKey'))).toEqual(['ARCHIVE:7', 'INBOX:8']);
     rows.forEach(row => {
-      expect(row.props()).toMatchObject({ emails: mails, openedKey: null, selectMode: true, selectedEmails: ['INBOX:8'], expanded: true, dragSource, showFolder: true });
+      expect(row.props()).toMatchObject({ emails: mails, openedKey: null, selectMode: true, selectedEmails: ['INBOX:8'], expanded: true, dragSource, showFolder: true, folders: FOLDERS });
     });
   });
 
@@ -313,8 +311,11 @@ describe('the folder list\'s row as a list of hits uses it (EXO-90871)', () => {
     expect(wrapper.find('.row-not-cached').exists()).toBe(false);
   });
 
-  it('names the folder the row sits in when asked, as the folder column names it, the key when unknown', async () => {
-    wrapper = mountRow({ email: hit(5, 'CUSTOM:1'), showFolder: true }, { mailFolders: FOLDERS });
+  it('names the folder the row sits in when asked, as the folder column names it, the key until the folders land', async () => {
+    // Drawn before the mailbox's folders answered: the key, then the name follows them.
+    wrapper = mountRow({ email: hit(5, 'CUSTOM:1'), showFolder: true });
+    expect(wrapper.find('.row-folder').text()).toBe('CUSTOM:1');
+    await wrapper.setProps({ folders: FOLDERS });
     expect(wrapper.find('.row-folder').text()).toBe('Factures');
 
     await wrapper.setProps({ email: hit(5, 'ARCHIVE') });
@@ -339,7 +340,7 @@ describe('the folder list\'s row as a list of hits uses it (EXO-90871)', () => {
 
   it('hands its opening to the list that listens for it, and ticks itself in select mode instead', async () => {
     const opened = [];
-    wrapper = mountRow({ email: hit(5, 'ARCHIVE'), rowKey: 'ARCHIVE:5', expanded: true }, {}, { open: () => opened.push(true) });
+    wrapper = mountRow({ email: hit(5, 'ARCHIVE'), rowKey: 'ARCHIVE:5', expanded: true }, { open: () => opened.push(true) });
     const emit = jest.fn();
     wrapper.vm.$root.$emit = emit;
 

@@ -315,6 +315,12 @@ export default {
       type: Boolean,
       default: false,
     },
+    // The mailbox's folders as the drawer lists them, to name the row's by (showFolder):
+    // a prop, so the name follows the list as it loads.
+    folders: {
+      type: Array,
+      default: () => [],
+    },
   },
   computed: {
     /**
@@ -404,9 +410,9 @@ export default {
     },
     /**
      * The folder the row sits in, named as the folder column names it, when the list
-     * asked for it (showFolder): read off the folders the drawer last listed, which it
-     * leaves on the root for the bars and the rows; the key itself when the folder is
-     * unknown to it.
+     * asked for it (showFolder): read off the folders the drawer lists (folders), the
+     * key itself while the folder is unknown to it -- a list of hits may draw its rows
+     * before the mailbox's folders have landed, and the name then follows them.
      *
      * @returns {String} the folder's name, or an empty string when not asked for
      */
@@ -415,7 +421,7 @@ export default {
         return '';
       }
       const key = this.email.folder || 'INBOX';
-      const folder = (this.$root.mailFolders || []).find(candidate => candidate.key === key);
+      const folder = this.folders.find(candidate => candidate.key === key);
       return folder ? this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)) : key;
     },
     subject() {
