@@ -54,8 +54,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       class="text-center px-4 suggestions-email-empty">
       <v-icon :size="compact ? 32 : 60" class="icon-default-color">fa-magic</v-icon>
       <div class="mt-2 text-subtitle text-sub-title text-wrap">
-        {{ $t('emailConnector.mailBox.suggestions.empty') }}
+        {{ emptyMessage }}
       </div>
+      <!-- Emptied by the chips: offered to clear them, as an empty folder's list does
+           (EXO-90892). -->
+      <v-btn
+        v-if="filtered"
+        class="mt-2"
+        color="primary"
+        small
+        text
+        @click="$emit('clear-filters')">
+        {{ $t('emailConnector.mailBox.list.drawer.noEmail.clearFilters') }}
+      </v-btn>
     </div>
   </div>
 </template>
@@ -101,6 +112,12 @@ export default {
       type: Array,
       default: () => [],
     },
+    // Whether the Favorites or Unread chip narrows the mails (EXO-90892): an empty view
+    // then says so, and offers to clear them (the clear-filters event).
+    filtered: {
+      type: Boolean,
+      default: false,
+    },
     // The full-screen reader's mail, keyed as the rows are (folder:uid), null while it
     // shows none: whichever way it was opened -- a click, the first mail opened on entry,
     // the arrow keys (EXO-90875) --, its row is lit, and no row is while the placeholder
@@ -128,6 +145,17 @@ export default {
      */
     litKey() {
       return typeof this.readerKey === 'undefined' ? this.openedKey : this.readerKey;
+    },
+    /**
+     * Why the view is empty: its filters, as an empty folder's list says (EXO-90892), or
+     * no suggestion waiting.
+     *
+     * @returns {String} the message
+     */
+    emptyMessage() {
+      return this.filtered
+        ? this.$t('emailConnector.mailBox.list.drawer.noEmail.filtered')
+        : this.$t('emailConnector.mailBox.suggestions.empty');
     },
   },
   watch: {
