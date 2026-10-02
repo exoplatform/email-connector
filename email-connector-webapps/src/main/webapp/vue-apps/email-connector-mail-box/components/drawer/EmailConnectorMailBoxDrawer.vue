@@ -1381,6 +1381,11 @@ export default {
           // Kept because the rows double as the reader's list, whose category
           // filter dereferences categoryIds on every row.
           categoryIds: e.categoryIds || [],
+          // What the row shows beside the envelope, as the answers' hits carry it
+          // (EXO-90882): the excerpt and attachments, the conversation's size and draft.
+          content: e.content,
+          threadCount: e.threadCount,
+          threadHasDraft: e.threadHasDraft,
         }));
     },
     /**
