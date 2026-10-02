@@ -124,6 +124,20 @@ class SvgLogoSanitizerTest {
   }
 
   /**
+   * A document nested deeper than a logo ever is -- a few thousand groups, well inside
+   * the size limit, which would overflow the stack while cleaning or writing it -- is
+   * refused, so it ends as "no logo" like any other refusal; a logo at the bound is kept.
+   */
+  @Test
+  void aDeeplyNestedDocumentIsRefused() {
+    assertNull(SvgLogoSanitizer.sanitize(utf8(OPEN + "<g>".repeat(5000) + "</g>".repeat(5000) + CLOSE)));
+    assertNull(SvgLogoSanitizer.sanitize(utf8(OPEN + "<g>".repeat(SvgLogoSanitizer.MAX_DEPTH) + "</g>".repeat(SvgLogoSanitizer.MAX_DEPTH)
+        + CLOSE)));
+    assertNotNull(SvgLogoSanitizer.sanitize(utf8(OPEN + "<g>".repeat(SvgLogoSanitizer.MAX_DEPTH - 1)
+        + "</g>".repeat(SvgLogoSanitizer.MAX_DEPTH - 1) + CLOSE)));
+  }
+
+  /**
    * Cleans a document given as text.
    *
    * @param svg the document
