@@ -43,6 +43,12 @@ public class EmailWaitingSuggestionMail {
   /** The message's Message-ID, which its suggestions are attached to. */
   private String      mailHeaderId;
 
+  /**
+   * The conversation the message belongs to, as the folder list carries it: what the
+   * reader reads the conversation by, rather than by the copy it opened (EXO-90875).
+   */
+  private String      threadId;
+
   private String      subject;
 
   private EmailSender sender;
