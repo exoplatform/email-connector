@@ -118,7 +118,8 @@ export function senderAvatarUrl(address) {
 /**
  * Records what the page learnt of a sender elsewhere: the reader reads a whole message
  * with its sender's picture -- a platform user's photo, or for anybody else the
- * generated initials (a data: URL), which says there is no photo to ask for.
+ * generated initials (a data: URL), which says there is no photo to ask for -- or the
+ * brand logo it was offered (EXO-90893), which also replaces an earlier "none".
  *
  * @param {string} address - the sender's address
  * @param {string} avatarUrl - the picture the server gave the message's sender
@@ -126,7 +127,10 @@ export function senderAvatarUrl(address) {
  */
 export function rememberSenderAvatar(address, avatarUrl) {
   const key = keyOf(address);
-  if (!key || !avatarUrl || answers.has(key)) {
+  // A brand logo the reader was offered replaces a "none" the list was answered before
+  // the server had resolved the domain (EXO-90893); anything else learnt first stays.
+  const logoOverNone = answers.get(key) === null && isSenderLogoUrl(avatarUrl);
+  if (!key || !avatarUrl || (answers.has(key) && !logoOverNone)) {
     return;
   }
   answers.set(key, avatarUrl.startsWith('data:') ? null : avatarUrl);
