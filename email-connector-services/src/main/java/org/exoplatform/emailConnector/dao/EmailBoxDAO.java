@@ -200,10 +200,10 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * @param mailHeaderIds the Message-IDs, not empty
    * @param excludedFolders the folders left out, not empty
    * @return rows of {@code [id, folder, mailHeaderId, mailRemoteId, subject, sender,
-   *         receivedDate, read, starred]}, newest first
+   *         receivedDate, read, starred, threadId]}, newest first
    */
   @Query("SELECT email.id, email.folder, email.mailHeaderId, email.mailRemoteId, email.subject, email.sender, email.receivedDate,"
-      + " email.read, email.starred FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId IN :mailHeaderIds"
+      + " email.read, email.starred, email.threadId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId IN :mailHeaderIds"
       + " AND email.folder NOT IN :excludedFolders AND email.draftLocalId IS NULL ORDER BY email.receivedDate DESC, email.id DESC")
   List<Object[]> findListedByUserIdAndMailHeaderIds(@Param("userId")
   String userId, @Param("mailHeaderIds")
