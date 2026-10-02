@@ -19,7 +19,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        suggestions waiting", said from the notification's CONTENT, the sentence the
        server built in the receiver's language and brought up to date as suggestions come
        and go, rebuilt here from SUGGESTION_COUNT when it is missing. A click opens the
-       mailbox on its inbox, whose list marks the mails with waiting suggestions. -->
+       mailbox on its Suggestions view, the mails the suggestions wait on (EXO-90851). -->
   <div
     role="button"
     tabindex="0"
@@ -102,13 +102,13 @@ export default {
       return typeof this.$te === 'function' && this.$te(key) ? this.$t(key) : null;
     },
     /**
-     * Opens the mailbox on its inbox, where the list marks the mails with waiting
-     * suggestions.
+     * Opens the mailbox on its Suggestions view, which lists the mails with waiting
+     * suggestions (EXO-90851).
      *
      * @returns {void}
      */
     openMailbox() {
-      const event = new CustomEvent('open-email-box-folder', { detail: { folder: 'INBOX' } });
+      const event = new CustomEvent('open-email-box-folder', { detail: { folder: 'SUGGESTIONS' } });
       window.require(['SHARED/emailConnectorQuickActionExtension'], () => document.dispatchEvent(event));
     },
   },
