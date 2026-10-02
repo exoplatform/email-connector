@@ -61,6 +61,7 @@ import org.jsoup.nodes.Element;
 import org.jsoup.parser.Tag;
 
 import org.exoplatform.commons.utils.CommonsUtils;
+import org.exoplatform.commons.utils.ListAccess;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.emailConnector.model.Email;
@@ -670,6 +671,13 @@ public class EmailConnectorUtils {
     return "/portal/" + defaultPortalOwner + "?openEmailBox=true";
   }
 
+  /**
+   * The profile of the first enabled platform user whose account carries an address,
+   * looked up by equality on the stored value.
+   *
+   * @param email the address
+   * @return the profile, or null when no user carries it or the directory cannot be read
+   */
   public static Profile getUserProfileByEmail(String email) {
     if (email == null) {
       return null;
@@ -679,7 +687,10 @@ public class EmailConnectorUtils {
       Query query = new Query();
       query.setEmail(email);
       OrganizationService organizationService = CommonsUtils.getOrganizationService();
-      User[] users = organizationService.getUserHandler().findUsersByQuery(query).load(0, 10);
+      // Bounded by the size the directory reports: its list refuses a load past it.
+      ListAccess<User> found = organizationService.getUserHandler().findUsersByQuery(query);
+      int size = Math.min(found.getSize(), 10);
+      User[] users = size <= 0 ? new User[0] : found.load(0, size);
       if (users.length > 0) {
         String userName = users[0].getUserName();
         if (userName != null) {
