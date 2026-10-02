@@ -121,7 +121,7 @@ class EmailSecurityServiceTest {
   @Test
   void theBrandLogoIsOfferedOnlyToAnUndoubtedStranger() {
     String logo = SenderLogoService.LOGO_PATH + "brand.example";
-    lenient().when(senderLogoService.logoUrlFor("news@brand.example", true)).thenReturn(logo);
+    lenient().when(senderLogoService.logoUrlFor("news@brand.example", true, USER)).thenReturn(logo);
 
     Email passed = stranger();
     passed.getContent().setDmarcPassed(true);
@@ -130,7 +130,7 @@ class EmailSecurityServiceTest {
 
     Email notPassed = stranger();
     service.decorate(notPassed, USER, false);
-    verify(senderLogoService).logoUrlFor("news@brand.example", false);
+    verify(senderLogoService).logoUrlFor("news@brand.example", false, USER);
     assertEquals(null, notPassed.getSender().getLogoUrl(), "no DMARC pass, no logo");
 
     clearInvocations(senderLogoService);
@@ -154,7 +154,7 @@ class EmailSecurityServiceTest {
     sent.setFolder(MailFolder.SENT);
     service.decorate(sent, USER, false);
 
-    verify(senderLogoService, never()).logoUrlFor(anyString(), org.mockito.ArgumentMatchers.anyBoolean());
+    verify(senderLogoService, never()).logoUrlFor(anyString(), org.mockito.ArgumentMatchers.anyBoolean(), anyString());
     for (Email email : List.of(doubted, platformUser, unresolved, sent)) {
       assertEquals(null, email.getSender().getLogoUrl());
     }

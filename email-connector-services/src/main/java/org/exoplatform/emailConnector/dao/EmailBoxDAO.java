@@ -276,6 +276,26 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String address);
 
   /**
+   * One message of a mailbox sent from an address that the receiving server vouched
+   * for, if there is any (EXO-90893): DMARC passed for its domain and no sender check
+   * failed. What lets the mail list offer the brand logo of an address only to a user
+   * who holds genuine mail from it. Matched as {@link #findOneIdBySenderAddress}.
+   *
+   * @param userId the mailbox owner: only their own rows are read
+   * @param pattern the lower-cased {@code %,address} pattern, its {@code %}, {@code _}
+   *          and {@code !} escaped with {@code !}
+   * @param address the lower-cased address, for a column holding it alone
+   * @return the id of one such message, or an empty list
+   */
+  @Query("SELECT email.id FROM EmailBoxEntity email WHERE email.userId = :userId AND email.dmarcPass = TRUE"
+      + " AND email.authFailure IS NULL"
+      + " AND (LOWER(email.sender) LIKE :pattern ESCAPE '!' OR LOWER(email.sender) = :address) LIMIT 1")
+  List<Long> findOneVerifiedIdBySenderAddress(@Param("userId")
+  String userId, @Param("pattern")
+  String pattern, @Param("address")
+  String address);
+
+  /**
    * The starred subset of a folder, for the list's starred filter. A dedicated query
    * rather than a flag on {@link #findByUserIdAndFolderWithAttachments} so the common
    * unfiltered listing keeps its exact plan, and the filter runs in SQL instead of
