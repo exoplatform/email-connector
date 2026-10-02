@@ -422,6 +422,23 @@ describe('a category picked on a view lists the inbox narrowed to it, as picked 
     expect(listed()).toEqual([2]);
   });
 
+  it('in full screen, picking the lit category during a search leaves the hit for the category\'s first mail', async () => {
+    await onView('INBOX');
+    fixture.wrapper.vm.openCategoryView(IMPORTANT.id);
+    await flush();
+    await flush();
+    // A hit outside Important is in the reader.
+    await fixture.wrapper.setData({ searchTerm: 'mail', email: inboxRow(3, [INVITATION.id]), selectEmailPlaceHolder: false });
+    fixture.service.getEmailByRemoteId.mockClear();
+
+    fixture.wrapper.vm.openCategoryView(IMPORTANT.id);
+    await flush();
+    await flush();
+
+    expect(listed()).toEqual([2]);
+    expect(readerOpenings(fixture)).toEqual([[2, 'INBOX', { broadcast: false }]]);
+  });
+
   it('lists the category itself and opens its first mail when its expansion fails', async () => {
     await onView(emailConnectorMailBoxService.SUGGESTIONS_VIEW, { subcategoryIds: () => Promise.reject(new Error('down')) });
 
