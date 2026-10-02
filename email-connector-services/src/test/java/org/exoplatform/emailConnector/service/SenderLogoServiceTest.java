@@ -125,6 +125,7 @@ class SenderLogoServiceTest {
     verify(senderLogoStorage, never()).getLogo(anyString());
     assertEquals(1, queued.size(), "one resolution per domain at a time");
 
+    when(senderLogoStorage.getLogo("brand.example")).thenReturn(SenderLogo.none(System.currentTimeMillis()));
     queued.remove(0).run();
     verify(senderLogoStorage).getLogo("brand.example");
     verify(senderLogoStorage, never()).evict(anyString());
@@ -145,6 +146,7 @@ class SenderLogoServiceTest {
 
     when(senderLogoStorage.peek("brand.example")).thenReturn(SenderLogo.none(System.currentTimeMillis() - SenderLogoService.NONE_TTL_MS));
     assertNull(service.logoUrlFor("news@brand.example", true, USER));
+    when(senderLogoStorage.getLogo("brand.example")).thenReturn(SenderLogo.none(System.currentTimeMillis()));
     queued.remove(0).run();
     InOrder order = inOrder(senderLogoStorage);
     order.verify(senderLogoStorage).evict("brand.example");
@@ -241,7 +243,7 @@ class SenderLogoServiceTest {
   }
 
   /**
-   * The reader's validators change at each resolution that ends and with the switch,
+   * The reader's validators change when a resolution finds a logo and with the switch,
    * so a copy cached before the logo was resolved, or with a stale URL, is not
    * confirmed; nothing changes it while no mail server is trusted.
    */
@@ -250,10 +252,15 @@ class SenderLogoServiceTest {
     when(emailConnectorService.isSenderLogosEnabled()).thenReturn(true);
     int before = service.offerFingerprint();
     assertEquals(before, service.offerFingerprint(), "stable while nothing happens");
+    when(senderLogoStorage.getLogo("plain.example")).thenReturn(SenderLogo.none(1L));
+    assertNull(service.logoUrlFor("info@plain.example", true, USER));
+    queued.remove(0).run();
+    assertEquals(before, service.offerFingerprint(), "a domain found to have none changes no offer");
+    when(senderLogoStorage.getLogo("brand.example")).thenReturn(LOGO);
     assertNull(service.logoUrlFor("news@brand.example", true, USER));
     queued.remove(0).run();
     int resolved = service.offerFingerprint();
-    assertNotEquals(before, resolved, "a resolution ended");
+    assertNotEquals(before, resolved, "a logo was found");
     when(emailConnectorService.isSenderLogosEnabled()).thenReturn(false);
     assertNotEquals(resolved, service.offerFingerprint(), "the switch");
     System.clearProperty(EmailSecurityUtils.TRUSTED_AUTHSERV_IDS_PROPERTY);
