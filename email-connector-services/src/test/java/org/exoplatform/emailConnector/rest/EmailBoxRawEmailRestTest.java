@@ -59,6 +59,7 @@ import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.RawEmailSource;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailScheduledSendService;
+import org.exoplatform.emailConnector.service.EmailSecurityService;
 import org.exoplatform.emailConnector.service.RawEmailSink;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
 
@@ -98,6 +99,9 @@ class EmailBoxRawEmailRestTest {
 
   @MockitoBean
   private ReadReceiptService        readReceiptService;
+
+  @MockitoBean
+  private EmailSecurityService      emailSecurityService;
 
   @Autowired
   private SecurityFilterChain       filterChain;
