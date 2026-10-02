@@ -38,6 +38,7 @@ import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
+import org.exoplatform.commons.utils.ListAccess;
 import org.exoplatform.services.organization.OrganizationService;
 import org.exoplatform.services.organization.Query;
 import org.exoplatform.services.organization.User;
@@ -109,6 +110,9 @@ public class EmailSenderProfileService {
 
   /** How often a directory that cannot be read is logged at most, in ms: once, not per address. */
   static final long           FAILURE_LOG_INTERVAL_MS = 60L * 1000;
+
+  /** The most users one directory query is read for: an address names one user. */
+  static final int            MAX_CANDIDATES        = 10;
 
   private static final Log    LOG                   = ExoLogger.getLogger(EmailSenderProfileService.class);
 
@@ -424,16 +428,21 @@ public class EmailSenderProfileService {
   }
 
   /**
-   * The enabled users the directory answers for an email query.
+   * The enabled users the directory answers for an email query, at most
+   * {@link #MAX_CANDIDATES}. The directory's list refuses a load past its size, which
+   * a prefix query matching fewer users than that answers, so the load is bounded by
+   * the size it reports.
    *
    * @param email the queried email, a trailing * making it a case-insensitive prefix
-   * @return up to ten users
+   * @return the users, empty for none
    * @throws Exception when the directory cannot be read
    */
   private User[] findUsers(String email) throws Exception { // NOSONAR the directory's own signature
     Query query = new Query();
     query.setEmail(email);
-    return organizationService.getUserHandler().findUsersByQuery(query).load(0, 10);
+    ListAccess<User> found = organizationService.getUserHandler().findUsersByQuery(query);
+    int size = Math.min(found.getSize(), MAX_CANDIDATES);
+    return size <= 0 ? new User[0] : found.load(0, size);
   }
 
   /**
