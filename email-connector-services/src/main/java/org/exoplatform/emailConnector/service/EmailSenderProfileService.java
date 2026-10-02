@@ -127,6 +127,9 @@ public class EmailSenderProfileService {
   @Autowired
   private EmailContactService     emailContactService;
 
+  @Autowired
+  private SenderLogoService       senderLogoService;
+
   // The owner found for each normalized address.
   private final Map<String, SenderAddressOwner> owners = new ConcurrentHashMap<>();
 
@@ -222,10 +225,12 @@ public class EmailSenderProfileService {
    * generated picture of a user with none.
    * <p>
    * An address with none of these is left out: the list draws its coloured initials
-   * itself, as the server draws them for the reader. A connected mailbox's address
-   * names its owner only when the asking user's mailbox holds mail from it. The
-   * contacts read are the asking user's alone, in one query for the addresses the
-   * platform answered no photo for.
+   * itself, as the server draws them for the reader -- unless it is answered its brand
+   * logo (EXO-90893): an address no platform user holds, from which the asking user's
+   * mailbox holds genuine mail, and none of whose contacts carries a picture. A
+   * connected mailbox's address names its owner only when the asking user's mailbox
+   * holds mail from it. The contacts read are the asking user's alone, in one query for
+   * the addresses the platform answered no photo for.
    *
    * @param addresses the addresses, at most {@link #AVATARS_MAX_ADDRESSES}; blank,
    *          malformed and repeated ones are skipped
@@ -282,8 +287,12 @@ public class EmailSenderProfileService {
       Map<String, String> contactPictures = contactPhotosOf(username, withoutPhoto.keySet());
       withoutPhoto.forEach((key, platformPicture) -> {
         String picture = contactPictures.get(key);
-        // A sender's brand logo (EXO-90893) belongs here: after the viewer's contact,
-        // before the platform's generated picture and the client's initials.
+        // A sender's brand logo (EXO-90893): after the viewer's contact, before the
+        // platform's generated picture and the client's initials -- for an address no
+        // platform user holds only, so a colleague is never shown as a brand.
+        if (picture == null && platformPicture == null) {
+          picture = brandLogoUrl(key, username);
+        }
         if (picture == null) {
           picture = platformPicture;
         }
@@ -293,6 +302,24 @@ public class EmailSenderProfileService {
       });
     }
     return avatars;
+  }
+
+  /**
+   * The brand logo of an address no platform user holds (EXO-90893): offered when the
+   * asking user's mailbox holds mail from it that passed DMARC and failed no sender
+   * check, so the list never learns a logo for an address it only got spoofed mail
+   * from. The list shows it on that address's verified rows only
+   * ({@code EmailSender#domainVerified}).
+   *
+   * @param key the normalized address
+   * @param username the asking user
+   * @return the logo's URL, or null for the initials
+   */
+  private String brandLogoUrl(String key, String username) {
+    if (!senderLogoService.mayOffer(key)) {
+      return null;
+    }
+    return senderLogoService.logoUrlFor(key, emailBoxStorage.hasVerifiedMailFrom(username, key), username);
   }
 
   /**
