@@ -296,6 +296,40 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String address);
 
   /**
+   * The newest rows of a folder whose DMARC verdict was never recorded (EXO-90909):
+   * cached before changeset 1.0.0-99, so the list cannot offer their sender's brand
+   * logo. The key projection {@code [id, folder, mailHeaderId, mailRemoteId, sender]}
+   * the verdict is filled in from.
+   *
+   * @param userId the mailbox owner: only their own rows are read
+   * @param folder the folder discriminator
+   * @param pageable how many, the newest first
+   * @return the rows' keys and senders
+   */
+  @Query("SELECT email.id, email.folder, email.mailHeaderId, email.mailRemoteId, email.sender FROM EmailBoxEntity email"
+      + " WHERE email.userId = :userId AND email.folder = :folder AND email.dmarcPass IS NULL ORDER BY email.receivedDate DESC, email.id DESC")
+  List<Object[]> findWithoutDmarcVerdict(@Param("userId")
+  String userId, @Param("folder")
+  String folder, Pageable pageable);
+
+  /**
+   * Records the DMARC verdict of rows that had none (EXO-90909); a row given one
+   * meanwhile, by a sync, keeps its own.
+   *
+   * @param userId the mailbox owner: only their own rows are written
+   * @param ids the rows
+   * @param dmarcPass the verdict
+   * @return how many rows were written
+   */
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.dmarcPass = :dmarcPass WHERE email.userId = :userId AND email.id IN :ids AND email.dmarcPass IS NULL")
+  int setDmarcVerdict(@Param("userId")
+  String userId, @Param("ids")
+  Collection<Long> ids, @Param("dmarcPass")
+  boolean dmarcPass);
+
+  /**
    * The starred subset of a folder, for the list's starred filter. A dedicated query
    * rather than a flag on {@link #findByUserIdAndFolderWithAttachments} so the common
    * unfiltered listing keeps its exact plan, and the filter runs in SQL instead of

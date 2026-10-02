@@ -16,10 +16,13 @@
  */
 package org.exoplatform.emailConnector.storage;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,6 +40,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
+import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.upload.UploadService;
 
@@ -119,6 +123,43 @@ class EmailBoxVerifiedSenderStorageTest {
   }
 
   /**
+   * EXO-90909 -- the rows without a verdict are read newest first, a folder and a
+   * mailbox at a time, within the limit, with their keys and sender; a verdict is
+   * written on the owner's rows that still have none only, and a row given one by a
+   * sync meanwhile keeps its own.
+   */
+  @Test
+  void theRowsWithoutAVerdictAreFilledIn() {
+    long day = 24L * 60 * 60 * 1000;
+    long base = System.currentTimeMillis() - 10 * day;
+    EmailBoxEntity oldest = save("uma", MailFolder.INBOX, "Old,old@brand.example", null, null, new Date(base));
+    EmailBoxEntity middle = save("uma", MailFolder.INBOX, "bare@brand.example", null, null, new Date(base + day));
+    EmailBoxEntity newest = save("uma", MailFolder.INBOX, "New,new@brand.example", null, null, new Date(base + 2 * day));
+    EmailBoxEntity decided = save("uma", MailFolder.INBOX, "Done,done@brand.example", Boolean.FALSE, null, new Date(base + 3 * day));
+    save("uma", MailFolder.ARCHIVE, "Arch,arch@brand.example", null, null, new Date(base + 4 * day));
+    EmailBoxEntity others = save("vic", MailFolder.INBOX, "Vic,vic@brand.example", null, null, new Date(base + 5 * day));
+
+    List<Email> rows = emailBoxStorage.getEmailsWithoutDmarcVerdict("uma", MailFolder.INBOX, 2);
+    assertEquals(List.of(newest.getId(), middle.getId()), rows.stream().map(Email::getId).toList());
+    Email first = rows.get(0);
+    assertEquals(newest.getMailRemoteId(), first.getMailRemoteId());
+    assertEquals(MailFolder.INBOX, first.getFolder());
+    assertEquals("new@brand.example", first.getSender().getAddress());
+    assertEquals("bare@brand.example", rows.get(1).getSender().getAddress());
+    assertEquals(3, emailBoxStorage.getEmailsWithoutDmarcVerdict("uma", MailFolder.INBOX, 50).size());
+
+    assertEquals(2, emailBoxStorage.setDmarcVerdict("uma", List.of(newest.getId(), decided.getId(), others.getId(), oldest.getId()), true));
+    assertEquals(Boolean.TRUE, emailBoxDAO.findById(newest.getId()).orElseThrow().getDmarcPass());
+    assertEquals(Boolean.TRUE, emailBoxDAO.findById(oldest.getId()).orElseThrow().getDmarcPass());
+    assertEquals(Boolean.FALSE, emailBoxDAO.findById(decided.getId()).orElseThrow().getDmarcPass(), "a verdict is never overwritten");
+    assertNull(emailBoxDAO.findById(others.getId()).orElseThrow().getDmarcPass(), "another mailbox's row");
+    assertEquals(1, emailBoxStorage.setDmarcVerdict("uma", List.of(middle.getId()), false));
+    assertEquals(List.of(), emailBoxStorage.getEmailsWithoutDmarcVerdict("uma", MailFolder.INBOX, 50));
+    assertTrue(emailBoxStorage.hasVerifiedMailFrom("uma", "new@brand.example"), "a filled pass counts for the list");
+    assertEquals(0, emailBoxStorage.setDmarcVerdict("uma", List.of(), true));
+  }
+
+  /**
    * Stores one cached message.
    *
    * @param owner the mailbox owner
@@ -128,6 +169,21 @@ class EmailBoxVerifiedSenderStorageTest {
    * @param authFailure the stored failed check, or null
    */
   private void save(String owner, String folder, String sender, Boolean dmarcPass, String authFailure) {
+    save(owner, folder, sender, dmarcPass, authFailure, new Date());
+  }
+
+  /**
+   * Stores one cached message received at a given date.
+   *
+   * @param owner the mailbox owner
+   * @param folder the {@link MailFolder} discriminator
+   * @param sender the stored sender
+   * @param dmarcPass the stored DMARC pass, null for a row older than it
+   * @param authFailure the stored failed check, or null
+   * @param receivedDate when it was received
+   * @return the stored row
+   */
+  private EmailBoxEntity save(String owner, String folder, String sender, Boolean dmarcPass, String authFailure, Date receivedDate) {
     EmailBoxEntity email = new EmailBoxEntity();
     email.setMailRemoteId(System.nanoTime());
     email.setUserId(owner);
@@ -136,10 +192,10 @@ class EmailBoxVerifiedSenderStorageTest {
     email.setSender(sender);
     email.setTo("Someone,someone@example.org");
     email.setCc("");
-    email.setReceivedDate(new Date());
+    email.setReceivedDate(receivedDate);
     email.setBody("body");
     email.setDmarcPass(dmarcPass);
     email.setAuthFailure(authFailure);
-    emailBoxDAO.save(email);
+    return emailBoxDAO.save(email);
   }
 }
