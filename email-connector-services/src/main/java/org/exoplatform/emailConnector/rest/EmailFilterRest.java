@@ -44,6 +44,7 @@ import org.exoplatform.emailConnector.model.EmailFilter;
 import org.exoplatform.emailConnector.model.EmailFilterMatch;
 import org.exoplatform.emailConnector.model.EmailFilterProposal;
 import org.exoplatform.emailConnector.model.EmailFilterSuggestionCounts;
+import org.exoplatform.emailConnector.model.EmailWaitingSuggestionMail;
 import org.exoplatform.emailConnector.model.FilterApplyReport;
 import org.exoplatform.emailConnector.model.FilterPreview;
 import org.exoplatform.emailConnector.model.ServerRule;
@@ -782,6 +783,31 @@ public class EmailFilterRest {
                                       @RequestParam(name = "delegationId", required = false)
                                       Long delegationId) {
     return read(() -> emailFilterProposalService.getWaitingMails(request.getRemoteUser(), delegationId));
+  }
+
+  /**
+   * The caller's mails with a suggestion waiting for them, as the mailbox's "Suggestions"
+   * view lists them.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param delegationId the share the request is made from; refused
+   * @return the mails, newest first
+   */
+  @GetMapping("/proposals/waiting/emails")
+  @Secured("users")
+  @Operation(summary = "Lists the caller's mails with a suggestion waiting for them, to open", method = "GET",
+      description = "One cached copy per mail of the caller's own mailbox that has at least one tool call proposed by a "
+          + "filter's assistant, still waiting for a decision and not past its expiry, newest first, with how many wait on "
+          + "it: what the mailbox's Suggestions view lists. Copies in Trash, Spam, All Mail, Drafts or a shared mailbox are "
+          + "not listed. Bounded by the mailbox's pending cap.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = FORBIDDEN_DESCRIPTION),
+      @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected") })
+  public List<EmailWaitingSuggestionMail> getWaitingEmails(HttpServletRequest request,
+                                                           @Parameter(description = DELEGATION_DESCRIPTION)
+                                                           @RequestParam(name = "delegationId", required = false)
+                                                           Long delegationId) {
+    return read(() -> emailFilterProposalService.getWaitingEmails(request.getRemoteUser(), delegationId));
   }
 
   /**
