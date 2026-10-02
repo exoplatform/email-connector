@@ -20,7 +20,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
@@ -35,12 +37,15 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 import org.exoplatform.emailConnector.entity.EmailContactAddressEntity;
 import org.exoplatform.emailConnector.entity.EmailContactEntity;
 import org.exoplatform.emailConnector.model.EmailContactSource;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.service.EmailContactService;
+import org.exoplatform.emailConnector.storage.EmailContactStorage;
 
 /**
  * Real-database smoke test of the new queries, on in-memory HSQLDB — the same
@@ -366,6 +371,75 @@ public class EmailContactDAOTest {
   }
 
   /**
+   * The mail's avatars after the platform profile (EXO-90908): the contacts of the
+   * viewer's own store that carry a picture, for the addresses asked, in one query. An
+   * address is matched among every address of a contact, the primary one and the
+   * others; a contact with no photo, a suppressed one, a directory row and another
+   * user's contact at the same address never answer.
+   */
+  @Test
+  void photoContactsAreTheViewersOwnWithAPictureOnly() {
+    long bob = persistPhotoContact(USERNAME, EmailContactSource.CARDDAV, "bob@example.org", 41L, date(3), false,
+                                   "bob@example.org", "bob.home@example.net");
+    persistPhotoContact(USERNAME, EmailContactSource.MANUAL, "nophoto@example.org", null, date(1), false, "nophoto@example.org");
+    persistPhotoContact(USERNAME, EmailContactSource.CARDDAV, "gone@example.org", 42L, date(1), true, "gone@example.org");
+    persistPhotoContact(USERNAME, EmailContactSource.DIRECTORY, "colleague@example.org", 43L, date(1), false,
+                        "colleague@example.org");
+    long malloryCarol = persistPhotoContact("mallory", EmailContactSource.CARDDAV, "carol@example.org", 44L, date(2), false,
+                                            "carol@example.org");
+    persistPhotoContact("mallory", EmailContactSource.CARDDAV, "bob@example.org", 45L, date(2), false, "bob@example.org");
+
+    List<Object[]> rows = emailContactAddressDAO.findPhotoContactsByAddresses(USERNAME,
+                                                                               List.of("bob.home@example.net",
+                                                                                       "bob@example.org",
+                                                                                       "nophoto@example.org",
+                                                                                       "gone@example.org",
+                                                                                       "colleague@example.org",
+                                                                                       "carol@example.org",
+                                                                                       "stranger@example.org"),
+                                                                               EmailContactSource.DIRECTORY);
+
+    assertEquals(List.of("bob.home@example.net", "bob@example.org"), rows.stream().map(row -> (String) row[0]).toList());
+    rows.forEach(row -> assertEquals(bob, ((Number) row[1]).longValue()));
+    assertEquals(date(3), rows.get(0)[2]);
+    assertEquals(41L, ((Number) rows.get(0)[3]).longValue());
+
+    // The other store holds its own, and only its own.
+    List<Object[]> mallorys = emailContactAddressDAO.findPhotoContactsByAddresses("mallory",
+                                                                                   List.of("carol@example.org"),
+                                                                                   EmailContactSource.DIRECTORY);
+    assertEquals(1, mallorys.size());
+    assertEquals(malloryCarol, ((Number) mallorys.get(0)[1]).longValue());
+  }
+
+  /**
+   * The same lookup through the storage and the service the avatars call: the URL is
+   * the contacts app's, versioned on the row's update; the addresses are matched
+   * whatever their case; a user with no store, or no user, reads nothing.
+   */
+  @Test
+  void contactPhotoUrlsReadTheCallersOwnStoreOnly() {
+    long bob = persistPhotoContact(USERNAME, EmailContactSource.CARDDAV, "bob@example.org", 41L, date(3), false,
+                                   "bob@example.org");
+    long undated = persistPhotoContact(USERNAME, EmailContactSource.MANUAL, "ann@example.org", 46L, null, false,
+                                       "ann@example.org");
+    persistPhotoContact("mallory", EmailContactSource.CARDDAV, "carol@example.org", 44L, date(2), false, "carol@example.org");
+    EmailContactStorage storage = new EmailContactStorage();
+    ReflectionTestUtils.setField(storage, "emailContactAddressDAO", emailContactAddressDAO);
+    ReflectionTestUtils.setField(storage, "emailContactDAO", emailContactDAO);
+    EmailContactService contacts = new EmailContactService();
+    ReflectionTestUtils.setField(contacts, "emailContactStorage", storage);
+
+    assertEquals(Map.of("bob@example.org", "/email-connector/rest/contacts/" + bob + "/photo?v=" + date(3).getTime(),
+                        "ann@example.org", "/email-connector/rest/contacts/" + undated + "/photo?v=46"),
+                 contacts.getContactPhotoUrls(USERNAME, List.of(" Bob@Example.org", "ANN@example.org", "carol@example.org",
+                                                                "not-an-address", "")));
+    assertTrue(contacts.getContactPhotoUrls("mallory", List.of("bob@example.org")).isEmpty());
+    assertTrue(contacts.getContactPhotoUrls(null, List.of("bob@example.org")).isEmpty());
+    assertTrue(contacts.getContactPhotoUrls(USERNAME, List.of()).isEmpty());
+  }
+
+  /**
    * A fixed instant, so an ordering assertion never depends on the clock.
    *
    * @param day the day offset from an arbitrary epoch
@@ -373,6 +447,37 @@ public class EmailContactDAOTest {
    */
   private java.util.Date date(int day) {
     return new java.util.Date(1700000000000L + day * 86400000L);
+  }
+
+  /**
+   * Persists one contact of a store, with its picture and the address rows the
+   * avatar lookup reads.
+   *
+   * @param owner the store owner
+   * @param source the contact's source
+   * @param primary the primary address
+   * @param photoFileId the stored picture's file id, null for none
+   * @param updatedDate the row's update time, may be null
+   * @param suppressed whether the row is a tombstone
+   * @param addresses every lower-cased address of the contact
+   * @return the contact's id
+   */
+  private long persistPhotoContact(String owner, String source, String primary, Long photoFileId, Date updatedDate,
+                                   boolean suppressed, String... addresses) {
+    EmailContactEntity entity = new EmailContactEntity();
+    entity.setUserId(owner);
+    entity.setSource(source);
+    entity.setPrimaryEmail(primary);
+    entity.setSortName(primary.toUpperCase());
+    entity.setPhotoFileId(photoFileId);
+    entity.setUpdatedDate(updatedDate);
+    entity.setSuppressed(suppressed);
+    entityManager.persist(entity);
+    for (String address : addresses) {
+      entityManager.persist(new EmailContactAddressEntity(null, entity.getId(), owner, address));
+    }
+    entityManager.flush();
+    return entity.getId();
   }
 
   /**

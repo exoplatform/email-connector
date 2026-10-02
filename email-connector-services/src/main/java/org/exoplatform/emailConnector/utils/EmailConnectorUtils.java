@@ -36,6 +36,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
@@ -238,6 +239,11 @@ public class EmailConnectorUtils {
   // profiles: the EmailSenderProfileService registers its own matching and cache here
   // (EXO-90891); until it has, the account address alone (getUserProfileByEmail).
   private static final AtomicReference<Function<String, Profile>> SENDER_PROFILE_RESOLVER = new AtomicReference<>();
+
+  // The picture of the reading user's own contact at a sender's address, (reader,
+  // address) -> URL or null: the EmailSenderProfileService registers its lookup here
+  // (EXO-90908); until it has, no contact picture.
+  private static final AtomicReference<BiFunction<String, String, String>> CONTACT_PHOTO_RESOLVER = new AtomicReference<>();
 
   /**
    * Extracts a message's displayable body and attachment descriptors, without
@@ -554,6 +560,31 @@ public class EmailConnectorUtils {
   }
 
   /**
+   * Sets who resolves the picture of the reading user's own contact at a sender's
+   * address, when a message is read with its profiles and its sender has no platform
+   * photo ({@link #getEmailSender(Address, boolean, String)}).
+   *
+   * @param resolver (reader, address) to the picture's URL or null; null for no contact
+   *          picture
+   */
+  public static void setContactPhotoResolver(BiFunction<String, String, String> resolver) {
+    CONTACT_PHOTO_RESOLVER.set(resolver);
+  }
+
+  /**
+   * The picture of the reading user's own contact at an address, by the registered
+   * resolver.
+   *
+   * @param reader the reading user, or null
+   * @param address the sender's address
+   * @return the picture's URL, or null for none, no reader or no resolver
+   */
+  private static String contactPhoto(String reader, String address) {
+    BiFunction<String, String, String> resolver = CONTACT_PHOTO_RESOLVER.get();
+    return resolver == null || StringUtils.isBlank(reader) ? null : resolver.apply(reader, address);
+  }
+
+  /**
    * The profile of the platform user an address of a message belongs to, by the
    * registered resolver, else by the account address alone.
    *
@@ -575,6 +606,22 @@ public class EmailConnectorUtils {
    * @return the sender, or null for an address that is not an internet address
    */
   public static EmailSender getEmailSender(Address messageSenderAddress, boolean withProfile) {
+    return getEmailSender(messageSenderAddress, withProfile, null);
+  }
+
+  /**
+   * The sender of a message as the mailbox shows it to a reader: the name, and with its
+   * profile, the picture -- the platform user's own photo, else that of the reader's own
+   * contact at the address (EXO-90908), else the platform's generated picture of a user
+   * with none, else the generated initials -- and the platform user's profile link.
+   *
+   * @param messageSenderAddress the message's From address
+   * @param withProfile whether to resolve the platform user and the picture behind it
+   *          (the reader)
+   * @param reader the reading user, whose own contacts alone are read; null for none
+   * @return the sender, or null for an address that is not an internet address
+   */
+  public static EmailSender getEmailSender(Address messageSenderAddress, boolean withProfile, String reader) {
     if (messageSenderAddress instanceof InternetAddress internetAddress) {
       String avatarUrl = null;
       String profileUrl = null;
@@ -582,11 +629,20 @@ public class EmailConnectorUtils {
                                                                 : internetAddress.getAddress();
       if (withProfile) {
         Profile userProfile = senderProfile(internetAddress.getAddress());
+        String platformPicture = userProfile == null ? null : StringUtils.trimToNull(userProfile.getAvatarUrl());
+        if (platformPicture == null || userProfile.isDefaultAvatar()) {
+          // A sender's brand logo (EXO-90893) belongs after the reader's contact, before
+          // the platform's generated picture and the initials.
+          avatarUrl = contactPhoto(reader, internetAddress.getAddress());
+        }
+        if (avatarUrl == null) {
+          avatarUrl = platformPicture;
+        }
         if (userProfile != null) {
-          avatarUrl = userProfile.getAvatarUrl();
           profileUrl = userProfile.getUrl();
           senderName = displayNameOf(internetAddress.getPersonal(), internetAddress.getAddress(), userProfile.getFullName());
-        } else {
+        }
+        if (avatarUrl == null) {
           avatarUrl = getSenderDefaultAvatar(senderName);
         }
       }
