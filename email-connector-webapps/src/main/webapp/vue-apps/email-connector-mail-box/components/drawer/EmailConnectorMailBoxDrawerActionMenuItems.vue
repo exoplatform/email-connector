@@ -41,6 +41,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :disabled="folder.labelOnly"
           :style="folder.depth ? { paddingInlineStart: `${16 + Math.min(folder.depth, 6) * 16}px` } : null"
           :title="folder.path || null"
+          :aria-label="folder.countDescription"
           class="height-auto"
           @click="switchFolder(folder.key)">
           <v-sheet
@@ -54,15 +55,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               {{ folder.icon }}
             </v-icon>
           </v-sheet>
-          <span :class="{ 'primary--text font-weight-bold': folder.key === currentFolder && !categoryViewId }">
+          <span :class="{ 'primary--text': folder.key === currentFolder && !categoryViewId, 'font-weight-bold': folder.unread || (folder.key === currentFolder && !categoryViewId) }">
             {{ folder.label }}
           </span>
-          <!-- The Scheduled view's count, in the warning colour when one of its mails was
-               not sent (EXO-90434); the Suggestions view's, the suggestions waiting
-               (EXO-90851). -->
+          <!-- The count the full-screen folder column shows, from the same counts and with
+               its rules (EXO-90881): the unread mail of the inbox and the spam, every mail
+               of the drafts, the Scheduled view's -- in the warning colour when one of its
+               mails was not sent (EXO-90434) --, the suggestions waiting (EXO-90851). -->
           <span
             v-if="folder.count"
-            :class="folder.attention ? 'warning--text font-weight-bold' : 'text-sub-title'"
+            :title="folder.countDescription"
+            :class="folder.attention ? 'warning--text font-weight-bold' : (folder.unread ? 'font-weight-bold' : 'text-sub-title')"
             class="ms-auto ps-2 caption folder-menu-count">
             {{ $emailConnectorMailBoxService.formatCount(folder.count) }}
           </span>
@@ -96,6 +99,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-list-item
           v-for="category in categories"
           :key="category.id"
+          :aria-label="categoryCountDescription(category)"
           class="height-auto"
           @click="openCategoryView(category.id)">
           <v-sheet
@@ -109,8 +113,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               {{ category.icon || 'fa-tag' }}
             </v-icon>
           </v-sheet>
-          <span :class="{ 'primary--text font-weight-bold': category.id === categoryViewId }">
+          <span :class="{ 'primary--text': category.id === categoryViewId, 'font-weight-bold': category.id === categoryViewId || categoryCount(category) > 0 }">
             {{ category.name }}
+          </span>
+          <!-- Its unread mail, as the full-screen column counts it (EXO-90881). -->
+          <span
+            v-if="categoryCount(category)"
+            :title="categoryCountDescription(category)"
+            class="ms-auto ps-2 caption font-weight-bold folder-menu-count">
+            {{ $emailConnectorMailBoxService.formatCount(categoryCount(category)) }}
           </span>
         </v-list-item>
       </template>
@@ -291,6 +302,18 @@ export default {
       type: [Number, String],
       default: null,
     },
+    // The count each folder shows, by folder key ({count, unread, attention}): the
+    // drawer's folderCounts, the very counts the full-screen folder column shows
+    // (EXO-90881).
+    folderCounts: {
+      type: Object,
+      default: () => ({}),
+    },
+    // The unread mail of each category, by category id: the column's too (EXO-90881).
+    categoryUnreadCounts: {
+      type: Object,
+      default: () => ({}),
+    },
     syncInProgress: {
       type: Boolean,
       default: false,
@@ -316,7 +339,7 @@ export default {
   },
   computed: {
     /**
-     * The folders to display, each with its icon and its label. The label comes from
+     * The folders to display, each with its icon, its label and its count. The label comes from
      * the one labelling function: a built-in through the bundle, a custom folder as
      * the user wrote it -- never through $t; the icon from the one icon function the
      * full-screen folder column reads too. The ORDER of the list is the server's: inbox,
@@ -335,8 +358,8 @@ export default {
       this.availableFolders.filter(folder => folder.readable === false).forEach(folder => delete collapsed[folder.key]);
       return visibleFolderRows(buildFolderTree(this.availableFolders, this.namespaceFolders || this.availableFolders), collapsed).map(row => {
         const folder = row.folder;
-        const scheduled = this.$emailConnectorMailBoxService.isScheduledView(folder.key);
-        const counted = scheduled || this.$emailConnectorMailBoxService.isSuggestionsView(folder.key);
+        const { count, unread, attention } = this.$emailConnectorMailBoxService.folderCountOf(this.folderCounts, folder.key);
+        const label = row.showPath ? row.pathLabel : this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this));
         return {
           key: folder.key,
           depth: row.depth,
@@ -344,12 +367,13 @@ export default {
           labelOnly: folder.readable === false,
           path: this.$emailConnectorMailBoxService.folderPath(folder, this.namespaceFolders || this.availableFolders),
           icon: this.$emailConnectorMailBoxService.folderIcon(folder),
-          label: row.showPath ? row.pathLabel : this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)),
-          // Counted in the menu only for the Scheduled view, which is listed only when it
-          // holds something and says when one of its mails needs the user (EXO-90434), and
-          // for the Suggestions view, listed while a suggestion waits (EXO-90851).
-          count: counted ? folder.count || 0 : 0,
-          attention: scheduled && !!folder.attention,
+          label,
+          // The full-screen column's count, by its rules (EXO-90881): the Scheduled view's
+          // says when one of its mails needs the user (EXO-90434).
+          count,
+          unread,
+          attention,
+          countDescription: this.$emailConnectorMailBoxService.countDescription(this.$t.bind(this), label, count, unread, attention),
         };
       });
     },
@@ -406,6 +430,25 @@ export default {
     },
   },
   methods: {
+    /**
+     * The unread mail of a category, as the full-screen column shows it.
+     *
+     * @param {Object} category the category ({id, name, icon})
+     * @returns {Number} the count, 0 for none
+     */
+    categoryCount(category) {
+      return this.$emailConnectorMailBoxService.categoryCountOf(this.categoryUnreadCounts, category.id);
+    },
+    /**
+     * A category's name with its unread mail, as a screen reader and a hover say it.
+     *
+     * @param {Object} category the category ({id, name, icon})
+     * @returns {String} the description
+     */
+    categoryCountDescription(category) {
+      const count = this.categoryCount(category);
+      return this.$emailConnectorMailBoxService.countDescription(this.$t.bind(this), category.name, count, count > 0, false);
+    },
     /**
      * What the collapse button of a folder says: the action it takes, with the folder's name.
      *
