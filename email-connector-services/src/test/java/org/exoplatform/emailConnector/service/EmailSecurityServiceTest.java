@@ -161,6 +161,18 @@ class EmailSecurityServiceTest {
   }
 
   /**
+   * EXO-90893 -- the reader's validators follow the logo offer: a copy cached before a
+   * logo was resolved, or with a URL a restart made stale, is not confirmed.
+   */
+  @Test
+  void theReadersValidatorsFollowTheLogoOffer() {
+    when(senderLogoService.offerFingerprint()).thenReturn(1);
+    int first = service.settingsFingerprint(USER);
+    when(senderLogoService.offerFingerprint()).thenReturn(2);
+    assertNotEquals(first, service.settingsFingerprint(USER));
+  }
+
+  /**
    * A received message from a sender no platform user holds, as a read resolving
    * profiles serves it: the server's initials as avatar, no profile.
    *
