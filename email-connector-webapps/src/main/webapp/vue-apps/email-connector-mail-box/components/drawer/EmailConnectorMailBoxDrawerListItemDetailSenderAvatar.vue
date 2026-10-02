@@ -138,7 +138,6 @@ export default {
     learntUrl() {
       return (!this.person && this.email?.sender?.logoUrl) || this.shown?.avatarUrl || null;
     },
-
     /**
      * The name the initials and their colour are read off: the name, else the address
      * -- the label the server draws its own initials from.
