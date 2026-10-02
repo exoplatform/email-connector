@@ -409,10 +409,20 @@ class EmailImportServiceTest {
     Path directory = EmailImportService.createPrivateDirectory();
     Path locked = Files.createDirectory(directory.resolve("locked"));
     Files.writeString(locked.resolve("kept"), "x");
+    Files.writeString(locked.resolve("probe"), "p");
     Files.writeString(directory.resolve("000"), "a");
     Files.writeString(directory.resolve("001"), "b");
     Files.setPosixFilePermissions(locked, java.nio.file.attribute.PosixFilePermissions.fromString("r-x------"));
     try {
+      // A user the permissions do not stop (root) deletes anything: the case is not there.
+      boolean lockHolds;
+      try {
+        Files.delete(locked.resolve("probe"));
+        lockHolds = false;
+      } catch (java.io.IOException e) {
+        lockHolds = true;
+      }
+      org.junit.jupiter.api.Assumptions.assumeTrue(lockHolds, "the file system lets this user delete in a read-only directory");
       EmailImportService.deleteQuietly(directory);
 
       assertFalse(Files.exists(directory.resolve("000")));
