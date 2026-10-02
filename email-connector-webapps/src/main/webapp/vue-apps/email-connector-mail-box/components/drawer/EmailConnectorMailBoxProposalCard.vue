@@ -20,16 +20,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        assistant's wording: the tool's own title and description, as its definition gave
        them, then every argument as the model gave it -- a space id or a username shown
        with its name where the platform's own services resolve it, the raw value always
-       beside it --, then the assistant's one-line reason, labelled as its suggestion.
-       Everything is text: no markup, no link. One decision per card: Approve runs the
-       call as the user, through the platform's own tool path; Reject; Continue in the
-       chat hands it to the regular AI chat, after which it never runs from here. -->
+       beside it --, then the assistant's one-line reason, as it gave it. Everything is
+       text: no markup, no link. One decision per card: Approve runs the call as the
+       user, through the platform's own tool path; Reject; Adjust in the AI chat hands it
+       to the regular AI chat, after which it never runs from here. -->
   <!-- Compact until opened: a pending card is one row -- the tool's title, the call's
        recipients, people and places under it, wrapped when long, the assistant's reason
-       on one line, Approve, Reject and the Details chevron --,
+       on two lines at most, Approve, Reject and the Details chevron, which drop under the
+       text when the drawer is too narrow for both --,
        a decided one a single line of its status icon, title and status. The details --
        the tool's id and description, the arguments as a key/value list, the whole reason,
-       the error, Continue in the chat -- open under the chevron. -->
+       the error, Adjust in the AI chat -- open under the chevron. -->
   <!-- A failed card offers Fix it in the chat, on its folded row and in its details: the
        regular AI chat about the mail opens with the recorded call and its error as an
        unsent draft. Nothing is decided here: the proposal stays failed, and the chat's own
@@ -41,7 +42,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     class="px-2 py-1 mt-1"
     outlined
     flat>
-    <div class="d-flex align-center text-start">
+    <div :class="waiting && 'flex-wrap'" class="d-flex align-center text-start">
       <v-progress-circular
         v-if="proposal.status === 'RUNNING'"
         :size="12"
@@ -55,7 +56,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         class="me-2 flex-shrink-0">
         {{ statusIcon }}
       </v-icon>
-      <div class="flex-grow-1 text-truncate" style="min-width: 0;">
+      <div style="flex: 1 1 240px; min-width: 0;">
         <div
           :title="title"
           class="text-body-2 font-weight-bold text-truncate">
@@ -80,7 +81,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <div
           v-if="waiting && proposal.rationale && !open"
           :title="rationaleLine"
-          class="text-caption text-sub-title font-italic text-truncate">
+          :style="rationaleStyle"
+          class="text-caption text-break">
           {{ rationaleLine }}
         </div>
       </div>
@@ -101,7 +103,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         role="button"
         href="javascript:void(0);"
         @click.prevent="busy || fixInChat()"
-        @keydown.enter.prevent="busy || fixInChat()">
+        @keydown.enter.prevent="busy || fixInChat()"
+        @keydown.space.prevent="busy || fixInChat()">
         {{ $t('emailConnector.mailBox.automations.proposal.fix') }}
       </a>
       <a
@@ -111,12 +114,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         class="text-caption primary--text ms-2 flex-shrink-0">
         {{ $t('emailConnector.mailBox.automations.proposal.open') }}
       </a>
-      <template v-if="waiting">
+      <!-- One block, pushed to the row's end: when the row wraps, the decision and the
+           chevron go under the text together. -->
+      <div class="d-flex align-center ms-auto flex-shrink-0">
         <v-btn
-          v-if="actions"
+          v-if="waiting && actions"
+          :aria-label="$t('emailConnector.mailBox.automations.proposal.approveLabel', { 0: title })"
           :loading="busy === 'approve'"
           :disabled="!!busy"
-          class="ms-2 px-3 flex-shrink-0"
+          class="ms-2 px-3"
           color="primary"
           elevation="0"
           small
@@ -130,10 +136,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </template>
         </v-btn>
         <v-btn
+          v-if="waiting"
+          :aria-label="$t('emailConnector.mailBox.automations.proposal.rejectLabel', { 0: title })"
           :loading="busy === 'reject'"
           :disabled="!!busy"
-          class="ms-1 px-3 flex-shrink-0"
-          outlined
+          class="ms-1 px-2"
+          text
           small
           @click="reject">
           {{ $t('emailConnector.mailBox.automations.proposal.reject') }}
@@ -144,19 +152,23 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               indeterminate />
           </template>
         </v-btn>
-      </template>
-      <v-btn
-        :aria-label="$t(open ? 'emailConnector.mailBox.automations.proposal.hideDetails' : 'emailConnector.mailBox.automations.proposal.showDetails')"
-        :aria-expanded="String(open)"
-        :title="$t(open ? 'emailConnector.mailBox.automations.proposal.hideDetails' : 'emailConnector.mailBox.automations.proposal.showDetails')"
-        class="ms-1 flex-shrink-0"
-        icon
-        x-small
-        @click="toggle">
-        <v-icon size="12" class="icon-default-color">{{ open ? 'fas fa-chevron-up' : 'fas fa-chevron-down' }}</v-icon>
-      </v-btn>
+        <v-btn
+          :aria-label="$t(open ? 'emailConnector.mailBox.automations.proposal.hideDetails' : 'emailConnector.mailBox.automations.proposal.showDetails')"
+          :aria-expanded="String(open)"
+          :title="$t(open ? 'emailConnector.mailBox.automations.proposal.hideDetails' : 'emailConnector.mailBox.automations.proposal.showDetails')"
+          class="ms-1"
+          icon
+          small
+          @click="toggle">
+          <v-icon size="12" class="icon-default-color">{{ open ? 'fas fa-chevron-up' : 'fas fa-chevron-down' }}</v-icon>
+        </v-btn>
+      </div>
     </div>
-    <div v-if="waiting" class="text-caption text-sub-title">{{ expiryLine }}</div>
+    <div
+      v-if="waiting && expiryLine"
+      class="text-caption text-sub-title text-start">
+      {{ expiryLine }}
+    </div>
     <v-expand-transition>
       <div v-show="open" class="pb-1 text-start">
         <div class="text-caption text-sub-title text-break">{{ proposal.toolName }}</div>
@@ -174,7 +186,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           role="button"
           href="javascript:void(0);"
           @click.prevent.stop="toggleDescription"
-          @keydown.enter.prevent.stop="toggleDescription">
+          @keydown.enter.prevent.stop="toggleDescription"
+          @keydown.space.prevent.stop="toggleDescription">
           {{ $t(descriptionOpen ? 'emailConnector.mailBox.automations.proposal.less' : 'emailConnector.mailBox.automations.proposal.more') }}
         </a>
         <div
@@ -211,27 +224,33 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           class="d-inline-block text-caption primary--text mt-1">
           {{ $t('emailConnector.mailBox.automations.proposal.open') }}
         </a>
-        <v-btn
-          v-if="waiting && actions"
-          :loading="busy === 'handover'"
-          :disabled="!!busy"
-          class="mt-1 px-1"
-          color="primary"
-          text
-          x-small
-          @click="continueInChat">
-          {{ $t('emailConnector.mailBox.automations.proposal.continue') }}
-        </v-btn>
-        <v-btn
-          v-if="fixable"
-          :disabled="!!busy"
-          class="mt-1 px-1"
-          color="primary"
-          text
-          x-small
-          @click="fixInChat">
-          {{ $t('emailConnector.mailBox.automations.proposal.fix') }}
-        </v-btn>
+        <!-- The hand-overs are inline links, as the panel writes its inline actions. -->
+        <div v-if="(waiting && actions) || fixable" class="mt-1">
+          <a
+            v-if="waiting && actions"
+            :aria-disabled="!!busy"
+            :class="busy ? 'text--disabled' : 'primary--text'"
+            class="text-caption"
+            role="button"
+            href="javascript:void(0);"
+            @click.prevent="busy || continueInChat()"
+            @keydown.enter.prevent="busy || continueInChat()"
+            @keydown.space.prevent="busy || continueInChat()">
+            {{ $t('emailConnector.mailBox.automations.proposal.continue') }}
+          </a>
+          <a
+            v-if="fixable"
+            :aria-disabled="!!busy"
+            :class="busy ? 'text--disabled' : 'primary--text'"
+            class="text-caption"
+            role="button"
+            href="javascript:void(0);"
+            @click.prevent="busy || fixInChat()"
+            @keydown.enter.prevent="busy || fixInChat()"
+            @keydown.space.prevent="busy || fixInChat()">
+            {{ $t('emailConnector.mailBox.automations.proposal.fix') }}
+          </a>
+        </div>
       </div>
     </v-expand-transition>
     <div
@@ -282,6 +301,24 @@ const LINK_DEPTH = 6;
 
 /** A day, in milliseconds. */
 const DAY = 24 * 3600 * 1000;
+
+/** How many days before it expires a waiting proposal starts saying when. */
+const EXPIRY_SHOWN_DAYS = 3;
+
+/** Two lines of text, then an ellipsis: a text that fits is not changed by it. */
+const CLAMP_STYLE = { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' };
+
+/**
+ * The local midnight starting the day of a time.
+ *
+ * @param {Number} time - the time, in ms
+ * @returns {Number} the day's start, in ms
+ */
+function startOfDay(time) {
+  const day = new Date(time);
+  day.setHours(0, 0, 0, 0);
+  return day.getTime();
+}
 
 export default {
   props: {
@@ -362,7 +399,7 @@ export default {
       return this.proposal.status === 'PROPOSED';
     },
     /**
-     * @returns {String} the assistant's reason, labelled as its suggestion
+     * @returns {String} the assistant's reason, as it gave it
      */
     rationaleLine() {
       return this.$t('emailConnector.mailBox.automations.proposal.why', { 0: this.proposal.rationale });
@@ -376,6 +413,15 @@ export default {
       return STATUS_ICONS[this.proposal.status] || null;
     },
     /**
+     * The folded row's reason: two lines, then an ellipsis -- the whole reason is in the
+     * details. The card's text block cuts its lines, so this one wraps on its own.
+     *
+     * @returns {Object} the style binding
+     */
+    rationaleStyle() {
+      return { ...CLAMP_STYLE, whiteSpace: 'normal' };
+    },
+    /**
      * The folded description's style: two lines, then an ellipsis -- a description that
      * fits is not changed by it.
      *
@@ -385,7 +431,7 @@ export default {
       if (this.descriptionOpen) {
         return {};
       }
-      return { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' };
+      return CLAMP_STYLE;
     },
     /**
      * The call's arguments, as the model gave them.
@@ -473,12 +519,25 @@ export default {
       return this.targetSegments.filter(segment => segment.class !== 'd-sr-only').map(segment => segment.text).join('');
     },
     /**
-     * @returns {String} how long the proposal still waits
+     * When the proposal stops waiting, said only once it is close: in calendar days from
+     * today -- today, tomorrow, in N days -- up to {@link EXPIRY_SHOWN_DAYS}; nothing
+     * further away, nor without an expiry date.
+     *
+     * @returns {String} the line, or empty when none is shown
      */
     expiryLine() {
-      const days = Math.max(0, Math.ceil(((this.proposal.expiresDate || 0) - Date.now()) / DAY));
-      return days <= 1
-        ? this.$t('emailConnector.mailBox.automations.proposal.expiresToday')
+      if (!this.proposal.expiresDate) {
+        return '';
+      }
+      const days = Math.max(0, Math.round((startOfDay(this.proposal.expiresDate) - startOfDay(Date.now())) / DAY));
+      if (days > EXPIRY_SHOWN_DAYS) {
+        return '';
+      }
+      if (days === 0) {
+        return this.$t('emailConnector.mailBox.automations.proposal.expiresToday');
+      }
+      return days === 1
+        ? this.$t('emailConnector.mailBox.automations.proposal.expiresTomorrow')
         : this.$t('emailConnector.mailBox.automations.proposal.expiresIn', { 0: days });
     },
     /**
