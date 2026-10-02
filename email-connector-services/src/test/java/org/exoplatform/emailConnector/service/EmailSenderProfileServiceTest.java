@@ -22,7 +22,9 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -82,6 +84,9 @@ class EmailSenderProfileServiceTest {
 
   @Mock
   private EmailContactService     emailContactService;
+
+  @Mock
+  private SenderLogoService       senderLogoService;
 
   @InjectMocks
   private EmailSenderProfileService service;
@@ -234,6 +239,58 @@ class EmailSenderProfileServiceTest {
 
     assertEquals(Map.of("bob@example.org", "/portal/rest/v1/social/users/12/avatar?byId=true"), avatars);
     assertEquals(List.of("bob@example.org", "ann@client.org", "ann@client.org*"), queries);
+  }
+
+  /**
+   * EXO-90893 -- an address no platform user holds is answered its brand logo when the
+   * asking user holds genuine mail from it, and only then; a colleague's photo always
+   * wins, and an address the logo service cannot offer costs no mail query.
+   */
+  @Test
+  void theBatchAnswersABrandLogoForGenuineMailOnly() {
+    String logo = SenderLogoService.LOGO_PATH + "brand.example?t=x";
+    when(senderLogoService.mayOffer(anyString())).thenAnswer(invocation -> !"noise@other.example".equals(invocation.getArgument(0)));
+    when(emailBoxStorage.hasVerifiedMailFrom("viewer", "news@brand.example")).thenReturn(true);
+    when(senderLogoService.logoUrlFor("news@brand.example", true, "viewer")).thenReturn(logo);
+
+    Map<String, String> avatars = service.resolveAvatars(List.of("news@brand.example", "spoof@bank.example", "noise@other.example"),
+                                                         "viewer");
+
+    assertEquals(Map.of("news@brand.example", logo), avatars);
+    verify(senderLogoService).logoUrlFor("spoof@bank.example", false, "viewer");
+    verify(emailBoxStorage, never()).hasVerifiedMailFrom("viewer", "noise@other.example");
+    accounts.put("bob@example.org", "bob");
+    enabledUser("bob", "bob-avatar");
+    assertEquals(Map.of("bob@example.org", "bob-avatar"), service.resolveAvatars(List.of("bob@example.org"), "viewer"));
+    verify(senderLogoService, never()).logoUrlFor(eq("bob@example.org"), org.mockito.ArgumentMatchers.anyBoolean(), anyString());
+  }
+
+  /**
+   * EXO-90893 with EXO-90908 -- the avatar order: the viewer's own contact photo comes
+   * before a brand logo, and a platform user without a photo keeps the platform's
+   * generated picture, never a brand.
+   */
+  @Test
+  void aContactPhotoAndAColleagueComeBeforeTheBrand() {
+    String logo = SenderLogoService.LOGO_PATH + "brand.example?t=x";
+    lenient().when(senderLogoService.mayOffer(anyString())).thenReturn(true);
+    lenient().when(emailBoxStorage.hasVerifiedMailFrom(anyString(), anyString())).thenReturn(true);
+    lenient().when(senderLogoService.logoUrlFor(anyString(), org.mockito.ArgumentMatchers.anyBoolean(), anyString())).thenReturn(logo);
+    lenient().when(emailContactService.getContactPhotoUrls(any(), any())).thenReturn(Map.of());
+    when(emailContactService.getContactPhotoUrls("viewer", List.of("ann@brand.example", "carl@brand.example")))
+                                                                                                            .thenReturn(Map.of("ann@brand.example",
+                                                                                                                               "ann-contact"));
+    accounts.put("carl@brand.example", "carl");
+    defaultAvatarUser("carl", "carl-generated");
+
+    Map<String, String> avatars = service.resolveAvatars(List.of("ann@brand.example", "carl@brand.example", "news@brand.example"),
+                                                         "viewer");
+
+    assertEquals("ann-contact", avatars.get("ann@brand.example"), "the viewer's contact first");
+    assertEquals("carl-generated", avatars.get("carl@brand.example"), "a colleague is never a brand");
+    assertEquals(logo, avatars.get("news@brand.example"));
+    verify(senderLogoService, never()).logoUrlFor(eq("ann@brand.example"), org.mockito.ArgumentMatchers.anyBoolean(), anyString());
+    verify(senderLogoService, never()).logoUrlFor(eq("carl@brand.example"), org.mockito.ArgumentMatchers.anyBoolean(), anyString());
   }
 
   /** Past the cap the batch is refused before a single directory query; the cap itself is taken. */
