@@ -139,8 +139,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               <div
                 v-if="matchWaiting(match)"
                 class="text-caption font-weight-bold text-start">
-                {{ $t('emailConnector.mailBox.automations.proposal.heading') }}
-                <span class="text-sub-title font-weight-regular">({{ matchWaiting(match) }})</span>
+                {{ $t('emailConnector.mailBox.automations.proposal.heading', { 0: matchWaiting(match) }) }}
               </div>
               <email-connector-mail-box-proposal-card
                 v-for="proposal in proposalRuns[match.id].latest"
