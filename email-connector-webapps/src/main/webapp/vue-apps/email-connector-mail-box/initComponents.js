@@ -53,7 +53,6 @@ import EmailConnectorMailBoxDrawerMultiSelectEmail from './components/drawer/Ema
 import EmailConnectorMailBoxDrawerNavigation from './components/drawer/EmailConnectorMailBoxDrawerNavigation.vue';
 import EmailConnectorMailBoxColumnSeparator from './components/drawer/EmailConnectorMailBoxColumnSeparator.vue';
 import EmailConnectorMailBoxDrawerSearchResults from './components/drawer/EmailConnectorMailBoxDrawerSearchResults.vue';
-import EmailConnectorMailBoxDrawerSearchResultItem from './components/drawer/EmailConnectorMailBoxDrawerSearchResultItem.vue';
 import EmailConnectorMailBoxDrawerNoEmail from './components/drawer/EmailConnectorMailBoxDrawerNoEmail.vue';
 import EmailConnectorMailBoxDrawerSelectEmail from './components/drawer/EmailConnectorMailBoxDrawerSelectEmail.vue';
 import EmailConnectorMailBoxDrawerFavoriteToggle from './components/drawer/EmailConnectorMailBoxDrawerFavoriteToggle.vue';
@@ -126,7 +125,6 @@ const components = {
   'email-connector-mail-box-drawer-navigation': EmailConnectorMailBoxDrawerNavigation,
   'email-connector-mail-box-column-separator': EmailConnectorMailBoxColumnSeparator,
   'email-connector-mail-box-drawer-search-results': EmailConnectorMailBoxDrawerSearchResults,
-  'email-connector-mail-box-drawer-search-result-item': EmailConnectorMailBoxDrawerSearchResultItem,
   'email-connector-mail-box-drawer-no-email': EmailConnectorMailBoxDrawerNoEmail,
   'email-connector-mail-box-drawer-select-email': EmailConnectorMailBoxDrawerSelectEmail,
   'email-connector-mail-box-drawer-favorite-toggle': EmailConnectorMailBoxDrawerFavoriteToggle,
