@@ -33,6 +33,45 @@ import org.junit.jupiter.api.Test;
 class SenderLogoUtilsTest {
 
   /**
+   * The icon a home page declares (EXO-90909): the first link whose rel holds an icon
+   * token, its href resolved against the page; data:, javascript: and relative URLs
+   * that resolve to nothing are skipped, a mask icon is no icon, and a page declaring
+   * nothing usable gives null.
+   */
+  @Test
+  void readsTheIconAPageDeclares() {
+    String base = "https://brand.example/home/index.html";
+    assertEquals("https://brand.example/home/img/icon.png",
+                 SenderLogoUtils.declaredIconUrl(utf8("<link rel=\"icon\" href=\"img/icon.png\">"), base));
+    assertEquals("https://brand.example/i.png",
+                 SenderLogoUtils.declaredIconUrl(utf8("<link rel=\"Shortcut Icon\" href=\"/i.png\">"), base));
+    assertEquals("https://cdn.example/t.png",
+                 SenderLogoUtils.declaredIconUrl(utf8("<link rel=\"stylesheet\" href=\"/a.css\">"
+                     + "<link rel=\"apple-touch-icon\" href=\"//cdn.example/t.png\"><link rel=\"icon\" href=\"/second.png\">"), base));
+    assertEquals("https://brand.example/ok.png",
+                 SenderLogoUtils.declaredIconUrl(utf8("<link rel=\"icon\" href=\"data:image/png;base64,AAAA\">"
+                     + "<link rel=\"icon\" href=\"javascript:alert(1)\"><link rel=\"icon\" href=\"/ok.png\">"), base));
+    assertNull(SenderLogoUtils.declaredIconUrl(utf8("<link rel=\"mask-icon\" href=\"/m.svg\">"), base));
+    assertNull(SenderLogoUtils.declaredIconUrl(utf8("<link rel=\"icon\" href=\"data:image/png;base64,AAAA\">"), base));
+    assertNull(SenderLogoUtils.declaredIconUrl(utf8("<link rel=\"icon\" href=\"ftp://brand.example/i.png\">"), base));
+    assertNull(SenderLogoUtils.declaredIconUrl(utf8("<p>no icon</p>"), base));
+    assertNull(SenderLogoUtils.declaredIconUrl(new byte[0], base));
+    assertNull(SenderLogoUtils.declaredIconUrl(utf8("<link rel=\"icon\" href=\"/i.png\">"), null));
+  }
+
+  /**
+   * A page is HTML or XHTML by its declared type, parameters ignored, and nothing else.
+   */
+  @Test
+  void tellsAPageByItsDeclaredType() {
+    assertTrue(SenderLogoUtils.isPageDeclaredType("text/html; charset=utf-8"));
+    assertTrue(SenderLogoUtils.isPageDeclaredType("Application/XHTML+XML"));
+    assertFalse(SenderLogoUtils.isPageDeclaredType("text/plain"));
+    assertFalse(SenderLogoUtils.isPageDeclaredType("image/png"));
+    assertFalse(SenderLogoUtils.isPageDeclaredType(null));
+  }
+
+  /**
    * A domain is cached and served under one form only, and only a domain name a mail
    * could come from is one: no address literal, no single label, no path or port, no
    * underscore, no numeric top level.

@@ -62,6 +62,9 @@ class SenderLogoFetcherTest {
 
   private static final byte[]           PNG  = { (byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13 };
 
+  /** The most of a home page the test fetcher reads. */
+  private static final int              PAGE_LIMIT = 2048;
+
   /** The names the loopback stub answers for as if it were on the internet. */
   private static final Set<String>      PUBLIC_HOSTS = Set.of("brand.example", "news.brand.example", "cdn.example");
 
@@ -122,6 +125,7 @@ class SenderLogoFetcherTest {
     fetcher = new SenderLogoFetcher(guard,
                                     this::lookup,
                                     1024,
+                                    PAGE_LIMIT,
                                     Duration.ofSeconds(2),
                                     Duration.ofMillis(500),
                                     Duration.ofSeconds(2),
@@ -282,7 +286,7 @@ class SenderLogoFetcherTest {
     txt.put("_dmarc.brand.example", List.of("v=DMARC1; p=reject"));
     answers.put("/logo.svg", ok(SenderLogoUtils.SVG, SVG.getBytes(StandardCharsets.UTF_8)));
     assertFalse(fetcher.resolve("brand.example").isPresent());
-    assertEquals(List.of("/favicon.ico"), hits, "only the icon was asked for, and it has none");
+    assertEquals(List.of("/favicon.ico", "/"), hits, "only the icon and the home page were asked for, and they have none");
   }
 
   /**
@@ -394,6 +398,127 @@ class SenderLogoFetcherTest {
   }
 
   /**
+   * A site with no favicon gets the icon its home page declares, a relative href
+   * resolved against the page: the page and that icon are read, nothing else.
+   */
+  @Test
+  void aMissingFaviconFallsBackToTheDeclaredIcon() {
+    answers.put("/", page("<html><head><link rel=\"shortcut icon\" href=\"static/brand.png\"></head></html>"));
+    answers.put("/static/brand.png", ok("image/png", PNG));
+
+    SenderLogo logo = fetcher.resolve("brand.example");
+
+    assertEquals(SenderLogo.SOURCE_ICON, logo.getSource());
+    assertEquals(SenderLogoUtils.PNG, logo.getContentType());
+    assertEquals(List.of("/favicon.ico", "/", "/static/brand.png"), hits);
+  }
+
+  /**
+   * A favicon that redirects to a web page, that is a web page, or that is empty, gives
+   * way to the declared icon; a working favicon never has the page read.
+   */
+  @Test
+  void aFaviconThatIsNoImageFallsBackToTheDeclaredIcon() {
+    answers.put("/", page("<link rel=\"apple-touch-icon\" href=\"" + url("cdn.example", "/touch.png") + "\">"));
+    answers.put("/touch.png", ok("image/png", PNG));
+    answers.put("/landing", page("<p>welcome</p>"));
+    for (Answer favicon : new Answer[] { redirect("/landing"), page("<p>not found</p>"), ok("image/x-icon", new byte[0]) }) {
+      hits.clear();
+      answers.put("/favicon.ico", favicon);
+      assertEquals(SenderLogo.SOURCE_ICON, fetcher.resolve("brand.example").getSource(), favicon.toString());
+      assertTrue(hits.contains("/touch.png"), favicon.toString());
+    }
+
+    hits.clear();
+    answers.put("/favicon.ico", ok("image/x-icon", PNG));
+    assertEquals(SenderLogo.SOURCE_ICON, fetcher.resolve("brand.example").getSource());
+    assertEquals(List.of("/favicon.ico"), hits);
+  }
+
+  /**
+   * A declared icon that is a data: or a javascript: URL is skipped, never fetched nor
+   * kept, and the next declared one is used; a page declaring only those, or only a
+   * mask icon, gives no logo.
+   */
+  @Test
+  void aDeclaredIconOnAnotherSchemeIsSkipped() {
+    String refused = "<link rel=\"icon\" href=\"data:image/png;base64,iVBORw0KGgo=\">"
+        + "<link rel=\"icon\" href=\"javascript:alert(1)\"><link rel=\"mask-icon\" href=\"/mask.svg\">";
+    answers.put("/", page(refused));
+    answers.put("/mask.svg", ok(SenderLogoUtils.SVG, SVG.getBytes(StandardCharsets.UTF_8)));
+    assertFalse(fetcher.resolve("brand.example").isPresent());
+    assertEquals(List.of("/favicon.ico", "/"), hits);
+
+    hits.clear();
+    answers.put("/", page(refused + "<link rel=\"ICON\" href=\"/real.png\">"));
+    answers.put("/real.png", ok("image/png", PNG));
+    assertEquals(SenderLogo.SOURCE_ICON, fetcher.resolve("brand.example").getSource());
+    assertEquals(List.of("/favicon.ico", "/", "/real.png"), hits);
+  }
+
+  /**
+   * A page is read up to its limit and no further: an icon declared within it is found
+   * though the page is longer, one declared past it is never seen. A page that is not
+   * declared as HTML is not parsed at all.
+   */
+  @Test
+  void aHomePageIsReadUpToItsLimit() {
+    String padding = "<!--" + "x".repeat(PAGE_LIMIT) + "-->";
+    answers.put("/", page("<link rel=\"icon\" href=\"/early.png\">" + padding));
+    answers.put("/early.png", ok("image/png", PNG));
+    answers.put("/late.png", ok("image/png", PNG));
+    assertEquals(SenderLogo.SOURCE_ICON, fetcher.resolve("brand.example").getSource(), "declared within the limit");
+
+    hits.clear();
+    answers.put("/", page(padding + "<link rel=\"icon\" href=\"/late.png\">"));
+    assertFalse(fetcher.resolve("brand.example").isPresent(), "declared past the limit");
+    assertEquals(List.of("/favicon.ico", "/"), hits);
+
+    hits.clear();
+    answers.put("/", ok("text/plain", "<link rel=\"icon\" href=\"/early.png\">".getBytes(StandardCharsets.UTF_8)));
+    assertFalse(fetcher.resolve("brand.example").isPresent(), "a page not declared as HTML");
+    assertEquals(List.of("/favicon.ico", "/"), hits);
+  }
+
+  /**
+   * The home page and its declared icon go through the same guard as the favicon: a
+   * page redirecting to an internal address, or declaring an icon on one, is refused,
+   * and the internal target never sees a request.
+   */
+  @Test
+  void theHomePageAndItsIconAreGuarded() {
+    answers.put("/", redirect(url("loopback.example", "/page")));
+    answers.put("/page", page("<link rel=\"icon\" href=\"/x.png\">"));
+    answers.put("/x.png", ok("image/png", PNG));
+    assertFalse(fetcher.resolve("brand.example").isPresent());
+    assertEquals(List.of("/favicon.ico", "/"), hits, "the redirect to loopback is never followed");
+
+    for (String host : new String[] { "loopback.example", "internal.example", "metadata.example" }) {
+      hits.clear();
+      answers.put("/", page("<link rel=\"icon\" href=\"" + url(host, "/x.png") + "\">"));
+      assertFalse(fetcher.resolve("brand.example").isPresent(), host);
+      assertEquals(List.of("/favicon.ico", "/"), hits, host);
+    }
+  }
+
+  /**
+   * A page's base URL resolves its relative icon, and an icon declared at the favicon's
+   * own address, which just gave nothing, is not asked for twice.
+   */
+  @Test
+  void theDeclaredIconIsResolvedAgainstThePage() {
+    answers.put("/", page("<head><base href=\"" + url("cdn.example", "/assets/") + "\"><link rel=\"icon\" href=\"logo.png\"></head>"));
+    answers.put("/assets/logo.png", ok("image/png", PNG));
+    assertEquals(SenderLogo.SOURCE_ICON, fetcher.resolve("brand.example").getSource());
+    assertEquals(List.of("/favicon.ico", "/", "/assets/logo.png"), hits);
+
+    hits.clear();
+    answers.put("/", page("<link rel=\"icon\" href=\"/favicon.ico\">"));
+    assertFalse(fetcher.resolve("brand.example").isPresent());
+    assertEquals(List.of("/favicon.ico", "/"), hits);
+  }
+
+  /**
    * A fetcher over the test names with another DNS.
    *
    * @param dns the DNS
@@ -404,6 +529,7 @@ class SenderLogoFetcherTest {
     return new SenderLogoFetcher(guard,
                                  dns,
                                  1024,
+                                 PAGE_LIMIT,
                                  Duration.ofSeconds(2),
                                  Duration.ofMillis(500),
                                  Duration.ofSeconds(2),
@@ -441,6 +567,16 @@ class SenderLogoFetcherTest {
    */
   private static Answer ok(String type, byte[] body) {
     return new Answer(200, type, body, null, false, 0);
+  }
+
+  /**
+   * A 200 HTML page.
+   *
+   * @param html the page
+   * @return the answer
+   */
+  private static Answer page(String html) {
+    return ok("text/html; charset=utf-8", html.getBytes(StandardCharsets.UTF_8));
   }
 
   /**
