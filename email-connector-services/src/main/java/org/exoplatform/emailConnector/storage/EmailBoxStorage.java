@@ -1686,14 +1686,13 @@ public class EmailBoxStorage {
 
   /**
    * A light listed row out of the projection {@code [id, folder, mailHeaderId,
-   * mailRemoteId, subject, sender, receivedDate, read, starred]}. The sender column is
-   * {@code name,address}: the address is what follows the last comma, so a name that
-   * holds one stays whole.
+   * mailRemoteId, subject, sender, receivedDate, read, starred]}, the sender read
+   * through {@link #splitStoredPerson} as {@link #toLightSender} reads it: named by its
+   * address when the column carries no name.
    *
    * @param row the projected row
    * @return the row as an email carrying those fields only
    */
-  @SneakyThrows
   private static Email toListedEmail(Object[] row) {
     Email email = new Email();
     email.setId((Long) row[0]);
@@ -1703,9 +1702,8 @@ public class EmailBoxStorage {
     email.setSubject((String) row[4]);
     String sender = (String) row[5];
     if (StringUtils.isNotBlank(sender)) {
-      int comma = sender.lastIndexOf(',');
-      String name = comma > 0 ? StringUtils.trimToNull(sender.substring(0, comma)) : null;
-      email.setSender(EmailConnectorUtils.getEmailSender(new InternetAddress(sender.substring(comma + 1).trim(), name), false));
+      String[] parts = splitStoredPerson(sender);
+      email.setSender(new EmailSender(StringUtils.isBlank(parts[0]) ? parts[1] : parts[0], parts[1], null, null));
     }
     email.setReceivedDate((Date) row[6]);
     email.setRead(Boolean.TRUE.equals(row[7]));

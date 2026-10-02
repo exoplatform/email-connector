@@ -1059,7 +1059,9 @@ export default {
      * Gmail offers it rather than appearing only once something was filtered -- plus every
      * custom folder with its opt-in. Data, not a hard-coded array: the server's
      * MailFolder.isBrowsable is the one spelling of what may be listed, and this is its
-     * answer, so the menu can never offer a folder the backend refuses.
+     * answer, so the menu can never offer a folder the backend refuses. In the user's own
+     * mailbox the Suggestions view is the one entry added here, right after the Scheduled
+     * view, while a suggestion waits (withSuggestionsView, EXO-90851).
      *
      * @returns {Array} the folder descriptors ({key, type, displayName, path, syncEnabled, missing, count})
      */
