@@ -40,6 +40,9 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.SettingValue;
+import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.emailConnector.model.SenderLogo;
 import org.exoplatform.emailConnector.storage.SenderLogoStorage;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
@@ -71,11 +74,12 @@ import jakarta.annotation.PreDestroy;
  * can make the server reach a domain of its choosing.
  * <p>
  * <b>A logo URL is its reader's.</b> It carries a token binding the domain to the user
- * it was offered to (an HMAC under a key drawn when the server starts), and the
- * endpoint serves it to that user only: whether this server holds a domain's logo --
- * that is, whether someone here read genuine mail from it this week -- is never
- * answered to anyone else. A server restart, or another node of a cluster, refuses an
- * older URL, and the avatar falls back to its other picture until the next read.
+ * it was offered to (an HMAC under one key for the whole platform, drawn on first use
+ * and kept as a global setting, so that every node of a cluster checks the same token),
+ * and the endpoint serves it to that user only: whether this server holds a domain's
+ * logo -- that is, whether someone here read genuine mail from it this week -- is never
+ * answered to anyone else. A node that has not resolved the domain yet answers no logo,
+ * and the avatar falls back to its other picture until that node resolves it.
  * <p>
  * The logo is fetched by the server, never by the browser, so a brand cannot learn that
  * its mail was opened, nor by whom. An administrator turns the whole feature off
@@ -108,9 +112,15 @@ public class SenderLogoService {
   /** How many domains may wait for a background resolution; past it they are dropped. */
   static final int           WARM_QUEUE     = 100;
 
+  /** The global setting holding the URL tokens' key, base64. */
+  static final String         TOKEN_KEY_SETTING = "senderLogoTokenKey";
+
   private static final Log   LOG            = ExoLogger.getLogger(SenderLogoService.class);
 
   private static final String TOKEN_ALGORITHM = "HmacSHA256";
+
+  /** The length of the URL tokens' key, in bytes. */
+  private static final int    TOKEN_KEY_BYTES = 32;
 
   /** How many bytes of the HMAC a token keeps: 128 bits. */
   private static final int    TOKEN_BYTES     = 16;
@@ -121,11 +131,13 @@ public class SenderLogoService {
   @Autowired
   private SenderLogoStorage     senderLogoStorage;
 
+  @Autowired
+  private SettingService        settingService;
+
   private final Set<String>     warming       = ConcurrentHashMap.newKeySet();
 
   private final ExecutorService warmPool      = warmPool();
 
-  private final byte[]          tokenKey      = newTokenKey();
 
   private final int             epoch         = new SecureRandom().nextInt();
 
@@ -220,11 +232,11 @@ public class SenderLogoService {
   }
 
   /**
-   * A value that changes whenever a logo offer could: at each server start (the URL
-   * tokens' key is drawn anew), when the switch or the trusted mail servers change, and
-   * each time a domain's resolution finds a logo. The reader's cache validators fold it in, so
-   * a copy cached before a logo was resolved, or carrying a URL a restart made stale,
-   * is not confirmed as current.
+   * A value that changes whenever a logo offer could: at each server start (the cache
+   * starts empty), when the switch or the trusted mail servers change, and each time a
+   * domain's resolution finds a logo. The reader's cache validators fold it in, so a
+   * copy cached before a logo was resolved, or carrying a URL a restart left without
+   * its logo, is not confirmed as current.
    *
    * @return the fingerprint
    */
@@ -320,7 +332,7 @@ public class SenderLogoService {
   String token(String domain, String username) {
     try {
       Mac mac = Mac.getInstance(TOKEN_ALGORITHM);
-      mac.init(new SecretKeySpec(tokenKey, TOKEN_ALGORITHM));
+      mac.init(new SecretKeySpec(tokenKey(), TOKEN_ALGORITHM));
       byte[] digest = mac.doFinal((domain + "\n" + username).getBytes(StandardCharsets.UTF_8));
       return Base64.getUrlEncoder().withoutPadding().encodeToString(Arrays.copyOf(digest, TOKEN_BYTES));
     } catch (GeneralSecurityException e) {
@@ -329,14 +341,43 @@ public class SenderLogoService {
   }
 
   /**
-   * A key for the URL tokens, drawn once per server start.
+   * The key of the URL tokens, one for the whole platform: read from the global
+   * setting {@value #TOKEN_KEY_SETTING}, and drawn and stored there by the first node
+   * that finds none. It is read again on every use, never kept in memory, so that two
+   * nodes drawing one at the same moment converge on the one stored last.
    *
-   * @return 32 random bytes
+   * @return the key's bytes
    */
-  private static byte[] newTokenKey() {
-    byte[] key = new byte[32];
-    new SecureRandom().nextBytes(key);
-    return key;
+  private byte[] tokenKey() {
+    byte[] key = storedTokenKey();
+    if (key == null) {
+      byte[] drawn = new byte[TOKEN_KEY_BYTES];
+      new SecureRandom().nextBytes(drawn);
+      settingService.set(Context.GLOBAL,
+                         EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                         TOKEN_KEY_SETTING,
+                         SettingValue.create(Base64.getEncoder().encodeToString(drawn)));
+      key = storedTokenKey();
+    }
+    return key == null ? new byte[TOKEN_KEY_BYTES] : key;
+  }
+
+  /**
+   * The key stored in the global setting.
+   *
+   * @return its bytes, or null when none is stored or it cannot be read
+   */
+  private byte[] storedTokenKey() {
+    SettingValue<?> value = settingService.get(Context.GLOBAL, EmailConnectorService.EMAIL_CONNECTOR_SCOPE, TOKEN_KEY_SETTING);
+    if (value == null || value.getValue() == null) {
+      return null; // NOSONAR null is "none stored"
+    }
+    try {
+      byte[] key = Base64.getDecoder().decode(value.getValue().toString());
+      return key.length == TOKEN_KEY_BYTES ? key : null;
+    } catch (IllegalArgumentException e) {
+      return null; // NOSONAR an unreadable key is drawn anew
+    }
   }
 
   /**
