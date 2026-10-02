@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -41,7 +42,9 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
+import javax.mail.FetchProfile;
 import javax.mail.Folder;
 import javax.mail.Store;
 import javax.mail.UIDFolder;
@@ -49,6 +52,7 @@ import javax.mail.internet.MimeMessage;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -71,6 +75,7 @@ import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 import org.exoplatform.emailConnector.storage.EmailReadReceiptAnswerStorage;
 import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
+import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
 import org.exoplatform.services.listener.ListenerService;
 import org.exoplatform.services.scheduler.JobSchedulerService;
 
@@ -148,6 +153,9 @@ class EmailBoxMailTransferTest {
 
   @MockitoBean
   private EmailDelegationService  emailDelegationService;
+
+  @MockitoBean
+  private EmailDmarcVerdictBackfillService emailDmarcVerdictBackfillService;
 
   @Autowired
   private EmailBoxService         emailBoxService;
@@ -280,6 +288,97 @@ class EmailBoxMailTransferTest {
 
     assertEquals(List.of("begin:3", "missing:A", "missing:B", "message:C"), visitor.events);
     verify(other, never()).writeTo(any());
+  }
+
+  /**
+   * EXO-90909 -- the DMARC verdict fill reads the Authentication-Results header alone of
+   * the messages still cached under their UID: the folder opened read-only, one fetch
+   * of that header and the Message-ID, nothing else of the messages read; a message
+   * gone, or another one under the UID, is left out, and one without the header gives
+   * an empty array.
+   *
+   * @throws Exception when a mock cannot be stubbed
+   */
+  @Test
+  void theVerdictFillReadsTheAuthenticationHeaderAlone() throws Exception {
+    connected(OWNER);
+    Store store = connectedStore(OWNER);
+    IMAPFolder inbox = uidFolder();
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    IMAPMessage a = message("<a@x>", new byte[0]);
+    IMAPMessage other = message("<other@x>", new byte[0]);
+    IMAPMessage d = message("<d@x>", new byte[0]);
+    when(inbox.getMessagesByUID(any(long[].class))).thenReturn(new javax.mail.Message[] { a, other, null, d });
+    when(inbox.getUID(a)).thenReturn(11L);
+    when(inbox.getUID(other)).thenReturn(12L);
+    when(inbox.getUID(d)).thenReturn(14L);
+    String[] header = { "mx.example.com; dmarc=pass header.from=brand.example" };
+    when(a.getHeader(EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS)).thenReturn(header);
+
+    Map<Long, String[]> read = emailBoxService.readAuthenticationResults(OWNER,
+                                                                        MailFolder.INBOX,
+                                                                        List.of(cachedRow(11L, "<a@x>"),
+                                                                                cachedRow(12L, "<b@x>"),
+                                                                                cachedRow(13L, "<c@x>"),
+                                                                                cachedRow(14L, "<d@x>")));
+
+    assertEquals(java.util.Set.of(11L, 14L), read.keySet());
+    assertArrayEquals(header, read.get(11L));
+    assertArrayEquals(new String[0], read.get(14L));
+    verify(inbox).open(Folder.READ_ONLY);
+    ArgumentCaptor<FetchProfile> profile = ArgumentCaptor.forClass(FetchProfile.class);
+    verify(inbox).fetch(any(), profile.capture());
+    assertEquals(java.util.Set.of(EmailSecurityUtils.HEADER_AUTHENTICATION_RESULTS, "Message-ID"),
+                 java.util.Set.of(profile.getValue().getHeaderNames()));
+    assertFalse(profile.getValue().contains(FetchProfile.Item.ENVELOPE));
+    assertFalse(profile.getValue().contains(FetchProfile.Item.CONTENT_INFO));
+    verify(a, never()).writeTo(any());
+    verify(a, never()).getContent();
+    verify(a, never()).setFlag(any(), anyBoolean());
+    verify(store).close();
+  }
+
+  /**
+   * EXO-90909 -- the verdict fill is refused for a user who may not use their mailbox,
+   * before any connection; a mail server failing is an IllegalStateException, the
+   * connection closed; a folder the mailbox no longer has gives nothing.
+   *
+   * @throws Exception when a mock cannot be stubbed
+   */
+  @Test
+  void theVerdictFillReadsOnlyAMailboxItMay() throws Exception {
+    UserEmailSetting setting = setting();
+    when(userEmailSettingService.getUserEmailSetting(OWNER)).thenReturn(setting);
+    when(userEmailSettingService.canConnect(1L, OWNER)).thenReturn(false);
+    assertThrows(IllegalAccessException.class,
+                 () -> emailBoxService.readAuthenticationResults(OWNER, MailFolder.INBOX, List.of(cachedRow(11L, "<a@x>"))));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+
+    when(userEmailSettingService.canConnect(1L, OWNER)).thenReturn(true);
+    Store store = connectedStore(OWNER);
+    IMAPFolder inbox = uidFolder();
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    doThrow(new javax.mail.MessagingException("down")).when(inbox).open(Folder.READ_ONLY);
+    assertThrows(IllegalStateException.class,
+                 () -> emailBoxService.readAuthenticationResults(OWNER, MailFolder.INBOX, List.of(cachedRow(11L, "<a@x>"))));
+    verify(store).close();
+
+    assertEquals(Map.of(), emailBoxService.readAuthenticationResults(OWNER, "CUSTOM:9", List.of(cachedRow(11L, "<a@x>"))));
+  }
+
+  /**
+   * A cached row as the verdict fill reads it: its UID and Message-ID.
+   *
+   * @param uid the UID
+   * @param messageId the Message-ID
+   * @return the row
+   */
+  private static Email cachedRow(long uid, String messageId) {
+    Email row = new Email();
+    row.setId(uid * 10);
+    row.setMailRemoteId(uid);
+    row.setMailHeaderId(messageId);
+    return row;
   }
 
   /**
