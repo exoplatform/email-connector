@@ -23,8 +23,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        a read status on them (EXO-90871). Each one is the folder list's own row -- star,
        selection, categories, drag, the count of its waiting suggestions --, alone in its
        conversation, keyed by folder and UID since it may sit in any folder, which the row
-       names; opened as a search hit is, and its Automations panel shows open, ready to
-       approve or reject (isSuggestionsViewListed). No loading bar of its own: the
+       names; opened as a search hit is, and walked by the arrow keys as the search's
+       hits are, its first one opened on entry in full screen (EXO-90875); its
+       Automations panel shows open, ready to approve or reject (isSuggestionsViewListed). No loading bar of its own: the
        drawer's header bar shows what it waits on (the loading event), as for the
        Scheduled view. -->
   <div class="suggestions-email-list">
@@ -38,7 +39,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :email="mail"
         :emails="emails"
         :row-key="keyOf(mail)"
-        :opened-key="openedKey"
+        :opened-key="litKey"
         :select-mode="selectMode"
         :selected-emails="selectedEmails"
         :expanded="compact"
@@ -61,6 +62,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { refreshWaitingSuggestions, setSuggestionsViewListed, waitingSuggestionsReadFailed } from '../../js/EmailConnectorMailFilters.js';
+import { focusKeyedRow } from '../../js/EmailConnectorMailBoxListNavigation.js';
 
 export default {
   props: {
@@ -99,6 +101,15 @@ export default {
       type: Array,
       default: () => [],
     },
+    // The full-screen reader's mail, keyed as the rows are (folder:uid), null while it
+    // shows none: whichever way it was opened -- a click, the first mail opened on entry,
+    // the arrow keys (EXO-90875) --, its row is lit, and no row is while the placeholder
+    // is up, as the search results light theirs. Not given in the narrow drawer, whose
+    // reader is the mail drawer.
+    readerKey: {
+      type: String,
+      default: undefined,
+    },
   },
   data: () => ({
     loading: false,
@@ -106,6 +117,17 @@ export default {
     // The mail the reader was opened on from this view, by its folder and UID.
     openedKey: null,
   }),
+  computed: {
+    /**
+     * The row to light: the full-screen reader's mail when the drawer gives it, nothing
+     * while that reader shows none; in the narrow drawer, the one this view last opened.
+     *
+     * @returns {String} the row's key, or null
+     */
+    litKey() {
+      return this.readerKey === undefined ? this.openedKey : this.readerKey;
+    },
+  },
   watch: {
     loading: {
       immediate: true,
@@ -172,6 +194,18 @@ export default {
     open(mail) {
       this.$root.$emit('open-suggested-email', { mailRemoteId: mail.mailRemoteId, folder: mail.folder, cached: true });
       this.openedKey = this.keyOf(mail);
+    },
+    /**
+     * Gives one mail's row the keyboard focus and brings it into view: the arrow keys'
+     * way of walking the view, as the search results' (EXO-90875). Every row is
+     * rendered, so there is nothing to build first.
+     *
+     * @param {String} key the row's key (keyOf)
+     * @returns {Promise<void>} resolved once the row has the focus
+     */
+    async revealThread(key) {
+      await this.$nextTick();
+      focusKeyedRow(this.$el, key);
     },
     /**
      * Reads the waiting suggestions again at once, which reads the view and its count.
