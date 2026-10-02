@@ -285,7 +285,7 @@ public class EmailBoxRestTest {
                                                    .param("favorites", "true")
                                                    .param("sinceDays", "30")
                                                    .param("categoryIds", "11", "12")
-                                                   .param("attachmentTypes", "PDF", "IMAGE")
+                                                   .param("attachmentTypes", "PDF", "VIDEO")
                                                    .param("attachmentName", "contract")
                                                    .param("folder", "SENT")
                                                    .param("limit", "7")
@@ -295,7 +295,7 @@ public class EmailBoxRestTest {
     ArgumentCaptor<EmailSearchCriteria> sent = ArgumentCaptor.forClass(EmailSearchCriteria.class);
     verify(emailBoxService).searchEmails(eq(SIMPLE_USER), sent.capture(), eq("SENT"), eq(7));
     assertEquals(List.of(11L, 12L), sent.getValue().getCategoryIds(), "EXO-90888 -- the categories, as sent");
-    assertEquals(List.of("PDF", "IMAGE"), sent.getValue().getAttachmentTypes(), "EXO-90910 -- the kinds, as sent");
+    assertEquals(List.of("PDF", "VIDEO"), sent.getValue().getAttachmentTypes(), "EXO-90910 -- the kinds, as sent");
     assertEquals("contract", sent.getValue().getAttachmentName(), "EXO-90910 -- the file name, as sent");
     EmailSearchCriteria criteria = sent.getValue();
     assertEquals("report", criteria.getQuery());
