@@ -541,9 +541,10 @@ class CalendarInvitationServiceTest {
     assertFalse(invitation.isLandable(), "a cancelled event is not added");
     assertTrue(invitation.isRemovable());
 
-    // One of this deployment's own Agenda events lives in Agenda already: never
-    // added from the mail, whatever the method, and the two recognitions -- the
-    // reader's by link, the calendar add-on's by UID -- agree on it.
+    // One of this deployment's own Agenda events, recognised by its link: it lives
+    // in Agenda already, so nothing is offered and the add-on is never reached,
+    // whatever the method. (The add-on's own recognition, by UID, is pinned in
+    // caldav's CaldavInvitationLandingServiceTest.)
     try (MockedStatic<CommonsUtils> portal = mockStatic(CommonsUtils.class)) {
       portal.when(CommonsUtils::getCurrentDomain).thenReturn("https://exo.example.test");
       for (String fixture : List.of("agenda-own-publish.ics", "agenda-own-request.ics")) {
