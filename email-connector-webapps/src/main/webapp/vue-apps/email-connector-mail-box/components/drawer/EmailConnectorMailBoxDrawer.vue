@@ -2852,16 +2852,34 @@ export default {
         this.openCategoryView(this.importantCategory.id);
       }
     },
-    // Switch the list to one category — from the ⋮ menu or the Important
-    // shortcut chip — a view like Sent or Archive, not a checkbox: single
-    // selection, replacing whatever category view was active. Picking the
-    // active category again leaves the view, as does selecting any folder.
-    // The Favorites and Unread chips survive the switch and combine with the
-    // view (their chips stay on screen inside it, so nothing narrows the list
-    // invisibly): Favorites' server-answered subset stays loaded and the
-    // category narrows it client-side — no reload needed either way.
+    /**
+     * Switches the list to one category -- from the folder column, the 3-dots menu or
+     * the Important shortcut chip --, a view like Sent or Archive, not a checkbox:
+     * single selection, replacing whatever category view was active. Picking the
+     * active category again leaves the view, as does selecting any folder.
+     * The Favorites and Unread chips survive the switch and combine with the
+     * view (their chips stay on screen inside it, so nothing narrows the list
+     * invisibly): Favorites' server-answered subset stays loaded and the
+     * category narrows it client-side -- no reload needed either way.
+     * <p>
+     * A category narrows a folder's list. The Scheduled and Suggestions views have
+     * lists of their own, which it does not narrow, so from either the category opens
+     * on the inbox, as it does when picked there (EXO-90885). Nor does it narrow a
+     * search's hits, which do not all say their categories: a search ends with the
+     * pick, so the list shown is the category's.
+     *
+     * @param {Number} categoryId the category id
+     * @returns {void}
+     */
     openCategoryView(categoryId) {
       this.filtersTouched = true;
+      if (isMailboxView(this.currentFolder)) {
+        this.onSwitchFolder('INBOX');
+      }
+      if (this.searchActive) {
+        this.clearSearch();
+        this.resetSearchField();
+      }
       this.categoryViewId = this.categoryViewId === categoryId ? null : categoryId;
     },
     /**
@@ -4003,7 +4021,12 @@ export default {
       // the user just left. The folder switch calls this again once the new list is in.
       // Only that load: a chip's reload, or a mail opening, keeps the folder listed, and
       // nothing would call this again after them.
-      if (!this.expanded || !this.emailBoxDrawer || this.folderLoading) {
+      // Nor while a category view opened is not expanded yet: the list is not narrowed
+      // to it, and its first mail may not be the category's. The expansion calls this
+      // again once it lands -- after the folder's load, a category picked on a view
+      // switching to the inbox (EXO-90885).
+      if (!this.expanded || !this.emailBoxDrawer || this.folderLoading
+          || (this.categoryViewId && !this.selectedCategoryIds.includes(this.categoryViewId))) {
         return;
       }
       const showingEmail = this.email && !this.selectEmailPlaceHolder;
