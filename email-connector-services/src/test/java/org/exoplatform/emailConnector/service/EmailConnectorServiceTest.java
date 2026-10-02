@@ -747,6 +747,49 @@ public class EmailConnectorServiceTest {
                                argThat(value -> "false".equals(String.valueOf(value.getValue()))));
   }
 
+  /**
+   * EXO-90893 -- the senders' brand logos are on unless switched off: unset reads the
+   * JVM property (true when unset), a stored value wins over it, and only an
+   * administrator writes it.
+   */
+  @Test
+  void theSenderLogosSwitch() throws Exception {
+    when(settingService.get(Context.GLOBAL,
+                            EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                            EmailConnectorService.SENDER_LOGOS_ENABLED_KEY)).thenReturn(null);
+    assertEquals(true, emailConnectorService.isSenderLogosEnabled(), "on by default");
+    System.setProperty(EmailConnectorService.SENDER_LOGOS_ENABLED_PROPERTY, "false");
+    try {
+      assertEquals(false, emailConnectorService.isSenderLogosEnabled(), "a deployment without outbound calls turns it off by property");
+      doReturn(SettingValue.create("true")).when(settingService)
+                                           .get(Context.GLOBAL,
+                                                EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                                EmailConnectorService.SENDER_LOGOS_ENABLED_KEY);
+      assertEquals(true, emailConnectorService.isSenderLogosEnabled(), "an administrator's choice wins over the property");
+    } finally {
+      System.clearProperty(EmailConnectorService.SENDER_LOGOS_ENABLED_PROPERTY);
+    }
+    doReturn(SettingValue.create("false")).when(settingService)
+                                          .get(Context.GLOBAL,
+                                               EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                               EmailConnectorService.SENDER_LOGOS_ENABLED_KEY);
+    assertEquals(false, emailConnectorService.isSenderLogosEnabled(), "an administrator's off wins");
+
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.saveSenderLogosEnabled(false, TEST_USER));
+    verify(settingService, never()).set(eq(Context.GLOBAL),
+                                        eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE),
+                                        eq(EmailConnectorService.SENDER_LOGOS_ENABLED_KEY),
+                                        any());
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    emailConnectorService.saveSenderLogosEnabled(false, TEST_USER);
+    verify(settingService).set(eq(Context.GLOBAL),
+                               eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE),
+                               eq(EmailConnectorService.SENDER_LOGOS_ENABLED_KEY),
+                               argThat(value -> "false".equals(String.valueOf(value.getValue()))));
+  }
+
   @Test
   void customFoldersEnabledDefaultsToTrueWhenUnset() {
     when(settingService.get(Context.GLOBAL,

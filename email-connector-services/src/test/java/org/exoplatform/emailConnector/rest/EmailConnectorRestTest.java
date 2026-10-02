@@ -541,6 +541,24 @@ public class EmailConnectorRestTest {
            .andExpect(status().isForbidden());
   }
 
+  /**
+   * EXO-90893 -- the administration switch of the senders' brand logos: read and
+   * written by an administrator, the value reaching the service, and a refusal of the
+   * service is a 403.
+   */
+  @Test
+  void senderLogosSwitch() throws Exception {
+    when(emailConnectorService.isSenderLogosEnabled()).thenReturn(false);
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/sender-logos").with(testAdminUser()))
+           .andExpect(status().isOk())
+           .andExpect(content().string("false"));
+    mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/sender-logos?enabled=true").with(testAdminUser())).andExpect(status().isOk());
+    verify(emailConnectorService).saveSenderLogosEnabled(true, ADMIN_USER);
+    doThrow(new IllegalAccessException("not an administrator")).when(emailConnectorService).saveSenderLogosEnabled(false, ADMIN_USER);
+    mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/sender-logos?enabled=false").with(testAdminUser()))
+           .andExpect(status().isForbidden());
+  }
+
   @Test
   void getEmailConnectorIllustration() throws Exception {
     when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(mock(EmailConnector.class));

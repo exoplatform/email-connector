@@ -124,6 +124,21 @@ class EmailBoxReadReceiptStorageTest {
   }
 
   /**
+   * EXO-90893: the sync's DMARC pass is stored with the row and read back on the
+   * message the reader opens; a message without it reads back false.
+   */
+  @Test
+  void theDmarcPassIsStoredAndReadBack() {
+    Email passing = incoming("<brand@partner.example>", MailFolder.INBOX, 13L);
+    passing.getContent().setDmarcPassed(true);
+    Email created = emailBoxStorage.createEmail(passing);
+    assertTrue(read(created.getId(), USER, "alice@corp.example").getContent().isDmarcPassed());
+
+    Email unknown = emailBoxStorage.createEmail(incoming("<plain@partner.example>", MailFolder.INBOX, 14L));
+    assertFalse(read(unknown.getId(), USER, "alice@corp.example").getContent().isDmarcPassed());
+  }
+
+  /**
    * A draft keeps the author's choice across saves -- the first save creates the row,
    * every later one mutates it column by column -- and unchecking it is saved too.
    */
