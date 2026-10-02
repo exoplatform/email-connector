@@ -802,9 +802,9 @@ public class EmailFilterRest {
   @Operation(summary = "Lists the caller's mails with a suggestion waiting for them, to open", method = "GET",
       description = "One cached copy per mail of the caller's own mailbox that has at least one tool call proposed by a "
           + "filter's assistant, still waiting for a decision and not past its expiry, newest first, with how many wait on "
-          + "it, and what the mailbox's folder list shows of it: content (its excerpt and attachments, never its body) "
-          + "and, once its conversation is counted, threadCount and threadHasDraft. What the mailbox's Suggestions view lists. Copies in Trash, Spam, All Mail, Drafts or a shared mailbox are "
-          + "not listed. Bounded by the mailbox's pending cap.")
+          + "it -- what the mailbox's Suggestions view lists -- and what the mailbox's folder list shows of it: content (its "
+          + "excerpt and attachments, never its body) and, once its conversation is counted, threadCount and threadHasDraft. "
+          + "Copies in Trash, Spam, All Mail, Drafts or a shared mailbox are not listed. Bounded by the mailbox's pending cap.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "403", description = FORBIDDEN_DESCRIPTION),
       @ApiResponse(responseCode = "404", description = "The feature is off, or no mailbox is connected") })
