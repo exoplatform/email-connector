@@ -54,7 +54,10 @@ import com.sun.net.httpserver.HttpServer;
  */
 class SenderLogoFetcherTest {
 
-  private static final String           SVG  = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\">"
+  private static final String           SVG  = "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.2\" baseProfile=\"tiny-ps\""
+      + " viewBox=\"0 0 10 10\"><title>Brand</title><rect width=\"10\" height=\"10\" fill=\"#00c805\"/></svg>";
+
+  private static final String           UNSAFE_SVG = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\">"
       + "<script>alert(1)</script><rect width=\"10\" height=\"10\" fill=\"#00c805\"/></svg>";
 
   private static final byte[]           PNG  = { (byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13 };
@@ -137,8 +140,8 @@ class SenderLogoFetcherTest {
   }
 
   /**
-   * A BIMI logo under an enforced DMARC policy is used, sanitised, and the icon is
-   * never asked for.
+   * A BIMI logo under an enforced DMARC policy that the platform's SVG check accepts is
+   * served as fetched, and the icon is never asked for.
    */
   @Test
   void aBimiLogoUnderAnEnforcedPolicyIsUsed() {
@@ -150,25 +153,45 @@ class SenderLogoFetcherTest {
 
     assertEquals(SenderLogo.SOURCE_BIMI, logo.getSource());
     assertEquals(SenderLogoUtils.SVG, logo.getContentType());
-    String svg = new String(logo.getData(), StandardCharsets.UTF_8);
-    assertFalse(svg.contains("script"), svg);
-    assertTrue(svg.contains("#00c805"), svg);
+    assertEquals(SVG, new String(logo.getData(), StandardCharsets.UTF_8));
     assertEquals(List.of("/logo.svg"), hits);
   }
 
   /**
-   * A BIMI logo too deeply nested to clean is refused, and the domain falls back to its
-   * icon, then to "no logo" -- an answer, never an error escaping the resolution.
+   * An SVG the platform's check refuses is never served, from BIMI or as an icon: the
+   * domain falls back to its icon, then to "no logo" -- the initials.
    */
   @Test
-  void aTooDeepBimiLogoEndsAsAnAnswer() {
+  void anUnsafeSvgIsRefused() {
     bimi("brand.example", url("cdn.example", "/logo.svg"));
     txt.put("_dmarc.brand.example", List.of("v=DMARC1; p=reject"));
-    String deep = "<svg xmlns=\"http://www.w3.org/2000/svg\">" + "<g>".repeat(5000) + "</g>".repeat(5000) + "</svg>";
-    answers.put("/logo.svg", ok(SenderLogoUtils.SVG, deep.getBytes(StandardCharsets.UTF_8)));
-    answers.put("/favicon.ico", ok(SenderLogoUtils.SVG, deep.getBytes(StandardCharsets.UTF_8)));
+    answers.put("/logo.svg", ok(SenderLogoUtils.SVG, UNSAFE_SVG.getBytes(StandardCharsets.UTF_8)));
+    answers.put("/favicon.ico", ok("image/x-icon", PNG));
+    assertEquals(SenderLogo.SOURCE_ICON, fetcher.resolve("brand.example").getSource(), "an unsafe BIMI logo gives way to the icon");
 
-    assertFalse(fetcher.resolve("brand.example").isPresent());
+    answers.put("/favicon.ico", ok(SenderLogoUtils.SVG, UNSAFE_SVG.getBytes(StandardCharsets.UTF_8)));
+    assertFalse(fetcher.resolve("brand.example").isPresent(), "an unsafe SVG icon gives no logo");
+  }
+
+  /**
+   * What the platform's SVG check refuses -- a script, an event handler, a foreign
+   * object, a script URL, a document type declaration (no entity is expanded, nothing
+   * external read), a style sheet instruction, a document that is not well-formed --
+   * and what it accepts, a plain drawing, however deeply its groups nest: the check
+   * streams, so no depth exhausts the stack.
+   */
+  @Test
+  void thePlatformsSvgCheckDecides() {
+    String open = "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">";
+    for (String unsafe : new String[] { UNSAFE_SVG, open + "<rect onload=\"alert(1)\"/></svg>",
+        open + "<foreignObject><div xmlns=\"http://www.w3.org/1999/xhtml\"/></foreignObject></svg>",
+        open + "<a xlink:href=\"javascript:alert(1)\"><rect/></a></svg>",
+        "<?xml version=\"1.0\"?><!DOCTYPE svg [<!ENTITY x SYSTEM \"file:///etc/passwd\">]>" + open + "<text>&x;</text></svg>",
+        "<?xml-stylesheet href=\"https://evil.example/a.css\"?>" + open + "</svg>", open + "<rect>" }) {
+      assertFalse(fetcher.isSafeSvg(unsafe.getBytes(StandardCharsets.UTF_8)), unsafe);
+    }
+    assertTrue(fetcher.isSafeSvg(SVG.getBytes(StandardCharsets.UTF_8)));
+    assertTrue(fetcher.isSafeSvg((open + "<g>".repeat(5000) + "</g>".repeat(5000) + "</svg>").getBytes(StandardCharsets.UTF_8)));
   }
 
   /**
