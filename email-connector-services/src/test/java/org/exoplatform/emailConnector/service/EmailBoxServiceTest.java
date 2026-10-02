@@ -15595,6 +15595,131 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-90888 -- a category narrows the search of eXo's copy to the matches eXo filed
+   * under it or under one of its subcategories, before the page is cut and the matches
+   * counted; a category alone is a search. Only the mailbox's own categories can be
+   * named: another id is refused once the caller's access is checked, before any read.
+   */
+  @Test
+  void aCategoryNarrowsTheCopysSearchToItsMailAndItsSubcategories() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    mockCategoryIdSetting("emailImportantCategory", "11");
+    when(categoryService.getSubcategoryIds(11L, 0, -1, -1)).thenReturn(List.of(12L));
+    when(categoryService.getSubcategoryIds(12L, 0, -1, -1)).thenReturn(List.of());
+    EmailSearchCriteria foreign = new EmailSearchCriteria();
+    foreign.setCategoryIds(List.of(99L));
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.searchCachedFolder(TEST_USER, foreign, MailFolder.INBOX, 10));
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    assertEquals("emailConnector.search.invalidCategory",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchCachedFolder(TEST_USER, foreign, MailFolder.INBOX, 10)).getMessage(),
+                 "a category that is not one of the mailbox's");
+    verify(emailBoxStorage, never()).getEmailsForSearchInFolders(anyString(), anyList(), anyBoolean());
+
+    Email inSubcategory = mirrored(1L, "Budget", "carol@acme.com", false, 2);
+    inSubcategory.setId(101L);
+    Email inCategory = mirrored(2L, "Lunch", "erin@acme.com", false, 1);
+    inCategory.setId(102L);
+    Email uncategorized = mirrored(3L, "Budget again", "frank@acme.com", false, 0);
+    uncategorized.setId(103L);
+    List<Email> rows = List.of(inSubcategory, inCategory, uncategorized);
+    rows.forEach(email -> email.setFolder(MailFolder.INBOX));
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of(MailFolder.INBOX), false)).thenReturn(rows);
+    when(emailBoxStorage.getEmailIdsInCategories(anyCollection(), eq(Set.of(11L, 12L)))).thenReturn(Set.of(101L, 102L));
+    when(emailBoxStorage.getEmailIdsInCategories(anyCollection(), eq(Set.of(12L)))).thenReturn(Set.of(101L));
+    EmailSearchCriteria important = new EmailSearchCriteria();
+    important.setCategoryIds(List.of(11L));
+
+    EmailSearchResultPage page = emailBoxService.searchCachedFolder(TEST_USER, important, MailFolder.INBOX, 1);
+
+    assertEquals(List.of(2L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList(), "the newest of them");
+    assertEquals(2, page.getTotalMatches(), "the category's mail and its subcategory's, counted before the page is cut");
+    assertEquals(List.of(1L), cachedUids(withCategories(12L)), "a subcategory alone: its own mail only");
+    EmailSearchCriteria wordsAndCategory = withCategories(11L);
+    wordsAndCategory.setWords("budget");
+    assertEquals(List.of(1L), cachedUids(wordsAndCategory), "the category on top of the other criteria");
+    verify(emailBoxStorage).getEmailIdsInCategories(argThat(ids -> Set.copyOf(ids).equals(Set.of(101L, 103L))),
+                                                    eq(Set.of(11L, 12L)));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * EXO-90888 -- the mail server knows nothing of eXo's categories: a server search naming
+   * one is held to the folder's messages eXo holds and filed under it, its other terms
+   * asked of those messages only -- one UID FETCH, one SEARCH over them, never a search
+   * of the whole folder -- so a message outside eXo's copy never matches. No categorized
+   * message asks the server nothing, and another category is refused before it is asked.
+   */
+  @Test
+  void aCategoryHoldsTheServerSearchToTheCategorizedMessagesOfTheCopy() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    mockCategoryIdSetting("emailImportantCategory", "11");
+    when(categoryService.getSubcategoryIds(11L, 0, -1, -1)).thenReturn(List.of(12L));
+    assertEquals("emailConnector.search.invalidCategory",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchEmails(TEST_USER, withCategories(11L, 99L), "INBOX", 10)).getMessage());
+    Store store = mock(Store.class);
+    lenient().when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(store.getFolder("INBOX")).thenReturn(inbox);
+    lenient().when(inbox.isOpen()).thenReturn(true);
+    when(emailBoxStorage.getCachedFolderEmailIds(TEST_USER, "INBOX")).thenReturn(Map.of(30L, 101L, 31L, 102L, 32L, 103L));
+    when(emailBoxStorage.getEmailIdsInCategories(anyCollection(), eq(Set.of(11L, 12L)))).thenReturn(Set.of());
+
+    EmailSearchResultPage nothing = emailBoxService.searchEmails(TEST_USER, withCategories(11L), "INBOX", 10);
+
+    assertEquals(0, nothing.getTotalMatches());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+
+    when(emailBoxStorage.getEmailIdsInCategories(argThat(ids -> Set.copyOf(ids).equals(Set.of(101L, 102L, 103L))),
+                                                 eq(Set.of(11L, 12L)))).thenReturn(Set.of(101L, 103L));
+    Message older = mock(Message.class);
+    Message newer = mock(Message.class);
+    when(((UIDFolder) inbox).getMessagesByUID(new long[] { 30L, 32L })).thenReturn(new Message[] { older, newer });
+    when(((UIDFolder) inbox).getUID(older)).thenReturn(30L);
+    when(((UIDFolder) inbox).getUID(newer)).thenReturn(32L);
+    when(emailBoxStorage.getCachedEmailIds(eq(TEST_USER), eq("INBOX"), anyList())).thenReturn(Map.of(30L, 101L, 32L, 103L));
+
+    EmailSearchResultPage categorized = emailBoxService.searchEmails(TEST_USER, withCategories(11L), "INBOX", 10);
+
+    assertEquals(List.of(32L, 30L), categorized.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList());
+    assertEquals(2, categorized.getTotalMatches(), "the categorized messages, never the folder's count");
+    assertTrue(categorized.getResults().stream().allMatch(EmailSearchResult::isCached));
+    verify(inbox, never()).search(any(SearchTerm.class));
+    verify(inbox, never()).getMessageCount();
+
+    EmailSearchCriteria wordsAndCategory = withCategories(11L);
+    wordsAndCategory.setWords("budget");
+    when(inbox.search(any(SearchTerm.class), any(Message[].class))).thenReturn(new Message[] { newer });
+    // What the whole folder would answer: both, and more than the categorized ones.
+    lenient().when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { older, mock(Message.class), newer });
+
+    EmailSearchResultPage narrowed = emailBoxService.searchEmails(TEST_USER, wordsAndCategory, "INBOX", 10);
+
+    assertEquals(List.of(32L), narrowed.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList());
+    assertEquals(1, narrowed.getTotalMatches());
+    ArgumentCaptor<Message[]> askedOf = ArgumentCaptor.forClass(Message[].class);
+    verify(inbox).search(any(SearchTerm.class), askedOf.capture());
+    assertArrayEquals(new Message[] { older, newer }, askedOf.getValue(), "the words asked of the categorized messages only");
+    verify(inbox, never()).search(any(SearchTerm.class));
+  }
+
+  /**
+   * Criteria naming some categories, and nothing else.
+   *
+   * @param categoryIds the categories
+   * @return the criteria
+   */
+  private EmailSearchCriteria withCategories(Long... categoryIds) {
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setCategoryIds(List.of(categoryIds));
+    return criteria;
+  }
+
+  /**
    * EXO-90838 -- the cached search of a folder of a mailbox shared with the user reads
    * the user's copy of it, only while the delegation service finds it searchable for
    * this user -- re-checked on every search -- and a share withdrawn meanwhile says so.

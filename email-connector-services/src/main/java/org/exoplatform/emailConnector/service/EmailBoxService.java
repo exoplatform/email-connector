@@ -7362,7 +7362,8 @@ public class EmailBoxService {
    * @return the newest matching messages of the copy and how many matched
    * @throws IllegalAccessException if the user may not read their mailbox
    * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for any
-   *           other folder, and the codes of {@link #validateSearchCriteria}
+   *           other folder, and the codes of {@link #validateSearchCriteria} and
+   *           {@link #searchCategoryIds}
    * @throws DelegationRevokedException when the folder's share is no longer accepted
    */
   public EmailSearchResultPage searchCachedFolder(String username,
@@ -7385,17 +7386,20 @@ public class EmailBoxService {
    * read that folder: behind {@link #searchCachedFolder}, {@link #searchSharedMailboxMirror}
    * and the server search of a folder of a mailbox shared with the user (EXO-90590), which
    * never reaches the server. The rows the sync brought in, filtered by
-   * {@link #filterCached} -- which the copy's own size bounds -- newest first.
+   * {@link #filterCached} -- which the copy's own size bounds -- and, when the criteria
+   * name categories, by eXo's links of the matches to them (EXO-90888), newest first.
    *
    * @param username the reader
    * @param folderKey the folder's key, already checked
    * @param criteria what to match
    * @param limit how many hits to return, newest first
    * @return the newest matching messages and how many matched
-   * @throws IllegalArgumentException the codes of {@link #validateSearchCriteria}
+   * @throws IllegalArgumentException the codes of {@link #validateSearchCriteria} and
+   *           {@link #searchCategoryIds}
    */
   private EmailSearchResultPage searchMirror(String username, String folderKey, EmailSearchCriteria criteria, int limit) {
     validateSearchCriteria(criteria);
+    Set<Long> categoryIds = searchCategoryIds(criteria);
     // The search's own read, not the listing's: no attachment, category or excerpt, which
     // a search discards -- this runs once per keystroke in the drawer's search box.
     List<Email> rows = emailBoxStorage.getEmailsForSearchInFolders(username,
@@ -7407,6 +7411,16 @@ public class EmailBoxService {
                                                                                                                    List.of(folderKey))
                                                              : Set.of();
     List<Email> matches = filterCached(rows, criteria, withAttachments);
+    if (categoryIds != null) {
+      // eXo's category links on the matches, read in batches, before the page is cut and
+      // the matches are counted (EXO-90888).
+      Set<Long> inCategories = emailBoxStorage.getEmailIdsInCategories(matches.stream()
+                                                                              .map(Email::getId)
+                                                                              .filter(Objects::nonNull)
+                                                                              .toList(),
+                                                                       categoryIds);
+      matches = matches.stream().filter(email -> inCategories.contains(email.getId())).toList();
+    }
     List<EmailSearchResult> results = matches.stream()
                                              .limit(Math.min(Math.max(limit, 1), SEARCH_MAX_RESULTS))
                                              .map(email -> new EmailSearchResult(email.getMailRemoteId(),
@@ -7492,6 +7506,53 @@ public class EmailBoxService {
     if (!criteria.hasCriterion()) {
       throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
     }
+  }
+
+  /**
+   * The categories a search is narrowed to (EXO-90888), each one with every category
+   * under it -- a category counts its subcategories' mail, as the folder column counts
+   * it -- or null when the search names none. Only the mailbox's own categories can be
+   * named: the add-on's email categories (Important, Invitation, Notification, To
+   * review) and the categories under them. Any other id is refused, so a search never
+   * reads the links another feature's categories hold on the user's mail. Package-visible
+   * for tests.
+   *
+   * @param criteria the search's criteria
+   * @return the categories' ids with their subcategories', or null for no category
+   * @throws IllegalArgumentException {@code emailConnector.search.invalidCategory} for
+   *           an id that is not one of the mailbox's categories
+   */
+  Set<Long> searchCategoryIds(EmailSearchCriteria criteria) {
+    List<Long> requested = criteria.getCategoryIds();
+    if (requested == null || requested.isEmpty()) {
+      return null; // NOSONAR -- null says "no category criterion", an empty set "no category"
+    }
+    Set<Long> mailboxCategoryIds = new HashSet<>();
+    getDefaultEmailCategoryIds().forEach(rootId -> {
+      mailboxCategoryIds.add(rootId);
+      mailboxCategoryIds.addAll(subcategoryIdsOf(rootId));
+    });
+    Set<Long> expanded = new HashSet<>();
+    for (Long categoryId : requested) {
+      if (categoryId == null || !mailboxCategoryIds.contains(categoryId)) {
+        throw new IllegalArgumentException("emailConnector.search.invalidCategory");
+      }
+      expanded.add(categoryId);
+      expanded.addAll(subcategoryIdsOf(categoryId));
+    }
+    return expanded;
+  }
+
+  /**
+   * Every category under a category, at any depth, as the platform's category tree holds
+   * them.
+   *
+   * @param categoryId the category
+   * @return the ids of the categories under it, empty when none
+   */
+  private List<Long> subcategoryIdsOf(long categoryId) {
+    List<Long> subcategoryIds = categoryService.getSubcategoryIds(categoryId, 0, -1, -1);
+    return subcategoryIds == null ? List.of() : subcategoryIds;
   }
 
   /**
@@ -15994,6 +16055,11 @@ public class EmailBoxService {
    * messages carrying an attachment. All of them are terms of the one IMAP SEARCH for the
    * user's own folders ({@link #buildEmailSearchTerm(EmailSearchCriteria, Date)}), and
    * filters of the user's copy for a folder of a mailbox shared with them.
+   * <p>
+   * The categories (EXO-90888) are eXo's alone, which the mail server knows nothing of:
+   * a search naming some is held to the folder's messages eXo holds and filed under one
+   * of them ({@link #searchCategoryIds}), its other terms asked of those messages only. A
+   * message outside eXo's copy carries no category, so it never matches such a search.
    *
    * @param username the mailbox owner
    * @param criteria what to match, at least one criterion
@@ -16003,7 +16069,8 @@ public class EmailBoxService {
    * @return the newest matching messages plus the total match count
    * @throws IllegalAccessException if the user is not allowed to search their mailbox
    * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for any
-   *           other folder, and the codes of {@link #validateSearchCriteria}
+   *           other folder, and the codes of {@link #validateSearchCriteria} and
+   *           {@link #searchCategoryIds}
    * @throws DelegationRevokedException when the folder's share is no longer accepted
    */
   public EmailSearchResultPage searchEmails(String username,
@@ -16027,12 +16094,20 @@ public class EmailBoxService {
       throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
     }
     validateSearchCriteria(criteria);
+    Set<Long> categoryIds = searchCategoryIds(criteria);
     Date since = criteria.getSinceDays() == null ? null
                                                  : new Date(System.currentTimeMillis()
                                                      - TimeUnit.DAYS.toMillis(criteria.getSinceDays()));
     SearchTerm searchTerm = buildEmailSearchTerm(criteria, since);
     boolean favoritesOnly = criteria.isFavoritesOnly();
     int cappedLimit = Math.min(Math.max(limit, 1), SEARCH_MAX_RESULTS);
+    // The categories are eXo's, never the mail server's (EXO-90888): the search is held to
+    // the folder's messages eXo holds and filed under one of them, so a message outside
+    // eXo's copy never matches. None of them: nothing to ask the server.
+    long[] categorizedUids = categoryIds == null ? null : categorizedUids(username, folder, categoryIds);
+    if (categorizedUids != null && categorizedUids.length == 0) {
+      return new EmailSearchResultPage(List.of(), 0, favoritesOnly);
+    }
     Store store = null;
     Folder remoteFolder = null;
     try {
@@ -16043,13 +16118,24 @@ public class EmailBoxService {
         return new EmailSearchResultPage(List.of(), 0);
       }
       remoteFolder.open(Folder.READ_ONLY);
-      // The attachment criterion alone leaves no term: the newest messages of the folder
-      // are examined instead (see below), never the whole folder.
-      Message[] found = searchTerm == null ? newestMessages(remoteFolder, ATTACHMENT_SCAN_LIMIT) : remoteFolder.search(searchTerm);
+      Message[] found;
+      if (categorizedUids != null) {
+        // The categorized messages still on the server, the search's other terms asked of
+        // them only -- one UID FETCH, then one SEARCH over that set.
+        Message[] byUid = ((UIDFolder) remoteFolder).getMessagesByUID(categorizedUids);
+        Message[] categorized = byUid == null ? new Message[0]
+                                              : Arrays.stream(byUid).filter(Objects::nonNull).toArray(Message[]::new);
+        found = searchTerm == null || categorized.length == 0 ? categorized : remoteFolder.search(searchTerm, categorized);
+      } else {
+        // The attachment criterion alone leaves no term: the newest messages of the folder
+        // are examined instead (see below), never the whole folder.
+        found = searchTerm == null ? newestMessages(remoteFolder, ATTACHMENT_SCAN_LIMIT) : remoteFolder.search(searchTerm);
+      }
       if (found == null || found.length == 0) {
         return new EmailSearchResultPage(List.of(), 0);
       }
-      int totalMatches = searchTerm == null ? remoteFolder.getMessageCount() : found.length;
+      // The attachment criterion alone counts the folder; any other search, its matches.
+      int totalMatches = searchTerm == null && categorizedUids == null ? remoteFolder.getMessageCount() : found.length;
       int scanned = 0;
       Message[] page;
       if (criteria.isAttachmentsOnly()) {
@@ -16146,6 +16232,28 @@ public class EmailBoxService {
     } finally {
       closeQuietly(remoteFolder, store, username);
     }
+  }
+
+  /**
+   * The UIDs of the messages of one of the user's folders that eXo holds and filed under
+   * one of some categories, oldest first (EXO-90888): what a server search narrowed to
+   * categories is held to. Two reads: the folder's (UID, id) pairs, then eXo's category
+   * links of those rows in batches -- never one per message.
+   *
+   * @param username the mailbox owner
+   * @param folder the folder searched
+   * @param categoryIds the categories, each already expanded to its subcategories
+   * @return the UIDs, ascending, empty when none
+   */
+  private long[] categorizedUids(String username, String folder, Set<Long> categoryIds) {
+    Map<Long, Long> cachedIds = emailBoxStorage.getCachedFolderEmailIds(username, folder);
+    Set<Long> inCategories = emailBoxStorage.getEmailIdsInCategories(cachedIds.values(), categoryIds);
+    return cachedIds.entrySet()
+                    .stream()
+                    .filter(entry -> inCategories.contains(entry.getValue()))
+                    .mapToLong(Map.Entry::getKey)
+                    .sorted()
+                    .toArray();
   }
 
   /**
