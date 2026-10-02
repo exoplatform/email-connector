@@ -170,7 +170,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :content="content"
       :sender-address="senderAddress"
       :loading="remoteContentLoading"
-      :wide="expandedDrawer"
       @show-remote-content="loadRemoteContent" />
     <div
       v-if="unavailable"
