@@ -48,6 +48,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :namespace-folders="namespaceFolders"
       :categories="categories"
       :category-view-id="categoryViewId"
+      :folder-counts="folderCounts"
+      :category-unread-counts="categoryUnreadCounts"
       :sync-in-progress="syncInProgress"
       :has-webmail-access="hasWebmailAccess"
       :hide-views="hideViews"
@@ -252,6 +254,16 @@ export default {
     categoryViewId: {
       type: [Number, String],
       default: null,
+    },
+    // The counts the ⋮ menu's folders and categories show: the full-screen folder
+    // column's, so the two never disagree (EXO-90881).
+    folderCounts: {
+      type: Object,
+      default: () => ({}),
+    },
+    categoryUnreadCounts: {
+      type: Object,
+      default: () => ({}),
     },
     top: {
       type: Boolean,
