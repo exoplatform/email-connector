@@ -256,13 +256,50 @@ function askAgainIfNone(key) {
  * @returns {void}
  */
 export function refreshSenderDomain(domain) {
-  const suffix = `@${(domain || '').trim().toLowerCase()}`;
-  if (suffix.length < 2) {
+  const wanted = asciiDomain(domain);
+  if (!wanted) {
     return;
   }
   Array.from(answers.keys()).concat(Array.from(asking))
-    .filter(key => key.endsWith(suffix))
+    .filter(key => asciiDomain(key.substring(key.lastIndexOf('@') + 1)) === wanted)
     .forEach(askAgainIfNone);
+}
+
+/**
+ * Asks for the picture of a sender whose brand logo the reader's server was still
+ * looking up (EXO-90909): the answer brings the logo when it was found meanwhile --
+ * before the page could hear of it --, and otherwise the request is one the page
+ * tracks, so the word that it was found asks again. A picture already known stays.
+ *
+ * @param {string} address - the sender's address
+ * @returns {void}
+ */
+export function requestPendingSenderLogo(address) {
+  const key = keyOf(address);
+  if (!key || answers.get(key)) {
+    return;
+  }
+  answers.delete(key);
+  requestSenderAvatar(key);
+}
+
+/**
+ * A domain in the ASCII form the server names it in (punycode, lower-cased), so that
+ * an address written with an internationalised domain matches the server's word.
+ *
+ * @param {string} domain - the domain, as written
+ * @returns {string} the ASCII form, or an empty string for none
+ */
+function asciiDomain(domain) {
+  const trimmed = (domain || '').trim().toLowerCase().replace(/\.$/, '');
+  if (!trimmed) {
+    return '';
+  }
+  try {
+    return new URL(`https://${trimmed}`).hostname;
+  } catch (e) {
+    return trimmed;
+  }
 }
 
 /**
