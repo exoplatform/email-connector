@@ -21,14 +21,21 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -39,6 +46,9 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.SettingValue;
+import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.emailConnector.model.SenderLogo;
 import org.exoplatform.emailConnector.storage.SenderLogoStorage;
 import org.exoplatform.emailConnector.utils.EmailSecurityUtils;
@@ -62,6 +72,12 @@ class SenderLogoServiceTest {
   @Mock
   private SenderLogoStorage     senderLogoStorage;
 
+  @Mock
+  private SettingService        settingService;
+
+  /** The global settings, as the platform would keep them for every node. */
+  private final Map<String, String> settings = new HashMap<>();
+
   @InjectMocks
   private SenderLogoService     service;
 
@@ -74,6 +90,7 @@ class SenderLogoServiceTest {
   @BeforeEach
   void holdBackgroundWork() {
     service.setWarmExecutor(queued::add);
+    keepSettingsIn(settingService);
     System.setProperty(EmailSecurityUtils.TRUSTED_AUTHSERV_IDS_PROPERTY, "mx.example.com");
   }
 
@@ -265,6 +282,56 @@ class SenderLogoServiceTest {
     assertNotEquals(resolved, service.offerFingerprint(), "the switch");
     System.clearProperty(EmailSecurityUtils.TRUSTED_AUTHSERV_IDS_PROPERTY);
     assertEquals(0, service.offerFingerprint());
+  }
+
+  /**
+   * The URL tokens' key is one for the platform: drawn by the first node that needs it,
+   * stored as a global setting, and read by every other node -- a URL offered by one
+   * node is served by another. An unreadable stored key is drawn anew.
+   *
+   * @throws Exception when the second instance cannot be built
+   */
+  @Test
+  void theTokenKeyIsSharedByEveryNode() throws Exception {
+    String token = service.token("brand.example", USER);
+    String stored = settings.get(SenderLogoService.TOKEN_KEY_SETTING);
+    assertEquals(32, Base64.getDecoder().decode(stored).length, "drawn once, stored");
+
+    SenderLogoService otherNode = new SenderLogoService();
+    SettingService otherSettings = mock(SettingService.class);
+    keepSettingsIn(otherSettings);
+    java.lang.reflect.Field field = SenderLogoService.class.getDeclaredField("settingService");
+    field.setAccessible(true);
+    field.set(otherNode, otherSettings);
+    try {
+      assertEquals(token, otherNode.token("brand.example", USER), "the other node checks the same token");
+      assertEquals(stored, settings.get(SenderLogoService.TOKEN_KEY_SETTING), "and draws no key of its own");
+    } finally {
+      otherNode.stop();
+    }
+
+    settings.put(SenderLogoService.TOKEN_KEY_SETTING, "not base64 !");
+    String redrawn = service.token("brand.example", USER);
+    assertNotEquals(token, redrawn);
+    assertEquals(redrawn, service.token("brand.example", USER), "the new key is kept");
+  }
+
+  /**
+   * Keeps a setting service's global values in {@link #settings}, shared by every
+   * instance given it, as the platform's are by every node.
+   *
+   * @param service the mocked setting service
+   */
+  private void keepSettingsIn(SettingService service) {
+    lenient().when(service.get(eq(Context.GLOBAL), eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE), anyString()))
+             .thenAnswer(invocation -> {
+               String value = settings.get((String) invocation.getArgument(2));
+               return value == null ? null : SettingValue.create(value);
+             });
+    lenient().doAnswer(invocation -> {
+      settings.put(invocation.getArgument(2), String.valueOf(((SettingValue<?>) invocation.getArgument(3)).getValue()));
+      return null;
+    }).when(service).set(eq(Context.GLOBAL), eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE), anyString(), any());
   }
 
   /**
