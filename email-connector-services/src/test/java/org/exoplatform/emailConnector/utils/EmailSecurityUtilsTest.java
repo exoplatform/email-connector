@@ -17,11 +17,14 @@
 package org.exoplatform.emailConnector.utils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
@@ -93,6 +96,64 @@ class EmailSecurityUtilsTest {
     assertNull(EmailSecurityUtils.authenticationFailure(null, null));
     assertNull(EmailSecurityUtils.authenticationFailure(new String[0], null));
     assertNull(EmailSecurityUtils.authenticationFailure(new String[] { " " }, null));
+  }
+
+  /**
+   * EXO-90893 -- a DMARC pass counts for the brand logo only when the top header says
+   * so for the From domain itself: a pass for another domain, a pass beside a failure,
+   * a pass only a lower header claims, a pass in a comment, no header or no From, none
+   * of these is a pass. Case and folding do not matter, and a result naming no
+   * header.from is the From's.
+   */
+  @Test
+  void aDmarcPassCountsForTheFromDomainOnly() {
+    assertTrue(passed("mx.example.com; spf=pass; dkim=pass header.d=brand.example; dmarc=pass header.from=brand.example"));
+    assertTrue(passed("MX.EXAMPLE.COM;\r\n\tDMARC=PASS (p=REJECT) HEADER.FROM=Brand.Example"));
+    assertTrue(passed("mx.example.com; dmarc=pass"));
+    assertFalse(passed("mx.example.com; dmarc=pass header.from=other.example"));
+    assertFalse(passed("mx.example.com; dmarc=pass header.from=news.brand.example"), "a subdomain's pass is not the domain's");
+    assertFalse(passed("mx.example.com; dmarc=pass header.from=brand.example; dmarc=fail header.from=brand.example"));
+    assertFalse(passed("mx.example.com; spf=pass (dmarc=pass header.from=brand.example)"));
+    assertFalse(passed("mx.example.com; dmarc=none header.from=brand.example"));
+    assertFalse(passed("mx.example.com; dkim=pass header.d=brand.example"));
+    assertFalse(EmailSecurityUtils.dmarcPassed(new String[] { "mx.example.com; spf=pass", "forged.example; dmarc=pass" },
+                                               "news@brand.example",
+                                               Set.of()),
+                "a lower header vouches for nothing");
+    assertFalse(EmailSecurityUtils.dmarcPassed(null, "news@brand.example", Set.of()));
+    assertFalse(EmailSecurityUtils.dmarcPassed(new String[] { " " }, "news@brand.example", Set.of()));
+    assertFalse(EmailSecurityUtils.dmarcPassed(new String[] { "mx.example.com; dmarc=pass" }, null, Set.of()));
+    assertFalse(EmailSecurityUtils.dmarcPassed(new String[] { "mx.example.com; dmarc=pass" }, "no-domain", Set.of()));
+  }
+
+  /**
+   * EXO-90893 -- once the deployment names the authserv-ids of its mail servers, a
+   * header written by any other server vouches for nothing, whatever it says; an empty
+   * list believes the top header.
+   */
+  @Test
+  void aDmarcPassNeedsATrustedServerWhenTheDeploymentNamesOne() {
+    String[] header = { "mx.example.com 1; dmarc=pass header.from=brand.example" };
+    assertTrue(EmailSecurityUtils.dmarcPassed(header, "news@brand.example", Set.of("mx.example.com")));
+    assertFalse(EmailSecurityUtils.dmarcPassed(header, "news@brand.example", Set.of("imap.corp.example")));
+    assertTrue(EmailSecurityUtils.dmarcPassed(header, "news@brand.example", Set.of()));
+    System.setProperty(EmailSecurityUtils.TRUSTED_AUTHSERV_IDS_PROPERTY, " MX.example.com , imap.corp.example,");
+    try {
+      assertEquals(Set.of("mx.example.com", "imap.corp.example"), EmailSecurityUtils.trustedAuthservIds());
+    } finally {
+      System.clearProperty(EmailSecurityUtils.TRUSTED_AUTHSERV_IDS_PROPERTY);
+    }
+    assertEquals(Set.of(), EmailSecurityUtils.trustedAuthservIds());
+  }
+
+  /**
+   * The DMARC pass verdict of a top header, for news@brand.example, any server trusted.
+   *
+   * @param header the top Authentication-Results header
+   * @return whether DMARC passed for brand.example
+   */
+  private static boolean passed(String header) {
+    return EmailSecurityUtils.dmarcPassed(new String[] { header }, "news@brand.example", Set.of());
   }
 
   /**

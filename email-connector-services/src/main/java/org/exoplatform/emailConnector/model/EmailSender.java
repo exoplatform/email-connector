@@ -32,4 +32,24 @@ public class EmailSender {
   private String avatarUrl;
   
   private String profileUrl;
+
+  /**
+   * The sender's brand logo (EXO-90893), served by this add-on, for a sender with no
+   * platform profile whose message passed DMARC for its domain and gives no reason for
+   * doubt; null otherwise. Set by the reader's decoration only, and shown before
+   * {@code avatarUrl}, which stays the fallback when the logo cannot be loaded.
+   */
+  private String logoUrl;
+
+  /**
+   * A sender without a brand logo.
+   *
+   * @param name the name to show
+   * @param address the address
+   * @param avatarUrl the picture, or null
+   * @param profileUrl the platform profile, or null
+   */
+  public EmailSender(String name, String address, String avatarUrl, String profileUrl) {
+    this(name, address, avatarUrl, profileUrl, null);
+  }
 }

@@ -83,6 +83,9 @@ class EmailSecurityServiceTest {
   @Mock
   private IdentityManager             identityManager;
 
+  @Mock
+  private SenderLogoService           senderLogoService;
+
   @InjectMocks
   private EmailSecurityService        service;
 
@@ -107,6 +110,66 @@ class EmailSecurityServiceTest {
   @AfterEach
   void clearProperty() {
     System.clearProperty(EmailSecurityService.ORGANISATION_DOMAINS_PROPERTY);
+  }
+
+  /**
+   * EXO-90893 -- the brand logo is offered to a sender the read found no platform user
+   * for (the server's initials, no profile), with the message's DMARC pass; never to a
+   * message giving a reason for doubt, to a platform user, to a read that resolved no
+   * profile, or to the mailbox's own sent mail.
+   */
+  @Test
+  void theBrandLogoIsOfferedOnlyToAnUndoubtedStranger() {
+    String logo = SenderLogoService.LOGO_PATH + "brand.example";
+    lenient().when(senderLogoService.logoUrlFor("news@brand.example", true)).thenReturn(logo);
+
+    Email passed = stranger();
+    passed.getContent().setDmarcPassed(true);
+    service.decorate(passed, USER, false);
+    assertEquals(logo, passed.getSender().getLogoUrl());
+
+    Email notPassed = stranger();
+    service.decorate(notPassed, USER, false);
+    verify(senderLogoService).logoUrlFor("news@brand.example", false);
+    assertEquals(null, notPassed.getSender().getLogoUrl(), "no DMARC pass, no logo");
+
+    clearInvocations(senderLogoService);
+    Email doubted = stranger();
+    doubted.getContent().setDmarcPassed(true);
+    doubted.getContent().setAuthFailure(EmailSecurityUtils.AUTH_SPF);
+    service.decorate(doubted, USER, false);
+
+    Email platformUser = stranger();
+    platformUser.getContent().setDmarcPassed(true);
+    platformUser.getSender().setProfileUrl("/portal/dw/profile/jsmith");
+    service.decorate(platformUser, USER, false);
+
+    Email unresolved = stranger();
+    unresolved.getContent().setDmarcPassed(true);
+    unresolved.getSender().setAvatarUrl(null);
+    service.decorate(unresolved, USER, false);
+
+    Email sent = stranger();
+    sent.getContent().setDmarcPassed(true);
+    sent.setFolder(MailFolder.SENT);
+    service.decorate(sent, USER, false);
+
+    verify(senderLogoService, never()).logoUrlFor(anyString(), org.mockito.ArgumentMatchers.anyBoolean());
+    for (Email email : List.of(doubted, platformUser, unresolved, sent)) {
+      assertEquals(null, email.getSender().getLogoUrl());
+    }
+  }
+
+  /**
+   * A received message from a sender no platform user holds, as a read resolving
+   * profiles serves it: the server's initials as avatar, no profile.
+   *
+   * @return the message
+   */
+  private static Email stranger() {
+    Email email = received("Brand News", "news@brand.example", "<p>Hello</p>");
+    email.getSender().setAvatarUrl("data:image/png;base64,AAAA");
+    return email;
   }
 
   /**

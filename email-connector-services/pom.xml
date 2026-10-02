@@ -46,6 +46,13 @@
       <artifactId>analytics-api</artifactId>
       <scope>provided</scope>
     </dependency>
+    <!-- Provided by the server (lib/httpclient5.jar): the sender logo fetch (EXO-90893)
+         needs a client whose resolver is the address guard, which java.net.http lacks. -->
+    <dependency>
+      <groupId>org.apache.httpcomponents.client5</groupId>
+      <artifactId>httpclient5</artifactId>
+      <scope>provided</scope>
+    </dependency>
     <!-- MCP Server API (used by the email MCP tools exposed to the AI agent) -->
     <dependency>
       <groupId>io.meeds.mcp-server</groupId>
