@@ -1403,8 +1403,7 @@ public class EmailMcpTool implements McpToolPlugin {
    * @return true for a bare address
    */
   private static boolean isBareAddress(String entry) {
-    String value = StringUtils.trimToEmpty(entry);
-    return !value.isEmpty() && !StringUtils.containsWhitespace(value) && !StringUtils.containsAny(value, '<', '>', '"', ',', ';', '&');
+    return EmailAddressRules.isBareAddress(entry);
   }
 
   /**
@@ -1416,7 +1415,7 @@ public class EmailMcpTool implements McpToolPlugin {
    * @return the address, trimmed and lower-cased; empty for a blank one
    */
   private static String normalisedAddress(String address) {
-    return StringUtils.trimToEmpty(address).toLowerCase(Locale.ROOT);
+    return EmailAddressRules.normalisedAddress(address);
   }
 
   /**
