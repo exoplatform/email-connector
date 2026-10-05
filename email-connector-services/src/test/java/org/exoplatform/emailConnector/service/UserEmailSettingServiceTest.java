@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import static org.mockito.Mockito.times;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -1661,9 +1662,9 @@ public class UserEmailSettingServiceTest {
   }
 
   /**
-   * EXO-90836. The user-facing disconnection runs in its own transaction, as the
-   * removal it delegates to does: the delegation goes through {@code this}, so without
-   * this annotation the removal and the account-cleanup listeners would run with none.
+   * EXO-90836. The user-facing disconnection runs in its own transaction and rolls back
+   * on any exception: the removal it delegates to is a private method, so without this
+   * annotation the removal and the account-cleanup listeners would run in none.
    * Pins the annotation-removed mutant, which a call made by hand cannot kill.
    */
   @Test
@@ -1674,6 +1675,7 @@ public class UserEmailSettingServiceTest {
 
     assertNotNull(transactional);
     assertEquals(Propagation.REQUIRES_NEW, transactional.propagation());
+    assertArrayEquals(new Class<?>[] { Exception.class }, transactional.rollbackFor());
   }
 
   /**

@@ -649,17 +649,16 @@ public class UserEmailSettingService {
    * deletion - call {@link #deleteUserEmailSetting(String)} instead.
    *
    * <p>
-   * Transactional as {@link #deleteUserEmailSetting(String)} is: the call below goes
-   * through {@code this}, not the proxy, so this method's transaction is the one the
-   * removal and the account-cleanup listeners run in.
+   * Runs in its own transaction, as {@link #deleteUserEmailSetting(String)} does: the
+   * removal and the account-cleanup listeners run in it.
    *
    * @param username the eXo login disconnecting
    * @throws ManagedConnectionLockedException when managed mode governs the user
    */
-  @Transactional(propagation = Propagation.REQUIRES_NEW)
+  @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
   public void disconnectUserEmailSetting(String username) throws ManagedConnectionLockedException {
     emailManagedModeService.checkUserMayChangeConnection(username, null);
-    deleteUserEmailSetting(username);
+    removeUserEmailSetting(username);
   }
 
   /**
@@ -669,6 +668,10 @@ public class UserEmailSettingService {
    */
   @Transactional(propagation = Propagation.REQUIRES_NEW)
   public void deleteUserEmailSetting(String username) {
+    removeUserEmailSetting(username);
+  }
+
+  private void removeUserEmailSetting(String username) {
     settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
     settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONNECTED_BY_MANAGED_MODE_KEY);
     // The signature belongs to the mail account's composer, so disconnecting the
