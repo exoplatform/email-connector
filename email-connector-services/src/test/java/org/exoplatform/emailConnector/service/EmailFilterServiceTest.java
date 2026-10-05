@@ -95,6 +95,7 @@ import org.exoplatform.emailConnector.model.ReconcileReport;
 import org.exoplatform.emailConnector.model.ServerRule.Condition;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.plugin.EmailFilterAgentHandler;
+import org.exoplatform.emailConnector.plugin.EmailFilterProposalProvider;
 import org.exoplatform.emailConnector.service.filters.FilterRunContext;
 import org.exoplatform.emailConnector.storage.EmailFilterStorage;
 import org.exoplatform.emailConnector.storage.EmailFilterStorage.OwnedMatch;
@@ -149,6 +150,12 @@ public class EmailFilterServiceTest {
   private ObjectProvider<EmailFilterAgentHandler> agentHandlers;
 
   @Mock
+  private ObjectProvider<EmailFilterProposalProvider> proposalProviders;
+
+  @Mock
+  private EmailFilterProposalProvider  proposalProvider;
+
+  @Mock
   private SettingService               settingService;
 
   @Mock
@@ -186,6 +193,7 @@ public class EmailFilterServiceTest {
     fakeSettings();
     lenient().when(agentHandlers.stream()).thenAnswer(invocation -> Stream.of(new EmailFilterAgentHandler() {
     }));
+    lenient().when(proposalProviders.orderedStream()).thenAnswer(invocation -> Stream.of(proposalProvider));
     lenient().when(emailBoxService.getDefaultEmailCategoryId(EmailFilterService.SEED_IMPORTANT_CATEGORY)).thenReturn(IMPORTANT_ID);
     lenient().doReturn(Locale.ENGLISH).when(service).seedLocale(USERNAME);
   }
@@ -318,6 +326,82 @@ public class EmailFilterServiceTest {
     service.deleteFilter(USERNAME, null, existing.getId(), false);
 
     assertFalse(filters.containsKey(existing.getId()));
+  }
+
+  /**
+   * The AI add-on's side hears of a rule its owner saves, with the rule as it was and as
+   * saved, and of a rule its owner deletes (EXO-90956): a rule its owner switched off
+   * runs nothing without asking any more. A failure there never fails the write.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theAiSideHearsOfTheRulesTheOwnerSavesAndDeletes() throws Exception {
+    EmailFilter existing = stored(rule("Star", EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of(action(FilterAction.STAR))));
+    EmailFilter off = rule("Star", EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of(action(FilterAction.STAR)));
+    off.setEnabled(false);
+
+    EmailFilter saved = service.updateFilter(USERNAME, null, existing.getId(), off, false, false);
+
+    ArgumentCaptor<EmailFilter> previous = ArgumentCaptor.forClass(EmailFilter.class);
+    ArgumentCaptor<EmailFilter> after = ArgumentCaptor.forClass(EmailFilter.class);
+    verify(proposalProvider).onFilterSaved(eq(USERNAME), previous.capture(), after.capture());
+    assertTrue(previous.getValue().isEnabled(), "the rule as it was");
+    assertFalse(after.getValue().isEnabled(), "the rule as its owner saved it");
+    assertEquals(saved.getId(), after.getValue().getId());
+
+    doThrow(new IllegalStateException("down")).when(proposalProvider).onFilterDeleted(USERNAME, existing.getId());
+    service.deleteFilter(USERNAME, null, existing.getId(), false);
+    verify(proposalProvider).onFilterDeleted(USERNAME, existing.getId());
+    assertFalse(filters.containsKey(existing.getId()), "the write stands");
+  }
+
+  /**
+   * A rule eXo switches off because it can no longer read it is not saved by its owner:
+   * the AI side hears nothing of it, so the rule keeps its standing approvals, as a
+   * suspended scheduled agent does (EXO-90956, Q6). Mutant: the switch-off through the
+   * owner's save path, which tells it.
+   */
+  @Test
+  void aRuleEXoSwitchesOffIsNotToldAsTheOwnersSave() {
+    stored(rule("Broken", EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of()));
+    givenNewMail(mail(1L, "boss@acme.com", "Hello"));
+
+    service.applyToNewMail(USERNAME, List.of(inbox(1L)), new FilterRunContext(EmailFilter.SCOPE_OWN, MailFolder.INBOX));
+
+    verify(emailFilterStorage).disableWithError(anyLong(), eq(USERNAME), eq(EmailFilterService.UNREADABLE), any());
+    verify(proposalProvider, never()).onFilterSaved(any(), any(), any());
+  }
+
+  /**
+   * The matches the retention deletes are told to the AI side, their decided
+   * suggestions going with them (EXO-90956, Q9); nothing deleted, nothing told.
+   */
+  @Test
+  void thePrunedMatchesAreTold() {
+    stored(rule("Star", EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of(action(FilterAction.STAR))));
+    when(emailFilterStorage.getMatchIdsOlderThan(eq(USERNAME), any())).thenReturn(List.of(4L, 5L));
+    givenNewMail(mail(1L, "boss@acme.com", "Hello"));
+
+    service.applyToNewMail(USERNAME, List.of(inbox(1L)), new FilterRunContext(EmailFilter.SCOPE_OWN, MailFolder.INBOX));
+
+    verify(emailFilterStorage).pruneMatches(eq(USERNAME), any());
+    verify(proposalProvider).onMatchesPurged(USERNAME, List.of(4L, 5L));
+
+    when(emailFilterStorage.getMatchIdsOlderThan(eq(USERNAME), any())).thenReturn(List.of());
+    service.applyToNewMail(USERNAME, List.of(inbox(1L)), new FilterRunContext(EmailFilter.SCOPE_OWN, MailFolder.INBOX));
+    verify(proposalProvider).onMatchesPurged(eq(USERNAME), any());
+  }
+
+  /**
+   * A disconnected mailbox is told to the AI side; a blank user tells nothing.
+   */
+  @Test
+  void aDisconnectedMailboxIsTold() {
+    service.onMailboxDisconnected(USERNAME);
+    verify(proposalProvider).onMailboxDisconnected(USERNAME);
+    service.onMailboxDisconnected(" ");
+    verify(proposalProvider).onMailboxDisconnected(any());
   }
 
   /**
