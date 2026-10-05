@@ -216,7 +216,8 @@ public class UserEmailSettingRestTest {
 
   /**
    * EXO-90836. A governed user's disconnection, typed connection and one-click
-   * connection elsewhere answer 403 with their code carried in the 403 body.
+   * connection elsewhere answer 403 with their code under {@code message} in the
+   * body, the field the browser reads.
    */
   @Test
   void aGovernedUsersConnectionChangesAnswer403WithTheirCode() throws Exception {
@@ -227,16 +228,16 @@ public class UserEmailSettingRestTest {
 
     mockMvc.perform(delete(USER_EMAIL_SETTING_PATH).with(testSimpleUser()))
            .andExpect(status().isForbidden())
-           .andExpect(status().reason(ManagedConnectionLockedException.MESSAGE_CODE));
+           .andExpect(jsonPath("$.message").value(ManagedConnectionLockedException.MESSAGE_CODE));
     mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "?broadcast=false").with(testSimpleUser())
                                                                      .content(asJsonString(userEmailSetting()))
                                                                      .contentType(MediaType.APPLICATION_JSON)
                                                                      .accept(MediaType.APPLICATION_JSON))
            .andExpect(status().isForbidden())
-           .andExpect(status().reason(ManagedConnectionLockedException.MESSAGE_CODE));
+           .andExpect(jsonPath("$.message").value(ManagedConnectionLockedException.MESSAGE_CODE));
     mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/connect?emailConnectorId=3").with(testSimpleUser()))
            .andExpect(status().isForbidden())
-           .andExpect(status().reason(ManagedConnectionLockedException.MESSAGE_CODE));
+           .andExpect(jsonPath("$.message").value(ManagedConnectionLockedException.MESSAGE_CODE));
   }
 
   /** EXO-90836. The settings read says whether managed mode keeps the user, and on which connector. */

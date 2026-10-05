@@ -32,6 +32,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.annotation.Secured;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -151,11 +152,11 @@ public class UserEmailSettingRest {
   public void connectThroughProvider(HttpServletRequest request,
                                      @Parameter(description = "Email connector to connect to", required = true)
                                      @RequestParam(name = "emailConnectorId")
-                                     long emailConnectorId) {
+                                     long emailConnectorId) throws ManagedConnectionLockedException {
     try {
       userEmailSettingService.connectThroughProvider(emailConnectorId, request.getRemoteUser());
     } catch (ManagedConnectionLockedException e) {
-      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+      throw e;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
@@ -185,11 +186,11 @@ public class UserEmailSettingRest {
                                       @RequestParam(name = "broadcast", defaultValue = "true")
                                       boolean broadcast,
                                       @RequestBody
-                                      UserEmailSetting userEmailSetting) {
+                                      UserEmailSetting userEmailSetting) throws ManagedConnectionLockedException {
     try {
       userEmailSettingService.connectUserEmailSetting(userEmailSetting, request.getRemoteUser(), broadcast);
     } catch (ManagedConnectionLockedException e) {
-      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+      throw e;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
@@ -452,11 +453,11 @@ public class UserEmailSettingRest {
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public void deleteUserEmailSetting(HttpServletRequest request) {
+  public void deleteUserEmailSetting(HttpServletRequest request) throws ManagedConnectionLockedException {
     try {
       userEmailSettingService.disconnectUserEmailSetting(request.getRemoteUser());
     } catch (ManagedConnectionLockedException e) {
-      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+      throw e;
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
@@ -1475,6 +1476,23 @@ public class UserEmailSettingRest {
     } catch (DelegationRevokedException e) {
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     }
+  }
+
+  /**
+   * The 403 answer of a connection change managed mode refuses, with its message code
+   * under {@code message}, which the JS services read: Spring Boot's default error body
+   * leaves out a {@code ResponseStatusException}'s reason on this platform. The same
+   * shape as {@code EmailConnectorRest#onRefusal}.
+   *
+   * @param refusal the refusal
+   * @return a 403 carrying the code
+   */
+  @ExceptionHandler(ManagedConnectionLockedException.class)
+  public ResponseEntity<Map<String, Object>> onConnectionLocked(ManagedConnectionLockedException refusal) {
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("status", HttpStatus.FORBIDDEN.value());
+    body.put("message", refusal.getMessage());
+    return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
   }
 
   /**
