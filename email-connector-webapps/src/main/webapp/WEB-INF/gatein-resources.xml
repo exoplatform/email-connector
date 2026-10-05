@@ -276,6 +276,22 @@
     </depends>
   </module>
 
+  <!-- Contributes the "In your mail filters" group to the AI assistant's standing
+       approvals drawer (EXO-90956). The name MUST contain "AiToolGrantGroupExtension": the
+       drawer loads AiToolGrantGroupGRP, then runs the modules whose NAME holds it
+       (includeExtensions matches on the name, as for the favorites below). Pure
+       extensionRegistry: no AI code, harmless where the AI add-on is not installed. -->
+  <module>
+    <name>EmailConnectorAiToolGrantGroupExtension</name>
+    <load-group>AiToolGrantGroupGRP</load-group>
+    <script>
+      <path>/js/emailConnectorAiToolGrantGroupExtension.bundle.js</path>
+    </script>
+    <depends>
+      <module>extensionRegistry</module>
+    </depends>
+  </module>
+
   <!-- Contributes the "Emails" section to the platform's global Favorites drawer. The
        name MUST contain "FavoriteDrawerExtension": the favorites portlet discovers its
        contributors with includeExtensions('FavoriteDrawerExtension'), which matches on
