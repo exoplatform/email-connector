@@ -930,10 +930,13 @@ export function retryAutomation(matchId) {
  * answer waits for it.
  *
  * @param {number} proposalId - the proposal
+ * @param {boolean} [allowForFilter] - whether its rule may run the tool without asking
+ *   from now on (EXO-90956)
  * @returns {Promise<object>} the proposal once run: DONE or FAILED
  */
-export function approveProposal(proposalId) {
-  return filterRequest(`/proposals/${proposalId}/approve`, 'POST', null, 'Error when approving the proposal');
+export function approveProposal(proposalId, allowForFilter) {
+  return filterRequest(`/proposals/${proposalId}/approve${allowForFilter ? '?allowForFilter=true' : ''}`, 'POST', null,
+    'Error when approving the proposal');
 }
 
 /**

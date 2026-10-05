@@ -58,6 +58,9 @@ import io.meeds.social.util.JsonUtils;
 @Component
 public class EmailFilterStorage {
 
+  /** The most ids one IN list holds. */
+  static final int MAX_IN = 500;
+
   /** The longest error kept on a row. */
   private static final int    MAX_ERROR_LENGTH   = 1000;
 
@@ -481,6 +484,45 @@ public class EmailFilterStorage {
    */
   public int pruneMatches(String userId, Date before) {
     return emailFilterMatchDAO.deleteOlderThan(userId, before);
+  }
+
+  /**
+   * @param userId the owner
+   * @param before the oldest date kept
+   * @return the ids of the owner's matches older than the date
+   */
+  public List<Long> getMatchIdsOlderThan(String userId, Date before) {
+    return emailFilterMatchDAO.findIdsOlderThan(userId, before);
+  }
+
+  /**
+   * The rule and the Message-ID of some of the owner's matches, read in chunks.
+   *
+   * @param userId the owner
+   * @param matchIds the matches
+   * @return the keys, by match id; another user's match is absent
+   */
+  public Map<Long, MatchKey> getMatchKeys(String userId, Collection<Long> matchIds) {
+    Map<Long, MatchKey> keys = new LinkedHashMap<>();
+    if (matchIds == null || matchIds.isEmpty()) {
+      return keys;
+    }
+    List<Long> ids = matchIds.stream().filter(Objects::nonNull).distinct().toList();
+    for (int start = 0; start < ids.size(); start += MAX_IN) {
+      for (Object[] row : emailFilterMatchDAO.findMatchKeys(userId, ids.subList(start, Math.min(ids.size(), start + MAX_IN)))) {
+        keys.put((Long) row[0], new MatchKey((Long) row[1], (String) row[2]));
+      }
+    }
+    return keys;
+  }
+
+  /**
+   * The rule and the mail of a match.
+   *
+   * @param filterId the rule
+   * @param mailHeaderId the mail's Message-ID
+   */
+  public record MatchKey(long filterId, String mailHeaderId) {
   }
 
   /**

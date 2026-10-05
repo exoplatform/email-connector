@@ -16,18 +16,14 @@
  */
 package org.exoplatform.emailConnector.service;
 
-import java.time.Clock;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
-import java.util.regex.Pattern;
+import java.util.TreeMap;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.ObjectProvider;
@@ -38,247 +34,95 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailFilterMatch;
 import org.exoplatform.emailConnector.model.EmailFilterProposal;
+import org.exoplatform.emailConnector.model.EmailFilterProposalCount;
 import org.exoplatform.emailConnector.model.EmailFilterSuggestionCounts;
 import org.exoplatform.emailConnector.model.EmailWaitingSuggestionMail;
 import org.exoplatform.emailConnector.model.MailFolder;
-import org.exoplatform.emailConnector.plugin.EmailFilterAgentHandler;
+import org.exoplatform.emailConnector.model.StoredFilterProposal;
+import org.exoplatform.emailConnector.plugin.EmailFilterProposalProvider;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailFilterProposalStorage;
 import org.exoplatform.emailConnector.storage.EmailFilterStorage;
-import org.exoplatform.services.log.ExoLogger;
-import org.exoplatform.services.log.Log;
+import org.exoplatform.emailConnector.storage.EmailFilterStorage.MatchKey;
 
 /**
  * The tool calls a mail filter's assistant proposed instead of running them, and the
  * owner's decision on each: approve, reject, or hand it to the AI chat.
  * <p>
- * <b>Recorded while the assistant runs.</b> Only the handler of a match whose assistant
- * is {@code RUNNING} records a call, for the match's owner; a run records at most
- * {@value #DEFAULT_MAX_PER_RUN} calls ({@value #MAX_PER_RUN_PROPERTY}), a mailbox holds at
- * most {@value #DEFAULT_MAX_PENDING} waiting ones ({@value #MAX_PENDING_PROPERTY}), and one
- * call is recorded once per match. A call waits {@value #DEFAULT_TTL_DAYS} days
- * ({@value #TTL_DAYS_PROPERTY}), then expires.
+ * <b>Kept by the AI add-on</b> (EXO-90956): the suggestions are the AI add-on's shared
+ * proposals of source type {@code email-filter}, one source per match, read and decided
+ * through the {@link EmailFilterProposalProvider} its glue declares. This service keeps
+ * the email-connector's own REST and views over them: it checks that a request is the
+ * caller's own, from their own mailbox, then joins the suggestions with the matches and
+ * the mails they are about. Without a provider -- no AI add-on, or its profile off --
+ * nothing is suggested: the lists are empty and a decision is refused
+ * {@value #UNAVAILABLE}.
  * <p>
- * <b>Decided by its owner only, once.</b> Every decision moves the status from
- * {@code PROPOSED} by a conditional UPDATE scoped to the owner and to an unexpired row:
- * a second click, another tab or another node finds it moved and is refused. An approved
- * call runs as the owner, through the handler, which runs it on the platform's own tool
- * path; how it ended is written on the row. A handed-over call never runs from here.
+ * <b>Decided by its owner only, once</b>, by the provider: the owner is the request's
+ * user, never a value the client sends.
  */
 @Service
 public class EmailFilterProposalService {
 
-  /** How many calls one run of a mail's assistant may record. */
-  public static final String  MAX_PER_RUN_PROPERTY   = "exo.email.filters.agent.tools.maxProposalsPerMail";
+  /** The code of a proposal that does not exist. */
+  public static final String  NOT_FOUND   = "emailConnector.filters.proposal.notFound";
 
-  /** How many waiting calls a mailbox may hold. */
-  public static final String  MAX_PENDING_PROPERTY   = "exo.email.filters.agent.tools.maxPendingPerMailbox";
+  /** The code of a proposal that is not the caller's. */
+  public static final String  NOT_YOURS   = "emailConnector.filters.proposal.notYours";
 
-  /** How many days a call waits for its owner. */
-  public static final String  TTL_DAYS_PROPERTY      = "exo.email.filters.agent.tools.proposalTtlDays";
+  /** The code of a proposal that no longer waits. */
+  public static final String  NOT_PENDING = "emailConnector.filters.proposal.notPending";
 
-  /** No such proposal. */
-  public static final String  NOT_FOUND              = "emailConnector.filters.proposal.notFound";
+  /** The code of a proposal past its expiry. */
+  public static final String  EXPIRED     = "emailConnector.filters.proposal.expired";
 
-  /** Someone else's proposal. */
-  public static final String  NOT_YOURS              = "emailConnector.filters.proposal.notYours";
+  /** The code of a decision nothing can take: no AI add-on on this deployment. */
+  public static final String  UNAVAILABLE = "emailConnector.filters.proposal.unavailable";
 
-  /** A proposal already decided. */
-  public static final String  NOT_PENDING            = "emailConnector.filters.proposal.notPending";
-
-  /** A proposal past its expiry. */
-  public static final String  EXPIRED                = "emailConnector.filters.proposal.expired";
-
-  /** A run that recorded as many calls as it may. */
-  public static final String  RUN_CAP                = "emailConnector.filters.proposal.runCap";
-
-  /** A mailbox holding as many waiting calls as it may. */
-  public static final String  PENDING_CAP            = "emailConnector.filters.proposal.pendingCap";
-
-  /** A call recorded for a match whose assistant is not running. */
-  public static final String  NOT_RUNNING            = "emailConnector.filters.proposal.notRunning";
-
-  /** A call without a valid tool name, or with too long arguments. */
-  public static final String  INVALID                = "emailConnector.filters.proposal.invalid";
-
-  /** No handler runs tools on this deployment. */
-  public static final String  UNAVAILABLE            = "emailConnector.filters.proposal.unavailable";
-
-  /** An approved call whose run never came back: its node died, or it never ended. */
-  public static final String  INTERRUPTED            = "emailConnector.filters.proposal.interrupted";
-
-  /** How long an approved call may run before it is taken for abandoned, in minutes. */
-  static final long           RUNNING_CEILING_MINUTES = 15;
-
-  /** A call whose tool failed without a message of its own. */
-  public static final String  TOOL_FAILED            = "emailConnector.filters.proposal.toolFailed";
-
-  /** The default of {@value #MAX_PER_RUN_PROPERTY}. */
-  static final int            DEFAULT_MAX_PER_RUN    = 3;
-
-  /** The default of {@value #MAX_PENDING_PROPERTY}. */
-  static final int            DEFAULT_MAX_PENDING    = 50;
-
-  /** The default of {@value #TTL_DAYS_PROPERTY}. */
-  static final int            DEFAULT_TTL_DAYS       = 14;
-
-  /** The longest arguments recorded, in characters. */
-  static final int            MAX_ARGUMENTS_LENGTH   = 65_536;
-
-  /** A tool's name, as the platform's tool definitions write them. */
-  private static final Pattern TOOL_NAME             = Pattern.compile("[A-Za-z0-9_.-]{1,200}");
-
-  /** The logger. */
-  private static final Log    LOG                    = ExoLogger.getLogger(EmailFilterProposalService.class);
+  /** The most suggestions the "Suggestions" view counts at once. */
+  static final int            MAX_WAITING = 100;
 
   @Autowired
-  private EmailFilterProposalStorage              emailFilterProposalStorage;
+  private EmailFilterProposalStorage                  emailFilterProposalStorage;
 
   @Autowired
-  private EmailFilterStorage                      emailFilterStorage;
+  private EmailFilterStorage                          emailFilterStorage;
 
   @Autowired
-  private EmailFilterService                      emailFilterService;
+  private EmailFilterService                          emailFilterService;
 
   @Autowired
-  private ObjectProvider<EmailFilterAgentHandler> agentHandlers;
+  private ObjectProvider<EmailFilterProposalProvider> proposalProviders;
 
   @Autowired
-  private EmailFilterSuggestionDigest             suggestionDigest;
+  private EmailBoxStorage                             emailBoxStorage;
 
   @Autowired
-  private EmailBoxStorage                         emailBoxStorage;
-
-  @Autowired
-  private EmailDelegationService                  emailDelegationService;
-
-  private Clock                                   clock                = Clock.systemUTC();
+  private EmailDelegationService                      emailDelegationService;
 
   /**
-   * Records a tool call a match's assistant made, for the match's owner to decide: the
-   * handler's write, while that assistant runs. A call the match already holds is not
-   * recorded again: the proposal it holds is answered, and one a later run superseded is
-   * put back to wait, as a new one.
-   *
-   * @param username the owner, as whom the assistant runs
-   * @param matchId the match
-   * @param conversationId the run's conversation
-   * @param toolName the tool's name
-   * @param toolTitle the tool's title, from its definition; may be null
-   * @param toolDescription the tool's description, from its definition; may be null
-   * @param arguments the arguments, as the model gave them
-   * @return the proposal
-   * @throws ObjectNotFoundException {@value EmailFilterService#MATCH_NOT_FOUND} when the
-   *           match is not this user's
-   * @throws IllegalArgumentException {@value #INVALID} for a tool name that is none, or
-   *           arguments longer than {@value #MAX_ARGUMENTS_LENGTH} characters
-   * @throws IllegalStateException {@value #NOT_RUNNING} when the match's assistant is not
-   *           running, {@value #RUN_CAP} or {@value #PENDING_CAP} past a cap
-   */
-  public EmailFilterProposal createProposal(String username,
-                                            long matchId,
-                                            String conversationId,
-                                            String toolName,
-                                            String toolTitle,
-                                            String toolDescription,
-                                            String arguments) throws ObjectNotFoundException {
-    if (toolName == null || !TOOL_NAME.matcher(toolName).matches() || StringUtils.length(arguments) > MAX_ARGUMENTS_LENGTH
-        || StringUtils.isBlank(conversationId)) {
-      throw new IllegalArgumentException(INVALID);
-    }
-    EmailFilterMatch match = emailFilterStorage.getMatch(matchId, username)
-                                               .orElseThrow(() -> new ObjectNotFoundException(EmailFilterService.MATCH_NOT_FOUND));
-    if (!EmailFilterMatch.AGENT_RUNNING.equals(match.getAgentStatus())) {
-      throw new IllegalStateException(NOT_RUNNING);
-    }
-    String callArguments = StringUtils.defaultIfBlank(arguments, "{}");
-    Optional<EmailFilterProposal> existing = emailFilterProposalStorage.getByCall(username, matchId, toolName, callArguments);
-    if (existing.isPresent() && !isSuperseded(existing.get())) {
-      return existing.get();
-    }
-    checkCaps(username, matchId, conversationId);
-    long now = clock.millis();
-    EmailFilterProposal proposal = existing.orElseGet(EmailFilterProposal::new);
-    proposal.setMatchId(matchId);
-    proposal.setFilterId(match.getFilterId());
-    proposal.setToolName(toolName);
-    proposal.setToolTitle(StringUtils.trimToNull(toolTitle));
-    proposal.setToolDescription(StringUtils.trimToNull(toolDescription));
-    proposal.setArguments(callArguments);
-    proposal.setRationale(null);
-    proposal.setStatus(EmailFilterProposal.PROPOSED);
-    proposal.setCreatedDate(now);
-    proposal.setExpiresDate(now + ChronoUnit.DAYS.getDuration().toMillis() * ttlDays());
-    proposal.setDecidedDate(null);
-    proposal.setConversationId(StringUtils.left(conversationId, 64));
-    proposal.setResult(null);
-    proposal.setLastError(null);
-    if (existing.isPresent()) {
-      return emailFilterProposalStorage.update(proposal, username)
-                                       .orElseThrow(() -> new ObjectNotFoundException(NOT_FOUND));
-    }
-    return emailFilterProposalStorage.create(proposal, username)
-                                     .or(() -> emailFilterProposalStorage.getByCall(username, matchId, toolName, callArguments))
-                                     .orElseThrow(() -> new IllegalStateException(NOT_PENDING));
-  }
-
-  /**
-   * Writes the assistant's one-line reasons on the calls its run recorded: the run's
-   * write, once its answer is read. A reason for another match's proposal, or for one no
-   * longer waiting, is ignored.
-   *
-   * @param username the owner
-   * @param matchId the match
-   * @param rationales the reasons, by proposal id
-   * @return how many were written
-   */
-  public int setRationales(String username, long matchId, Map<Long, String> rationales) {
-    if (rationales == null || rationales.isEmpty()) {
-      return 0;
-    }
-    int written = 0;
-    for (Map.Entry<Long, String> entry : rationales.entrySet()) {
-      String why = StringUtils.trimToNull(entry.getValue());
-      // One conditional UPDATE of the reason alone: an approval that moved the row in
-      // between is never undone by this write.
-      if (why != null && entry.getKey() != null && emailFilterProposalStorage.setRationale(entry.getKey(), username, matchId, why)) {
-        written++;
-      }
-    }
-    return written;
-  }
-
-  /**
-   * Expires the calls a match's assistant proposed and that still wait: a new run of it
-   * supersedes them. The ones already decided stay as they are.
-   *
-   * @param username the owner
-   * @param matchId the match
-   * @return how many
-   */
-  public int supersede(String username, long matchId) {
-    return emailFilterProposalStorage.expireOfMatch(username, matchId, EmailFilterProposal.SUPERSEDED, new Date(clock.millis()));
-  }
-
-  /**
-   * The proposals of some of the owner's matches, the expired ones marked so first, and
-   * an approved call still running past {@value #RUNNING_CEILING_MINUTES} minutes failed
-   * {@value #INTERRUPTED}: the cards of a mail's Automations panel.
+   * The suggestions of some of the owner's matches: the cards of a mail's Automations
+   * panel.
    *
    * @param username the owner
    * @param matchIds the matches
-   * @return the proposals, oldest first
+   * @return the suggestions, oldest first, each with its rule
    */
   public List<EmailFilterProposal> getProposalsOfMatches(String username, Collection<Long> matchIds) {
-    if (matchIds == null || matchIds.isEmpty()) {
+    EmailFilterProposalProvider provider = provider();
+    if (provider == null || StringUtils.isBlank(username) || matchIds == null || matchIds.isEmpty()) {
       return List.of();
     }
-    Date now = new Date(clock.millis());
-    expireDue(username, now);
-    emailFilterProposalStorage.failStaleRunning(username,
-                                                INTERRUPTED,
-                                                new Date(now.getTime() - ChronoUnit.MINUTES.getDuration().toMillis() * RUNNING_CEILING_MINUTES));
-    return emailFilterProposalStorage.getByMatches(username, matchIds);
+    Map<Long, MatchKey> keys = emailFilterStorage.getMatchKeys(username, matchIds);
+    List<EmailFilterProposal> proposals = new ArrayList<>();
+    for (EmailFilterProposal proposal : provider.getProposalsOfMatches(username, keys.keySet())) {
+      MatchKey key = keys.get(proposal.getMatchId());
+      if (key != null) {
+        proposal.setFilterId(key.filterId());
+        proposals.add(proposal);
+      }
+    }
+    return proposals;
   }
 
   /**
@@ -294,17 +138,15 @@ public class EmailFilterProposalService {
    */
   public List<String> getWaitingMails(String username, Long delegationId) throws ObjectNotFoundException, IllegalAccessException {
     emailFilterService.checkOwnMailbox(username, delegationId);
-    return emailFilterProposalStorage.getWaitingMailHeaderIds(username, new Date(clock.millis()));
+    return List.copyOf(waitingByMail(username).keySet());
   }
 
   /**
    * The caller's mails with a suggestion still waiting for them, as the mailbox's
    * "Suggestions" view lists them (EXO-90851): one cached copy per message, newest first,
    * with how many suggestions wait on it. The copy is one the user can open from a list:
-   * never in Trash, Spam, All Mail or Drafts, nor in a mailbox somebody shared with them
-   * -- the folders the Favorites leave out, for the same reasons. A message with no such
-   * copy cached is not listed. Of the caller's own mailbox only; two reads, whatever the
-   * number of mails, which the mailbox's pending cap bounds.
+   * never in Trash, Spam, All Mail or Drafts, nor in a mailbox somebody shared with them.
+   * A message with no such copy cached is not listed. Of the caller's own mailbox only.
    *
    * @param username the caller, from the request's session
    * @param delegationId the share the request was made from; any value is refused
@@ -316,11 +158,7 @@ public class EmailFilterProposalService {
   public List<EmailWaitingSuggestionMail> getWaitingEmails(String username, Long delegationId) throws ObjectNotFoundException,
                                                                                                IllegalAccessException {
     emailFilterService.checkOwnMailbox(username, delegationId);
-    Map<String, Integer> waiting = new HashMap<>();
-    emailFilterProposalStorage.getWaitingMailHeaderIds(username, new Date(clock.millis()))
-                              .stream()
-                              .filter(StringUtils::isNotBlank)
-                              .forEach(mailHeaderId -> waiting.merge(mailHeaderId, 1, Integer::sum));
+    Map<String, Integer> waiting = waitingByMail(username);
     if (waiting.isEmpty()) {
       return List.of();
     }
@@ -352,121 +190,85 @@ public class EmailFilterProposalService {
   }
 
   /**
-   * Approves a proposal of the caller's and runs it, as the caller, through the handler.
+   * Approves a suggestion of the caller's and runs it, as the caller.
    *
    * @param username the caller, from the request's session
    * @param delegationId the share the request was made from; any value is refused
-   * @param id the proposal
-   * @return the proposal once run: {@code DONE} with the tool's answer, or
-   *         {@code FAILED} with its reason
+   * @param id the suggestion
+   * @return the suggestion once run
    * @throws ObjectNotFoundException when the feature is off, no mailbox is connected, or
-   *           there is no such proposal
+   *           there is no such suggestion
    * @throws IllegalAccessException when the request comes from someone else's mailbox,
-   *           the caller may not use their connector, or the proposal is not theirs
-   * @throws IllegalStateException {@value #EXPIRED} or {@value #NOT_PENDING} when it no
-   *           longer waits
+   *           the caller may not use their connector, or the suggestion is not theirs
+   * @throws IllegalStateException with a message code when it no longer waits, or
+   *           {@value #UNAVAILABLE} when nothing can decide it
    */
   public EmailFilterProposal approve(String username, Long delegationId, long id) throws ObjectNotFoundException,
                                                                                   IllegalAccessException {
-    EmailFilterProposal proposal = claim(username, delegationId, id, EmailFilterProposal.RUNNING);
-    EmailFilterAgentHandler handler = agentHandlers == null ? null : agentHandlers.stream().findFirst().orElse(null);
-    if (handler == null) {
-      emailFilterProposalStorage.finish(id, username, EmailFilterProposal.FAILED, null, UNAVAILABLE);
-      return reread(username, id);
-    }
-    boolean finished = false;
-    try {
-      String result = handler.executeProposal(username, proposal);
-      finished = emailFilterProposalStorage.finish(id, username, EmailFilterProposal.DONE, result, null);
-    } catch (Exception e) { // NOSONAR whatever the tool did, the row says how it ended
-      LOG.info("The tool '{}' proposed by a mail filter's assistant failed for user {}: {}",
-               proposal.getToolName(),
-               username,
-               e.getMessage());
-      LOG.debug("The failure of the proposal {}", id, e);
-      finished = emailFilterProposalStorage.finish(id,
-                                                   username,
-                                                   EmailFilterProposal.FAILED,
-                                                   null,
-                                                   StringUtils.defaultIfBlank(e.getMessage(), TOOL_FAILED));
-    } finally {
-      if (!finished) {
-        // An Error, or a write that failed: the row never stays RUNNING.
-        emailFilterProposalStorage.finish(id, username, EmailFilterProposal.FAILED, null, INTERRUPTED);
-      }
-      refreshDigest(username);
-    }
-    return reread(username, id);
+    return approve(username, delegationId, id, false);
   }
 
   /**
-   * Rejects a proposal of the caller's: it never runs.
+   * Approves a suggestion of the caller's and runs it, as the caller; with
+   * {@code allowForFilter}, its rule may run the tool without asking from now on.
    *
    * @param username the caller, from the request's session
    * @param delegationId the share the request was made from; any value is refused
-   * @param id the proposal
-   * @return the proposal, {@code REJECTED}
-   * @throws ObjectNotFoundException as {@link #approve}
-   * @throws IllegalAccessException as {@link #approve}
-   * @throws IllegalStateException as {@link #approve}
+   * @param id the suggestion
+   * @param allowForFilter whether its rule may run the tool without asking from now on
+   * @return the suggestion once run
+   * @throws ObjectNotFoundException as {@link #approve(String, Long, long)}
+   * @throws IllegalAccessException as {@link #approve(String, Long, long)}
+   * @throws IllegalStateException as {@link #approve(String, Long, long)}
    */
-  public EmailFilterProposal reject(String username, Long delegationId, long id) throws ObjectNotFoundException,
-                                                                                 IllegalAccessException {
-    claim(username, delegationId, id, EmailFilterProposal.REJECTED);
-    refreshDigest(username);
-    return reread(username, id);
+  public EmailFilterProposal approve(String username,
+                                     Long delegationId,
+                                     long id,
+                                     boolean allowForFilter) throws ObjectNotFoundException, IllegalAccessException {
+    emailFilterService.checkOwnMailbox(username, delegationId);
+    return requireProvider().approve(username, id, allowForFilter);
   }
 
   /**
-   * Hands a proposal of the caller's to the AI chat, where the caller goes on: it never
+   * Rejects a suggestion of the caller's: it never runs.
+   *
+   * @param username the caller, from the request's session
+   * @param delegationId the share the request was made from; any value is refused
+   * @param id the suggestion
+   * @return the suggestion, rejected
+   * @throws ObjectNotFoundException as {@link #approve(String, Long, long)}
+   * @throws IllegalAccessException as {@link #approve(String, Long, long)}
+   * @throws IllegalStateException as {@link #approve(String, Long, long)}
+   */
+  public EmailFilterProposal reject(String username, Long delegationId, long id) throws ObjectNotFoundException,
+                                                                                 IllegalAccessException {
+    emailFilterService.checkOwnMailbox(username, delegationId);
+    return requireProvider().reject(username, id);
+  }
+
+  /**
+   * Hands a suggestion of the caller's to the AI chat, where the caller goes on: it never
    * runs from here again, whatever the chat does.
    *
    * @param username the caller, from the request's session
    * @param delegationId the share the request was made from; any value is refused
-   * @param id the proposal
-   * @return the proposal, {@code HANDED_OVER}
-   * @throws ObjectNotFoundException as {@link #approve}
-   * @throws IllegalAccessException as {@link #approve}
-   * @throws IllegalStateException as {@link #approve}
+   * @param id the suggestion
+   * @return the suggestion, handed over
+   * @throws ObjectNotFoundException as {@link #approve(String, Long, long)}
+   * @throws IllegalAccessException as {@link #approve(String, Long, long)}
+   * @throws IllegalStateException as {@link #approve(String, Long, long)}
    */
   public EmailFilterProposal handOver(String username, Long delegationId, long id) throws ObjectNotFoundException,
                                                                                    IllegalAccessException {
-    claim(username, delegationId, id, EmailFilterProposal.HANDED_OVER);
-    refreshDigest(username);
-    return reread(username, id);
-  }
-
-  /**
-   * Tells the owner how many suggestions wait, once a run of their assistant proposed
-   * some: the one digest notification ({@link EmailFilterSuggestionDigest#publish}),
-   * never one per suggestion. The run's write, after its proposals are recorded.
-   *
-   * @param username the owner
-   */
-  public void notifyWaiting(String username) {
-    suggestionDigest.publish(username, countWaiting(username));
-  }
-
-  /**
-   * Brings the owner's digest to the count that waits now, when suggestions stopped
-   * waiting without a decision -- a new run of the assistant superseded them and proposed
-   * nothing. Nothing is sent; the digest is removed when nothing waits. Never throws.
-   *
-   * @param username the owner
-   */
-  public void refreshWaiting(String username) {
-    try {
-      suggestionDigest.recount(username, countWaiting(username));
-    } catch (RuntimeException e) {
-      LOG.warn("The digest of the waiting suggestions of user {} could not be recounted", username, e);
-    }
+    emailFilterService.checkOwnMailbox(username, delegationId);
+    return requireProvider().handOver(username, id);
   }
 
   /**
    * What the caller decided on each of their rules' suggestions: per rule, how many were
-   * approved, rejected, expired unanswered, continued in the chat, and how many wait --
-   * the numbers that tell whether the assistant is worth running on more mail. Kept as
-   * long as the rules' log (their matches' retention).
+   * approved, rejected, expired unanswered, continued in the chat, and how many wait.
+   * Kept as long as the rules' log (their matches' retention); a superseded suggestion
+   * and an action run on its own count as none of them.
    *
    * @param username the caller, from the request's session
    * @param delegationId the share the request was made from; any value is refused
@@ -478,20 +280,69 @@ public class EmailFilterProposalService {
   public List<EmailFilterSuggestionCounts> getSuggestionCounts(String username, Long delegationId) throws ObjectNotFoundException,
                                                                                                   IllegalAccessException {
     emailFilterService.checkOwnMailbox(username, delegationId);
-    expireDue(username, new Date(clock.millis()));
-    return emailFilterProposalStorage.countByFilter(username);
+    EmailFilterProposalProvider provider = provider();
+    if (provider == null) {
+      return List.of();
+    }
+    List<EmailFilterProposalCount> counts = provider.countByMatch(username);
+    Map<Long, MatchKey> keys = emailFilterStorage.getMatchKeys(username, counts.stream().map(EmailFilterProposalCount::matchId).toList());
+    Map<Long, Map<String, Long>> byFilter = new TreeMap<>();
+    for (EmailFilterProposalCount count : counts) {
+      MatchKey key = keys.get(count.matchId());
+      if (key != null) {
+        byFilter.computeIfAbsent(key.filterId(), filterId -> new HashMap<>()).merge(count.status(), count.count(), Long::sum);
+      }
+    }
+    return byFilter.entrySet().stream().map(entry -> {
+      Map<String, Long> byStatus = entry.getValue();
+      long approved = byStatus.getOrDefault(EmailFilterProposal.RUNNING, 0L) + byStatus.getOrDefault(EmailFilterProposal.DONE, 0L)
+          + byStatus.getOrDefault(EmailFilterProposal.FAILED, 0L);
+      return new EmailFilterSuggestionCounts(entry.getKey(),
+                                             approved,
+                                             byStatus.getOrDefault(EmailFilterProposal.REJECTED, 0L),
+                                             byStatus.getOrDefault(EmailFilterProposal.EXPIRED, 0L),
+                                             byStatus.getOrDefault(EmailFilterProposal.HANDED_OVER, 0L),
+                                             byStatus.getOrDefault(EmailFilterProposal.PROPOSED, 0L));
+    }).toList();
   }
 
   /**
-   * How many of the owner's suggestions wait, the expired ones marked so first. Its
-   * callers write the digest with the count themselves, so the expiry here does not.
+   * A page of the suggestions of the email-connector's former store, every user's, by
+   * id: what the move to the AI add-on's shared proposals reads (EXO-90956).
+   *
+   * @param afterId the id the page starts after, 0 for the first page
+   * @param limit the page size
+   * @return the suggestions with their owners
+   */
+  public List<StoredFilterProposal> getStoredProposals(long afterId, int limit) {
+    return emailFilterProposalStorage.getPage(afterId, limit);
+  }
+
+  /**
+   * How many suggestions wait on each of the owner's mails, by Message-ID.
    *
    * @param username the owner
-   * @return the count
+   * @return the counts, by Message-ID
    */
-  private long countWaiting(String username) {
-    emailFilterProposalStorage.expireDue(username, new Date(clock.millis()));
-    return emailFilterProposalStorage.countByStatus(username, EmailFilterProposal.PROPOSED);
+  private Map<String, Integer> waitingByMail(String username) {
+    EmailFilterProposalProvider provider = provider();
+    if (provider == null) {
+      return Map.of();
+    }
+    List<Long> waitingMatches = provider.getWaitingMatchIds(username);
+    if (waitingMatches.isEmpty()) {
+      return Map.of();
+    }
+    Map<Long, MatchKey> keys = emailFilterStorage.getMatchKeys(username, waitingMatches);
+    Map<String, Integer> waiting = new LinkedHashMap<>();
+    waitingMatches.stream()
+                  .limit(MAX_WAITING)
+                  .map(keys::get)
+                  .filter(Objects::nonNull)
+                  .map(MatchKey::mailHeaderId)
+                  .filter(StringUtils::isNotBlank)
+                  .forEach(mailHeaderId -> waiting.merge(mailHeaderId, 1, Integer::sum));
+    return waiting;
   }
 
   /**
@@ -518,140 +369,22 @@ public class EmailFilterProposalService {
   }
 
   /**
-   * Expires the owner's proposals past their date and, when some were, brings the digest
-   * to the count that still waits: a digest never tells suggestions that expired.
-   *
-   * @param username the owner
-   * @param now the time
-   * @return how many were expired
+   * @return the provider the glue declares, null when there is none
    */
-  private int expireDue(String username, Date now) {
-    int expired = emailFilterProposalStorage.expireDue(username, now);
-    if (expired > 0) {
-      try {
-        suggestionDigest.recount(username, emailFilterProposalStorage.countByStatus(username, EmailFilterProposal.PROPOSED));
-      } catch (RuntimeException e) {
-        LOG.warn("The digest of the waiting suggestions of user {} could not be recounted", username, e);
-      }
+  private EmailFilterProposalProvider provider() {
+    return proposalProviders == null ? null : proposalProviders.orderedStream().findFirst().orElse(null);
+  }
+
+  /**
+   * @return the provider the glue declares
+   * @throws IllegalStateException {@value #UNAVAILABLE} when there is none
+   */
+  private EmailFilterProposalProvider requireProvider() {
+    EmailFilterProposalProvider provider = provider();
+    if (provider == null) {
+      throw new IllegalStateException(UNAVAILABLE);
     }
-    return expired;
+    return provider;
   }
 
-  /**
-   * Brings the owner's digest to what waits now, after a decision. Never throws.
-   *
-   * @param username the owner
-   */
-  private void refreshDigest(String username) {
-    try {
-      suggestionDigest.refresh(username, countWaiting(username));
-    } catch (RuntimeException e) {
-      LOG.warn("The digest of the waiting suggestions of user {} could not be refreshed", username, e);
-    }
-  }
-
-  /**
-   * Moves a waiting proposal of the caller's to a decision, once: checks, in order, the
-   * caller's mailbox, that the proposal exists, that it is theirs, then claims it.
-   *
-   * @param username the caller
-   * @param delegationId the share the request was made from
-   * @param id the proposal
-   * @param to the decision's status
-   * @return the proposal as it was before the claim
-   * @throws ObjectNotFoundException when there is no such proposal
-   * @throws IllegalAccessException when it is not the caller's
-   * @throws IllegalStateException when it no longer waits
-   */
-  private EmailFilterProposal claim(String username, Long delegationId, long id, String to) throws ObjectNotFoundException,
-                                                                                            IllegalAccessException {
-    emailFilterService.checkOwnMailbox(username, delegationId);
-    if (!emailFilterProposalStorage.exists(id)) {
-      throw new ObjectNotFoundException(NOT_FOUND);
-    }
-    EmailFilterProposal proposal = emailFilterProposalStorage.get(id, username)
-                                                             .orElseThrow(() -> new IllegalAccessException(NOT_YOURS));
-    Date now = new Date(clock.millis());
-    if (!emailFilterProposalStorage.claim(id, username, EmailFilterProposal.PROPOSED, to, now)) {
-      expireDue(username, now);
-      EmailFilterProposal current = reread(username, id);
-      throw new IllegalStateException(EmailFilterProposal.EXPIRED.equals(current.getStatus()) ? EXPIRED : NOT_PENDING);
-    }
-    return proposal;
-  }
-
-  /**
-   * Refuses one more call past the caps of the run or of the mailbox.
-   *
-   * @param username the owner
-   * @param matchId the match
-   * @param conversationId the run's conversation
-   * @throws IllegalStateException {@value #RUN_CAP} or {@value #PENDING_CAP}
-   */
-  private void checkCaps(String username, long matchId, String conversationId) {
-    if (emailFilterProposalStorage.countByRun(username, matchId, StringUtils.left(conversationId, 64))
-        >= intProperty(MAX_PER_RUN_PROPERTY, DEFAULT_MAX_PER_RUN)) {
-      throw new IllegalStateException(RUN_CAP);
-    }
-    expireDue(username, new Date(clock.millis()));
-    if (emailFilterProposalStorage.countByStatus(username, EmailFilterProposal.PROPOSED)
-        >= intProperty(MAX_PENDING_PROPERTY, DEFAULT_MAX_PENDING)) {
-      throw new IllegalStateException(PENDING_CAP);
-    }
-  }
-
-  /**
-   * A proposal of the owner's, read again.
-   *
-   * @param username the owner
-   * @param id the proposal
-   * @return the proposal
-   * @throws ObjectNotFoundException when it vanished
-   */
-  private EmailFilterProposal reread(String username, long id) throws ObjectNotFoundException {
-    return emailFilterProposalStorage.get(id, username).orElseThrow(() -> new ObjectNotFoundException(NOT_FOUND));
-  }
-
-  /**
-   * Whether a proposal was set aside by a later run of its assistant.
-   *
-   * @param proposal the proposal
-   * @return true for an expired one with that reason
-   */
-  private static boolean isSuperseded(EmailFilterProposal proposal) {
-    return EmailFilterProposal.EXPIRED.equals(proposal.getStatus()) && EmailFilterProposal.SUPERSEDED.equals(proposal.getLastError());
-  }
-
-  /**
-   * How many days a call waits ({@value #TTL_DAYS_PROPERTY}).
-   *
-   * @return at least 1
-   */
-  private static int ttlDays() {
-    return Math.max(1, intProperty(TTL_DAYS_PROPERTY, DEFAULT_TTL_DAYS));
-  }
-
-  /**
-   * An integer system property.
-   *
-   * @param name the property
-   * @param defaultValue its default
-   * @return the value, the default when unset or unreadable
-   */
-  private static int intProperty(String name, int defaultValue) {
-    try {
-      return Integer.parseInt(System.getProperty(name, String.valueOf(defaultValue)).trim());
-    } catch (NumberFormatException e) {
-      return defaultValue;
-    }
-  }
-
-  /**
-   * Replaces the clock, for tests.
-   *
-   * @param clock the clock
-   */
-  void setClock(Clock clock) {
-    this.clock = clock;
-  }
 }
