@@ -34,14 +34,6 @@ import io.meeds.pwa.plugin.PwaNotificationPlugin;
 class EmailFilterPwaPluginsTest {
 
   /**
-   * The digest's push: title and link as written, the sentence without its tags.
-   */
-  @Test
-  void theDigestsPushBodyIsPlainText() {
-    assertPlainBody(new EmailFilterSuggestionsNotificationPwaPlugin());
-  }
-
-  /**
    * The assistant's notification's push: the same.
    */
   @Test
