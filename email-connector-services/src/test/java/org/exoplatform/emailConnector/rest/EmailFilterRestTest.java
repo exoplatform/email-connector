@@ -464,21 +464,26 @@ public class EmailFilterRestTest {
    */
   @Test
   void approveProposalAnswersOkOrEveryRefusal() throws Exception {
-    when(emailFilterProposalService.approve(anyString(), any(), eq(5L))).thenReturn(proposal());
+    when(emailFilterProposalService.approve(anyString(), any(), eq(5L), eq(false))).thenReturn(proposal());
     mockMvc.perform(post(FILTERS_PATH + "/proposals/5/approve").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.status").value(EmailFilterProposal.DONE));
+    // "Don't ask again for this filter" is passed on (EXO-90956)
+    when(emailFilterProposalService.approve(anyString(), any(), eq(5L), eq(true))).thenReturn(proposal());
+    mockMvc.perform(post(FILTERS_PATH + "/proposals/5/approve?allowForFilter=true").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.status").value(EmailFilterProposal.DONE));
 
     doThrow(new IllegalAccessException("emailConnector.filters.proposal.notYours")).when(emailFilterProposalService)
-                                                                                    .approve(anyString(), any(), anyLong());
+                                                                                    .approve(anyString(), any(), anyLong(), anyBoolean());
     mockMvc.perform(post(FILTERS_PATH + "/proposals/5/approve").with(testSimpleUser())).andExpect(status().isForbidden());
 
     doThrow(new ObjectNotFoundException("emailConnector.filters.proposal.notFound")).when(emailFilterProposalService)
-                                                                                     .approve(anyString(), any(), anyLong());
+                                                                                     .approve(anyString(), any(), anyLong(), anyBoolean());
     mockMvc.perform(post(FILTERS_PATH + "/proposals/5/approve").with(testSimpleUser())).andExpect(status().isNotFound());
 
     doThrow(new IllegalStateException("emailConnector.filters.proposal.notPending")).when(emailFilterProposalService)
-                                                                                     .approve(anyString(), any(), anyLong());
+                                                                                     .approve(anyString(), any(), anyLong(), anyBoolean());
     mockMvc.perform(post(FILTERS_PATH + "/proposals/5/approve").with(testSimpleUser())).andExpect(status().isConflict());
   }
 
