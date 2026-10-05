@@ -154,14 +154,14 @@ export default {
     connectManaged() {
       const resume = this.afterManagedConnect;
       this.afterManagedConnect = null;
-      this.$emailConnectorUserSettingService.connectThroughProvider(this.userEmailSetting.managedConnectorId)
+      this.$emailConnectorCommonService.connectThroughProvider(this.userEmailSetting.managedConnectorId)
         .then(() => {
           document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
           if (resume) {
             resume();
           }
         })
-        .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.managed.connect.error'), 'error'));
+        .catch(error => this.$root.$emit('alert-message', this.$t(error?.code || 'UserSettings.emailConnector.managed.connect.error'), 'error'));
     },
     // Entry point used by other apps (e.g. the Documents "Send by email" action) to
     // open a NEW email pre-seeded with a document as an attachment. Same connected

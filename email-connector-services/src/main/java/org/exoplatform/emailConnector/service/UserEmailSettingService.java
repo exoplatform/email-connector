@@ -287,9 +287,13 @@ public class UserEmailSettingService {
    * changes, so the account-cleanup broadcast empties the previous mailbox's mirror and
    * ends the shares the user accepted, as any rebind does. The connection is marked as
    * made by managed mode.
+   * <p>
+   * No entitlement check is made on {@code username}: the caller establishes it, and
+   * it is never a value a client supplied. The managed enrolment calls this at login,
+   * with the login's own user.
    *
    * @param emailConnectorId the designated connector
-   * @param username the eXo login to move
+   * @param username the eXo login to move, established by the caller
    * @return true when the connection was recorded, false when the stored setting
    *         already named that connector by the time of the write
    * @throws IllegalAccessException when the connector is unknown or deactivated, or

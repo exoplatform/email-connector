@@ -250,12 +250,12 @@ export default {
      */
     connectManaged() {
       this.connecting = true;
-      this.$emailConnectorUserSettingService.connectThroughProvider(this.userEmailSetting.managedConnectorId)
+      this.$emailConnectorCommonService.connectThroughProvider(this.userEmailSetting.managedConnectorId)
         .then(() => {
           this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.managed.connected'), 'success');
           document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
         })
-        .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.managed.connect.error'), 'error'))
+        .catch(error => this.$root.$emit('alert-message', this.$t(error?.code || 'UserSettings.emailConnector.managed.connect.error'), 'error'))
         .finally(() => this.connecting = false);
     },
     /**

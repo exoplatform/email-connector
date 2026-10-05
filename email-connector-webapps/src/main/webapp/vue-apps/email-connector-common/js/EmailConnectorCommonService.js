@@ -110,6 +110,41 @@ export function resetAndResyncMailbox() {
 }
 
 /**
+ * The message code a managed-mode refusal carries in its 403 body: the instance keeps
+ * the user on the designated connector.
+ */
+export const CONNECTION_LOCKED_CODE = 'emailConnector.managed.connectionLocked';
+
+/**
+ * Connects to a connector whose provider asks the user for nothing. The server
+ * opens the mailbox with the service account's own material and records the
+ * connection only if that worked, so a resolved promise means tested — the same
+ * promise the typed form makes.
+ *
+ * @param {Number} emailConnectorId the connector to connect to
+ * @returns {Promise} resolves once connected; rejects with an error whose `code` is
+ *          {@link CONNECTION_LOCKED_CODE} when managed mode refuses the connection
+ */
+export function connectThroughProvider(emailConnectorId) {
+  return fetch(`/email-connector/rest/user-email-setting/connect?emailConnectorId=${emailConnectorId}`, {
+    credentials: 'include',
+    method: 'POST'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return;
+    }
+    return resp.text().catch(() => '').then(message => {
+      const error = new Error('Error when connecting through the configured provider');
+      error.status = resp.status;
+      if (resp.status === 403 && message?.includes(CONNECTION_LOCKED_CODE)) {
+        error.code = CONNECTION_LOCKED_CODE;
+      }
+      throw error;
+    });
+  });
+}
+
+/**
  * Synchronizes the user's mailbox now. The server runs the synchronization before it
  * answers, so the promise resolves once the run has ended.
  *
