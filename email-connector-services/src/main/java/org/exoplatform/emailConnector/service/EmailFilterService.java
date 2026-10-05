@@ -70,6 +70,7 @@ import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.notification.plugin.EmailFilterNotificationPlugin;
 import org.exoplatform.emailConnector.plugin.EmailFilterAgentHandler;
+import org.exoplatform.emailConnector.plugin.EmailFilterProposalProvider;
 import org.exoplatform.emailConnector.service.filters.EmailFilterMail;
 import org.exoplatform.emailConnector.service.filters.FilterConditionEvaluator;
 import org.exoplatform.emailConnector.service.filters.FilterConditionEvaluator.Result;
@@ -396,6 +397,12 @@ public class EmailFilterService {
   @Autowired
   private ObjectProvider<EmailFilterAgentHandler> agentHandlers;
 
+  // The AI add-on's side of the rules' suggestions and standing approvals (EXO-90956),
+  // optional as the handler: told of each rule saved or deleted, of the matches pruned
+  // and of a mailbox disconnected.
+  @Autowired
+  private ObjectProvider<EmailFilterProposalProvider> proposalProviders;
+
   private Clock                       clock                      = Clock.systemUTC();
 
   /**
@@ -477,7 +484,7 @@ public class EmailFilterService {
       filter.setPosition(emailFilterStorage.nextPosition(username));
       Date now = now();
       filter.setActiveSince(now.getTime());
-      EmailFilter saved = emailFilterStorage.save(username, filter, now);
+      EmailFilter saved = saveFilterRow(username, filter, now);
       markSeeded(username);
       LOG.info("Mail filter {} 'Important mail' seeded, switched off, for user {}", saved.getId(), username);
       return true;
@@ -645,11 +652,11 @@ public class EmailFilterService {
     Date now = now();
     filter.setActiveSince(now.getTime());
     if (!EmailFilter.KIND_HOP.equals(filter.getKind())) {
-      return emailFilterStorage.save(username, filter, now);
+      return saveFilterRow(username, filter, now);
     }
     boolean wanted = filter.isEnabled();
     filter.setEnabled(false);
-    EmailFilter provisional = emailFilterStorage.save(username, filter, now);
+    EmailFilter provisional = saveFilterRow(username, filter, now);
     try {
       EmailFilter hop = withHopNames(provisional);
       hop.setEnabled(wanted);
@@ -657,11 +664,11 @@ public class EmailFilterService {
       if (wanted) {
         publishHops(username, hop, consent, republish);
       }
-      return emailFilterStorage.save(username, hop, now);
+      return saveFilterRow(username, hop, now);
     } catch (ObjectNotFoundException | IllegalAccessException | ServerRuleUnavailableException | ServerRuleConflictException
         | ServerRuleUnsupportedException | RuntimeException e) {
       // The server did not take the rule's half: the rule is not created.
-      emailFilterStorage.delete(provisional.getId(), username);
+      deleteFilterRow(provisional.getId(), username);
       throw e;
     }
   }
@@ -715,7 +722,7 @@ public class EmailFilterService {
     } else if (isLiveHop(existing)) {
       removeHop(username, existing, republish);
     }
-    return emailFilterStorage.save(username, filter, now());
+    return saveFilterRow(username, filter, now());
   }
 
   /**
@@ -745,7 +752,7 @@ public class EmailFilterService {
     if (isLiveHop(existing)) {
       removeHop(username, existing, republish);
     }
-    emailFilterStorage.delete(id, username);
+    deleteFilterRow(id, username);
     LOG.info("Mail filter {} deleted by user {}", id, username);
   }
 
@@ -985,7 +992,7 @@ public class EmailFilterService {
     if (existing.isEnabled()) {
       EmailFilter off = copyOf(existing);
       off.setEnabled(false);
-      emailFilterStorage.save(username, off, now());
+      saveFilterRow(username, off, now());
     }
     try {
       if (isLiveHop(existing)) {
@@ -996,10 +1003,10 @@ public class EmailFilterService {
     } catch (ObjectNotFoundException | IllegalAccessException | ServerRuleUnavailableException | ServerRuleConflictException
         | ServerRuleUnsupportedException | RuntimeException e) {
       // The server did not take the rule: the eXo filter stays what it was.
-      emailFilterStorage.save(username, existing, now());
+      saveFilterRow(username, existing, now());
       throw e;
     }
-    emailFilterStorage.delete(id, username);
+    deleteFilterRow(id, username);
     LOG.info("Mail filter {} of user {} moved to the mail server", id, username);
     return serverFilter(input, null);
   }
@@ -1045,7 +1052,7 @@ public class EmailFilterService {
     filter.setActiveSince(now.getTime());
     boolean wanted = filter.isEnabled();
     filter.setEnabled(false);
-    EmailFilter provisional = emailFilterStorage.save(username, filter, now);
+    EmailFilter provisional = saveFilterRow(username, filter, now);
     EmailFilter saved = EmailFilter.KIND_HOP.equals(provisional.getKind()) ? withHopNames(provisional) : provisional;
     try {
       if (EmailFilter.KIND_HOP.equals(saved.getKind())) {
@@ -1061,14 +1068,14 @@ public class EmailFilterService {
     } catch (ObjectNotFoundException | IllegalAccessException | ServerRuleUnavailableException | ServerRuleConflictException
         | ServerRuleUnsupportedException | RuntimeException e) {
       // The server still holds the rule: the eXo filter is not created.
-      emailFilterStorage.delete(provisional.getId(), username);
+      deleteFilterRow(provisional.getId(), username);
       throw e;
     }
     // The server no longer holds the rule: from here on the row is the filter's only copy,
     // never deleted. When it cannot be switched on, it stays in the list, switched off,
     // for the user to switch on again.
     saved.setEnabled(wanted);
-    return emailFilterStorage.save(username, saved, now);
+    return saveFilterRow(username, saved, now);
   }
 
   /**
@@ -1758,6 +1765,21 @@ public class EmailFilterService {
    */
   public Optional<EmailFilter> getFilterOfMatch(String username, long filterId) {
     return emailFilterStorage.getFilter(filterId, username);
+  }
+
+  /**
+   * One match of the owner's, as the AI side reads it to describe and check a
+   * suggestion of its assistant (EXO-90956).
+   *
+   * @param username the owner
+   * @param matchId the match
+   * @return the match, or empty when it is gone or someone else's
+   */
+  public Optional<EmailFilterMatch> getOwnMatch(String username, long matchId) {
+    if (StringUtils.isBlank(username)) {
+      return Optional.empty();
+    }
+    return emailFilterStorage.getMatch(matchId, username);
   }
 
   /**
@@ -3032,7 +3054,81 @@ public class EmailFilterService {
   private void prune(String username) {
     int days = intProperty(RETENTION_PROPERTY, 90);
     if (days > 0) {
-      emailFilterStorage.pruneMatches(username, Date.from(clock.instant().minus(days, ChronoUnit.DAYS)));
+      Date before = Date.from(clock.instant().minus(days, ChronoUnit.DAYS));
+      List<Long> pruned = emailFilterStorage.getMatchIdsOlderThan(username, before);
+      emailFilterStorage.pruneMatches(username, before);
+      if (!pruned.isEmpty()) {
+        // the decided suggestions go with their matches, as the former store's cascade did
+        tellProvider(provider -> provider.onMatchesPurged(username, pruned), "the pruned matches", username);
+      }
+    }
+  }
+
+  /**
+   * Saves a rule's row and tells the AI add-on's side, once written, how the rule was
+   * and is: a rule switched off by its owner no longer runs anything without asking.
+   * The rule switched off by eXo after an error is not saved here
+   * ({@link EmailFilterStorage#disableWithError}): it keeps its standing approvals, as
+   * a suspended scheduled agent does, and resumes with them once its owner switches it
+   * on again.
+   *
+   * @param username the owner
+   * @param filter the rule
+   * @param now the write's time
+   * @return the rule as saved
+   */
+  private EmailFilter saveFilterRow(String username, EmailFilter filter, Date now) {
+    EmailFilter previous = filter.getId() == null ? null : emailFilterStorage.getFilter(filter.getId(), username).orElse(null);
+    EmailFilter saved = emailFilterStorage.save(username, filter, now);
+    tellProvider(provider -> provider.onFilterSaved(username, previous, saved), "the saved rule " + saved.getId(), username);
+    return saved;
+  }
+
+  /**
+   * Deletes a rule's row and tells the AI add-on's side, once deleted.
+   *
+   * @param id the rule
+   * @param username the owner
+   * @return true when a row was deleted
+   */
+  private boolean deleteFilterRow(long id, String username) {
+    boolean deleted = emailFilterStorage.delete(id, username);
+    if (deleted) {
+      tellProvider(provider -> provider.onFilterDeleted(username, id), "the deleted rule " + id, username);
+    }
+    return deleted;
+  }
+
+  /**
+   * Tells the AI add-on's side that the owner's mailbox is disconnected, or bound to
+   * another account: the rules' standing approvals no longer hold. Never throws.
+   *
+   * @param username the owner
+   */
+  public void onMailboxDisconnected(String username) {
+    if (StringUtils.isNotBlank(username)) {
+      tellProvider(provider -> provider.onMailboxDisconnected(username), "the disconnected mailbox", username);
+    }
+  }
+
+  /**
+   * Tells the AI add-on's side, when the deployment has one, of a rule's life. A failure
+   * there is logged, never thrown: the rule's own write stands.
+   *
+   * @param call what to tell it
+   * @param what what is told, for the log
+   * @param username the owner
+   */
+  private void tellProvider(java.util.function.Consumer<EmailFilterProposalProvider> call, String what, String username) {
+    EmailFilterProposalProvider provider = proposalProviders == null ? null :
+                                                                     proposalProviders.orderedStream().findFirst().orElse(null);
+    if (provider == null) {
+      return;
+    }
+    try {
+      call.accept(provider);
+    } catch (RuntimeException e) {
+      LOG.warn("The AI side of the mail filters of user {} could not be told of {}", username, what, e);
     }
   }
 

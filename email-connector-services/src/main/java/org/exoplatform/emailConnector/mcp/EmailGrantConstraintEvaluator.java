@@ -61,7 +61,7 @@ import io.meeds.mcp.server.plugin.McpToolGrantConstraintEvaluator;
 public class EmailGrantConstraintEvaluator implements McpToolGrantConstraintEvaluator {
 
   /** The tools whose standing approvals this evaluator rules. */
-  static final Set<String>  MAIL_TOOLS       = Set.of("send_email", "reply_email", "reply_all", "forward_email");
+  public static final Set<String> MAIL_TOOLS = Set.of("send_email", "reply_email", "reply_all", "forward_email");
 
   /** The recipient arguments, as the tool methods name them. */
   private static final List<String> RECIPIENT_ARGUMENTS = List.of("to", "cc", "bcc");
