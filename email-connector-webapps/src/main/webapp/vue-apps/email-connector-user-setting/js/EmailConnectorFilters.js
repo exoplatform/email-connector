@@ -20,6 +20,14 @@ import { notifyForwardingUpdated } from './EmailConnectorForwarding.js';
 /** The root event the Settings row opens the filters drawer with. */
 export const OPEN_FILTERS_DRAWER_EVENT = 'open-email-filters-drawer';
 
+/**
+ * The document event another app of the page opens the filters drawer with, on one rule's
+ * form when it names one: {filterId, handled}. The drawer sets handled, so the sender can
+ * follow a link where no drawer is on the page (the AI standing approvals' mail filters
+ * group, EXO-90956).
+ */
+export const OPEN_FILTERS_DRAWER_DOCUMENT_EVENT = 'email-connector-open-filters-drawer';
+
 /** The root event that closes the filters drawer: a matched mail opened from its log drawer. */
 export const CLOSE_FILTERS_DRAWER_EVENT = 'close-email-filters-drawer';
 
