@@ -16,12 +16,6 @@
  */
 package org.exoplatform.emailConnector.service;
 
-import org.exoplatform.emailConnector.plugin.EmailFilterProposalProvider;
-
-import org.springframework.beans.factory.ObjectProvider;
-
-import java.util.stream.Stream;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -51,6 +45,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -61,6 +56,7 @@ import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.beans.factory.ObjectProvider;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
@@ -74,6 +70,7 @@ import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities.VocabularySource;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.plugin.EmailFilterProposalProvider;
 import org.exoplatform.emailConnector.service.rules.sieve.SieveRuleEngine;
 import org.exoplatform.emailConnector.storage.EmailFilterStorage;
 import org.exoplatform.services.listener.ListenerService;
