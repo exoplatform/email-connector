@@ -114,7 +114,8 @@ public class EmailFilterRest {
       + "or a server half this server cannot run (emailConnector.rules.unsupported.*)";
 
   private static final String    PROPOSAL_CONFLICT_DESCRIPTION = "The proposal no longer waits: decided already "
-      + "(emailConnector.filters.proposal.notPending) or past its expiry (emailConnector.filters.proposal.expired)";
+      + "(ai.proposal.notPending) or past its expiry (ai.proposal.expired); or nothing can decide it here, the AI add-on "
+      + "being absent (emailConnector.filters.proposal.unavailable)";
 
   private static final String    FORBIDDEN_DESCRIPTION   = "Asked from someone else's mailbox (emailConnector.rules.ownMailboxOnly), "
       + "or the connector may not be used";
@@ -858,11 +859,11 @@ public class EmailFilterRest {
   @Operation(summary = "Approves a tool call a filter's assistant proposed, and runs it", method = "POST",
       description = "The call runs once, as the caller, through the platform's own tool path -- the tool's own permission checks "
           + "and approval apply -- and the answer waits for it. The proposal answered is DONE with the tool's result, or FAILED "
-          + "with the tool's message; 409 emailConnector.filters.proposal.unavailable when nothing runs tools here. Kept by "
-          + "the AI add-on's shared proposals (EXO-90956), whose own REST the pages use.")
+          + "with the tool's message; 409 emailConnector.filters.proposal.unavailable when nothing runs tools here. The mail "
+          + "pages decide through this REST; the AI add-on's shared proposals keep the suggestions (EXO-90956).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Run; DONE or FAILED"),
       @ApiResponse(responseCode = "403", description = FORBIDDEN_DESCRIPTION + ", or the proposal is someone else's "
-          + "(emailConnector.filters.proposal.notYours)"),
+          + "(no code)"),
       @ApiResponse(responseCode = "404", description = "The feature is off, no mailbox is connected, or no such proposal"),
       @ApiResponse(responseCode = "409", description = PROPOSAL_CONFLICT_DESCRIPTION) })
   public EmailFilterProposal approveProposal(HttpServletRequest request,
@@ -892,7 +893,7 @@ public class EmailFilterRest {
       description = "The call never runs.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Rejected"),
       @ApiResponse(responseCode = "403", description = FORBIDDEN_DESCRIPTION + ", or the proposal is someone else's "
-          + "(emailConnector.filters.proposal.notYours)"),
+          + "(no code)"),
       @ApiResponse(responseCode = "404", description = "The feature is off, no mailbox is connected, or no such proposal"),
       @ApiResponse(responseCode = "409", description = PROPOSAL_CONFLICT_DESCRIPTION) })
   public EmailFilterProposal rejectProposal(HttpServletRequest request,
@@ -920,7 +921,7 @@ public class EmailFilterRest {
           + "proposal again, whatever the chat does.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Handed over"),
       @ApiResponse(responseCode = "403", description = FORBIDDEN_DESCRIPTION + ", or the proposal is someone else's "
-          + "(emailConnector.filters.proposal.notYours)"),
+          + "(no code)"),
       @ApiResponse(responseCode = "404", description = "The feature is off, no mailbox is connected, or no such proposal"),
       @ApiResponse(responseCode = "409", description = PROPOSAL_CONFLICT_DESCRIPTION) })
   public EmailFilterProposal handOverProposal(HttpServletRequest request,
