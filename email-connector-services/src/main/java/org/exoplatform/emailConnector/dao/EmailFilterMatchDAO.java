@@ -216,4 +216,28 @@ public interface EmailFilterMatchDAO extends JpaRepository<EmailFilterMatchEntit
   int deleteOlderThan(@Param("userId")
   String userId, @Param("before")
   Date before);
+
+  /**
+   * The rule and the Message-ID of some of a user's matches.
+   *
+   * @param userId the owner
+   * @param ids the matches
+   * @return rows of match id, rule id and Message-ID
+   */
+  @Query("SELECT fm.id, fm.filterId, fm.mailHeaderId FROM EmailFilterMatchEntity fm WHERE fm.userId = :userId AND fm.id IN :ids")
+  List<Object[]> findMatchKeys(@Param("userId")
+  String userId, @Param("ids")
+  Collection<Long> ids);
+
+  /**
+   * The ids of a user's matches older than a date: those the log's retention deletes.
+   *
+   * @param userId the owner
+   * @param before the oldest date kept
+   * @return the ids
+   */
+  @Query("SELECT fm.id FROM EmailFilterMatchEntity fm WHERE fm.userId = :userId AND fm.matchedDate < :before")
+  List<Long> findIdsOlderThan(@Param("userId")
+  String userId, @Param("before")
+  Date before);
 }
