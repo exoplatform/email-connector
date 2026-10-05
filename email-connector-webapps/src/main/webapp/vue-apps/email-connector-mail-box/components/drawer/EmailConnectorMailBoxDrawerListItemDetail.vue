@@ -21,10 +21,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        and then close under the user. Opened on its own -- from the platform's search,
        or the Favorites drawer -- there is no mailbox behind it to hand the mail to, and
        expanding is not offered. -->
-  <exo-drawer
+  <pinneable-drawer
     id="emailDetailDrawer"
     ref="emailDetailDrawer"
     v-model="emailDetailDrawer"
+    app-name="email"
+    no-dock
+    placement-disabled
     right
     :allow-expand="false"
     :loading="waitingForEmail || readerLoading || waitingForPartialEmail"
@@ -75,7 +78,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           @opened-partial="readerPartial = $event" />
       </template>
     </template>
-  </exo-drawer>
+  </pinneable-drawer>
 </template>
 
 <script>
@@ -509,7 +512,7 @@ export default {
      * @returns {void}
      */
     onDrawerOpened() {
-      if (this.standalone && !this.pageAlreadyDimmed()) {
+      if (this.standalone && !this.$refs.emailDetailDrawer?.stuckElsewhere && !this.pageAlreadyDimmed()) {
         this.showStandaloneBackdrop();
       }
     },
