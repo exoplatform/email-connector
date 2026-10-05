@@ -348,9 +348,15 @@ const STATUS_ICONS = {
  * answers the task with "link" (/portal/dw/tasks/taskDetail/<id>), create_agenda_event
  * the event with "url" (/portal/dw/agenda?eventId=<id>); the other names cover the
  * platform's other models (a note's or an activity's permalink, a document's webUrl).
- * create_personal_note and send_kudos answer no link at all: their cards offer no Open.
+ * A long answer (a note with its content) is stored cut, its link kept first (STORED_LINK).
  */
 const LINK_FIELDS = ['link', 'permalink', 'url', 'webUrl', 'web_url', 'note_url', 'noteUrl', 'activity_url', 'activityUrl', 'href'];
+
+/**
+ * The head a long answer is stored with by the AI proposals (EXO-90956): its link kept
+ * first, as {"url":"<link>"} on its own line, then the answer cut to fit.
+ */
+const STORED_LINK = /^\{"url":"([^"]+)"\}\n/;
 
 /** The fields of a wrapper around a tool's answer: MCP content and text, or a result envelope. */
 const WRAPPER_FIELDS = ['text', 'content', 'structuredContent', 'result', 'data'];
@@ -628,8 +634,14 @@ export default {
      * @returns {String|null} the link, or null when the call is not done or names none of this eXo
      */
     createdLink() {
-      if (this.proposal.status !== 'DONE' || !this.proposal.result) {
+      // approved and run, or run by the rule on its own
+      if (!['DONE', 'EXECUTED'].includes(this.proposal.status) || !this.proposal.result) {
         return null;
+      }
+      // a long answer the AI proposals cut keeps its link first
+      const head = this.proposal.result.match(STORED_LINK);
+      if (head) {
+        return this.safeLink(head[1]);
       }
       return this.findLink(this.proposal.result, LINK_DEPTH);
     },
