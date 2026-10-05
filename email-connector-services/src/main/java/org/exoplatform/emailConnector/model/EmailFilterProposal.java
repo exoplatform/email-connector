@@ -54,8 +54,15 @@ public class EmailFilterProposal {
   /** Handed to the regular AI chat, where the owner goes on; it never runs from here. */
   public static final String       HANDED_OVER   = "HANDED_OVER";
 
+  /**
+   * Not a suggestion: an action the rule's assistant ran on its own, under a standing
+   * approval its owner gave the rule ("Don't ask again for this filter"), kept for the
+   * history only (EXO-90956).
+   */
+  public static final String       EXECUTED      = "EXECUTED";
+
   /** Every status. */
-  public static final List<String> STATUSES      = List.of(PROPOSED, RUNNING, DONE, FAILED, REJECTED, EXPIRED, HANDED_OVER);
+  public static final List<String> STATUSES      = List.of(PROPOSED, RUNNING, DONE, FAILED, REJECTED, EXPIRED, HANDED_OVER, EXECUTED);
 
   /** The reason of a proposal a new run of the assistant replaced. */
   public static final String       SUPERSEDED    = "emailConnector.filters.proposal.superseded";
@@ -104,4 +111,10 @@ public class EmailFilterProposal {
 
   /** Why it did not run: the tool's message, or a message code. */
   private String                   lastError;
+
+  /**
+   * Whether approving it may also let its rule run the tool without asking from now
+   * on, which the card then offers (EXO-90956).
+   */
+  private boolean                  allowableForSource;
 }

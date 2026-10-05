@@ -169,6 +169,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       class="text-caption text-sub-title text-start">
       {{ expiryLine }}
     </div>
+    <v-checkbox
+      v-if="waiting && actions && proposal.allowableForSource"
+      v-model="dontAskAgain"
+      :label="$t('emailConnector.mailBox.automations.proposal.dontAskAgain')"
+      :disabled="!!busy"
+      class="mt-0 pt-0 text-caption"
+      dense
+      hide-details />
     <v-expand-transition>
       <div v-show="open" class="pb-1 text-start">
         <div class="text-caption text-sub-title text-break">{{ proposal.toolName }}</div>
@@ -285,6 +293,8 @@ const STATUS_ICONS = {
   REJECTED: 'fas fa-times-circle',
   EXPIRED: 'far fa-clock',
   HANDED_OVER: 'fas fa-comments',
+  // run by the rule on its own, under the standing approval its owner gave it (EXO-90956)
+  EXECUTED: 'fas fa-bolt',
 };
 
 /**
@@ -348,6 +358,10 @@ export default {
   data: () => ({
     busy: null,
     error: null,
+    // "Don't ask again for this filter": the approval also lets the rule run this tool
+    // without asking from now on, within the recipients' domain for a mail it sends
+    // (EXO-90956). Offered only when the server says the rule may be allowed it.
+    dontAskAgain: false,
     descriptionOpen: false,
     // Whether the folded description is cut: measured, since how many characters fit in
     // two lines depends on the drawer's width.
@@ -580,7 +594,18 @@ export default {
       if (this.proposal.status === 'FAILED') {
         return 'error--text';
       }
-      return this.proposal.status === 'DONE' ? 'success--text' : 'text-sub-title';
+      return ['DONE', 'EXECUTED'].includes(this.proposal.status) ? 'success--text' : 'text-sub-title';
+    },
+    /**
+     * The mail's other suggestions waiting for the same tool: a "Don't ask again"
+     * approval approves them too when the rule's new approval covers them, and this
+     * page answers each one's approval as it does this one's.
+     *
+     * @returns {Array<Object>} the other waiting suggestions of the tool
+     */
+    siblings() {
+      return (this.match?.proposals || []).filter(other => other.id !== this.proposal.id
+        && other.status === 'PROPOSED' && other.toolName === this.proposal.toolName);
     },
   },
   created() {
@@ -832,8 +857,10 @@ export default {
      * @returns {String} the text
      */
     reason(code) {
-      const prefix = 'emailConnector.filters.proposal.';
-      if (code?.startsWith(prefix)) {
+      // the email-connector's codes, and the AI proposals' since they keep the
+      // suggestions (EXO-90956): the same reasons, worded once
+      const prefix = ['emailConnector.filters.proposal.', 'ai.proposal.'].find(candidate => code?.startsWith(candidate));
+      if (prefix) {
         const key = `emailConnector.mailBox.automations.proposal.error.${code.substring(prefix.length)}`;
         return this.$te(key) ? this.$t(key) : this.$t('emailConnector.mailBox.automations.proposal.error.generic');
       }
@@ -857,8 +884,9 @@ export default {
           return updated;
         })
         .catch(error => {
-          this.error = this.reason(error?.message);
-          if (error?.status === 409) {
+          this.error = this.reason(error?.code || error?.message);
+          // decided or gone meanwhile (another tab, a new run): read the panel again
+          if (error?.status === 409 || error?.status === 404) {
             this.$emit('refresh');
           }
           return null;
@@ -872,8 +900,18 @@ export default {
      * @returns {Promise} resolved once run or refused
      */
     approve() {
+      const allowForSource = this.dontAskAgain && !!this.proposal.allowableForSource;
+      const others = allowForSource ? this.siblings : [];
       return this.decide('approve', () => this.actions.approve(this.proposal,
-        () => this.$emailConnectorUserSettingService.approveProposal(this.proposal.id)));
+        () => this.$emailConnectorUserSettingService.approveProposal(this.proposal.id, allowForSource),
+        {allowForSource, others}))
+        .then(updated => {
+          if (updated && others.length) {
+            // the others approved with it changed on the server: read the panel again
+            this.$emit('refresh');
+          }
+          return updated;
+        });
     },
     /**
      * Rejects the call.
