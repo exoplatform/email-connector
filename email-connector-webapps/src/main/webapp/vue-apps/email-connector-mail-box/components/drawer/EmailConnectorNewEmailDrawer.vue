@@ -15,9 +15,12 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <exo-drawer
+  <pinneable-drawer
     id="newEmailDrawer"
     ref="newEmailDrawer"
+    app-name="email"
+    no-dock
+    placement-disabled
     v-bind="containerFocusOff"
     @opened="focusFirstEmptyField"
     v-model="newEmailDrawer"
@@ -288,7 +291,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-menu>
       </div>
     </template>
-  </exo-drawer>
+  </pinneable-drawer>
 </template>
 
 <script>
