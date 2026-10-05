@@ -22,7 +22,6 @@ import EmailDelegationResponseNotificationPlugin from './components/EmailDelegat
 import DelegatedNewEmailsNotificationPlugin from './components/DelegatedNewEmailsNotificationPlugin.vue';
 import EmailFilterNotificationPlugin from './components/EmailFilterNotificationPlugin.vue';
 import EmailForwardingNotificationPlugin from './components/EmailForwardingNotificationPlugin.vue';
-import EmailFilterSuggestionsNotificationPlugin from './components/EmailFilterSuggestionsNotificationPlugin.vue';
 import MailImportFinishedNotificationPlugin from './components/MailImportFinishedNotificationPlugin.vue';
 
 const components = {
@@ -33,7 +32,6 @@ const components = {
   'user-notification-delegated-new-emails': DelegatedNewEmailsNotificationPlugin,
   'user-notification-email-filter': EmailFilterNotificationPlugin,
   'user-notification-email-forwarding': EmailForwardingNotificationPlugin,
-  'user-notification-email-filter-suggestions': EmailFilterSuggestionsNotificationPlugin,
   'user-notification-mail-import-finished': MailImportFinishedNotificationPlugin,
 };
 
