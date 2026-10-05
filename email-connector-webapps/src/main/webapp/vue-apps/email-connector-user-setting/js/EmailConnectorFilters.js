@@ -135,9 +135,12 @@ export const FILTER_OUTCOME_EXTENSION = { app: 'EmailFilter', type: 'email-filte
 /**
  * The extension point of the AI glue's part of a proposal card (EXO-90659):
  * extensionRegistry.registerExtension('EmailFilter', 'email-filter-proposal', {id,
- * approve(proposal, request), continueInChat(proposal, match, email, t)}). approve runs
- * request() -- the REST approval, which runs the call as the user -- while it answers the
- * platform's own approval of that very call, and resolves with request()'s answer;
+ * approve(proposal, request, options), continueInChat(proposal, match, email, t)}).
+ * approve runs request() -- the REST approval, which runs the call as the user -- while
+ * it answers the platform's own approval of that very call, and resolves with request()'s
+ * answer; options {allowForSource, others} name the "Don't ask again for this filter"
+ * choice and the mail's other waiting calls of the tool approved with it, whose
+ * approvals it answers too (EXO-90956);
  * continueInChat opens the regular AI chat about the mail with the proposal as a draft,
  * written with the card's translation function t.
  * Without it the card offers only Reject: nothing on the deployment runs tools.

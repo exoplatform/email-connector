@@ -849,6 +849,8 @@ public class EmailFilterRest {
    * @param request the HTTP request, carrying the authenticated user
    * @param id the proposal
    * @param delegationId the share the request is made from; refused
+   * @param allowForFilter whether the proposal's rule may run the tool without asking
+   *          from now on
    * @return the proposal once run
    */
   @PostMapping("/proposals/{id:[0-9]+}/approve")
@@ -856,7 +858,8 @@ public class EmailFilterRest {
   @Operation(summary = "Approves a tool call a filter's assistant proposed, and runs it", method = "POST",
       description = "The call runs once, as the caller, through the platform's own tool path -- the tool's own permission checks "
           + "and approval apply -- and the answer waits for it. The proposal answered is DONE with the tool's result, or FAILED "
-          + "with the tool's message (or emailConnector.filters.proposal.unavailable when nothing runs tools here).")
+          + "with the tool's message; 409 emailConnector.filters.proposal.unavailable when nothing runs tools here. Kept by "
+          + "the AI add-on's shared proposals (EXO-90956), whose own REST the pages use.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Run; DONE or FAILED"),
       @ApiResponse(responseCode = "403", description = FORBIDDEN_DESCRIPTION + ", or the proposal is someone else's "
           + "(emailConnector.filters.proposal.notYours)"),
@@ -868,8 +871,11 @@ public class EmailFilterRest {
                                              long id,
                                              @Parameter(description = DELEGATION_DESCRIPTION)
                                              @RequestParam(name = "delegationId", required = false)
-                                             Long delegationId) {
-    return decide(() -> emailFilterProposalService.approve(request.getRemoteUser(), delegationId, id));
+                                             Long delegationId,
+                                             @Parameter(description = "Whether the proposal's rule may run the tool without asking from now on")
+                                             @RequestParam(name = "allowForFilter", required = false, defaultValue = "false")
+                                             boolean allowForFilter) {
+    return decide(() -> emailFilterProposalService.approve(request.getRemoteUser(), delegationId, id, allowForFilter));
   }
 
   /**
