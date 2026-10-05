@@ -31,4 +31,13 @@ extensionRegistry.registerExtension('AiToolGrants', 'grant-origin-group', {
   icon: 'fa-filter',
   unknownSourceKey: 'AiUserSettings.grants.aMailFilter',
   matches: grant => grant?.origin === 'EMAIL_FILTER',
+  // the rule's form opens in place, in the mail settings' filters drawer of this page;
+  // the mails' page where that drawer isn't on the page
+  open: grant => {
+    const detail = {filterId: grant?.originSourceId, handled: false};
+    document.dispatchEvent(new CustomEvent('email-connector-open-filters-drawer', {detail}));
+    if (!detail.handled && grant?.originLink) {
+      window.location.href = grant.originLink;
+    }
+  },
 });
