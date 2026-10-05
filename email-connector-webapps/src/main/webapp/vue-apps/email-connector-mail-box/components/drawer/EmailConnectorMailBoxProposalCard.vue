@@ -118,7 +118,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
            chevron go under the text together. -->
       <div class="d-flex align-center ms-auto flex-shrink-0">
         <v-btn
-          v-if="waiting && actions"
+          v-if="waiting && actions && !allowRow"
           :aria-label="$t('emailConnector.mailBox.automations.proposal.approveLabel', { 0: title })"
           :loading="busy === 'approve'"
           :disabled="!!busy"
@@ -136,7 +136,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </template>
         </v-btn>
         <v-btn
-          v-if="waiting"
+          v-if="waiting && !allowRow"
           :aria-label="$t('emailConnector.mailBox.automations.proposal.rejectLabel', { 0: title })"
           :loading="busy === 'reject'"
           :disabled="!!busy"
@@ -164,28 +164,62 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-btn>
       </div>
     </div>
-    <!-- "Don't ask again" changes what Approve does: under the buttons, at the card's
-         caption size -->
+    <!-- A call the rule may be allowed: the action row of the AI chat's approval card and
+         of a scheduled agent's proposal card -- [x Don't ask again for this filter] on the
+         left, Reject and Approve on the right; ticked, Approve says what it also does. -->
     <div
-      v-if="waiting && actions && proposal.allowableForSource"
-      class="d-flex justify-end">
-      <v-checkbox
-        v-model="dontAskAgain"
-        :disabled="!!busy"
-        class="mt-0 pt-0"
-        dense
-        hide-details>
-        <template #label>
-          <span class="text-caption text-color">{{ $t('emailConnector.mailBox.automations.proposal.dontAskAgain') }}</span>
-        </template>
-      </v-checkbox>
+      v-if="allowRow"
+      class="d-flex align-center flex-wrap mt-1"
+      style="column-gap: 4px; row-gap: 4px;">
+      <span
+        :aria-checked="String(dontAskAgain)"
+        :aria-disabled="String(!!busy)"
+        :aria-labelledby="dontAskAgainLabelId"
+        :class="!busy && 'clickable'"
+        tabindex="0"
+        role="checkbox"
+        class="d-inline-flex align-center flex-nowrap text-no-wrap body-2 text-sub-title"
+        @click="toggleDontAskAgain"
+        @keydown.space.prevent="toggleDontAskAgain">
+        <v-icon
+          :size="CHECKBOX_SIZE"
+          :color="dontAskAgain && !busy ? 'primary' : ''"
+          :class="busy && 'disabled--text'"
+          class="me-2">
+          {{ dontAskAgain ? '$checkboxOn' : '$checkboxOff' }}
+        </v-icon>
+        <span :id="dontAskAgainLabelId">{{ $t('emailConnector.mailBox.automations.proposal.dontAskAgain') }}</span>
+      </span>
+      <div class="d-flex align-center flex-nowrap flex-shrink-0 ms-auto">
+        <v-btn
+          :aria-label="$t('emailConnector.mailBox.automations.proposal.rejectLabel', { 0: title })"
+          :loading="busy === 'reject'"
+          :disabled="!!busy"
+          class="me-2"
+          elevation="0"
+          small
+          text
+          @click="reject">
+          {{ $t('emailConnector.mailBox.automations.proposal.reject') }}
+        </v-btn>
+        <v-btn
+          :aria-label="$t('emailConnector.mailBox.automations.proposal.approveLabel', { 0: title })"
+          :loading="busy === 'approve'"
+          :disabled="!!busy"
+          color="primary"
+          elevation="0"
+          small
+          depressed
+          @click="approve">
+          {{ $t(dontAskAgain ? 'emailConnector.mailBox.automations.proposal.approveAndAllow' : 'emailConnector.mailBox.automations.proposal.approve') }}
+        </v-btn>
+      </div>
     </div>
     <div
       v-if="waiting && expiryLine"
       class="text-caption text-sub-title text-start">
       {{ expiryLine }}
     </div>
-
     <v-expand-transition>
       <div v-show="open" class="pb-1 text-start">
         <div class="text-caption text-sub-title text-break">{{ proposal.toolName }}</div>
@@ -371,6 +405,9 @@ export default {
     // without asking from now on, within the recipients' domain for a mail it sends
     // (EXO-90956). Offered only when the server says the rule may be allowed it.
     dontAskAgain: false,
+    // the checkbox's size and its label's id, as the AI chat's approval card has them
+    CHECKBOX_SIZE: 18,
+    dontAskAgainLabelId: `email-proposal-dont-ask-${Math.random().toString(36).slice(2)}`,
     descriptionOpen: false,
     // Whether the folded description is cut: measured, since how many characters fit in
     // two lines depends on the drawer's width.
@@ -604,6 +641,15 @@ export default {
         return 'error--text';
       }
       return ['DONE', 'EXECUTED'].includes(this.proposal.status) ? 'success--text' : 'text-sub-title';
+    },
+    /**
+     * Whether the card shows the action row of an approval its rule may be allowed:
+     * waiting, decidable here, and allowable for the rule.
+     *
+     * @returns {boolean} true to show it
+     */
+    allowRow() {
+      return !!(this.waiting && this.actions && this.proposal.allowableForSource);
     },
     /**
      * The mail's other suggestions waiting for the same tool: a "Don't ask again"
@@ -921,6 +967,16 @@ export default {
           }
           return updated;
         });
+    },
+    /**
+     * Ticks or unticks "Don't ask again for this filter", unless a decision is running.
+     *
+     * @returns {void}
+     */
+    toggleDontAskAgain() {
+      if (!this.busy) {
+        this.dontAskAgain = !this.dontAskAgain;
+      }
     },
     /**
      * Rejects the call.
