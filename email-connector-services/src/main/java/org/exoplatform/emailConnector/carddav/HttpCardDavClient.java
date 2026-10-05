@@ -79,6 +79,9 @@ public class HttpCardDavClient implements CardDavClient {
   /** The multistatus child element wrapping one resource's properties. */
   private static final String   RESPONSE_ELEMENT   = "response";
 
+  /** The header carrying the account's credentials on every request. */
+  private static final String   AUTHORIZATION      = "Authorization";
+
   private static final Duration CONNECT_TIMEOUT    = Duration.ofSeconds(15);
 
   private static final Duration REQUEST_TIMEOUT    = Duration.ofSeconds(30);
@@ -335,7 +338,7 @@ public class HttpCardDavClient implements CardDavClient {
   public ContactResource fetchVCard(String url, CardDavAccount account) {
     HttpRequest request = HttpRequest.newBuilder(uri(url))
                                      .timeout(REQUEST_TIMEOUT)
-                                     .header("Authorization", authorization(account))
+                                     .header(AUTHORIZATION, authorization(account))
                                      .GET()
                                      .build();
     try {
@@ -402,7 +405,7 @@ public class HttpCardDavClient implements CardDavClient {
                                              // Content-Type belongs to PROPFIND/REPORT bodies, and a server
                                              // told a vCard is application/xml may refuse or misfile it.
                                              .header("Content-Type", "text/vcard; charset=utf-8")
-                                             .header("Authorization", authorization(account))
+                                             .header(AUTHORIZATION, authorization(account))
                                              .method("PUT", BodyPublishers.ofString(vcard, StandardCharsets.UTF_8));
     if (StringUtils.isNotBlank(preconditionValue)) {
       builder.header(preconditionHeader, preconditionValue);
@@ -648,7 +651,7 @@ public class HttpCardDavClient implements CardDavClient {
     return HttpRequest.newBuilder(uri(url))
                       .timeout(REQUEST_TIMEOUT)
                       .header("Content-Type", "application/xml; charset=utf-8")
-                      .header("Authorization", authorization(account))
+                      .header(AUTHORIZATION, authorization(account))
                       .method(method, BodyPublishers.ofString(body, StandardCharsets.UTF_8));
   }
 
@@ -679,8 +682,8 @@ public class HttpCardDavClient implements CardDavClient {
                                         account.getProviderName(),
                                         account.getUsername(),
                                         ConnectorCredentialsChannel.HTTP);
-    HttpRequest retry = HttpRequest.newBuilder(request, (name, value) -> !"Authorization".equalsIgnoreCase(name))
-                                   .header("Authorization", authorization(account))
+    HttpRequest retry = HttpRequest.newBuilder(request, (name, value) -> !AUTHORIZATION.equalsIgnoreCase(name))
+                                   .header(AUTHORIZATION, authorization(account))
                                    .build();
     return httpClient.send(retry, BodyHandlers.ofString(StandardCharsets.UTF_8));
   }
