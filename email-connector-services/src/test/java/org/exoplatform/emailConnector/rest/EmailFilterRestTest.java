@@ -474,15 +474,15 @@ public class EmailFilterRestTest {
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.status").value(EmailFilterProposal.DONE));
 
-    doThrow(new IllegalAccessException("emailConnector.filters.proposal.notYours")).when(emailFilterProposalService)
+    doThrow(new IllegalAccessException("Proposal 5 isn't the user's own")).when(emailFilterProposalService)
                                                                                     .approve(anyString(), any(), anyLong(), anyBoolean());
     mockMvc.perform(post(FILTERS_PATH + "/proposals/5/approve").with(testSimpleUser())).andExpect(status().isForbidden());
 
-    doThrow(new ObjectNotFoundException("emailConnector.filters.proposal.notFound")).when(emailFilterProposalService)
+    doThrow(new ObjectNotFoundException("ai.proposal.notFound")).when(emailFilterProposalService)
                                                                                      .approve(anyString(), any(), anyLong(), anyBoolean());
     mockMvc.perform(post(FILTERS_PATH + "/proposals/5/approve").with(testSimpleUser())).andExpect(status().isNotFound());
 
-    doThrow(new IllegalStateException("emailConnector.filters.proposal.notPending")).when(emailFilterProposalService)
+    doThrow(new IllegalStateException("ai.proposal.notPending")).when(emailFilterProposalService)
                                                                                      .approve(anyString(), any(), anyLong(), anyBoolean());
     mockMvc.perform(post(FILTERS_PATH + "/proposals/5/approve").with(testSimpleUser())).andExpect(status().isConflict());
   }
