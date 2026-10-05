@@ -392,9 +392,11 @@ export default {
      * @returns {void}
      */
     openFromPage(event) {
-      if (event?.detail) {
-        event.detail.handled = true;
+      // one drawer answers: the settings' and the mailbox's both listen on one page
+      if (!event?.detail || event.detail.handled) {
+        return;
       }
+      event.detail.handled = true;
       this.open();
       const filterId = Number(event?.detail?.filterId);
       if (!filterId) {
