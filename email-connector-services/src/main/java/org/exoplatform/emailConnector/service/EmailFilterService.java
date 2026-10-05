@@ -990,9 +990,11 @@ public class EmailFilterService {
     EmailFilter existing = ownFilter(username, id);
     ServerRule rule = serverRuleOf(input);
     if (existing.isEnabled()) {
+      // switched off while the server takes it: no owner's disable, its standing
+      // approvals stay until the rule is gone from eXo (deleteFilterRow below)
       EmailFilter off = copyOf(existing);
       off.setEnabled(false);
-      saveFilterRow(username, off, now());
+      emailFilterStorage.save(username, off, now());
     }
     try {
       if (isLiveHop(existing)) {
@@ -1003,7 +1005,7 @@ public class EmailFilterService {
     } catch (ObjectNotFoundException | IllegalAccessException | ServerRuleUnavailableException | ServerRuleConflictException
         | ServerRuleUnsupportedException | RuntimeException e) {
       // The server did not take the rule: the eXo filter stays what it was.
-      saveFilterRow(username, existing, now());
+      emailFilterStorage.save(username, existing, now());
       throw e;
     }
     deleteFilterRow(id, username);

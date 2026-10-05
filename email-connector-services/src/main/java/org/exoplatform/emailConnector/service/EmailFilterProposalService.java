@@ -33,6 +33,7 @@ import org.springframework.stereotype.Service;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailFilterMatch;
+import org.exoplatform.emailConnector.model.EmailFilterMatchKey;
 import org.exoplatform.emailConnector.model.EmailFilterProposal;
 import org.exoplatform.emailConnector.model.EmailFilterProposalCount;
 import org.exoplatform.emailConnector.model.EmailFilterSuggestionCounts;
@@ -43,7 +44,6 @@ import org.exoplatform.emailConnector.plugin.EmailFilterProposalProvider;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailFilterProposalStorage;
 import org.exoplatform.emailConnector.storage.EmailFilterStorage;
-import org.exoplatform.emailConnector.storage.EmailFilterStorage.MatchKey;
 
 /**
  * The tool calls a mail filter's assistant proposed instead of running them, and the
@@ -113,10 +113,10 @@ public class EmailFilterProposalService {
     if (provider == null || StringUtils.isBlank(username) || matchIds == null || matchIds.isEmpty()) {
       return List.of();
     }
-    Map<Long, MatchKey> keys = emailFilterStorage.getMatchKeys(username, matchIds);
+    Map<Long, EmailFilterMatchKey> keys = emailFilterStorage.getMatchKeys(username, matchIds);
     List<EmailFilterProposal> proposals = new ArrayList<>();
     for (EmailFilterProposal proposal : provider.getProposalsOfMatches(username, keys.keySet())) {
-      MatchKey key = keys.get(proposal.getMatchId());
+      EmailFilterMatchKey key = keys.get(proposal.getMatchId());
       if (key != null) {
         proposal.setFilterId(key.filterId());
         proposals.add(proposal);
@@ -285,10 +285,10 @@ public class EmailFilterProposalService {
       return List.of();
     }
     List<EmailFilterProposalCount> counts = provider.countByMatch(username);
-    Map<Long, MatchKey> keys = emailFilterStorage.getMatchKeys(username, counts.stream().map(EmailFilterProposalCount::matchId).toList());
+    Map<Long, EmailFilterMatchKey> keys = emailFilterStorage.getMatchKeys(username, counts.stream().map(EmailFilterProposalCount::matchId).toList());
     Map<Long, Map<String, Long>> byFilter = new TreeMap<>();
     for (EmailFilterProposalCount count : counts) {
-      MatchKey key = keys.get(count.matchId());
+      EmailFilterMatchKey key = keys.get(count.matchId());
       if (key != null) {
         byFilter.computeIfAbsent(key.filterId(), filterId -> new HashMap<>()).merge(count.status(), count.count(), Long::sum);
       }
@@ -333,13 +333,13 @@ public class EmailFilterProposalService {
     if (waitingMatches.isEmpty()) {
       return Map.of();
     }
-    Map<Long, MatchKey> keys = emailFilterStorage.getMatchKeys(username, waitingMatches);
+    Map<Long, EmailFilterMatchKey> keys = emailFilterStorage.getMatchKeys(username, waitingMatches);
     Map<String, Integer> waiting = new LinkedHashMap<>();
     waitingMatches.stream()
                   .limit(MAX_WAITING)
                   .map(keys::get)
                   .filter(Objects::nonNull)
-                  .map(MatchKey::mailHeaderId)
+                  .map(EmailFilterMatchKey::mailHeaderId)
                   .filter(StringUtils::isNotBlank)
                   .forEach(mailHeaderId -> waiting.merge(mailHeaderId, 1, Integer::sum));
     return waiting;

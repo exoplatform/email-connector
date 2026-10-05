@@ -16,6 +16,12 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import org.exoplatform.emailConnector.plugin.EmailFilterProposalProvider;
+
+import org.springframework.beans.factory.ObjectProvider;
+
+import java.util.stream.Stream;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -113,6 +119,12 @@ public class EmailFilterRoutingTest {
   @Mock
   private EmailForwardingService       emailForwardingService;
 
+  @Mock
+  private ObjectProvider<EmailFilterProposalProvider> proposalProviders;
+
+  @Mock
+  private EmailFilterProposalProvider  proposalProvider;
+
   @InjectMocks
   private EmailFilterService           service;
 
@@ -138,6 +150,7 @@ public class EmailFilterRoutingTest {
     lenient().when(emailServerRuleService.reconcileHops(eq(USERNAME), any(), anyBoolean(), anyBoolean(), anyBoolean()))
              .thenReturn(new ReconcileReport(List.of(), List.of(), null));
     fakeStorage();
+    lenient().when(proposalProviders.orderedStream()).thenAnswer(invocation -> Stream.of(proposalProvider));
   }
 
   /**
@@ -356,6 +369,27 @@ public class EmailFilterRoutingTest {
 
     assertTrue(filters.get(existing.getId()).isEnabled(), "back as it was");
     verify(emailFilterStorage, never()).delete(anyLong(), anyString());
+    // switched off only while the server was asked, by no request of its owner: the AI
+    // side hears nothing, so the rule keeps its standing approvals (EXO-90956)
+    verify(proposalProvider, never()).onFilterSaved(any(), any(), any());
+    verify(proposalProvider, never()).onFilterDeleted(any(), anyLong());
+  }
+
+  /**
+   * An eXo filter the server takes is gone from eXo: the AI side hears of its deletion,
+   * which revokes its standing approvals; never of the switch-off while the server was
+   * asked (EXO-90956).
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aFilterMovedToTheServerIsToldDeletedOnly() throws Exception {
+    EmailFilter existing = stored(rule(EmailFilter.KIND_EXO, List.of(BODY_INVOICE), action(FilterAction.STAR)));
+
+    service.saveRouted(USERNAME, null, filter(List.of(FROM_ACME), action(FilterAction.STAR)), null, existing.getId(), true, false);
+
+    verify(proposalProvider).onFilterDeleted(USERNAME, existing.getId());
+    verify(proposalProvider, never()).onFilterSaved(any(), any(), any());
   }
 
   /**
