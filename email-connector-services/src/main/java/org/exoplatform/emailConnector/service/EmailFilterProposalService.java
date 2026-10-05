@@ -64,18 +64,6 @@ import org.exoplatform.emailConnector.storage.EmailFilterStorage;
 @Service
 public class EmailFilterProposalService {
 
-  /** The code of a proposal that does not exist. */
-  public static final String  NOT_FOUND   = "emailConnector.filters.proposal.notFound";
-
-  /** The code of a proposal that is not the caller's. */
-  public static final String  NOT_YOURS   = "emailConnector.filters.proposal.notYours";
-
-  /** The code of a proposal that no longer waits. */
-  public static final String  NOT_PENDING = "emailConnector.filters.proposal.notPending";
-
-  /** The code of a proposal past its expiry. */
-  public static final String  EXPIRED     = "emailConnector.filters.proposal.expired";
-
   /** The code of a decision nothing can take: no AI add-on on this deployment. */
   public static final String  UNAVAILABLE = "emailConnector.filters.proposal.unavailable";
 
