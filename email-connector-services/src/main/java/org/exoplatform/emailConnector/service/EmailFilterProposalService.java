@@ -273,7 +273,8 @@ public class EmailFilterProposalService {
       return List.of();
     }
     List<EmailFilterProposalCount> counts = provider.countByMatch(username);
-    Map<Long, EmailFilterMatchKey> keys = emailFilterStorage.getMatchKeys(username, counts.stream().map(EmailFilterProposalCount::matchId).toList());
+    Map<Long, EmailFilterMatchKey> keys = emailFilterStorage.getMatchKeys(username,
+                                                                          counts.stream().map(EmailFilterProposalCount::matchId).toList());
     Map<Long, Map<String, Long>> byFilter = new TreeMap<>();
     for (EmailFilterProposalCount count : counts) {
       EmailFilterMatchKey key = keys.get(count.matchId());
