@@ -21,11 +21,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     The message is somebody else's markup, so the frame it is shown in runs no script:
     no `allow-scripts`, never together with `allow-same-origin`, since a frame with
     both can lift its own sandbox. That stops inline handlers, `javascript:` URLs,
-    nested frames and a `<meta refresh>` as well; forms, embedded documents and players
-    are the purifier's job, the sandbox alone would let a form out through a popup. The
-    frame keeps the page's origin only so that this component can read its document
-    from outside: the mail's height, its images, the quoted-history toggle, the anchor
-    links. Popups are allowed so that a link, which the document's base targets at a
+    nested frames and a `<meta refresh>` as well, and, with no `allow-forms`, every form
+    submission, whatever the form targets. The purifier removes forms and controls all
+    the same, so none renders as a dead widget; embedded documents and players are its
+    job alone. The frame keeps the page's origin only so that this component can read
+    its document from outside: the mail's height, its images, the quoted-history
+    toggle, the anchor links. Popups are allowed so that a link, which the document's base targets at a
     new tab, opens one that is not sandboxed itself. The referrer policy of the
     document itself is the meta the reader writes into its head: the attribute below
     governs the frame's own request, which a `srcdoc` frame never makes.
