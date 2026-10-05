@@ -51,16 +51,6 @@ public class NotificationConstants {
   /** The rule, or the other client's script, the change is about; blank when none. */
   public static final String FORWARDING_SOURCE              = "FORWARDING_SOURCE";
 
-  /**
-   * Suggestions of the mail filters' assistant wait for the receiver (EXO-90668): one
-   * notification per user, "N suggestions waiting", updated in place while unread and
-   * replaced once read, never one per suggestion.
-   */
-  public static final String EMAIL_FILTER_SUGGESTIONS_NOTIFICATION_PLUGIN = "EmailFilterSuggestionsNotificationPlugin";
-
-  /** How many suggestions wait, as the digest carries it. */
-  public static final String SUGGESTION_COUNT               = "SUGGESTION_COUNT";
-
   /** The mail filter's name, as its notification carries it. */
   public static final String FILTER_NAME                    = "FILTER_NAME";
 
