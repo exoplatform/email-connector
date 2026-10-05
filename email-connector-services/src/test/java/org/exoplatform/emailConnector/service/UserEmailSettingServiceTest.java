@@ -64,6 +64,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.commons.api.settings.ExoFeatureService;
 import org.exoplatform.commons.api.settings.SettingService;
@@ -1656,6 +1658,22 @@ public class UserEmailSettingServiceTest {
 
     verify(settingService, never()).remove(any(Context.class), any(Scope.class), anyString());
     verifyNoInteractions(eventPublisher, emailSignatureService);
+  }
+
+  /**
+   * EXO-90836. The user-facing disconnection runs in its own transaction, as the
+   * removal it delegates to does: the delegation goes through {@code this}, so without
+   * this annotation the removal and the account-cleanup listeners would run with none.
+   * Pins the annotation-removed mutant, which a call made by hand cannot kill.
+   */
+  @Test
+  @SneakyThrows
+  void theUserFacingDisconnectionRunsInItsOwnTransaction() {
+    Transactional transactional = UserEmailSettingService.class.getMethod("disconnectUserEmailSetting", String.class)
+                                                               .getAnnotation(Transactional.class);
+
+    assertNotNull(transactional);
+    assertEquals(Propagation.REQUIRES_NEW, transactional.propagation());
   }
 
   /**

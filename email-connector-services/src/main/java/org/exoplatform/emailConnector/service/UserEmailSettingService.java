@@ -648,9 +648,15 @@ public class UserEmailSettingService {
    * connector. The platform's own disconnections - a managed-mode change, a user's
    * deletion - call {@link #deleteUserEmailSetting(String)} instead.
    *
+   * <p>
+   * Transactional as {@link #deleteUserEmailSetting(String)} is: the call below goes
+   * through {@code this}, not the proxy, so this method's transaction is the one the
+   * removal and the account-cleanup listeners run in.
+   *
    * @param username the eXo login disconnecting
    * @throws ManagedConnectionLockedException when managed mode governs the user
    */
+  @Transactional(propagation = Propagation.REQUIRES_NEW)
   public void disconnectUserEmailSetting(String username) throws ManagedConnectionLockedException {
     emailManagedModeService.checkUserMayChangeConnection(username, null);
     deleteUserEmailSetting(username);
