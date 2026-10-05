@@ -34,6 +34,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.ResourceBundle;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 import org.apache.commons.lang3.StringUtils;
@@ -3121,7 +3122,7 @@ public class EmailFilterService {
    * @param what what is told, for the log
    * @param username the owner
    */
-  private void tellProvider(java.util.function.Consumer<EmailFilterProposalProvider> call, String what, String username) {
+  private void tellProvider(Consumer<EmailFilterProposalProvider> call, String what, String username) {
     EmailFilterProposalProvider provider = proposalProviders == null ? null :
                                                                      proposalProviders.orderedStream().findFirst().orElse(null);
     if (provider == null) {
