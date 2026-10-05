@@ -44,6 +44,7 @@ import org.exoplatform.emailConnector.entity.EmailFilterMatchEntity;
 import org.exoplatform.emailConnector.model.AppliedAction;
 import org.exoplatform.emailConnector.model.EmailFilter;
 import org.exoplatform.emailConnector.model.EmailFilterMatch;
+import org.exoplatform.emailConnector.model.EmailFilterMatchKey;
 import org.exoplatform.emailConnector.model.FilterAction;
 import org.exoplatform.emailConnector.model.ServerRule;
 
@@ -502,28 +503,20 @@ public class EmailFilterStorage {
    * @param matchIds the matches
    * @return the keys, by match id; another user's match is absent
    */
-  public Map<Long, MatchKey> getMatchKeys(String userId, Collection<Long> matchIds) {
-    Map<Long, MatchKey> keys = new LinkedHashMap<>();
+  public Map<Long, EmailFilterMatchKey> getMatchKeys(String userId, Collection<Long> matchIds) {
+    Map<Long, EmailFilterMatchKey> keys = new LinkedHashMap<>();
     if (matchIds == null || matchIds.isEmpty()) {
       return keys;
     }
     List<Long> ids = matchIds.stream().filter(Objects::nonNull).distinct().toList();
     for (int start = 0; start < ids.size(); start += MAX_IN) {
       for (Object[] row : emailFilterMatchDAO.findMatchKeys(userId, ids.subList(start, Math.min(ids.size(), start + MAX_IN)))) {
-        keys.put((Long) row[0], new MatchKey((Long) row[1], (String) row[2]));
+        keys.put((Long) row[0], new EmailFilterMatchKey((Long) row[1], (String) row[2]));
       }
     }
     return keys;
   }
 
-  /**
-   * The rule and the mail of a match.
-   *
-   * @param filterId the rule
-   * @param mailHeaderId the mail's Message-ID
-   */
-  public record MatchKey(long filterId, String mailHeaderId) {
-  }
 
   /**
    * The SHA-256 of a Message-ID, in lower-case hex: the column the keys use.

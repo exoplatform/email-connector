@@ -46,6 +46,7 @@ import org.springframework.beans.factory.ObjectProvider;
 
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailFilterMatch;
+import org.exoplatform.emailConnector.model.EmailFilterMatchKey;
 import org.exoplatform.emailConnector.model.EmailFilterProposal;
 import org.exoplatform.emailConnector.model.EmailFilterProposalCount;
 import org.exoplatform.emailConnector.model.EmailFilterSuggestionCounts;
@@ -55,7 +56,6 @@ import org.exoplatform.emailConnector.plugin.EmailFilterProposalProvider;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailFilterProposalStorage;
 import org.exoplatform.emailConnector.storage.EmailFilterStorage;
-import org.exoplatform.emailConnector.storage.EmailFilterStorage.MatchKey;
 
 /**
  * The suggestions' REST and views over the AI add-on's shared proposals (EXO-90956):
@@ -151,7 +151,7 @@ public class EmailFilterProposalServiceTest {
    */
   @Test
   void theCardsAreThoseOfTheCallersOwnMatches() {
-    when(emailFilterStorage.getMatchKeys(OWNER, List.of(7L, 8L))).thenReturn(Map.of(7L, new MatchKey(3L, "<a@x>")));
+    when(emailFilterStorage.getMatchKeys(OWNER, List.of(7L, 8L))).thenReturn(Map.of(7L, new EmailFilterMatchKey(3L, "<a@x>")));
     when(provider.getProposalsOfMatches(eq(OWNER), any())).thenReturn(List.of(proposal(1L, 7L, EmailFilterProposal.PROPOSED),
                                                                               proposal(2L, 8L, EmailFilterProposal.PROPOSED)));
     EmailFilterMatch mine = new EmailFilterMatch();
@@ -179,9 +179,9 @@ public class EmailFilterProposalServiceTest {
   void theWaitingEmailsAreOneRowPerMailWithItsWaitingCount() throws Exception {
     when(provider.getWaitingMatchIds(OWNER)).thenReturn(List.of(7L, 8L, 7L, 9L));
     when(emailFilterStorage.getMatchKeys(OWNER, List.of(7L, 8L, 7L, 9L))).thenReturn(Map.of(7L,
-                                                                                         new MatchKey(3L, "<a@x>"),
+                                                                                         new EmailFilterMatchKey(3L, "<a@x>"),
                                                                                          8L,
-                                                                                         new MatchKey(3L, "<b@x>")));
+                                                                                         new EmailFilterMatchKey(3L, "<b@x>")));
     when(emailDelegationService.getDelegatedFolderKeys(OWNER)).thenReturn(List.of("CUSTOM:9"));
     when(emailBoxStorage.getListedEmailsByMailHeaderIds(eq(OWNER), any(), any())).thenReturn(List.of(listed(11L, "<b@x>"),
                                                                                                      listed(12L, "<a@x>"),
@@ -218,7 +218,7 @@ public class EmailFilterProposalServiceTest {
                                                           new EmailFilterProposalCount(8L, "EXECUTED", 3),
                                                           new EmailFilterProposalCount(8L, "PROPOSED", 2),
                                                           new EmailFilterProposalCount(9L, "PROPOSED", 5)));
-    when(emailFilterStorage.getMatchKeys(eq(OWNER), any())).thenReturn(Map.of(7L, new MatchKey(3L, "<a@x>"), 8L, new MatchKey(4L, "<b@x>")));
+    when(emailFilterStorage.getMatchKeys(eq(OWNER), any())).thenReturn(Map.of(7L, new EmailFilterMatchKey(3L, "<a@x>"), 8L, new EmailFilterMatchKey(4L, "<b@x>")));
 
     assertEquals(List.of(new EmailFilterSuggestionCounts(3L, 3, 0, 0, 0, 0), new EmailFilterSuggestionCounts(4L, 0, 1, 0, 0, 2)),
                  service.getSuggestionCounts(OWNER, null));
