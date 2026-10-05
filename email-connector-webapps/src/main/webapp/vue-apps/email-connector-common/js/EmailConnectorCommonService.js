@@ -110,10 +110,10 @@ export function resetAndResyncMailbox() {
 }
 
 /**
- * Asks the server to synchronize the user's mailbox now. Resolves once the request is
- * accepted; the setting's sync status then says when it runs and ends.
+ * Synchronizes the user's mailbox now. The server runs the synchronization before it
+ * answers, so the promise resolves once the run has ended.
  *
- * @returns {Promise} resolves once the synchronization is requested
+ * @returns {Promise} resolves once the synchronization is done
  */
 export function synchronizeEmailBox() {
   return fetch('/email-connector/rest/email-box/synchronization', {

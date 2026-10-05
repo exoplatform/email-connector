@@ -226,8 +226,8 @@ export default {
       this.notifyCategoryIds = setting.notifyCategories || [];
     },
     /**
-     * Requests a synchronization now, then reads the setting again so that its sync
-     * status shows the run.
+     * Synchronizes the mailbox now, then reads the setting again: its sync status says
+     * how the run that just ended went.
      *
      * @returns {void}
      */
@@ -235,15 +235,16 @@ export default {
       this.synchronizing = true;
       this.$emailConnectorCommonService.synchronizeEmailBox()
         .then(() => {
-          this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.sync.started'), 'success');
+          this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.sync.done'), 'success');
           document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
         })
         .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.sync.error'), 'error'))
         .finally(() => this.synchronizing = false);
     },
     /**
-     * Connects a managed user who has no connection yet to the connector the instance
-     * designated, in one click: its provider asks the user for nothing.
+     * Connects a managed user who has no working connection - none at all, or one on a
+     * deactivated connector - to the connector the instance designated, in one click:
+     * its provider asks the user for nothing.
      *
      * @returns {void}
      */

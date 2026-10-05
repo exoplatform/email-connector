@@ -229,9 +229,9 @@ public class UserEmailSettingService {
    * differs from the stored one: connecting again the account already connected
    * keeps the user's mail and shares.
    * <p>
-   * A user managed mode governs may connect the designated connector only, and that
-   * connection is marked as made by managed mode, as the login-time attachment marks
-   * its own.
+   * A user managed mode governs may connect the designated connector only. That
+   * connect replaces whatever connection the user has on another connector, active or
+   * not, as the login-time switch does, and is marked as made by managed mode.
    *
    * @param emailConnectorId the connector preset to connect to
    * @param username the eXo login connecting
@@ -245,7 +245,7 @@ public class UserEmailSettingService {
   @Transactional(rollbackFor = Exception.class)
   public void connectThroughProvider(long emailConnectorId, String username) throws IllegalAccessException {
     Long governing = emailManagedModeService.checkUserMayChangeConnection(username, emailConnectorId);
-    connectThroughProvider(emailConnectorId, username, governing != null, false);
+    connectThroughProvider(emailConnectorId, username, governing != null, governing != null);
   }
 
   /**

@@ -1746,6 +1746,39 @@ public class UserEmailSettingServiceTest {
   }
 
   /**
+   * EXO-90836. A governed user's own one-click connect replaces a stored setting that
+   * names another connector an administrator has since deactivated - the case the
+   * settings page offers the managed Connect for - instead of giving up silently: the
+   * designated mailbox is recorded and marked, and the account cleanup is announced.
+   */
+  @Test
+  @SneakyThrows
+  void aGovernedUsersConnectReplacesASettingOnADeactivatedConnector() {
+    when(emailManagedModeService.checkUserMayChangeConnection(TEST_USER, 1L)).thenReturn(1L);
+    EmailConnector deactivated = emailConnector();
+    deactivated.setId(2L);
+    deactivated.setActive(false);
+    when(emailConnectorService.getEmailConnector(2L)).thenReturn(deactivated);
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY)))
+        .thenAnswer(invocation -> SettingValue.create("{\"emailConnectorId\":\"2\",\"emailAddress\":\"eric@own.example.org\"}"));
+
+    connectThroughTheProvider(() -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class),
+                               any(Scope.class),
+                               eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY),
+                               stored.capture());
+    String document = String.valueOf(stored.getValue().getValue());
+    assertTrue(document, document.contains("\"emailConnectorId\":\"1\""));
+    verify(settingService).set(any(Context.class),
+                               any(Scope.class),
+                               eq(UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY),
+                               any(SettingValue.class));
+    verify(eventPublisher).publishEvent(any(EmailBoxCleanupEvent.class));
+  }
+
+  /**
    * EXO-90836. The switch at login replaces a connection on another, active connector -
    * the very case the one-mailbox rule refuses a user - records the designated mailbox,
    * marks it, and announces the account cleanup, since the account changed.
