@@ -208,7 +208,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-import { CLOSE_FILTERS_DRAWER_EVENT, OPEN_FILTERS_DRAWER_EVENT, filtersMessage, holdsFilters, notifyFiltersUpdated } from '../../../js/EmailConnectorFilters.js';
+import { CLOSE_FILTERS_DRAWER_EVENT, OPEN_FILTERS_DRAWER_DOCUMENT_EVENT, OPEN_FILTERS_DRAWER_EVENT, filtersMessage, holdsFilters, notifyFiltersUpdated } from '../../../js/EmailConnectorFilters.js';
 import { buildFolderTree } from '../../../../email-connector-mail-box/js/EmailConnectorFolderTree.js';
 import { folderPath } from '../../../../email-connector-mail-box/js/EmailConnectorMailBoxService.js';
 
@@ -366,10 +366,12 @@ export default {
   created() {
     this.$root.$on(OPEN_FILTERS_DRAWER_EVENT, this.open);
     this.$root.$on(CLOSE_FILTERS_DRAWER_EVENT, this.close);
+    document.addEventListener(OPEN_FILTERS_DRAWER_DOCUMENT_EVENT, this.openFromPage);
   },
   beforeDestroy() {
     this.$root.$off(OPEN_FILTERS_DRAWER_EVENT, this.open);
     this.$root.$off(CLOSE_FILTERS_DRAWER_EVENT, this.close);
+    document.removeEventListener(OPEN_FILTERS_DRAWER_DOCUMENT_EVENT, this.openFromPage);
   },
   methods: {
     /**
@@ -380,6 +382,34 @@ export default {
      */
     close() {
       this.drawer = false;
+    },
+    /**
+     * Opens the drawer from another app of the page, on the form of the rule it names
+     * when that rule is still one of the user's, else on the list; tells the sender it
+     * was opened.
+     *
+     * @param {CustomEvent} event - its detail {filterId, handled}
+     * @returns {void}
+     */
+    openFromPage(event) {
+      if (event?.detail) {
+        event.detail.handled = true;
+      }
+      this.open();
+      const filterId = Number(event?.detail?.filterId);
+      if (!filterId) {
+        return;
+      }
+      this.$emailConnectorUserSettingService.getExoFilters()
+        .then(filters => {
+          const filter = (filters || []).find(candidate => Number(candidate?.id) === filterId);
+          if (filter && this.drawer && !this.editing) {
+            this.edit(filter);
+          }
+        })
+        .catch(() => {
+          // the list is shown, the rule's form is not: nothing else to do
+        });
     },
     /**
      * Opens the drawer on the list, read again, and the folders a filter may file into.
