@@ -513,7 +513,7 @@ export default {
      */
     onDrawerOpened() {
       if (this.standalone && !this.$refs.emailDetailDrawer?.stuckElsewhere && !this.pageAlreadyDimmed()) {
-        this.showStandaloneBackdrop();
+        this.$nextTick(this.showStandaloneBackdrop);
       }
     },
     /**
