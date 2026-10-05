@@ -517,7 +517,6 @@ public class EmailFilterStorage {
     return keys;
   }
 
-
   /**
    * The SHA-256 of a Message-ID, in lower-case hex: the column the keys use.
    *
