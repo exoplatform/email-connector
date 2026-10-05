@@ -164,19 +164,28 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-btn>
       </div>
     </div>
+    <!-- "Don't ask again" changes what Approve does: under the buttons, at the card's
+         caption size -->
+    <div
+      v-if="waiting && actions && proposal.allowableForSource"
+      class="d-flex justify-end">
+      <v-checkbox
+        v-model="dontAskAgain"
+        :disabled="!!busy"
+        class="mt-0 pt-0"
+        dense
+        hide-details>
+        <template #label>
+          <span class="text-caption text-color">{{ $t('emailConnector.mailBox.automations.proposal.dontAskAgain') }}</span>
+        </template>
+      </v-checkbox>
+    </div>
     <div
       v-if="waiting && expiryLine"
       class="text-caption text-sub-title text-start">
       {{ expiryLine }}
     </div>
-    <v-checkbox
-      v-if="waiting && actions && proposal.allowableForSource"
-      v-model="dontAskAgain"
-      :label="$t('emailConnector.mailBox.automations.proposal.dontAskAgain')"
-      :disabled="!!busy"
-      class="mt-0 pt-0 text-caption"
-      dense
-      hide-details />
+
     <v-expand-transition>
       <div v-show="open" class="pb-1 text-start">
         <div class="text-caption text-sub-title text-break">{{ proposal.toolName }}</div>
