@@ -75,6 +75,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <email-connector-mail-box-import-drawer />
     <email-connector-mail-box-drawer-attachments-drawer />
     <email-connector-mail-box-drawer-list-item-action-menu-drawer />
+    <!-- A user managed mode governs and who has no connection yet is offered the
+         designated mailbox, in one click, instead of the connectors drawer (EXO-90836). -->
+    <exo-confirm-dialog
+      ref="managedConnectDialog"
+      :title="$t('UserSettings.emailConnector.managed.dialog.title')"
+      :message="$t('UserSettings.emailConnector.managed.description')"
+      :ok-label="$t('UserSettings.emailConnector.managed.connect')"
+      :cancel-label="$t('UserSettings.emailConnector.managed.dialog.cancel')"
+      @ok="connectManaged" />
   </v-app>
 </template>
 
@@ -84,6 +93,9 @@ import { OPEN_FORWARDING_DRAWER_EVENT } from '../../email-connector-user-setting
 export default {
   data() {
     return {
+      // What a managed user's one-click connection resumes once it is recorded: the
+      // opening that found no connection.
+      afterManagedConnect: null,
       userEmailSetting: {
         emailConnectorId: '',
         emailConnectorImageUrl: '',
@@ -119,9 +131,37 @@ export default {
           this.$root.$emit('open-mail-box-drawer', event?.detail);
         }
         else {
-          this.$root.$emit('open-user-setting-connectors-drawer');
+          this.offerConnection(() => this.openDrawer(event));
         }
       });
+    },
+    /**
+     * What an opening that finds no connection offers: the connectors drawer, or, to a
+     * user managed mode governs, the designated mailbox in one click (EXO-90836).
+     *
+     * @param {Function} resume the opening to run again once a managed connection is
+     *          recorded
+     * @returns {void}
+     */
+    offerConnection(resume) {
+      if (this.userEmailSetting.managed) {
+        this.afterManagedConnect = resume;
+        this.$refs.managedConnectDialog.open();
+      } else {
+        this.$root.$emit('open-user-setting-connectors-drawer');
+      }
+    },
+    connectManaged() {
+      const resume = this.afterManagedConnect;
+      this.afterManagedConnect = null;
+      this.$emailConnectorCommonService.connectThroughProvider(this.userEmailSetting.managedConnectorId)
+        .then(() => {
+          document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
+          if (resume) {
+            resume();
+          }
+        })
+        .catch(error => this.$root.$emit('alert-message', this.$t(error?.code || 'UserSettings.emailConnector.managed.connect.error'), 'error'));
     },
     // Entry point used by other apps (e.g. the Documents "Send by email" action) to
     // open a NEW email pre-seeded with a document as an attachment. Same connected
@@ -133,7 +173,7 @@ export default {
       this.$emailConnectorCommonService.getUserEmailSetting().then(userEmailSetting => {
         this.userEmailSetting = userEmailSetting;
         if (!this.userEmailSetting.connected) {
-          this.$root.$emit('open-user-setting-connectors-drawer');
+          this.offerConnection(() => this.openComposeWithAttachment(event));
           return;
         }
         this.$root.$emit('open-new-email-drawer');
@@ -153,7 +193,7 @@ export default {
       this.$emailConnectorCommonService.getUserEmailSetting().then(userEmailSetting => {
         this.userEmailSetting = userEmailSetting;
         if (!this.userEmailSetting.connected) {
-          this.$root.$emit('open-user-setting-connectors-drawer');
+          this.offerConnection(() => this.openComposer(event));
           return;
         }
         this.$root.$emit('open-new-email-drawer', null, false, false, prefill);

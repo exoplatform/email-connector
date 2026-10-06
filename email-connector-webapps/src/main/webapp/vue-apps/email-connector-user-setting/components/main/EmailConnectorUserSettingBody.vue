@@ -26,8 +26,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-list-item>
       <v-list-item>
         <v-list-item-content>
-          <v-list-item-title v-if="!userEmailSetting.connected">
-            {{ $t('UserSettings.emailConnector.description') }}
+          <v-list-item-title v-if="!userEmailSetting.connected" class="text-wrap">
+            {{ managed ? $t('UserSettings.emailConnector.managed.description') : $t('UserSettings.emailConnector.description') }}
           </v-list-item-title>
           <div v-else>
             <email-connector-icon
@@ -38,17 +38,43 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             <span>{{ userEmailSetting.emailAddress }}</span>
           </div>
         </v-list-item-content>
-        <v-list-item-action>
+        <v-list-item-action class="d-flex flex-row align-center">
           <email-box-sync-loader
             v-if="syncInProgress"
             :label="$t('UserSettings.emailConnector.sync.tooltip')" />
-          <v-btn
-            v-else
-            icon
-            :title="$t('UserSettings.emailConnector.connectors.drawer.connector.button.edit.tooltip')"
-            @click="$root.$emit('open-user-setting-connectors-drawer')">
-            <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
-          </v-btn>
+          <template v-else>
+            <!-- Sync now, for every connected user; the pencil opens the connectors
+                 drawer, which managed mode takes away: a managed user keeps the
+                 mailbox the instance chose (EXO-90836). -->
+            <v-btn
+              v-if="userEmailSetting.connected"
+              :loading="synchronizing"
+              :disabled="synchronizing"
+              :aria-label="$t('UserSettings.emailConnector.sync.button.tooltip')"
+              :title="$t('UserSettings.emailConnector.sync.button.tooltip')"
+              icon
+              class="me-2"
+              @click="synchronize">
+              <v-icon size="20" class="icon-default-color">fa-sync-alt</v-icon>
+            </v-btn>
+            <v-btn
+              v-if="managed && !userEmailSetting.connected"
+              :loading="connecting"
+              :disabled="connecting"
+              :aria-label="$t('UserSettings.emailConnector.managed.connect')"
+              class="btn"
+              @click="connectManaged">
+              <v-icon size="14" class="me-1">fa-plug</v-icon>
+              {{ $t('UserSettings.emailConnector.managed.connect') }}
+            </v-btn>
+            <v-btn
+              v-else-if="!managed"
+              icon
+              :title="$t('UserSettings.emailConnector.connectors.drawer.connector.button.edit.tooltip')"
+              @click="$root.$emit('open-user-setting-connectors-drawer')">
+              <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
+            </v-btn>
+          </template>
         </v-list-item-action>
       </v-list-item>
       <template v-if="userEmailSetting && userEmailSetting.connected">
@@ -146,10 +172,15 @@ export default {
     notifyAll: true,
     notifyCategoryIds: [],
     saving: false,
+    synchronizing: false,
+    connecting: false,
   }),
   computed: {
     syncInProgress() {
       return this.userEmailSetting?.emailSyncStatus === 'IN_PROGRESS';
+    },
+    managed() {
+      return !!this.userEmailSetting?.managed;
     },
     // The add-on's Important category, or null while categories load. The
     // default-view toggle is disabled until it is known, since the toggle
@@ -193,6 +224,39 @@ export default {
       // notifyAllCategories unset (not a boolean) resolves to "All".
       this.notifyAll = typeof setting.notifyAllCategories !== 'boolean' ? true : setting.notifyAllCategories;
       this.notifyCategoryIds = setting.notifyCategories || [];
+    },
+    /**
+     * Synchronizes the mailbox now, then reads the setting again: its sync status says
+     * how the run that just ended went.
+     *
+     * @returns {void}
+     */
+    synchronize() {
+      this.synchronizing = true;
+      this.$emailConnectorCommonService.synchronizeEmailBox()
+        .then(() => {
+          this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.sync.done'), 'success');
+          document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
+        })
+        .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.sync.error'), 'error'))
+        .finally(() => this.synchronizing = false);
+    },
+    /**
+     * Connects a managed user who has no working connection - none at all, or one on a
+     * deactivated connector - to the connector the instance designated, in one click:
+     * its provider asks the user for nothing.
+     *
+     * @returns {void}
+     */
+    connectManaged() {
+      this.connecting = true;
+      this.$emailConnectorCommonService.connectThroughProvider(this.userEmailSetting.managedConnectorId)
+        .then(() => {
+          this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.managed.connected'), 'success');
+          document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
+        })
+        .catch(error => this.$root.$emit('alert-message', this.$t(error?.code || 'UserSettings.emailConnector.managed.connect.error'), 'error'))
+        .finally(() => this.connecting = false);
     },
     /**
      * Stores the default view and the notification preferences, which are one document.
