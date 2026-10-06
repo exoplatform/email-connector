@@ -21,10 +21,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        and then close under the user. Opened on its own -- from the platform's search,
        or the Favorites drawer -- there is no mailbox behind it to hand the mail to, and
        expanding is not offered. -->
-  <exo-drawer
+  <pinneable-drawer
     id="emailDetailDrawer"
     ref="emailDetailDrawer"
     v-model="emailDetailDrawer"
+    app-name="email"
+    no-dock
+    placement-disabled
     right
     :allow-expand="false"
     :loading="waitingForEmail || readerLoading || waitingForPartialEmail"
@@ -75,7 +78,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           @opened-partial="readerPartial = $event" />
       </template>
     </template>
-  </exo-drawer>
+  </pinneable-drawer>
 </template>
 
 <script>
@@ -501,16 +504,17 @@ export default {
     /**
      * Puts the backdrop up once the drawer reports itself open.
      *
-     * Not before: the drawer is given its z-index as it opens, so a backdrop placed
-     * on the same tick was measured against a drawer that did not have one yet, and
-     * landed too low to be seen -- which is why the dimming only showed from the
-     * second open onwards.
+     * Not before, and not on the same tick: the drawer is given its z-index as it
+     * opens, and the wrapper relays the open before the render applies it, so the
+     * plane is read from the drawer's element on the next tick. A backdrop measured
+     * earlier landed too low to be seen. Not at all while the email application is
+     * stuck: the drawer then opens without the shared mask, and so does this one.
      *
      * @returns {void}
      */
     onDrawerOpened() {
-      if (this.standalone && !this.pageAlreadyDimmed()) {
-        this.showStandaloneBackdrop();
+      if (this.standalone && !this.$refs.emailDetailDrawer?.stuckElsewhere && !this.pageAlreadyDimmed()) {
+        this.$nextTick(this.showStandaloneBackdrop);
       }
     },
     /**
@@ -544,18 +548,16 @@ export default {
      * does not cover this one when it opens alone, from the platform's search or the
      * Favorites drawer. Asking exo-drawer for its overlay instead is worse: that
      * renders Vuetify's scrim, which stacks ABOVE this drawer because the drawer's
-     * z-index is set by hand. So the backdrop is placed here, one step below whatever
-     * z-index the drawer ended up with, and clicking it closes the message like any
-     * other drawer.
+     * z-index is set by hand. So the backdrop is placed here, one step below the
+     * z-index the drawer's element carries once rendered, and clicking it closes the
+     * message like any other drawer.
      *
      * @returns {void}
      */
     showStandaloneBackdrop() {
       this.hideStandaloneBackdrop();
-      const drawer = this.$refs.emailDetailDrawer;
-      const drawerZIndex = Number(drawer?.zIndex)
-        || Number(drawer?.$el && window.getComputedStyle(drawer.$el).zIndex)
-        || 2000;
+      const drawerElement = this.$refs.emailDetailDrawer?.$el;
+      const drawerZIndex = Number(drawerElement && window.getComputedStyle(drawerElement).zIndex) || 2000;
       const backdrop = document.createElement('div');
       backdrop.id = BACKDROP_ID;
       backdrop.style.cssText = `position:fixed;top:0;left:0;right:0;bottom:0;background-color:rgba(0,0,0,0.46);z-index:${drawerZIndex - 1};`;
