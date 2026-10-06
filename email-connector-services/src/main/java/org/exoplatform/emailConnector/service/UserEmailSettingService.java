@@ -54,6 +54,7 @@ import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
 import org.exoplatform.emailConnector.event.EmailBoxSyncEvent;
 import org.exoplatform.emailConnector.event.EmailNotificationPreferencesChangedEvent;
 import org.exoplatform.emailConnector.exception.CredentialsProviderMissingException;
+import org.exoplatform.emailConnector.exception.ManagedConnectionLockedException;
 import org.exoplatform.emailConnector.model.ContactImportState;
 import org.exoplatform.emailConnector.model.ContactPublishQueue;
 import org.exoplatform.emailConnector.model.ContactSyncState;
@@ -153,6 +154,9 @@ public class UserEmailSettingService {
   @Autowired
   private EmailSignatureService     emailSignatureService;
 
+  @Autowired
+  private EmailManagedModeService   emailManagedModeService;
+
   // required = false, same reason as EmailBoxService's own guard: the resolver
   // needs ConnectorCredentialsService, a bean of another WAR, so it is undefined
   // in this addon's own Spring test contexts.
@@ -167,6 +171,7 @@ public class UserEmailSettingService {
    * @param broadcast broadcast event
    * @throws IllegalAccessException if user is not allowed to connect email
    *           setting
+   * @throws ManagedConnectionLockedException when managed mode governs the user
    * @throws IllegalArgumentException carrying {@link #PASSWORD_REQUIRED} when the
    *           password is blank and no stored password applies
    */
@@ -174,6 +179,9 @@ public class UserEmailSettingService {
   public void connectUserEmailSetting(UserEmailSetting userEmailSetting,
                                       String username,
                                       boolean broadcast) throws IllegalAccessException {
+    // Credentials the user types are never the designated connector's way in: its
+    // provider asks the user for nothing.
+    emailManagedModeService.checkUserMayChangeConnection(username, null);
     if (!canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE, username));
     }
@@ -221,17 +229,24 @@ public class UserEmailSettingService {
    * share the user accepted - is raised only when the connector or the address
    * differs from the stored one: connecting again the account already connected
    * keeps the user's mail and shares.
+   * <p>
+   * A user managed mode governs may connect the designated connector only. That
+   * connect replaces whatever connection the user has on another connector, active or
+   * not, as the login-time switch does, and is marked as made by managed mode.
    *
    * @param emailConnectorId the connector preset to connect to
    * @param username the eXo login connecting
    * @throws IllegalAccessException when the user may not connect this connector
+   * @throws ManagedConnectionLockedException when managed mode governs the user and
+   *           this is not the designated connector
    * @throws IllegalArgumentException when the provider expects the user to supply
    *           something, or names no mailbox
    * @throws IllegalStateException when the mailbox refuses the service account
    */
   @Transactional(rollbackFor = Exception.class)
   public void connectThroughProvider(long emailConnectorId, String username) throws IllegalAccessException {
-    connectThroughProvider(emailConnectorId, username, false);
+    Long governing = emailManagedModeService.checkUserMayChangeConnection(username, emailConnectorId);
+    connectThroughProvider(emailConnectorId, username, governing != null, governing != null);
   }
 
   /**
@@ -262,7 +277,44 @@ public class UserEmailSettingService {
   public boolean connectThroughProvider(long emailConnectorId,
                                         String username,
                                         boolean byManagedMode) throws IllegalAccessException {
-    if (!canConnect(emailConnectorId, username)) {
+    return connectThroughProvider(emailConnectorId, username, byManagedMode, false);
+  }
+
+  /**
+   * Moves a user managed mode governs from the connector they are on to the
+   * designated one, at login: the one-click connect, without the rule that a user
+   * keeps the mailbox they have. The designated mailbox is opened before anything is
+   * written, so a refusal leaves the previous connection as it was. The connector
+   * changes, so the account-cleanup broadcast empties the previous mailbox's mirror and
+   * ends the shares the user accepted, as any rebind does. The connection is marked as
+   * made by managed mode.
+   * <p>
+   * No entitlement check is made on {@code username}: the caller establishes it, and
+   * it is never a value a client supplied. The managed enrolment calls this at login,
+   * with the login's own user.
+   *
+   * @param emailConnectorId the designated connector
+   * @param username the eXo login to move, established by the caller
+   * @return true when the connection was recorded, false when the stored setting
+   *         already named that connector by the time of the write
+   * @throws IllegalAccessException when the connector is unknown or deactivated, or
+   *           the mail feature is off
+   * @throws IllegalArgumentException when the provider expects the user to supply
+   *           something, or names no mailbox
+   * @throws IllegalStateException when the mailbox refuses the service account
+   * @throws CredentialsProviderMissingException when no provider of the connector's
+   *           name is registered; nothing was asked of the mail server
+   */
+  @Transactional(rollbackFor = Exception.class)
+  public boolean switchThroughProvider(long emailConnectorId, String username) throws IllegalAccessException {
+    return connectThroughProvider(emailConnectorId, username, true, true);
+  }
+
+  private boolean connectThroughProvider(long emailConnectorId,
+                                         String username,
+                                         boolean byManagedMode,
+                                         boolean replacing) throws IllegalAccessException {
+    if (!(replacing ? isConnectable(emailConnectorId) : canConnect(emailConnectorId, username))) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE, username));
     }
     EmailConnector emailConnector = emailConnectorService.getEmailConnector(emailConnectorId);
@@ -284,7 +336,8 @@ public class UserEmailSettingService {
         throw new IllegalArgumentException("The provider of this connector names no mailbox for this user");
       }
       store = connectThroughProviderMaterial(emailConnector, username);
-      if (byManagedMode && StringUtils.isNotBlank(getStoredUserEmailSetting(username).getEmailConnectorId())) {
+      String storedConnectorId = byManagedMode ? getStoredUserEmailSetting(username).getEmailConnectorId() : null;
+      if (replacing ? String.valueOf(emailConnectorId).equals(storedConnectorId) : StringUtils.isNotBlank(storedConnectorId)) {
         return false;
       }
       // Read before the write: the cleanup broadcast wipes the mirror and ends every
@@ -577,12 +630,53 @@ public class UserEmailSettingService {
   }
 
   /**
+   * The user's mail setting as their own screens read it: {@link #getUserEmailSetting(String)},
+   * plus whether managed mode keeps them on the designated connector and which one.
+   * Kept apart from the plain read, which the platform calls on every sync and every
+   * write, so that only a screen pays for the managed-mode verdict.
+   *
+   * @param username the eXo login reading their setting
+   * @return the setting, with {@code managed} and {@code managedConnectorId} filled
+   */
+  public UserEmailSetting getUserEmailSettingWithManagedMode(String username) {
+    UserEmailSetting userEmailSetting = getUserEmailSetting(username);
+    Long managedConnectorId = emailManagedModeService.designatedConnectorFor(username);
+    userEmailSetting.setManaged(managedConnectorId != null);
+    userEmailSetting.setManagedConnectorId(managedConnectorId);
+    return userEmailSetting;
+  }
+
+  /**
+   * Disconnects the user's mailbox at their own request.
+   * <p>
+   * A user managed mode governs cannot: the instance keeps them on the designated
+   * connector. The platform's own disconnections - a managed-mode change, a user's
+   * deletion - call {@link #deleteUserEmailSetting(String)} instead.
+   *
+   * <p>
+   * Runs in its own transaction, as {@link #deleteUserEmailSetting(String)} does: the
+   * removal and the account-cleanup listeners run in it.
+   *
+   * @param username the eXo login disconnecting
+   * @throws ManagedConnectionLockedException when managed mode governs the user
+   */
+  @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
+  public void disconnectUserEmailSetting(String username) throws ManagedConnectionLockedException {
+    emailManagedModeService.checkUserMayChangeConnection(username, null);
+    removeUserEmailSetting(username);
+  }
+
+  /**
    * Delete user email setting.
    *
    * @param username user deleting user email setting
    */
   @Transactional(propagation = Propagation.REQUIRES_NEW)
   public void deleteUserEmailSetting(String username) {
+    removeUserEmailSetting(username);
+  }
+
+  private void removeUserEmailSetting(String username) {
     settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
     settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONNECTED_BY_MANAGED_MODE_KEY);
     // The signature belongs to the mail account's composer, so disconnecting the
@@ -982,13 +1076,7 @@ public class UserEmailSettingService {
 
   public boolean canConnect(long emailConnectorId, String username) {
     UserEmailSetting userEmailSetting = getUserEmailSetting(username);
-    if (!featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)) {
-      return false;
-    }
-    if (emailConnectorService.getEmailConnector(emailConnectorId) == null) {
-      return false;
-    }
-    if (!emailConnectorService.getEmailConnector(emailConnectorId).isActive()) {
+    if (!isConnectable(emailConnectorId)) {
       return false;
     }
     if (userEmailSetting.getEmailConnectorId() != null
@@ -998,6 +1086,14 @@ public class UserEmailSettingService {
       return false;
     }
     return true;
+  }
+
+  private boolean isConnectable(long emailConnectorId) {
+    if (!featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)) {
+      return false;
+    }
+    EmailConnector emailConnector = emailConnectorService.getEmailConnector(emailConnectorId);
+    return emailConnector != null && emailConnector.isActive();
   }
 
   private boolean isEmailConnectorUserConnected(long emailConnectorId, UserEmailSetting userEmailSetting) {
