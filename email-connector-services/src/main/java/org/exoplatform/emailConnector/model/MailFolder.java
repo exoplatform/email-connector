@@ -106,6 +106,13 @@ public final class MailFolder {
    */
   public static final List<String> HIDDEN_FOLDERS = List.of(TRASH, JUNK);
 
+  /**
+   * The folders whose starred mails stay out of the platform's Favorites drawer: the
+   * hidden ones; ALL_MAIL, which holds a copy of the other folders' messages; and
+   * DRAFTS, where the mailbox offers no star.
+   */
+  public static final List<String> NOT_FAVORITED_FOLDERS = List.of(TRASH, JUNK, ALL_MAIL, DRAFTS);
+
   // The prefix of a CUSTOM folder's key -- a folder the user made in their own mailbox
   // ("Factures", "Customers/Acme", a Gmail label), mirrored here on their say-so.
   // The key written to EMAIL_BOX.FOLDER for such a folder is "CUSTOM:" + the id of its

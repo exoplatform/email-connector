@@ -193,14 +193,16 @@ export default {
     // drawer's own copies: the list it was opened with — a snapshot when it
     // shows search results, which the periodic refresh never overwrites — and
     // the opened message.
-    this.onApplyEmailFavoriteStatus = (favorite, mailRemoteIds = []) => {
+    // A UID names a message within its folder only, so the change lands on the rows of
+    // the folder it was made in.
+    this.onApplyEmailFavoriteStatus = (favorite, mailRemoteIds = [], folder = 'INBOX') => {
       const ids = new Set(mailRemoteIds);
       (this.emails || []).forEach(email => {
-        if ((email.folder || 'INBOX') === 'INBOX' && ids.has(email.mailRemoteId)) {
+        if ((email.folder || 'INBOX') === folder && ids.has(email.mailRemoteId)) {
           this.$set(email, 'starred', favorite);
         }
       });
-      if (this.email && (this.email.folder || 'INBOX') === 'INBOX' && ids.has(this.email.mailRemoteId)) {
+      if (this.email && (this.email.folder || 'INBOX') === folder && ids.has(this.email.mailRemoteId)) {
         this.$set(this.email, 'starred', favorite);
       }
     };

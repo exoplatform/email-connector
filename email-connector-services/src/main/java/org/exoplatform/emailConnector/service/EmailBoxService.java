@@ -145,6 +145,7 @@ import org.exoplatform.emailConnector.model.DiscoveredFolder;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderClassification;
+import org.exoplatform.emailConnector.model.FavoriteRemoval;
 import org.exoplatform.emailConnector.model.FolderMessageCounts;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
@@ -266,8 +267,6 @@ public class EmailBoxService {
   // develop, not in a backport -- rewriting those lines drags a lot of untested legacy teardown
   // into this PR's new code. New code uses the constants.
   private static final String     STORE_CLOSE_ERROR_MESSAGE                                   = "Error when closing store";
-
-  private static final String     INBOX_CLOSE_ERROR_MESSAGE                                   = "Error when closing inbox";
 
   private static final String     STORE_CONNECT_ERROR_MESSAGE                                 =
                                                                                               "Error when connecting store for user {}";
@@ -5340,6 +5339,65 @@ public class EmailBoxService {
   }
 
   /**
+   * Clears the star of every copy a favorite stands for: its own row, and the rows of
+   * the user's other folders carrying its Message-ID, Trash, Spam, All Mail and Drafts left out
+   * as the Favorites drawer leaves them out. The drawer counts the copies of a message
+   * as one favorite ({@code EmailFavoriteService}), so clearing one copy only would
+   * leave the favorite standing on another, and the entry the user just removed would
+   * be back at the next reconciliation. Each copy is unstarred in its own folder,
+   * where its UID means that message.
+   *
+   * The copies asked to be unstarred are returned by folder, so a mailbox open beside
+   * the drawer can put out the star of each of them where it is listed.
+   *
+   * @param favorite the favorited email, resolved for this user with
+   *          {@link #getOwnedEmailById}
+   * @param username the mailbox owner
+   * @return the UIDs asked to be unstarred by folder, the favorite's own folder last,
+   *         and how many copies could not be unstarred
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   */
+  public FavoriteRemoval unstarFavorite(Email favorite, String username) throws IllegalAccessException {
+    Map<String, List<Long>> uidsByFolder = new LinkedHashMap<>();
+    if (StringUtils.isNotBlank(favorite.getMailHeaderId())) {
+      emailBoxStorage.getStarredCopyKeys(username, favorite.getMailHeaderId(), MailFolder.NOT_FAVORITED_FOLDERS)
+                     .forEach(copy -> addCopy(uidsByFolder, copy.getFolder(), copy.getMailRemoteId()));
+    }
+    // Its own folder last: each call realigns the drawer, and while the favorite's own
+    // row is starred it stays the copy the drawer shows, so the favorite never moves to
+    // another copy between two calls.
+    String ownFolder = StringUtils.isBlank(favorite.getFolder()) ? MailFolder.INBOX : favorite.getFolder();
+    List<Long> ownFolderCopies = uidsByFolder.remove(ownFolder);
+    addCopy(uidsByFolder, ownFolder, favorite.getMailRemoteId());
+    if (ownFolderCopies != null) {
+      ownFolderCopies.forEach(uid -> addCopy(uidsByFolder, ownFolder, uid));
+    }
+    int failed = 0;
+    for (Map.Entry<String, List<Long>> copies : uidsByFolder.entrySet()) {
+      failed += updateEmailStarredStatus(copies.getValue(), username, copies.getKey(), false, true);
+    }
+    return new FavoriteRemoval(failed, uidsByFolder);
+  }
+
+  /**
+   * Adds one copy of a message to the UIDs to unstar, per folder, once; a copy with no
+   * UID (a draft never uploaded) has nothing on the server to carry the flag.
+   *
+   * @param uidsByFolder the UIDs to unstar, by folder
+   * @param folder the copy's folder, blank meaning INBOX
+   * @param mailRemoteId the copy's UID within that folder
+   */
+  private static void addCopy(Map<String, List<Long>> uidsByFolder, String folder, Long mailRemoteId) {
+    if (mailRemoteId == null) {
+      return;
+    }
+    List<Long> uids = uidsByFolder.computeIfAbsent(StringUtils.isBlank(folder) ? MailFolder.INBOX : folder, key -> new ArrayList<>());
+    if (!uids.contains(mailRemoteId)) {
+      uids.add(mailRemoteId);
+    }
+  }
+
+  /**
    * Update the read/unread status of one or more emails (by IMAP mailRemoteId),
    * optimistically in the local mirror first and then, when requested, on the IMAP
    * server. Each per-message remote failure (including a message that no longer
@@ -5536,9 +5594,15 @@ public class EmailBoxService {
    * failure (including a message no longer on the server) reverts the local change
    * for that email and is counted — a star the server never took must not survive
    * locally, or the two copies silently diverge until the next sync.
+   * <p>
+   * The folder is part of the address, as for {@link #updateEmailReadStatus}: a UID
+   * numbers a message within one folder, so a star toggled on a row of the user's
+   * "Work" folder is pushed to that folder, never to an INBOX message that happens to
+   * carry the same number.
    *
    * @param mailRemoteIds the IMAP UIDs of the emails to update
    * @param username the user acting on their own mailbox
+   * @param folder the folder those UIDs are numbered in; blank means INBOX
    * @param starred {@code true} to star, {@code false} to unstar
    * @param updateRemoteStarredStatus whether the flag must also be pushed to the
    *          IMAP server (skipped, e.g., during sync where the flag comes from the
@@ -5549,63 +5613,75 @@ public class EmailBoxService {
    */
   public int updateEmailStarredStatus(List<Long> mailRemoteIds,
                                       String username,
+                                      String folder,
                                       boolean starred,
                                       boolean updateRemoteStarredStatus) throws IllegalAccessException {
-    int failedEmailUpdates = 0;
-    if (mailRemoteIds != null && !mailRemoteIds.isEmpty()) {
+    // A row with no UID (a draft never uploaded) has no message on the server to
+    // carry the flag: it is counted as failed, never pushed.
+    List<Long> uids = mailRemoteIds == null ? List.of() : mailRemoteIds.stream().filter(Objects::nonNull).toList();
+    int failedEmailUpdates = mailRemoteIds == null ? 0 : mailRemoteIds.size() - uids.size();
+    if (!uids.isEmpty()) {
       UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
       if (userEmailSetting.getEmailConnectorId() == null
           || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
         throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_UPDATE_EMAIL_MESSAGE, username));
       }
-      emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, starred, MailFolder.INBOX);
+      String sourceFolder = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
+      emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(uids, username, starred, sourceFolder);
       Store store = null;
-      Folder inbox = null;
+      Folder remoteFolder = null;
       try {
         if (updateRemoteStarredStatus) {
           store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
-          inbox = store.getFolder(INBOX_FOLDER_NAME);
-          inbox.open(Folder.READ_WRITE);
+          // Through the resolver the rows were cached by, as updateEmailReadStatus does.
+          remoteFolder = resolveCachedFolder(store, sourceFolder, username);
+          if (remoteFolder == null) {
+            // Rows cached under a folder the mailbox no longer offers: nothing can be
+            // flagged, so the optimistic local change goes back and every id fails.
+            emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(uids, username, !starred, sourceFolder);
+            LOG.warn("No {} folder for user {}; the star of {} message(s) could not be pushed",
+                     sourceFolder,
+                     username,
+                     uids.size());
+            emailFavoriteService.reconcileFavorites(username);
+            return failedEmailUpdates + uids.size();
+          }
+          remoteFolder.open(Folder.READ_WRITE);
         }
-        for (Long mailRemoteId : mailRemoteIds) {
+        for (Long mailRemoteId : uids) {
           try {
             if (updateRemoteStarredStatus) {
-              Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
+              Message remoteMessage = ((UIDFolder) remoteFolder).getMessageByUID(mailRemoteId);
               // Guard the not-found case explicitly: getMessageByUID returns null
               // (rather than throwing) when the UID is unknown to the server.
               if (remoteMessage == null) {
-                emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(List.of(mailRemoteId),
-                                                                        username,
-                                                                        !starred,
-                                                                        MailFolder.INBOX);
+                emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(List.of(mailRemoteId), username, !starred, sourceFolder);
                 failedEmailUpdates++;
-                LOG.warn("Email {} not found on IMAP server for user {}, starred status update reverted",
+                LOG.warn("Email {} not found in folder {} on IMAP server for user {}, starred status update reverted",
                          mailRemoteId,
+                         sourceFolder,
                          username);
                 continue;
               }
               remoteMessage.setFlag(Flags.Flag.FLAGGED, starred);
             }
           } catch (Exception e) {
-            emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(List.of(mailRemoteId),
-                                                                    username,
-                                                                    !starred,
-                                                                    MailFolder.INBOX);
+            emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(List.of(mailRemoteId), username, !starred, sourceFolder);
             failedEmailUpdates++;
-            LOG.error("Error when updating email {} starred status for user {}", mailRemoteId, username, e);
+            LOG.error("Error when updating email {} of folder {} starred status for user {}", mailRemoteId, sourceFolder, username, e);
           }
         }
       } catch (Exception e) {
-        emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, !starred, MailFolder.INBOX);
+        emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(uids, username, !starred, sourceFolder);
         LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
         throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
       } finally {
         try {
-          if (inbox != null && inbox.isOpen()) {
-            inbox.close(false);
+          if (remoteFolder != null && remoteFolder.isOpen()) {
+            remoteFolder.close(false);
           }
         } catch (MessagingException e) {
-          LOG.warn(INBOX_CLOSE_ERROR_MESSAGE, e);
+          LOG.warn("Error when closing folder {} of user {}", sourceFolder, username, e);
         }
         try {
           if (store != null) {
