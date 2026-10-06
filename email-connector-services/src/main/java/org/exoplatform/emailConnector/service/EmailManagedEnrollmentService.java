@@ -44,17 +44,18 @@ import jakarta.annotation.PreDestroy;
  * hour while they stay logged in ({@link
  * org.exoplatform.emailConnector.listener.EmailManagedLoginListener}, EXO-89653).
  * <p>
- * Three rules, in the order the board states them and with one reordering that
- * changes no outcome: the user already has a mail configuration - whatever connector
- * it names - and nothing happens; the user is in a population the administrator
- * excluded and nothing happens; otherwise they are attached to the designated
- * connector. The designation is read first here because it is the cheapest read and
- * the one that is null on every instance where managed mode is off.
+ * Three rules: the user is in a population the administrator excluded, or nothing
+ * is designated, and nothing happens; the user already has a mail configuration on the
+ * designated connector and nothing happens; otherwise they are put on the designated
+ * connector - attached when they have no configuration, switched when they are on
+ * another connector (EXO-90836). The designation is read first because it is the
+ * cheapest read and the one that is null on every instance where managed mode is off.
  * <p>
- * Having no configuration and having removed one are the same case: a user who
- * disconnects is attached again within the hour, or at their next login, and
- * disconnecting stays useful because whoever connects elsewhere has a
- * configuration, which rule one leaves alone.
+ * A switch opens the designated mailbox before it writes anything: a refusal leaves
+ * the user on the connector they are on, and the next attempt tries again. A user
+ * managed mode governs cannot disconnect, edit their connection or connect elsewhere
+ * themselves ({@link EmailManagedModeService#checkUserMayChangeConnection(String, Long)}),
+ * so the connector the instance designates is the only one they end up on.
  * <p>
  * An attachment is marked as made by managed mode
  * ({@link UserEmailSettingService#CONNECTED_BY_MANAGED_MODE_KEY}), and the
@@ -113,7 +114,7 @@ public class EmailManagedEnrollmentService {
   }
 
   /**
-   * Applies the three rules for one user, on the executor's thread.
+   * Applies the rules for one user, on the executor's thread.
    * <p>
    * {@code @ContainerTransactional} because this runs on a bare executor thread: the
    * aspect binds the portal container and a request lifecycle around the call, which
@@ -141,11 +142,12 @@ public class EmailManagedEnrollmentService {
         LOG.debug("User {} not enrolled: no managed mail connector applies to them", username);
         return EmailManagedEnrollmentOutcome.NOT_MANAGED;
       }
-      if (hasConfiguration(username)) {
-        LOG.debug("User {} not enrolled: they already have a mail configuration", username);
+      String configuredConnectorId = configuredConnectorId(username);
+      if (String.valueOf(connectorId).equals(configuredConnectorId)) {
+        LOG.debug("User {} not enrolled: they are already on the managed mail connector", username);
         return EmailManagedEnrollmentOutcome.ALREADY_CONFIGURED;
       }
-      return attach(connectorId, username);
+      return attach(connectorId, username, StringUtils.isNotBlank(configuredConnectorId));
     } catch (Exception e) {
       LOG.warn("Cannot attach user {} to the managed mail connector at login; their next login will try again", username, e);
       return EmailManagedEnrollmentOutcome.FAILED;
@@ -162,23 +164,32 @@ public class EmailManagedEnrollmentService {
   }
 
   /**
-   * Rule three: the one-click connect, run for the user. A refusal records
-   * nothing and is retried at the next login; any other exception is the
-   * caller's failure.
+   * Rule three: the one-click connect, run for the user - an attachment when they have
+   * no configuration, a switch when they are on another connector. A refusal records
+   * nothing and is retried at the next login; any other exception is the caller's
+   * failure.
    *
    * @param connectorId the designated connector
    * @param username the eXo login of the user who logged in
-   * @return ATTACHED, REFUSED, or ALREADY_CONFIGURED when the user configured a
-   *         mailbox during the attach
+   * @param switching true when the user is on another connector
+   * @return ATTACHED or SWITCHED, REFUSED, or ALREADY_CONFIGURED when the stored
+   *         setting changed during the connect
    * @throws Exception an unexpected failure, logged by the caller
    */
-  private EmailManagedEnrollmentOutcome attach(Long connectorId, String username) throws Exception {
+  private EmailManagedEnrollmentOutcome attach(Long connectorId, String username, boolean switching) throws Exception {
     try {
-      if (!userEmailSettingService.connectThroughProvider(connectorId, username, true)) {
-        // The user connected a mailbox themselves while the managed one was being
-        // probed: rule one again, their choice stands.
-        LOG.debug("User {} not enrolled: they configured a mailbox during the attach", username);
+      boolean recorded = switching ? userEmailSettingService.switchThroughProvider(connectorId, username)
+                                   : userEmailSettingService.connectThroughProvider(connectorId, username, true);
+      if (!recorded) {
+        // Another writer stored a setting while the managed mailbox was being probed:
+        // a mailbox the user connected before the lock reached them, or a concurrent
+        // switch of the same user. The next attempt judges what is stored then.
+        LOG.debug("User {} not enrolled: their mail setting changed during the connect", username);
         return EmailManagedEnrollmentOutcome.ALREADY_CONFIGURED;
+      }
+      if (switching) {
+        LOG.info("User {} switched to the managed mail connector {} at login", username, connectorId);
+        return EmailManagedEnrollmentOutcome.SWITCHED;
       }
       LOG.info("User {} attached to the managed mail connector {} at login", username, connectorId);
       return EmailManagedEnrollmentOutcome.ATTACHED;
@@ -221,15 +232,14 @@ public class EmailManagedEnrollmentService {
   }
 
   /**
-   * Rule one: whether the user already has a mail configuration, whatever connector
-   * it names.
+   * The connector the user's mail configuration names, whatever it is.
    *
    * @param username the eXo login
-   * @return true when a configuration exists
+   * @return the connector id as stored, null or blank when there is no configuration
    */
-  private boolean hasConfiguration(String username) {
+  private String configuredConnectorId(String username) {
     UserEmailSetting setting = userEmailSettingService.getUserEmailSetting(username);
-    return setting != null && StringUtils.isNotBlank(setting.getEmailConnectorId());
+    return setting == null ? null : setting.getEmailConnectorId();
   }
 
   private static ExecutorService newEnrollmentExecutor() {
