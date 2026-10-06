@@ -125,7 +125,7 @@ export default {
       // as it does through the form.
       if (!this.requiresUserAction) {
         this.connecting = true;
-        this.$emailConnectorUserSettingService.connectThroughProvider(this.userEmailConnector.id)
+        this.$emailConnectorCommonService.connectThroughProvider(this.userEmailConnector.id)
           .then(() => {
             document.dispatchEvent(new CustomEvent('refresh-active-connectors-list'));
             document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
@@ -133,8 +133,8 @@ export default {
               this.$t('UserSettings.emailConnector.userSetting.drawer.connect.success'),
               'success');
           })
-          .catch(() => this.$root.$emit('alert-message',
-            this.$t('UserSettings.emailConnector.userSetting.drawer.connect.error'),
+          .catch(error => this.$root.$emit('alert-message',
+            this.$t(error?.code || 'UserSettings.emailConnector.userSetting.drawer.connect.error'),
             'error'))
           .finally(() => this.connecting = false);
         return;

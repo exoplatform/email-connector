@@ -45,6 +45,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 
 import org.exoplatform.emailConnector.event.EmailManagedModeChangedEvent;
+import org.exoplatform.emailConnector.exception.ManagedConnectionLockedException;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailManagedMode;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
@@ -332,5 +333,68 @@ public class EmailManagedModeServiceTest {
     assertEquals(7L, mode.connectorId());
     assertNull(mode.connectorName());
     assertTrue(mode.managedForMe());
+  }
+  /**
+   * EXO-90836. A user managed mode does not govern changes their connection freely, and
+   * nothing is returned for them: the caller marks no connection as managed.
+   */
+  @Test
+  public void aUserManagedModeDoesNotGovernMayChangeTheirConnection() throws Exception {
+    designated(700);
+    when(managedConnectorService.exclusionsOf(KIND)).thenReturn(List.of("/externals"));
+    when(managedConnectorService.designatedConnectorFor(700L, List.of("/externals"), USER)).thenReturn(null);
+
+    assertNull(emailManagedModeService.checkUserMayChangeConnection(USER, null));
+    assertNull(emailManagedModeService.checkUserMayChangeConnection(USER, 3L));
+  }
+
+  /**
+   * EXO-90836. With managed mode off, nobody is governed.
+   */
+  @Test
+  public void nobodyIsLockedWhenManagedModeIsOff() throws Exception {
+    when(managedConnectorService.designatedConnectorFor(null, List.of(), USER)).thenReturn(null);
+
+    assertNull(emailManagedModeService.checkUserMayChangeConnection(USER, null));
+  }
+
+  /**
+   * EXO-90836. A governed user may connect the designated connector, and only it: the
+   * designated id is returned for the caller to mark the connection; a disconnection or
+   * an edit (no target) and any other connector are refused with the message code the
+   * 403 body carries.
+   */
+  @Test
+  public void aGovernedUserMayConnectTheDesignatedConnectorAndNothingElse() throws Exception {
+    designated(700);
+    when(managedConnectorService.designatedConnectorFor(700L, List.of(), USER)).thenReturn(700L);
+
+    assertEquals(700L, emailManagedModeService.checkUserMayChangeConnection(USER, 700L));
+    ManagedConnectionLockedException disconnecting =
+                                                   assertThrows(ManagedConnectionLockedException.class,
+                                                                () -> emailManagedModeService.checkUserMayChangeConnection(USER,
+                                                                                                                           null));
+    assertEquals("emailConnector.managed.connectionLocked", disconnecting.getMessage());
+    assertThrows(ManagedConnectionLockedException.class,
+                 () -> emailManagedModeService.checkUserMayChangeConnection(USER, 3L));
+  }
+
+  /**
+   * EXO-90836. The verdict is the strict one: a user whose identity cannot be resolved,
+   * and a caller with no login, are refused rather than counted as excluded.
+   */
+  @Test
+  public void anUnresolvableOrAnonymousCallerIsRefused() {
+    designated(700);
+    when(managedConnectorService.exclusionsOf(KIND)).thenReturn(List.of("/externals"));
+    when(managedConnectorService.designatedConnectorFor(700L, List.of("/externals"), "unknown"))
+        .thenThrow(new IllegalStateException("no identity"));
+    when(managedConnectorService.designatedConnectorFor(700L, List.of("/externals"), null))
+        .thenThrow(new IllegalArgumentException("user required"));
+
+    assertThrows(ManagedConnectionLockedException.class,
+                 () -> emailManagedModeService.checkUserMayChangeConnection("unknown", 700L));
+    assertThrows(ManagedConnectionLockedException.class,
+                 () -> emailManagedModeService.checkUserMayChangeConnection(null, null));
   }
 }
