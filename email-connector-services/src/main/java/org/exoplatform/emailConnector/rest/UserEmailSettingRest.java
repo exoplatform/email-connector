@@ -32,6 +32,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.annotation.Secured;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -46,6 +47,7 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.ForwardingRefusedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
+import org.exoplatform.emailConnector.exception.ManagedConnectionLockedException;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
@@ -143,15 +145,18 @@ public class UserEmailSettingRest {
           + "only when it answered. Refuses a provider that expects the user to type credentials.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Connected"),
       @ApiResponse(responseCode = "400", description = "The provider expects the user to supply something"),
-      @ApiResponse(responseCode = "403", description = "Forbidden operation"),
+      @ApiResponse(responseCode = "403", description = "Forbidden operation; emailConnector.managed.connectionLocked "
+          + "when managed mode keeps the caller on another connector"),
       @ApiResponse(responseCode = "500", description = "The mailbox refused the service account, or no credentials provider "
           + "of the connector's name is registered") })
   public void connectThroughProvider(HttpServletRequest request,
                                      @Parameter(description = "Email connector to connect to", required = true)
                                      @RequestParam(name = "emailConnectorId")
-                                     long emailConnectorId) {
+                                     long emailConnectorId) throws ManagedConnectionLockedException {
     try {
       userEmailSettingService.connectThroughProvider(emailConnectorId, request.getRemoteUser());
+    } catch (ManagedConnectionLockedException e) {
+      throw e;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
@@ -181,9 +186,11 @@ public class UserEmailSettingRest {
                                       @RequestParam(name = "broadcast", defaultValue = "true")
                                       boolean broadcast,
                                       @RequestBody
-                                      UserEmailSetting userEmailSetting) {
+                                      UserEmailSetting userEmailSetting) throws ManagedConnectionLockedException {
     try {
       userEmailSettingService.connectUserEmailSetting(userEmailSetting, request.getRemoteUser(), broadcast);
+    } catch (ManagedConnectionLockedException e) {
+      throw e;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
@@ -202,7 +209,7 @@ public class UserEmailSettingRest {
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public UserEmailSetting getUserEmailSetting(HttpServletRequest request) {
-    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(request.getRemoteUser());
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSettingWithManagedMode(request.getRemoteUser());
     // The decoded password never leaves the server (EXO-90610): passwordStored tells
     // the screen there is one to keep, and a blank password on the next PUT keeps it.
     userEmailSetting.setEmailPassword(null);
@@ -446,9 +453,11 @@ public class UserEmailSettingRest {
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public void deleteUserEmailSetting(HttpServletRequest request) {
+  public void deleteUserEmailSetting(HttpServletRequest request) throws ManagedConnectionLockedException {
     try {
-      userEmailSettingService.deleteUserEmailSetting(request.getRemoteUser());
+      userEmailSettingService.disconnectUserEmailSetting(request.getRemoteUser());
+    } catch (ManagedConnectionLockedException e) {
+      throw e;
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
@@ -1467,6 +1476,23 @@ public class UserEmailSettingRest {
     } catch (DelegationRevokedException e) {
       throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     }
+  }
+
+  /**
+   * The 403 answer of a connection change managed mode refuses, with its message code
+   * under {@code message}, which the JS services read: Spring Boot's default error body
+   * leaves out a {@code ResponseStatusException}'s reason on this platform. The same
+   * shape as {@code EmailConnectorRest#onRefusal}.
+   *
+   * @param refusal the refusal
+   * @return a 403 carrying the code
+   */
+  @ExceptionHandler(ManagedConnectionLockedException.class)
+  public ResponseEntity<Map<String, Object>> onConnectionLocked(ManagedConnectionLockedException refusal) {
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("status", HttpStatus.FORBIDDEN.value());
+    body.put("message", refusal.getMessage());
+    return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
   }
 
   /**

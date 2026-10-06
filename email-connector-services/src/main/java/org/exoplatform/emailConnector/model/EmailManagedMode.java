@@ -27,8 +27,9 @@ import java.util.List;
  * the <b>instance</b> decided — the administration screen renders them, and they
  * are the same for everybody. {@code managedForMe} says whether the decision
  * applies to <b>the caller</b>: the designation exists and the caller is in none
- * of the excluded groups. It governs the automatic attachment at login and
- * nothing else — never whether the caller may connect a connector of their own.
+ * of the excluded groups. It governs the automatic attachment at login, and a
+ * governed caller can neither disconnect, edit their connection nor connect another
+ * connector (EXO-90836).
  *
  * @param connectorId the connector the instance chose, null when managed mode is
  *          off
