@@ -58,7 +58,7 @@ import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.constant.EmailManagedEnrollmentOutcome;
 
 /**
- * EXO-89653. The three rules of the login-time enrolment, in order, and what each
+ * EXO-89653, EXO-90836. The rules of the login-time enrolment, in order, and what each
  * exit records: nothing unless the mail server accepted, and nothing stored about
  * the outcome itself.
  */
@@ -95,8 +95,12 @@ class EmailManagedEnrollmentServiceTest {
   }
 
   private void configured(boolean hasConfiguration) {
+    configuredOn(hasConfiguration ? "3" : null);
+  }
+
+  private void configuredOn(String connectorId) {
     UserEmailSetting setting = new UserEmailSetting();
-    setting.setEmailConnectorId(hasConfiguration ? "3" : null);
+    setting.setEmailConnectorId(connectorId);
     when(userEmailSettingService.getUserEmailSetting(USER)).thenReturn(setting);
   }
 
@@ -196,22 +200,69 @@ class EmailManagedEnrollmentServiceTest {
     when(userEmailSettingService.isConnectedByManagedMode(USER)).thenReturn(true);
     when(emailManagedModeService.governingConnectorFor(USER)).thenReturn(7L);
     when(userEmailSettingService.getStoredEmailConnectorId(USER)).thenReturn("7");
-    configured(true);
+    configuredOn("7");
 
     assertEquals(EmailManagedEnrollmentOutcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
 
     verify(userEmailSettingService, never()).deleteUserEmailSetting(anyString());
+    verify(userEmailSettingService, never()).switchThroughProvider(anyLong(), anyString());
   }
 
-  /** Rule one: a configuration exists, whatever connector it names, and nothing happens. */
+  /**
+   * A user who connected the designated connector themselves is on it already: nothing
+   * happens, whether managed mode marked the connection or not.
+   */
   @Test
-  void leavesAloneAUserWhoAlreadyHasAConfiguration() throws Exception {
+  void leavesAloneAUserAlreadyOnTheDesignatedConnector() throws Exception {
     when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(7L);
-    configured(true);
+    configuredOn("7");
 
     assertEquals(EmailManagedEnrollmentOutcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
 
     verify(userEmailSettingService, never()).connectThroughProvider(anyLong(), anyString(), anyBoolean());
+    verify(userEmailSettingService, never()).switchThroughProvider(anyLong(), anyString());
+  }
+
+  /**
+   * EXO-90836. A governed user on another connector - one they chose before managed
+   * mode reached them - is switched to the designated one, and nothing is deleted
+   * first: the switch writes only once the designated mailbox opened.
+   */
+  @Test
+  void switchesAtLoginAGovernedUserOnAnotherConnector() throws Exception {
+    when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(7L);
+    configuredOn("3");
+    when(userEmailSettingService.switchThroughProvider(7L, USER)).thenReturn(true);
+
+    assertEquals(EmailManagedEnrollmentOutcome.SWITCHED, service.enrollOnLogin(USER));
+
+    verify(userEmailSettingService, never()).deleteUserEmailSetting(anyString());
+    verify(userEmailSettingService, never()).connectThroughProvider(anyLong(), anyString(), anyBoolean());
+  }
+
+  /**
+   * EXO-90836. A switch the designated mailbox refuses leaves the user where they are,
+   * for the next login to try again.
+   */
+  @Test
+  void aRefusedSwitchLeavesTheUserOnTheirConnector() throws Exception {
+    when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(7L);
+    configuredOn("3");
+    doThrow(new IllegalStateException("refused")).when(userEmailSettingService).switchThroughProvider(7L, USER);
+
+    assertEquals(EmailManagedEnrollmentOutcome.REFUSED, service.enrollOnLogin(USER));
+
+    verify(userEmailSettingService, never()).deleteUserEmailSetting(anyString());
+  }
+
+  /** EXO-90836. A switch that finds the designated connector stored by then records nothing. */
+  @Test
+  void aSwitchOvertakenByAnotherWriterRecordsNothing() throws Exception {
+    when(emailManagedModeService.designatedConnectorFor(USER)).thenReturn(7L);
+    configuredOn("3");
+    when(userEmailSettingService.switchThroughProvider(7L, USER)).thenReturn(false);
+
+    assertEquals(EmailManagedEnrollmentOutcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
   }
 
   /** Rule three: attached through the one-click connect. */

@@ -67,6 +67,22 @@ public class UserEmailSetting extends UserEmailSettingEntity {
   private boolean passwordStored;
 
   /**
+   * Set at read time for the user's own screens: whether managed mode keeps the user on
+   * the designated connector, so that they are offered neither disconnecting nor
+   * another connector (EXO-90836). Serialised outbound only, never stored.
+   */
+  @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+  private boolean managed;
+
+  /**
+   * Set with {@code managed}: the connector managed mode keeps the user on, which the
+   * screens connect in one click when the user has no connection yet. Null when
+   * managed mode does not govern the user. Serialised outbound only, never stored.
+   */
+  @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+  private Long managedConnectorId;
+
+  /**
    * The decoded password, accepted in a request body and never written in a response
    * (EXO-90610): whatever endpoint returns this model, the password stays on the
    * server. Declared here and not on the entity's {@code getEmailPassword()}
