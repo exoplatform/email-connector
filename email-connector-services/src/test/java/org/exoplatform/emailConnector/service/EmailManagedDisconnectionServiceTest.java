@@ -109,6 +109,7 @@ class EmailManagedDisconnectionServiceTest {
     when(userEmailSettingService.getUsersConnectedByManagedMode()).thenReturn(all);
     for (String user : users) {
       lenient().when(userEmailSettingService.getStoredEmailConnectorId(user)).thenReturn(connectorId);
+      lenient().when(userEmailSettingService.isConnectedByManagedMode(user)).thenReturn(true);
     }
   }
 
@@ -243,6 +244,7 @@ class EmailManagedDisconnectionServiceTest {
     when(userEmailSettingService.getUsersConnectedByManagedMode()).thenReturn(List.of("alice", "bob"));
     when(userEmailSettingService.getStoredEmailConnectorId("alice")).thenThrow(new IllegalStateException("unreadable document"));
     when(userEmailSettingService.getStoredEmailConnectorId("bob")).thenReturn("3");
+    when(userEmailSettingService.isConnectedByManagedMode("bob")).thenReturn(true);
     inForce(5L);
 
     service.disconnectUsersNoLongerManaged();
@@ -262,6 +264,7 @@ class EmailManagedDisconnectionServiceTest {
       throw new IOException("malformed document");
     });
     when(userEmailSettingService.getStoredEmailConnectorId("bob")).thenReturn("3");
+    when(userEmailSettingService.isConnectedByManagedMode("bob")).thenReturn(true);
     inForce(5L);
 
     service.disconnectUsersNoLongerManaged();
@@ -322,11 +325,78 @@ class EmailManagedDisconnectionServiceTest {
   void aProviderChangeDisconnectsEveryUserOfTheConnector() throws Exception {
     when(emailConnectorService.getEmailConnector(3L)).thenReturn(new org.exoplatform.emailConnector.model.EmailConnector());
     when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(3L)).thenReturn(List.of("alice", "chloe"));
+    when(userEmailSettingService.getStoredEmailConnectorId("alice")).thenReturn("3");
+    when(userEmailSettingService.getStoredEmailConnectorId("chloe")).thenReturn("3");
 
     assertEquals(2, service.countUsersOf(3L, ADMIN));
     service.disconnectAllUsersOf(3L);
 
     verify(userEmailSettingService).deleteUserEmailSetting("alice");
     verify(userEmailSettingService).deleteUserEmailSetting("chloe");
+  }
+
+  /**
+   * Managed mode turned off: alice was selected, then connected her own mailbox before
+   * her turn, which cleared the mark. Her connection is hers, and stays. Killed by the
+   * mutant that drops the mark from isStillNoLongerManaged.
+   */
+  @Test
+  void aUserWhoConnectedThemselvesDuringTheRunIsLeftConnected() {
+    attachedByManagedMode("3", "alice", "bob");
+    inForce(null);
+    when(userEmailSettingService.isConnectedByManagedMode("alice")).thenReturn(false);
+
+    service.disconnectUsersNoLongerManaged();
+
+    verify(userEmailSettingService, never()).deleteUserEmailSetting("alice");
+    verify(userEmailSettingService).deleteUserEmailSetting("bob");
+  }
+
+  /**
+   * The designation moved to 7: alice, on 5, was selected, then logged in before her
+   * turn and was attached to 7. That connection is the one managed mode now wants, and
+   * stays. Killed by the mutant that drops the verdict from isStillNoLongerManaged.
+   */
+  @Test
+  void aUserAttachedToTheDesignatedConnectorDuringTheRunIsLeftConnected() {
+    attachedByManagedMode("5", "alice");
+    inForce(7L);
+    when(userEmailSettingService.getStoredEmailConnectorId("alice")).thenReturn("5", "7");
+
+    service.disconnectUsersNoLongerManaged();
+
+    verify(userEmailSettingService, never()).deleteUserEmailSetting(anyString());
+  }
+
+  /**
+   * Managed mode was off when alice was selected, and designates her own connector again
+   * before her turn: the verdict is computed against the designation read again, and she
+   * stays. Killed by the mutant that keeps the selection's designation.
+   */
+  @Test
+  void theDesignationIsReadAgainWhenAUsersTurnComes() {
+    attachedByManagedMode("3", "alice");
+    when(emailManagedModeService.getManagedConnectorId()).thenReturn(null, 3L);
+    lenient().when(emailManagedModeService.getExcludedGroups()).thenReturn(List.of());
+
+    service.disconnectUsersNoLongerManaged();
+
+    verify(userEmailSettingService, never()).deleteUserEmailSetting(anyString());
+  }
+
+  /**
+   * A provider change on 3: chloe moved to connector 4 before her turn, and that
+   * connection is not one the change touches. Killed by the mutant that drops isStillOn.
+   */
+  @Test
+  void aUserWhoMovedToAnotherConnectorDuringAProviderChangeIsLeftConnected() {
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(3L)).thenReturn(List.of("alice", "chloe"));
+    when(userEmailSettingService.getStoredEmailConnectorId("alice")).thenReturn("3");
+    when(userEmailSettingService.getStoredEmailConnectorId("chloe")).thenReturn("4");
+
+    service.disconnectAllUsersOf(3L);
+
+    verify(userEmailSettingService).deleteUserEmailSetting("alice");
+    verify(userEmailSettingService, never()).deleteUserEmailSetting("chloe");
   }
 }

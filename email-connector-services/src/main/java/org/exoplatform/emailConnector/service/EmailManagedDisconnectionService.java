@@ -155,27 +155,78 @@ public class EmailManagedDisconnectionService {
 
   /**
    * Selects, against the state now stored, the users managed mode attached and no
-   * longer governs, and disconnects them one by one.
+   * longer governs, and disconnects them one by one, each one checked again when their
+   * turn comes ({@link #isStillNoLongerManaged(String)}).
    *
    * @return the number of users disconnected
    */
   int reconcileNow() {
     List<String> users = usersNoLongerManaged(emailManagedModeService.getManagedConnectorId(),
                                               emailManagedModeService.getExcludedGroups());
-    return (int) users.stream().filter(this::disconnectNow).count();
+    return (int) users.stream().filter(this::isStillNoLongerManaged).filter(this::disconnectNow).count();
   }
 
   /**
-   * Disconnects every user of a connector one by one.
+   * Disconnects every user of a connector one by one, each one checked again when their
+   * turn comes ({@link #isStillOn(String, String)}).
    *
    * @param emailConnectorId the connector whose provider changed
    * @return the number of users disconnected
    */
   int disconnectAllNow(long emailConnectorId) {
+    String connectorId = String.valueOf(emailConnectorId);
     return (int) userEmailSettingService.getUserEmailSettingsByEmailConnectorId(emailConnectorId)
                                         .stream()
+                                        .filter(user -> isStillOn(user, connectorId))
                                         .filter(this::disconnectNow)
                                         .count();
+  }
+
+  /**
+   * Whether a user a run selected is still to be disconnected when their turn comes.
+   * The users are selected once, before the first delete, and each delete takes the
+   * user's cached mail with it, so a run lasts. Meanwhile a user may connect their own
+   * mailbox, which clears the managed-mode mark, or log in and be attached to the
+   * connector now designated. So the mark is read again, and the verdict is computed
+   * again against the designation and the exclusions read again. The time between this
+   * check and the delete remains: no lock is shared with the connect paths.
+   *
+   * @param username the eXo login the run selected
+   * @return true when the user is still to be disconnected
+   */
+  boolean isStillNoLongerManaged(String username) {
+    try {
+      return userEmailSettingService.isConnectedByManagedMode(username)
+          && isNoLongerManaged(username, emailManagedModeService.getManagedConnectorId(), emailManagedModeService.getExcludedGroups());
+    } catch (Exception e) {
+      // Exception, not RuntimeException: a malformed stored document surfaces as
+      // Jackson's checked exception, thrown sneakily.
+      LOG.warn("Cannot tell whether managed mode still governs user {}; left connected, their next login will decide",
+               username,
+               e);
+      return false;
+    }
+  }
+
+  /**
+   * Whether a user of a connector whose provider changed is still stored on it when
+   * their turn comes: a user who moved to another connector, or disconnected, during the
+   * run is left alone. A user who connected to this same connector again during the run
+   * cannot be told apart from one who did not, and is disconnected too: telling them
+   * apart needs a lock shared with the connect paths.
+   *
+   * @param username the eXo login the run selected
+   * @param connectorId the connector whose provider changed
+   * @return true when the user is still to be disconnected
+   */
+  boolean isStillOn(String username, String connectorId) {
+    try {
+      return connectorId.equals(userEmailSettingService.getStoredEmailConnectorId(username));
+    } catch (Exception e) {
+      // Exception, not RuntimeException: see isStillNoLongerManaged.
+      LOG.warn("Cannot read the mail setting of user {}; left connected to connector {}", username, connectorId, e);
+      return false;
+    }
   }
 
   /**
