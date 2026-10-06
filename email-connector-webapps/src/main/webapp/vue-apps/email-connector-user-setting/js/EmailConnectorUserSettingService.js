@@ -51,26 +51,6 @@ export function getConnectionRequirements() {
   });
 }
 
-/**
- * Connects to a connector whose provider asks the user for nothing. The server
- * opens the mailbox with the service account's own material and records the
- * connection only if that worked, so a resolved promise means tested — the same
- * promise the typed form makes.
- *
- * @param {Number} emailConnectorId the connector to connect to
- * @returns {Promise} resolves once connected
- */
-export function connectThroughProvider(emailConnectorId) {
-  return fetch(`/email-connector/rest/user-email-setting/connect?emailConnectorId=${emailConnectorId}`, {
-    credentials: 'include',
-    method: 'POST'
-  }).then((resp) => {
-    if (!resp?.ok) {
-      throw new Error('Error when connecting through the configured provider');
-    }
-  });
-}
-
 export function setUserEmailSetting(userEmailSetting, broadcast) {
   return fetch(`/email-connector/rest/user-email-setting?broadcast=${broadcast}`, {
     headers: {

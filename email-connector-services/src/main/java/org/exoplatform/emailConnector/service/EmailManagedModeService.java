@@ -24,6 +24,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.emailConnector.event.EmailManagedModeChangedEvent;
+import org.exoplatform.emailConnector.exception.ManagedConnectionLockedException;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailManagedMode;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
@@ -131,6 +132,38 @@ public class EmailManagedModeService {
    */
   public Long governingConnectorFor(String username) {
     return managedConnectorService.designatedConnectorFor(getManagedConnectorId(), getExcludedGroups(), username);
+  }
+
+  /**
+   * Refuses the connection changes managed mode takes away from the users it governs:
+   * disconnecting, editing the connection, and connecting to any connector but the
+   * designated one. A user managed mode does not govern changes their connection
+   * freely.
+   * <p>
+   * The verdict is {@link #governingConnectorFor(String)}'s: a user whose identity
+   * cannot be resolved, or a caller with no login, is refused rather than counted as
+   * excluded, since the change they ask for is one the instance may have taken from
+   * them.
+   *
+   * @param username the eXo login of the caller
+   * @param targetConnectorId the connector the caller asks to connect to, null for a
+   *          disconnection or an edit of the connection
+   * @return the designated connector managed mode governs the caller with, null when
+   *         it does not govern them
+   * @throws ManagedConnectionLockedException when managed mode governs the caller, or cannot tell whether it does, and
+   *           the change is not a connection to the designated connector
+   */
+  public Long checkUserMayChangeConnection(String username, Long targetConnectorId) throws ManagedConnectionLockedException {
+    Long governing;
+    try {
+      governing = governingConnectorFor(username);
+    } catch (IllegalArgumentException | IllegalStateException e) {
+      throw new ManagedConnectionLockedException();
+    }
+    if (governing != null && !governing.equals(targetConnectorId)) {
+      throw new ManagedConnectionLockedException();
+    }
+    return governing;
   }
 
   /**
