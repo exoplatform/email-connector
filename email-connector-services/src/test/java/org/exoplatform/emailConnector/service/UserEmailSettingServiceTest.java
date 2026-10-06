@@ -69,6 +69,7 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.emailConnector.entity.UserEmailSettingEntity;
 import org.exoplatform.emailConnector.event.ContactBookReleaseEvent;
+import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
 import org.exoplatform.emailConnector.event.EmailNotificationPreferencesChangedEvent;
 import org.exoplatform.emailConnector.model.ContactPublishQueue;
 import org.exoplatform.emailConnector.model.ContactPublishQueueEntry;
@@ -830,6 +831,8 @@ public class UserEmailSettingServiceTest {
 
   @Test
   void deleteUserEmailSetting() {
+    // The publisher mock is pinned in by hand, as for the preference tests below.
+    ReflectionTestUtils.setField(userEmailSettingService, "eventPublisher", eventPublisher);
     userEmailSettingService.deleteUserEmailSetting(TEST_USER);
     verify(settingService).remove(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY));
     // The managed-mode mark goes with the connection it marked.
@@ -837,6 +840,9 @@ public class UserEmailSettingServiceTest {
     // Disconnecting takes the signature along -- its own settings document and its
     // uploaded image file, which nothing else would ever clean up.
     verify(emailSignatureService).deleteEmailSignature(TEST_USER);
+    // ... and the cached mail: a disconnection, a managed one included, ends in
+    // EmailBoxCleanupEvent, whose listener deletes it.
+    verify(eventPublisher).publishEvent(any(EmailBoxCleanupEvent.class));
   }
 
   @Test
