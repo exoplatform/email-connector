@@ -177,10 +177,12 @@ export function dragLabel(count, t) {
 // browser's picture is replaced by a transparent pixel, so nothing else follows the
 // pointer.
 
-// A transparent pixel, loaded as the module loads so it is ready for the first drag: an
-// image not yet loaded is refused, and the browser then photographs the row.
-const BLANK_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-const BLANK_IMAGE = typeof Image === 'undefined' ? null : Object.assign(new Image(), { src: BLANK_PIXEL });
+// A picture with nothing in it, for the browser to show in place of its own: a
+// transparent canvas of one pixel, which is drawn as soon as it exists. An <img> of a
+// one-pixel transparent GIF, even one made at load time, is not drawn before the
+// browser has decoded it, and Chrome shows its placeholder for an undecoded picture
+// under the pointer -- a small dotted square -- for as long as the drag lasts.
+const BLANK_IMAGE = typeof document === 'undefined' ? null : Object.assign(document.createElement('canvas'), { width: 1, height: 1 });
 
 // How far from the pointer's tip the picture sits, so the tip stays visible.
 const PICTURE_OFFSET = 12;
