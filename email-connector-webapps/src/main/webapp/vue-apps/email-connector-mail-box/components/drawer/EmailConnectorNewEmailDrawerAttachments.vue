@@ -117,6 +117,12 @@ export default {
       type: Function,
       default: null,
     },
+    // The draft the stored files belong to, which is how their bytes are addressed
+    // when the shared list drawer opens one of them.
+    draftLocalId: {
+      type: String,
+      default: null,
+    },
   },
   data() {
     return {
@@ -241,6 +247,12 @@ export default {
       const clone = JSON.parse(JSON.stringify(item));
       delete clone.fileDrive;
       delete clone.space;
+      // The shared list drawer previews a file from the URL it is handed, and opens an
+      // empty window without one. A stored file is read from its draft; a file still
+      // going up has no bytes of its own to show yet.
+      if (item.stored && item.id && this.draftLocalId) {
+        clone.downloadUrl = this.$emailConnectorMailBoxService.getDraftAttachmentUrl(this.draftLocalId, item.id);
+      }
       return clone;
     },
     // A file was picked/uploaded through the Documents drawer. The drawer stores it
