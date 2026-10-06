@@ -399,4 +399,57 @@ class EmailManagedDisconnectionServiceTest {
     verify(userEmailSettingService).deleteUserEmailSetting("alice");
     verify(userEmailSettingService, never()).deleteUserEmailSetting("chloe");
   }
+
+  /**
+   * /externals was excluded when alice, a member, was selected, and is no longer excluded
+   * when her turn comes: the verdict is computed against the exclusions read again, and
+   * she stays on 3, the connector managed mode designates. Killed by the mutant that keeps
+   * the selection's exclusions.
+   */
+  @Test
+  void theExclusionsAreReadAgainWhenAUsersTurnComes() {
+    attachedByManagedMode("3", "alice");
+    when(emailManagedModeService.getManagedConnectorId()).thenReturn(3L);
+    when(emailManagedModeService.getExcludedGroups()).thenReturn(List.of("/externals"), List.of());
+    groupsOf("alice", "/externals");
+
+    service.disconnectUsersNoLongerManaged();
+
+    verify(userEmailSettingService, never()).deleteUserEmailSetting(anyString());
+  }
+
+  /**
+   * The designation moved from alice's 3 to 5 with no exclusions, so her selection needed
+   * no identity; /externals is excluded before her turn, and her identity then cannot be
+   * resolved. The re-check fails and she is left connected, never taken for excluded.
+   * Killed by the mutant whose isStillNoLongerManaged catch answers true.
+   */
+  @Test
+  void aReCheckThatCannotResolveTheIdentityLeavesTheUserConnected() {
+    attachedByManagedMode("3", "alice");
+    when(emailManagedModeService.getManagedConnectorId()).thenReturn(5L);
+    when(emailManagedModeService.getExcludedGroups()).thenReturn(List.of(), List.of("/externals"));
+    when(userAcl.getUserIdentity("alice")).thenReturn(null);
+
+    service.disconnectUsersNoLongerManaged();
+
+    verify(userEmailSettingService, never()).deleteUserEmailSetting(anyString());
+  }
+
+  /**
+   * A provider change on 3: chloe's setting cannot be read when her turn comes, so she is
+   * left connected and alice is still processed. Killed by the mutant whose isStillOn
+   * catch answers true.
+   */
+  @Test
+  void aProviderChangeLeavesConnectedAUserWhoseSettingCannotBeRead() {
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(3L)).thenReturn(List.of("alice", "chloe"));
+    when(userEmailSettingService.getStoredEmailConnectorId("alice")).thenReturn("3");
+    when(userEmailSettingService.getStoredEmailConnectorId("chloe")).thenThrow(new IllegalStateException("unreadable"));
+
+    service.disconnectAllUsersOf(3L);
+
+    verify(userEmailSettingService).deleteUserEmailSetting("alice");
+    verify(userEmailSettingService, never()).deleteUserEmailSetting("chloe");
+  }
 }

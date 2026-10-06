@@ -44,7 +44,9 @@ import jakarta.annotation.PreDestroy;
  * <ul>
  * <li>a change of the managed mode - another designated connector, managed mode off, a
  * group excluded - disconnects the users managed mode attached and no longer governs;
- * the users who chose a connector themselves are never touched;</li>
+ * the users who chose a connector themselves are left alone: each user is checked again
+ * just before the delete (see {@code isStillNoLongerManaged} for the short
+ * window that remains);</li>
  * <li>a connector moved to another credentials provider disconnects every user of that
  * connector, whoever made the connection: the authentication changed for all of them.
  * Nobody is reconnected automatically.</li>

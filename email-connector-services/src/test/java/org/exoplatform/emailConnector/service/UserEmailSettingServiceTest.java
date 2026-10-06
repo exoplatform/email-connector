@@ -831,7 +831,7 @@ public class UserEmailSettingServiceTest {
 
   @Test
   void deleteUserEmailSetting() {
-    // The publisher mock is pinned in by hand, as for the preference tests below.
+    // The publisher mock is pinned in by hand, as the preference tests above do.
     ReflectionTestUtils.setField(userEmailSettingService, "eventPublisher", eventPublisher);
     userEmailSettingService.deleteUserEmailSetting(TEST_USER);
     verify(settingService).remove(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY));
