@@ -309,9 +309,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               fas fa-exclamation-triangle
             </v-icon>
             <v-list-item-title class="text-wrap mt-5 mb-0">
-              {{ $t('emailConnector.mailBox.list.drawer.sync.blocked.reconnect') }}
+              {{ managed ? $t('emailConnector.mailBox.list.drawer.sync.blocked.managed') : $t('emailConnector.mailBox.list.drawer.sync.blocked.reconnect') }}
             </v-list-item-title>
-            <div class="mt-8">
+            <!-- A managed user's mailbox is the organisation's: there are no settings of
+                 theirs to check, and the server refuses their edits (EXO-90836). -->
+            <div v-if="!managed" class="mt-8">
               <v-btn
                 @click="checkSetting"
                 class="btn btn-primary body-2">
@@ -611,6 +613,9 @@ export default {
       // entry: the count is the last one the user's own listing gave.
       ownAddress: '',
       ownInboxUnread: 0,
+      // Whether managed mode keeps the user on the designated connector, read with the
+      // setting: a blocked sync then offers no settings to check (EXO-90836).
+      managed: false,
       NAVIGATION_BACKGROUND,
       // The chips row's height, which the folder column's first row shares.
       LIST_TOP_ROW_HEIGHT,
@@ -1625,6 +1630,7 @@ export default {
       this.defaultCategoryViewPromise = this.$emailConnectorCommonService.getUserEmailSetting()
         .then(setting => {
           this.ownAddress = setting?.emailAddress || '';
+          this.managed = !!setting?.managed;
           return setting && setting.defaultCategoryView || null;
         })
         .catch(() => null);
