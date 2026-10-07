@@ -23,6 +23,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -116,7 +117,7 @@ public class EmailManagedDisconnectionService {
    * the administrator's request returns as soon as the change is stored.
    */
   public void disconnectUsersNoLongerManaged() {
-    executor.execute(this::reconcile);
+    executor.execute(this::reconcileNow);
   }
 
   /**
@@ -125,7 +126,7 @@ public class EmailManagedDisconnectionService {
    * @param emailConnectorId the connector whose provider changed
    */
   public void disconnectAllUsersOf(long emailConnectorId) {
-    executor.execute(() -> disconnectAll(emailConnectorId));
+    executor.execute(() -> disconnectAllNow(emailConnectorId));
   }
 
   @PreDestroy
@@ -136,59 +137,56 @@ public class EmailManagedDisconnectionService {
   }
 
   /**
-   * Selects and disconnects the users managed mode no longer governs, on the
-   * executor's thread.
-   * <p>
-   * {@code @ContainerTransactional} because this runs on a bare executor thread; the
-   * work itself is in {@link #reconcileNow()}, the un-advised method.
-   * <p>
-   * One request lifecycle for the whole run, {@link #disconnectAll(long)} likewise:
-   * every setting read stays in its persistence context until the run ends. Accepted:
-   * a run reads each user it walks once, and a lifecycle per user would set the
-   * container up again for every one of them.
-   */
-  @ContainerTransactional
-  public void reconcile() {
-    reconcileNow();
-  }
-
-  /**
-   * Disconnects every user of a connector, on the executor's thread.
-   *
-   * @param emailConnectorId the connector whose provider changed
-   */
-  @ContainerTransactional
-  public void disconnectAll(long emailConnectorId) {
-    disconnectAllNow(emailConnectorId);
-  }
-
-  /**
    * Selects, against the state now stored, the users managed mode attached and no
    * longer governs, and disconnects them one by one, each one checked again when their
    * turn comes ({@link #isStillNoLongerManaged(String)}).
+   * <p>
+   * The selection runs in a request lifecycle of its own, closed before the first user's
+   * turn, and each user's turn - the re-check and the delete - in another
+   * ({@link #inItsOwnLifecycle(Supplier)}). A setting read in a lifecycle stays in its
+   * persistence context until the lifecycle ends, and is served from there as it was
+   * first loaded: a lifecycle shared with the selection would answer the re-check with
+   * the selection's rows, and a user who moved in the meantime would be disconnected.
    *
    * @return the number of users disconnected
    */
   int reconcileNow() {
-    List<String> users = usersNoLongerManaged(emailManagedModeService.getManagedConnectorId(),
-                                              emailManagedModeService.getExcludedGroups());
-    return (int) users.stream().filter(this::isStillNoLongerManaged).filter(this::disconnectNow).count();
+    List<String> users = inItsOwnLifecycle(() -> usersNoLongerManaged(emailManagedModeService.getManagedConnectorId(),
+                                                                     emailManagedModeService.getExcludedGroups()));
+    return (int) users.stream()
+                      .filter(user -> inItsOwnLifecycle(() -> isStillNoLongerManaged(user) && disconnectNow(user)))
+                      .count();
   }
 
   /**
    * Disconnects every user of a connector one by one, each one checked again when their
-   * turn comes ({@link #isStillOn(String, String)}).
+   * turn comes ({@link #isStillOn(String, String)}), in the request lifecycles
+   * {@link #reconcileNow()} describes.
    *
    * @param emailConnectorId the connector whose provider changed
    * @return the number of users disconnected
    */
   int disconnectAllNow(long emailConnectorId) {
     String connectorId = String.valueOf(emailConnectorId);
-    return (int) userEmailSettingService.getUserEmailSettingsByEmailConnectorId(emailConnectorId)
-                                        .stream()
-                                        .filter(user -> isStillOn(user, connectorId))
-                                        .filter(this::disconnectNow)
-                                        .count();
+    List<String> users = inItsOwnLifecycle(() -> userEmailSettingService.getUserEmailSettingsByEmailConnectorId(emailConnectorId));
+    return (int) users.stream()
+                      .filter(user -> inItsOwnLifecycle(() -> isStillOn(user, connectorId) && disconnectNow(user)))
+                      .count();
+  }
+
+  /**
+   * Runs one step of a run - its selection, or one user's turn - in a request lifecycle
+   * of its own. The runs execute on the executor's bare thread, where no lifecycle is
+   * open around them: each step's lifecycle is the outermost one, and closing it ends
+   * its persistence context.
+   *
+   * @param <T> what the step returns
+   * @param step the step
+   * @return what the step returned
+   */
+  @ContainerTransactional
+  <T> T inItsOwnLifecycle(Supplier<T> step) {
+    return step.get();
   }
 
   /**

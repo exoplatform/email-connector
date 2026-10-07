@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
@@ -31,7 +32,9 @@ import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,6 +48,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.exoplatform.container.ExoContainer;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.container.ExoContainerContext;
+import org.exoplatform.container.component.ComponentRequestLifecycle;
 import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
 import org.exoplatform.services.connector.credentials.managed.ManagedConnectorService;
@@ -78,14 +82,17 @@ class EmailManagedDisconnectionServiceTest {
 
   private MockedStatic<ExoContainerContext> containerContext;
 
+  private ExoContainer                     container;
+
   private final List<Runnable>             queued = new ArrayList<>();
 
   @BeforeEach
   void setUp() {
-    // reconcile() and disconnectAll() are @ContainerTransactional: the woven aspect reads the current
+    // inItsOwnLifecycle is @ContainerTransactional: the woven aspect reads the current
     // container, and with none bound it would boot the kernel.
+    container = mock(ExoContainer.class);
     containerContext = mockStatic(ExoContainerContext.class);
-    containerContext.when(ExoContainerContext::getCurrentContainer).thenReturn(mock(ExoContainer.class));
+    containerContext.when(ExoContainerContext::getCurrentContainer).thenReturn(container);
     service = new EmailManagedDisconnectionService();
     ReflectionTestUtils.setField(service,
                                  "managedConnectorService",
@@ -451,5 +458,96 @@ class EmailManagedDisconnectionServiceTest {
 
     verify(userEmailSettingService).deleteUserEmailSetting("alice");
     verify(userEmailSettingService, never()).deleteUserEmailSetting("chloe");
+  }
+
+  /**
+   * A provider change on 3: the selection loads chloe's and dan's settings, then dan
+   * moves to connector 4 from another session before his turn. His turn reads his
+   * setting in a request lifecycle of its own, finds 4 and leaves him connected. Killed
+   * by the mutant that runs the whole walk in the selection's lifecycle
+   * ({@code inItsOwnLifecycle(() -> disconnectAllNow(id))} on the executor), whose
+   * persistence context still serves dan's row as the selection loaded it.
+   */
+  @Test
+  void aUserWhoMovedAfterTheSelectionLoadedTheirSettingIsReadAgainAtTheirTurn() {
+    Map<String, String> stored = new HashMap<>(Map.of("chloe", "3", "dan", "3"));
+    PersistenceContext context = new PersistenceContext(stored);
+    when(container.getComponentInstancesOfType(ComponentRequestLifecycle.class)).thenReturn(List.of(context));
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(3L)).thenAnswer(invocation -> {
+      List<String> users = List.of("chloe", "dan");
+      users.forEach(context::read);
+      stored.put("dan", "4");
+      return users;
+    });
+    when(userEmailSettingService.getStoredEmailConnectorId(anyString())).thenAnswer(invocation -> context.read(invocation.getArgument(0)));
+
+    service.disconnectAllUsersOf(3L);
+
+    verify(userEmailSettingService).deleteUserEmailSetting("chloe");
+    verify(userEmailSettingService, never()).deleteUserEmailSetting("dan");
+  }
+
+  /**
+   * Both runs open one request lifecycle for their selection and one for each user's
+   * turn, never one around the whole run: two users, three lifecycles. Killed by the
+   * mutants that run either walk in a single lifecycle, as the previous test describes.
+   */
+  @Test
+  void eachStepOfARunOpensARequestLifecycleOfItsOwn() {
+    PersistenceContext context = new PersistenceContext(new HashMap<>());
+    when(container.getComponentInstancesOfType(ComponentRequestLifecycle.class)).thenReturn(List.of(context));
+    attachedByManagedMode("3", "alice", "bob");
+    inForce(5L);
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(3L)).thenReturn(List.of("chloe", "dan"));
+    lenient().when(userEmailSettingService.getStoredEmailConnectorId("chloe")).thenReturn("3");
+    lenient().when(userEmailSettingService.getStoredEmailConnectorId("dan")).thenReturn("3");
+
+    service.disconnectUsersNoLongerManaged();
+    assertEquals(3, context.lifecycles);
+
+    service.disconnectAllUsersOf(3L);
+    assertEquals(6, context.lifecycles);
+  }
+
+  /**
+   * A persistence context as a request lifecycle opens and closes it: a setting read
+   * while it is open is served, until it closes, as it was first loaded, the way
+   * Hibernate serves an entity already in its session.
+   */
+  private static final class PersistenceContext implements ComponentRequestLifecycle {
+
+    private final Map<String, String> stored;
+
+    private final Map<String, String> loaded = new HashMap<>();
+
+    private boolean                   started;
+
+    private int                       lifecycles;
+
+    PersistenceContext(Map<String, String> stored) {
+      this.stored = stored;
+    }
+
+    @Override
+    public void startRequest(ExoContainer exoContainer) {
+      started = true;
+      lifecycles++;
+    }
+
+    @Override
+    public void endRequest(ExoContainer exoContainer) {
+      started = false;
+      loaded.clear();
+    }
+
+    @Override
+    public boolean isStarted(ExoContainer exoContainer) {
+      return started;
+    }
+
+    String read(String user) {
+      assertTrue(started, "a setting is read outside any request lifecycle");
+      return loaded.computeIfAbsent(user, stored::get);
+    }
   }
 }
