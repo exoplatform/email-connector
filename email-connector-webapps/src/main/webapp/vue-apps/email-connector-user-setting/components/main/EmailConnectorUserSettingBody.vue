@@ -266,11 +266,18 @@ export default {
           this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.managed.connected'), 'success');
           document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
         })
-        .catch(error => {
-          this.$root.$emit('alert-message', this.$t(error?.code || 'UserSettings.emailConnector.managed.connect.error'), 'error');
-          // Read again: a refusal of the user's own account replaces the button with its message.
-          document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
-        })
+        .catch(error => this.$emailConnectorCommonService.getUserEmailSetting()
+          .catch(() => null)
+          .then(userEmailSetting => {
+            // A refusal of the user's own account was recorded by this click: its
+            // message, rather than "try again later", and the button goes.
+            if (userEmailSetting?.managed && userEmailSetting?.refused) {
+              this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.managed.refused'), 'warning');
+            } else {
+              this.$root.$emit('alert-message', this.$t(error?.code || 'UserSettings.emailConnector.managed.connect.error'), 'error');
+            }
+            document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
+          }))
         .finally(() => this.connecting = false);
     },
     /**
