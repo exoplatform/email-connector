@@ -358,11 +358,12 @@ public class UserEmailSettingService {
       // Read before the write: the cleanup broadcast wipes the mirror and ends every
       // accepted share, which is right for a rebind and wrong for a repeat connect
       // of the account the user already has.
-      boolean accountChanged = !isConnectedAccount(getUserEmailSetting(username), emailConnectorId, address);
+      UserEmailSetting stored = getUserEmailSetting(username);
+      boolean accountChanged = !isConnectedAccount(stored, emailConnectorId, address);
       UserEmailSetting connected = new UserEmailSetting();
       connected.setEmailConnectorId(String.valueOf(emailConnectorId));
       connected.setEmailAddress(address);
-      keepPreferences(connected, getStoredUserEmailSetting(username));
+      keepPreferences(connected, stored);
       setUserEmailSetting(connected, username, accountChanged);
       markConnectedByManagedMode(username, byManagedMode);
       clearManagedRefusal(username);

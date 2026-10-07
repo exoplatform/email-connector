@@ -2230,6 +2230,7 @@ public class UserEmailSettingServiceTest {
     assertNull(written.getNotifyCategories());
     assertNull(written.getDefaultCategoryView());
     assertNull(written.getCarddavEnabled());
+    assertNull(written.getCarddavAutoPublish());
   }
 
   /**
