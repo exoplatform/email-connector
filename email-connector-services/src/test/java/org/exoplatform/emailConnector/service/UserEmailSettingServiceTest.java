@@ -31,6 +31,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -1033,6 +1034,35 @@ public class UserEmailSettingServiceTest {
     verify(settingService).remove(any(Context.class),
                                   eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE),
                                   eq(UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY));
+  }
+
+  /**
+   * A user whose mark is stored reads as connected by managed mode. Kills the
+   * mutants {@code == null} and a read under another key or scope.
+   */
+  @Test
+  void aStoredMarkReadsAsAConnectionManagedModeMade() {
+    doReturn(SettingValue.create("true")).when(settingService)
+                                         .get(Context.USER.id(TEST_USER),
+                                              UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                              UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY);
+
+    assertTrue(userEmailSettingService.isConnectedByManagedMode(TEST_USER));
+  }
+
+  /**
+   * A user with no stored mark made their own connection, which the login and a
+   * managed disconnection run never delete. Kills the mutants {@code == null} and
+   * {@code return true}.
+   */
+  @Test
+  void anAbsentMarkReadsAsAConnectionTheUserMade() {
+    doReturn(null).when(settingService)
+                  .get(Context.USER.id(TEST_USER),
+                       UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                       UserEmailSettingService.CONNECTED_BY_MANAGED_MODE_KEY);
+
+    assertFalse(userEmailSettingService.isConnectedByManagedMode(TEST_USER));
   }
 
   /** The users managed mode attached are one query on the mark: no user document is read. */
