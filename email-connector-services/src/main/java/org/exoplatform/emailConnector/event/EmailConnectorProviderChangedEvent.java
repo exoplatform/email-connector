@@ -14,12 +14,23 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <gnu.org/licenses>.
  */
-package org.exoplatform.emailConnector.constant;
+package org.exoplatform.emailConnector.event;
 
 /**
- * What a login-time enrolment attempt came to: one value per branch of the three
- * rules of {@code EmailManagedEnrollmentService} and their failures.
+ * Published when an administrator moves a connector to another credentials provider.
+ * Every user of that connector is then disconnected: the authentication
+ * changed for all of them, and a connection left in place would fail at every sync for
+ * the users the new provider does not know.
  */
-public enum EmailManagedEnrollmentOutcome {
-  NOT_MANAGED, ALREADY_CONFIGURED, ATTACHED, REFUSED, FAILED, DETACHED
+public class EmailConnectorProviderChangedEvent {
+
+  private final long emailConnectorId;
+
+  public EmailConnectorProviderChangedEvent(long emailConnectorId) {
+    this.emailConnectorId = emailConnectorId;
+  }
+
+  public long getEmailConnectorId() {
+    return emailConnectorId;
+  }
 }

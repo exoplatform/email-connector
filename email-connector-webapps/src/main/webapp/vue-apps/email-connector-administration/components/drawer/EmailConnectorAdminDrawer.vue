@@ -236,6 +236,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ drawerButtonLabel }}
         </v-btn>
       </div>
+      <!--
+        Moving the connector to another provider disconnects every user of it:
+        said, with how many, in the platform's confirmation before anything is
+        stored.
+      -->
+      <confirm-dialog
+        ref="disconnectionConfirm"
+        :title="$t('emailConnector.admin.connectors.drawer.disconnection.title')"
+        :message="disconnectionConfirmMessage"
+        :ok-label="$t('emailConnector.admin.connectors.drawer.disconnection.confirm')"
+        :cancel-label="$t('emailConnector.admin.connectors.drawer.disconnection.cancel')"
+        @ok="saveConnector(true)" />
     </template>
   </exo-drawer>
 </template>
@@ -244,6 +256,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 export default {
   data: () => ({
     emailConnectorDrawer: false,
+    /** The provider the connector is stored with, as opened: what a change of provider is judged against. */
+    storedProviderName: '',
+    /** How many users the provider change being confirmed disconnects, for the confirmation's message. */
+    pendingDisconnections: 0,
     activeWebmailAccess: false,
     emailConnectorNameTranslations: {},
     loading: false,
@@ -277,6 +293,12 @@ export default {
     providerConfigValid: true
   }),
   computed: {
+    disconnectionConfirmMessage() {
+      const count = this.pendingDisconnections === 1
+        ? this.$t('emailConnector.admin.connectors.drawer.disconnection.one')
+        : this.$t('emailConnector.admin.connectors.drawer.disconnection.many', {0: this.pendingDisconnections});
+      return `${count} ${this.$t('emailConnector.admin.managed.disconnection.message')} ${this.$t('emailConnector.admin.connectors.drawer.disconnection.question')}`;
+    },
     emailConnectorName() {
       return this.emailConnectorNameTranslations[eXo.env.portal.defaultLanguage];
     },
@@ -353,6 +375,8 @@ export default {
         this.emailConnectorNameTranslations = await this.$translationService.getTranslations('emailConnector', emailConnector.id, 'name');
         this.emailConnector.name = this.emailConnectorNameTranslations[eXo.env.portal.defaultLanguage];
       }
+      this.storedProviderName = emailConnector && emailConnector.authProviderName || '';
+      this.pendingDisconnections = 0;
       this.activeWebmailAccess = !!this.emailConnector.webmailUrl;
       this.providerConfig = emailConnector && emailConnector.id
         && await this.loadProviderConfig(emailConnector.id)
@@ -374,6 +398,8 @@ export default {
       this.emailConnector.imageUrl = null;
       this.emailConnector.webmailUrl = '';
       this.emailConnector.authProviderName = '';
+      this.storedProviderName = '';
+      this.pendingDisconnections = 0;
       // Not kept between two openings: it holds what an administrator typed for
       // one connector, and the next one they open is not the same connector.
       this.providerConfig = {};
@@ -396,7 +422,49 @@ export default {
         return {};
       }
     },
-    async saveConnector() {
+    /**
+     * Whether saving would move an existing connector to another provider: a blank
+     * provider keeps the stored one, as the server reads it.
+     *
+     * @returns {Boolean} true when the provider in force changes
+     */
+    changesProvider() {
+      const chosen = this.emailConnector.authProviderName || this.storedProviderName;
+      return !!this.emailConnector.id && !!this.storedProviderName && chosen !== this.storedProviderName;
+    },
+    /**
+     * Counts, before anything is stored, the users a provider change disconnects, and
+     * opens the confirmation when there are any: a provider change disconnects every
+     * user of the connector, and the administrator is told how many first.
+     *
+     * @returns {Promise<Boolean>} true when the save waits for the administrator, or
+     *          stops because the count failed
+     */
+    async holdsForDisconnectionConfirm() {
+      this.loading = true;
+      try {
+        this.pendingDisconnections = await this.$emailConnectorAdministrationService.countConnectedUsers(this.emailConnector.id);
+      } catch (e) {
+        // Without the count the administrator cannot be told what the change
+        // costs: nothing is stored.
+        this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.disconnection.countFailed'), 'error');
+        return true;
+      } finally {
+        this.loading = false;
+      }
+      if (this.pendingDisconnections) {
+        this.$refs.disconnectionConfirm.open();
+        return true;
+      }
+      return false;
+    },
+    async saveConnector(confirmed) {
+      // Only the confirmation's OK passes a provider change: the Save button hands in
+      // its click event, and a dialog dismissed any other way leaves nothing behind.
+      if (confirmed !== true && this.changesProvider() && await this.holdsForDisconnectionConfirm()) {
+        return;
+      }
+      this.pendingDisconnections = 0;
       this.loading = true;
       const isNew = !this.emailConnector.id;
       if (!this.activeWebmailAccess) {
