@@ -86,9 +86,10 @@ public class UserEmailSettingService {
   /**
    * The setting that marks a connection made by managed mode rather than by the user,
    * stored beside the user's email setting. Its presence is the whole
-   * fact: the users it marks are listed by one query on the key, and they are always
-   * connected to the designated connector, since changing the designation disconnects
-   * them.
+   * fact: the users it marks are listed by one query on the key. A change of the
+   * designation disconnects them in the background; a marked user still on a
+   * connector managed mode no longer designates for them is disconnected at their
+   * next login.
    */
   public static final String        CONNECTED_BY_MANAGED_MODE_KEY                      = "connectedByManagedMode";
 
