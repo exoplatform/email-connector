@@ -2139,4 +2139,159 @@ public class UserEmailSettingServiceTest {
                                         eq(UserEmailSettingService.MANAGED_REFUSED_KEY),
                                         any(SettingValue.class));
   }
+
+  /** The stored setting of the preference tests: every preference set, on connector 1. */
+  private static final String STORED_WITH_PREFERENCES = "{\"emailConnectorId\":\"1\",\"emailAddress\":\"%s\","
+      + "\"notifyAllCategories\":false,\"notifyCategories\":[3,4],\"defaultCategoryView\":5,"
+      + "\"carddavEnabled\":true,\"carddavAutoPublish\":true}";
+
+  /**
+   * EXO-90824. Reconnecting the same account from the connection drawer, which posts the
+   * account and the password only, keeps the notification choice, the default view and
+   * the address-book options.
+   */
+  @Test
+  @SneakyThrows
+  void aTypedReconnectionOfTheSameAccountKeepsThePreferences() {
+    storedDocument(TEST_USER, String.format(STORED_WITH_PREFERENCES, "testEmail"));
+
+    connectWithTypedCredentials(userEmailSetting());
+
+    UserEmailSettingEntity written = writtenSetting();
+    assertEquals(Boolean.FALSE, written.getNotifyAllCategories());
+    assertEquals(List.of(3L, 4L), written.getNotifyCategories());
+    assertEquals(5L, written.getDefaultCategoryView());
+    assertEquals(Boolean.TRUE, written.getCarddavEnabled());
+    assertEquals(Boolean.TRUE, written.getCarddavAutoPublish());
+  }
+
+  /**
+   * EXO-90824. Connecting another account keeps the notification choice and the default
+   * view, which name the add-on's own categories, and leaves the address-book options
+   * unset: they were about the previous account's address book.
+   */
+  @Test
+  @SneakyThrows
+  void aTypedConnectionOfAnotherAccountKeepsTheCategoryPreferencesOnly() {
+    storedDocument(TEST_USER, String.format(STORED_WITH_PREFERENCES, "previous@example.org"));
+
+    connectWithTypedCredentials(userEmailSetting());
+
+    UserEmailSettingEntity written = writtenSetting();
+    assertEquals(Boolean.FALSE, written.getNotifyAllCategories());
+    assertEquals(List.of(3L, 4L), written.getNotifyCategories());
+    assertEquals(5L, written.getDefaultCategoryView());
+    assertNull(written.getCarddavEnabled());
+    assertNull(written.getCarddavAutoPublish());
+  }
+
+  /**
+   * EXO-90824. The one-click connect - the user's click and managed mode alike - builds
+   * the account from the provider and keeps the same preferences; the address matches
+   * without case, as mail servers treat it.
+   */
+  @Test
+  @SneakyThrows
+  void aOneClickReconnectionOfTheSameAccountKeepsThePreferences() {
+    storedDocument(TEST_USER, String.format(STORED_WITH_PREFERENCES, "Eric@BM.example.org"));
+
+    connectThroughTheProvider(() -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    UserEmailSettingEntity written = writtenSetting();
+    assertEquals(Boolean.FALSE, written.getNotifyAllCategories());
+    assertEquals(List.of(3L, 4L), written.getNotifyCategories());
+    assertEquals(5L, written.getDefaultCategoryView());
+    assertEquals(Boolean.TRUE, written.getCarddavEnabled());
+    assertEquals(Boolean.TRUE, written.getCarddavAutoPublish());
+  }
+
+  /** EXO-90824. A one-click connect of another account drops the address-book options. */
+  @Test
+  @SneakyThrows
+  void aOneClickConnectionOfAnotherAccountDropsTheAddressBookOptions() {
+    storedDocument(TEST_USER, String.format(STORED_WITH_PREFERENCES, "previous@bm.example.org"));
+
+    connectThroughTheProvider(() -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    UserEmailSettingEntity written = writtenSetting();
+    assertEquals(5L, written.getDefaultCategoryView());
+    assertNull(written.getCarddavEnabled());
+    assertNull(written.getCarddavAutoPublish());
+  }
+
+  /** EXO-90824. A first connection has nothing stored to keep. */
+  @Test
+  @SneakyThrows
+  void aFirstConnectionHasNoPreferences() {
+    connectWithTypedCredentials(userEmailSetting());
+
+    UserEmailSettingEntity written = writtenSetting();
+    assertNull(written.getNotifyAllCategories());
+    assertNull(written.getNotifyCategories());
+    assertNull(written.getDefaultCategoryView());
+    assertNull(written.getCarddavEnabled());
+  }
+
+  /**
+   * EXO-90824. The same address on another connector is another account: the
+   * address-book options are dropped there too.
+   */
+  @Test
+  @SneakyThrows
+  void theSameAddressOnAnotherConnectorDropsTheAddressBookOptions() {
+    storedDocument(TEST_USER, String.format(STORED_WITH_PREFERENCES, "testEmail").replace("\"emailConnectorId\":\"1\"",
+                                                                                          "\"emailConnectorId\":\"2\""));
+
+    connectWithTypedCredentials(userEmailSetting());
+
+    UserEmailSettingEntity written = writtenSetting();
+    assertEquals(5L, written.getDefaultCategoryView());
+    assertNull(written.getCarddavEnabled());
+    assertNull(written.getCarddavAutoPublish());
+  }
+
+  /** EXO-90824. A preference the connection states is written as stated, never replaced. */
+  @Test
+  @SneakyThrows
+  void aPreferenceTheConnectionStatesIsNotReplaced() {
+    storedDocument(TEST_USER, String.format(STORED_WITH_PREFERENCES, "testEmail"));
+    UserEmailSetting posted = userEmailSetting();
+    posted.setNotifyAllCategories(Boolean.TRUE);
+    posted.setNotifyCategories(List.of(9L));
+    posted.setDefaultCategoryView(8L);
+    posted.setCarddavEnabled(Boolean.FALSE);
+    posted.setCarddavAutoPublish(Boolean.FALSE);
+
+    connectWithTypedCredentials(posted);
+
+    UserEmailSettingEntity written = writtenSetting();
+    assertEquals(Boolean.TRUE, written.getNotifyAllCategories());
+    assertEquals(List.of(9L), written.getNotifyCategories());
+    assertEquals(8L, written.getDefaultCategoryView());
+    assertEquals(Boolean.FALSE, written.getCarddavEnabled());
+    assertEquals(Boolean.FALSE, written.getCarddavAutoPublish());
+  }
+
+  @SneakyThrows
+  private void connectWithTypedCredentials(UserEmailSetting posted) {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
+    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      when(session.getStore()).thenReturn(mock(Store.class));
+      userEmailSettingService.connectUserEmailSetting(posted, TEST_USER, false);
+    }
+  }
+
+  @SuppressWarnings("rawtypes")
+  private UserEmailSettingEntity writtenSetting() {
+    ArgumentCaptor<SettingValue> written = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(eq(Context.USER.id(TEST_USER)),
+                               eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE),
+                               eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY),
+                               written.capture());
+    return JsonUtils.fromJsonString(written.getValue().getValue().toString(), UserEmailSettingEntity.class);
+  }
 }

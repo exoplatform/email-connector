@@ -199,6 +199,7 @@ public class UserEmailSettingService {
     try {
       store = connectWithTypedCredentials(userEmailSetting,
                                           emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId())));
+      keepPreferences(userEmailSetting, getStoredUserEmailSetting(username));
       setUserEmailSetting(userEmailSetting, username, broadcast);
       // A connection the user makes is their own choice, even on the connector managed
       // mode had attached them to.
@@ -361,6 +362,7 @@ public class UserEmailSettingService {
       UserEmailSetting connected = new UserEmailSetting();
       connected.setEmailConnectorId(String.valueOf(emailConnectorId));
       connected.setEmailAddress(address);
+      keepPreferences(connected, getStoredUserEmailSetting(username));
       setUserEmailSetting(connected, username, accountChanged);
       markConnectedByManagedMode(username, byManagedMode);
       clearManagedRefusal(username);
@@ -390,6 +392,43 @@ public class UserEmailSettingService {
         }
       } catch (MessagingException messagingException) {
         LOG.warn("Error when closing store", messagingException);
+      }
+    }
+  }
+
+  /**
+   * Completes a connection about to be written with the preferences the stored setting
+   * holds, since {@link #setUserEmailSetting} rewrites the whole document from the model
+   * it is handed and a connection carries only the account. The new-mail notification
+   * choice ({@code notifyAllCategories}, {@code notifyCategories}) and the default view
+   * ({@code defaultCategoryView}) name the add-on's own categories, the same whatever the
+   * account, so they are kept on every reconnection. The address-book options
+   * ({@code carddavEnabled}, {@code carddavAutoPublish}) are about that account's
+   * address book, so they are kept only when the connector and the address are the
+   * stored ones; another account starts with them unset, as its address book is opted
+   * into anew. A value the connection does state is never overwritten.
+   *
+   * @param connecting the setting about to be written, completed in place
+   * @param stored the user's stored setting, an empty one when there is none: its
+   *          preferences are all unset and it names no connector, so nothing is kept
+   */
+  private void keepPreferences(UserEmailSetting connecting, UserEmailSetting stored) {
+    if (connecting.getNotifyAllCategories() == null) {
+      connecting.setNotifyAllCategories(stored.getNotifyAllCategories());
+    }
+    if (connecting.getNotifyCategories() == null) {
+      connecting.setNotifyCategories(stored.getNotifyCategories());
+    }
+    if (connecting.getDefaultCategoryView() == null) {
+      connecting.setDefaultCategoryView(stored.getDefaultCategoryView());
+    }
+    if (StringUtils.equals(stored.getEmailConnectorId(), connecting.getEmailConnectorId())
+        && StringUtils.equalsIgnoreCase(stored.getEmailAddress(), connecting.getEmailAddress())) {
+      if (connecting.getCarddavEnabled() == null) {
+        connecting.setCarddavEnabled(stored.getCarddavEnabled());
+      }
+      if (connecting.getCarddavAutoPublish() == null) {
+        connecting.setCarddavAutoPublish(stored.getCarddavAutoPublish());
       }
     }
   }
