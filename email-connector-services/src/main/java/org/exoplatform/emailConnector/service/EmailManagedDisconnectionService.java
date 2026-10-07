@@ -128,6 +128,13 @@ public class EmailManagedDisconnectionService {
     executor.execute(() -> disconnectAll(emailConnectorId));
   }
 
+  @PreDestroy
+  public void stop() {
+    if (executor instanceof ExecutorService service) {
+      service.shutdownNow();
+    }
+  }
+
   /**
    * Selects and disconnects the users managed mode no longer governs, on the
    * executor's thread.
@@ -304,13 +311,6 @@ public class EmailManagedDisconnectionService {
       thread.setDaemon(true);
       return thread;
     });
-  }
-
-  @PreDestroy
-  public void stop() {
-    if (executor instanceof ExecutorService service) {
-      service.shutdownNow();
-    }
   }
 
   /** For the tests: run the disconnections on the caller's thread. */
