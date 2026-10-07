@@ -137,14 +137,19 @@ export default {
     },
     /**
      * What an opening that finds no connection offers: the connectors drawer, or, to a
-     * user managed mode governs, the designated mailbox in one click (EXO-90836).
+     * user managed mode governs, the designated mailbox in one click (EXO-90836) - or
+     * why not, when the organization's server refused their account (EXO-91017).
      *
      * @param {Function} resume the opening to run again once a managed connection is
      *          recorded
      * @returns {void}
      */
     offerConnection(resume) {
-      if (this.userEmailSetting.managed) {
+      if (this.userEmailSetting.managed && this.userEmailSetting.refused) {
+        // The organization's server refused the user's account (EXO-91017): nothing to
+        // connect in one click, only the reason.
+        this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.managed.refused'), 'warning');
+      } else if (this.userEmailSetting.managed) {
         this.afterManagedConnect = resume;
         this.$refs.managedConnectDialog.open();
       } else {

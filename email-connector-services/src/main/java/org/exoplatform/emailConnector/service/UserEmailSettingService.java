@@ -66,6 +66,7 @@ import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
+import org.exoplatform.services.connector.credentials.ConnectorTargetRefusedException;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.web.security.codec.CodecInitializer;
@@ -100,6 +101,14 @@ public class UserEmailSettingService {
    * next login.
    */
   public static final String        CONNECTED_BY_MANAGED_MODE_KEY                      = "connectedByManagedMode";
+
+  /**
+   * The setting that records a connection managed mode made for the user and refused
+   * because of the user's own account: the designated connector and the address the
+   * provider named, as {@code <connectorId>:<address>} (EXO-91017). Kept while the user
+   * is not connected, removed by the next connection that succeeds.
+   */
+  public static final String        MANAGED_REFUSED_KEY                                = "managedRefused";
 
   /**
    * The address-book sync's own key, deliberately NOT a field of
@@ -194,6 +203,7 @@ public class UserEmailSettingService {
       // A connection the user makes is their own choice, even on the connector managed
       // mode had attached them to.
       markConnectedByManagedMode(username, false);
+      clearManagedRefusal(username);
       eventPublisher.publishEvent(new EmailBoxSyncEvent(username));
     } catch (Exception e) {
       LOG.error("Error when connecting store for user {}", username, e);
@@ -325,14 +335,18 @@ public class UserEmailSettingService {
       throw new CredentialsProviderMissingException(providerName);
     }
     Store store = null;
+    String address = null;
     try {
       // This path exists for the connectors that ask nothing. One that does ask is
       // refused here rather than connected with no credentials at all.
       if (emailCredentialsResolver == null || emailCredentialsResolver.requiresUserAction(providerName)) {
         throw new IllegalArgumentException("The provider of this connector expects the user to supply credentials");
       }
-      String address = emailCredentialsResolver.targetAccount(emailConnectorId, providerName, username);
+      address = emailCredentialsResolver.targetAccount(emailConnectorId, providerName, username);
       if (StringUtils.isBlank(address)) {
+        if (byManagedMode) {
+          saveManagedRefusal(username, emailConnectorId, address);
+        }
         throw new IllegalArgumentException("The provider of this connector names no mailbox for this user");
       }
       store = connectThroughProviderMaterial(emailConnector, username);
@@ -349,9 +363,18 @@ public class UserEmailSettingService {
       connected.setEmailAddress(address);
       setUserEmailSetting(connected, username, accountChanged);
       markConnectedByManagedMode(username, byManagedMode);
+      clearManagedRefusal(username);
       eventPublisher.publishEvent(new EmailBoxSyncEvent(username));
       return true;
     } catch (ConnectorCredentialsException | MessagingException e) {
+      if (byManagedMode && e instanceof ConnectorTargetRefusedException) {
+        // The remote authority refused the account the provider named for this user:
+        // recorded, so their screens stop offering a connection that is refused again.
+        // The setting commits in the kernel transaction of SettingService's own
+        // @ExoTransactional write, which the rollback of this method's Spring
+        // transaction does not undo.
+        saveManagedRefusal(username, emailConnectorId, address);
+      }
       // A refusal: the provider produced no material for this user, or the mail
       // server would not open the mailbox with it. Routine, not an incident -
       // the login-time enrolment meets it at every attempt for every unattached
@@ -636,14 +659,50 @@ public class UserEmailSettingService {
    * write, so that only a screen pays for the managed-mode verdict.
    *
    * @param username the eXo login reading their setting
-   * @return the setting, with {@code managed} and {@code managedConnectorId} filled
+   * @return the setting, with {@code managed}, {@code managedConnectorId} and {@code refused} filled
    */
   public UserEmailSetting getUserEmailSettingWithManagedMode(String username) {
     UserEmailSetting userEmailSetting = getUserEmailSetting(username);
     Long managedConnectorId = emailManagedModeService.designatedConnectorFor(username);
     userEmailSetting.setManaged(managedConnectorId != null);
     userEmailSetting.setManagedConnectorId(managedConnectorId);
+    userEmailSetting.setRefused(managedConnectorId != null && isManagedRefused(username, managedConnectorId));
     return userEmailSetting;
+  }
+
+  /**
+   * Whether a connection managed mode made for this user on the designated connector was
+   * refused because of their own account, and still would be (EXO-91017): the refusal
+   * recorded names this connector, and the provider names the same address for them now
+   * - none, when it named none. Addresses compare without case, as mail servers treat
+   * them. Another designation, or another address resolved for the user, is worth a new
+   * attempt, so the connection is offered again.
+   * <p>
+   * Never throws: a connector gone, a record that cannot be read or a provider that
+   * cannot answer reads as no refusal, and the connection stays offered.
+   *
+   * @param username the eXo login
+   * @param connectorId the connector managed mode designates for the user
+   * @return true when the user's screens offer no connection and say why instead
+   */
+  public boolean isManagedRefused(String username, long connectorId) {
+    SettingValue<?> value = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, MANAGED_REFUSED_KEY);
+    String stored = value == null || value.getValue() == null ? null : value.getValue().toString();
+    int separator = stored == null ? -1 : stored.indexOf(':');
+    if (separator <= 0 || !String.valueOf(connectorId).equals(stored.substring(0, separator)) || emailCredentialsResolver == null) {
+      return false;
+    }
+    try {
+      EmailConnector emailConnector = emailConnectorService.getEmailConnector(connectorId);
+      if (emailConnector == null) {
+        return false;
+      }
+      String address = emailCredentialsResolver.targetAccount(connectorId, emailConnector.getAuthProviderName(), username);
+      return StringUtils.defaultString(StringUtils.trimToNull(address)).equalsIgnoreCase(stored.substring(separator + 1));
+    } catch (ConnectorCredentialsException | RuntimeException e) {
+      LOG.debug("The managed mail refusal of {} could not be checked; the connection stays offered", username, e);
+      return false;
+    }
   }
 
   /**
@@ -816,6 +875,30 @@ public class UserEmailSettingService {
    */
   public boolean isConnectedByManagedMode(String username) {
     return settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONNECTED_BY_MANAGED_MODE_KEY) != null;
+  }
+
+  /**
+   * Records that a connection managed mode made for this user was refused because of
+   * their own account, replacing any previous record.
+   *
+   * @param username the eXo login
+   * @param connectorId the designated connector
+   * @param address the address the provider named, blank when none
+   */
+  private void saveManagedRefusal(String username, long connectorId, String address) {
+    settingService.set(Context.USER.id(username),
+                       EMAIL_CONNECTOR_SCOPE,
+                       MANAGED_REFUSED_KEY,
+                       SettingValue.create(connectorId + ":" + StringUtils.defaultString(StringUtils.trimToNull(address))));
+  }
+
+  /**
+   * Forgets the refusal recorded for this user, if any: a connection that succeeded.
+   *
+   * @param username the eXo login
+   */
+  private void clearManagedRefusal(String username) {
+    settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, MANAGED_REFUSED_KEY);
   }
 
   /**
