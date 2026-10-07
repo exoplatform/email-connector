@@ -33,8 +33,10 @@ import static org.mockito.Mockito.when;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -507,6 +509,44 @@ class EmailManagedDisconnectionServiceTest {
 
     service.disconnectAllUsersOf(3L);
     assertEquals(6, context.lifecycles);
+  }
+
+  /**
+   * bob is re-checked at his own turn, after alice's delete, which clears his mark: he
+   * is left connected. Killed by the mutant that re-checks every user before the first
+   * delete ({@code .toList().stream()} between the re-check and the delete).
+   */
+  @Test
+  void aUserTheDeleteBeforeTheirTurnUnmarksIsLeftConnected() {
+    attachedByManagedMode("3", "alice", "bob");
+    inForce(5L);
+    Set<String> marked = new HashSet<>(Set.of("alice", "bob"));
+    when(userEmailSettingService.isConnectedByManagedMode(anyString())).thenAnswer(invocation -> marked.contains(invocation.getArgument(0)));
+    doAnswer(invocation -> marked.remove("bob")).when(userEmailSettingService).deleteUserEmailSetting("alice");
+
+    service.disconnectUsersNoLongerManaged();
+
+    verify(userEmailSettingService).deleteUserEmailSetting("alice");
+    verify(userEmailSettingService, never()).deleteUserEmailSetting("bob");
+  }
+
+  /**
+   * A provider change on 3: dan is re-checked at his own turn, after chloe's delete,
+   * which moves him to connector 4: he is left connected. Killed by the mutant that
+   * re-checks every user before the first delete ({@code .toList().stream()} between the
+   * re-check and the delete).
+   */
+  @Test
+  void aUserTheDeleteBeforeTheirTurnMovesIsLeftConnectedByAProviderChange() {
+    Map<String, String> stored = new HashMap<>(Map.of("chloe", "3", "dan", "3"));
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(3L)).thenReturn(List.of("chloe", "dan"));
+    when(userEmailSettingService.getStoredEmailConnectorId(anyString())).thenAnswer(invocation -> stored.get(invocation.getArgument(0)));
+    doAnswer(invocation -> stored.put("dan", "4")).when(userEmailSettingService).deleteUserEmailSetting("chloe");
+
+    service.disconnectAllUsersOf(3L);
+
+    verify(userEmailSettingService).deleteUserEmailSetting("chloe");
+    verify(userEmailSettingService, never()).deleteUserEmailSetting("dan");
   }
 
   /**
