@@ -52,8 +52,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :disabled="synchronizing"
               :aria-label="$t('UserSettings.emailConnector.sync.button.tooltip')"
               :title="$t('UserSettings.emailConnector.sync.button.tooltip')"
+              :class="{'me-2': !managed}"
               icon
-              class="me-2"
               @click="synchronize">
               <v-icon size="20" class="icon-default-color">fa-sync-alt</v-icon>
             </v-btn>
