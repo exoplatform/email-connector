@@ -2214,6 +2214,32 @@ public class UserEmailSettingServiceTest {
     connectThroughTheProvider(() -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
 
     UserEmailSettingEntity written = writtenSetting();
+    assertEquals(Boolean.FALSE, written.getNotifyAllCategories());
+    assertEquals(List.of(3L, 4L), written.getNotifyCategories());
+    assertEquals(5L, written.getDefaultCategoryView());
+    assertNull(written.getCarddavEnabled());
+    assertNull(written.getCarddavAutoPublish());
+  }
+
+  /**
+   * EXO-90824. The switch at login to the designated connector always changes the
+   * connector: it keeps the category preferences and drops the address-book options.
+   */
+  @Test
+  @SneakyThrows
+  void aSwitchToTheDesignatedConnectorKeepsTheCategoryPreferencesOnly() {
+    EmailConnector other = emailConnector();
+    other.setId(2L);
+    when(emailConnectorService.getEmailConnector(2L)).thenReturn(other);
+    storedDocument(TEST_USER, String.format(STORED_WITH_PREFERENCES, "eric@bm.example.org").replace("\"emailConnectorId\":\"1\"",
+                                                                                                   "\"emailConnectorId\":\"2\""));
+
+    connectThroughTheProvider(() -> assertTrue(userEmailSettingService.switchThroughProvider(1L, TEST_USER)));
+
+    UserEmailSettingEntity written = writtenSetting();
+    assertEquals("1", written.getEmailConnectorId());
+    assertEquals(Boolean.FALSE, written.getNotifyAllCategories());
+    assertEquals(List.of(3L, 4L), written.getNotifyCategories());
     assertEquals(5L, written.getDefaultCategoryView());
     assertNull(written.getCarddavEnabled());
     assertNull(written.getCarddavAutoPublish());
