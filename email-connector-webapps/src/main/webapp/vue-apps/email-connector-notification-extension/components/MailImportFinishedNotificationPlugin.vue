@@ -31,7 +31,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :loading="loading">
       <template #avatar>
         <div>
-          <v-icon size="40" :class="failed ? 'warning--text' : 'primary--text'">fa-file-import</v-icon>
+          <v-icon size="36" :class="failed ? 'warning--text' : 'primary--text'">fa-file-import</v-icon>
         </div>
       </template>
       <template #actions>
