@@ -35,7 +35,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :loading="loading">
       <template #avatar>
         <div>
-          <v-icon size="40" class="primary--text">fa-filter</v-icon>
+          <v-icon size="36" class="icon-default-color">fa-filter</v-icon>
         </div>
       </template>
       <template #actions>
