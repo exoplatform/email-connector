@@ -503,6 +503,7 @@ public class EmailFilterRest {
   @Operation(summary = "Deletes a filter eXo runs after each sync of the caller's inbox", method = "DELETE",
       description = "A rule with a server half removes it from the server first. Its log stays, as long as the retention.")
   @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Deleted"),
+      @ApiResponse(responseCode = "400", description = "The rule is the one the product provides, which cannot be deleted"),
       @ApiResponse(responseCode = "403", description = FORBIDDEN_DESCRIPTION),
       @ApiResponse(responseCode = "404", description = "The feature is off, no mailbox is connected, or no such rule"),
       @ApiResponse(responseCode = "409", description = CONFLICT_DESCRIPTION),

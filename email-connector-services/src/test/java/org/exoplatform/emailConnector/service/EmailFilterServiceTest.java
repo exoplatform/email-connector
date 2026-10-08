@@ -1527,7 +1527,8 @@ public class EmailFilterServiceTest {
   }
 
   /**
-   * A seeded rule the owner deleted never comes back: the deletion leaves the marker.
+   * A seeded rule gone from the owner's rules, deleted before it could no longer be,
+   * never comes back: the marker stays.
    *
    * @throws Exception never
    */
@@ -1535,11 +1536,126 @@ public class EmailFilterServiceTest {
   void aDeletedSeedIsNeverRecreated() throws Exception {
     EmailFilter seeded = service.getFilters(USERNAME, null).get(0);
 
-    service.deleteFilter(USERNAME, null, seeded.getId(), false);
+    filters.remove(seeded.getId());
 
     assertTrue(service.getFilters(USERNAME, null).isEmpty(), "gone for good");
     assertEquals(EmailFilterService.SEED_IMPORTANT_VERSION, seedMarker(), "the marker stays");
     verify(emailFilterStorage, times(1)).save(eq(USERNAME), any(), any());
+  }
+
+  /**
+   * The seeded rule is the one the product provides: its id is recorded when it is
+   * seeded, and the read marks it, and it alone, as provided.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theSeededFilterIsMarkedAsProvided() throws Exception {
+    assertTrue(service.ensureImportantFilter(USERNAME));
+    EmailFilter seeded = filters.values().iterator().next();
+    assertEquals(String.valueOf(seeded.getId()), providedMarker(), "recorded when seeded, before any read");
+    EmailFilter own = stored(rule("Star", EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of(action(FilterAction.STAR))));
+
+    List<EmailFilter> read = service.getFilters(USERNAME, null);
+
+    assertTrue(read.stream().filter(filter -> seeded.getId().equals(filter.getId())).findFirst().orElseThrow().isProvided());
+    assertFalse(read.stream().filter(filter -> own.getId().equals(filter.getId())).findFirst().orElseThrow().isProvided(),
+                "the owner's own rule is not");
+  }
+
+  /**
+   * The rule the product provides cannot be deleted: the owner could not get it back.
+   * The owner's own rules still can.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theProvidedFilterCannotBeDeleted() throws Exception {
+    EmailFilter seeded = service.getFilters(USERNAME, null).get(0);
+    EmailFilter own = stored(rule("Star", EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of(action(FilterAction.STAR))));
+
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> service.deleteFilter(USERNAME, null, seeded.getId(), false));
+
+    assertEquals(EmailFilterService.PROVIDED, refused.getMessage());
+    assertTrue(filters.containsKey(seeded.getId()), "kept");
+    verify(emailFilterStorage, never()).delete(seeded.getId(), USERNAME);
+    verify(proposalProvider, never()).onFilterDeleted(USERNAME, seeded.getId());
+
+    service.deleteFilter(USERNAME, null, own.getId(), false);
+
+    assertFalse(filters.containsKey(own.getId()), "the owner's own rule is deleted");
+  }
+
+  /**
+   * An owner seeded before the id was recorded: the oldest of their rules that runs an
+   * assistant with the seed's name or the seed's instruction is the provided one, found
+   * on the next read and recorded. A rule with the seed's name and no assistant, or an
+   * assistant asked something else under another name, is not.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aSeedFromBeforeTheRecordedIdIsFoundAndRecorded() throws Exception {
+    settings.put(settingKey(Context.USER.id(USERNAME), EmailFilterService.SEED_SCOPE, EmailFilterService.SEED_IMPORTANT_KEY),
+                 EmailFilterService.SEED_IMPORTANT_VERSION);
+    EmailFilter namedNoAgent = stored(rule(EmailFilterService.SEED_IMPORTANT_NAME,
+                                           EmailFilter.KIND_EXO,
+                                           List.of(FROM_ACME),
+                                           List.of(action(FilterAction.STAR))));
+    EmailFilter otherAgent = stored(rule("Invoices", EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of(agent())));
+    EmailFilter renamedSeed = stored(rule("Mine now",
+                                          EmailFilter.KIND_EXO,
+                                          List.of(IMPORTANT),
+                                          List.of(new FilterAction(FilterAction.AGENT,
+                                                                   null,
+                                                                   null,
+                                                                   EmailFilterService.SEED_AGENT_MARKER,
+                                                                   EmailFilterService.SEED_IMPORTANT_INSTRUCTION,
+                                                                   List.of("NOTE"),
+                                                                   null))));
+    EmailFilter laterNamed = stored(rule(EmailFilterService.SEED_IMPORTANT_NAME, EmailFilter.KIND_EXO, List.of(IMPORTANT), List.of(agent())));
+
+    List<EmailFilter> read = service.getFilters(USERNAME, null);
+
+    assertEquals(List.of(renamedSeed.getId()), read.stream().filter(EmailFilter::isProvided).map(EmailFilter::getId).toList(),
+                 "the oldest seed-shaped rule only, not " + List.of(namedNoAgent.getId(), otherAgent.getId(), laterNamed.getId()));
+    assertEquals(String.valueOf(renamedSeed.getId()), providedMarker(), "recorded");
+    assertThrows(IllegalArgumentException.class, () -> service.deleteFilter(USERNAME, null, renamedSeed.getId(), false));
+  }
+
+  /**
+   * An owner seeded before the id was recorded, whose copy kept the seed's name and asks
+   * its assistant something else: found by its name.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aSeedFromBeforeTheRecordedIdIsFoundByItsName() throws Exception {
+    settings.put(settingKey(Context.USER.id(USERNAME), EmailFilterService.SEED_SCOPE, EmailFilterService.SEED_IMPORTANT_KEY),
+                 EmailFilterService.SEED_IMPORTANT_VERSION);
+    EmailFilter edited = stored(rule(EmailFilterService.SEED_IMPORTANT_NAME, EmailFilter.KIND_EXO, List.of(IMPORTANT), List.of(agent())));
+
+    assertTrue(service.getFilters(USERNAME, null).get(0).isProvided());
+    assertEquals(String.valueOf(edited.getId()), providedMarker());
+  }
+
+  /**
+   * An owner never seeded has no provided rule, and nothing is recorded for them, even
+   * with a rule shaped as the seed.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anOwnerNeverSeededHasNoProvidedFilter() throws Exception {
+    System.setProperty(EmailFilterService.SEED_IMPORTANT_PROPERTY, "false");
+    EmailFilter named = stored(rule(EmailFilterService.SEED_IMPORTANT_NAME, EmailFilter.KIND_EXO, List.of(IMPORTANT), List.of(agent())));
+
+    assertTrue(service.getFilters(USERNAME, null).stream().noneMatch(EmailFilter::isProvided));
+    assertNull(providedMarker());
+
+    service.deleteFilter(USERNAME, null, named.getId(), false);
+    assertFalse(filters.containsKey(named.getId()));
   }
 
   /**
@@ -1665,6 +1781,15 @@ public class EmailFilterServiceTest {
    */
   private String seedMarker() {
     return settings.get(settingKey(Context.USER.id(USERNAME), EmailFilterService.SEED_SCOPE, EmailFilterService.SEED_IMPORTANT_KEY));
+  }
+
+  /**
+   * The recorded id of the owner's provided rule.
+   *
+   * @return the id, as stored; null when none
+   */
+  private String providedMarker() {
+    return settings.get(settingKey(Context.USER.id(USERNAME), EmailFilterService.SEED_SCOPE, EmailFilterService.SEED_IMPORTANT_ID_KEY));
   }
 
   /**
@@ -2073,6 +2198,7 @@ public class EmailFilterServiceTest {
                            filter.getLastError(),
                            filter.getActiveSince(),
                            filter.getCreatedDate(),
-                           filter.getUpdatedDate());
+                           filter.getUpdatedDate(),
+                           filter.isProvided());
   }
 }

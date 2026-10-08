@@ -112,6 +112,13 @@ public class EmailFilter {
   private Long                     updatedDate;
 
   /**
+   * Whether the product gave the owner this rule, the "Important mail" one: it cannot be
+   * deleted. Set by the service when it reads the rules, never stored, never read from
+   * the form.
+   */
+  private boolean                  provided;
+
+  /**
    * Whether this rule runs an assistant.
    *
    * @return true when one of its actions is {@link FilterAction#AGENT}
