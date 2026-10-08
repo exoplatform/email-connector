@@ -2118,9 +2118,10 @@ function isDraftOwnFile(attachment) {
 
 /**
  * What tells one attachment from another when a copy of it is remembered: a message
- * part is named by its mail and its part path, a draft's own file by its draft and
- * its id, since it has no part path and every file of a draft would otherwise share
- * one name.
+ * part is named by its folder, its mail and its part path, since IMAP numbers the
+ * messages of each folder on their own (see getAttachmentUrl); a draft's own file by
+ * its draft and its id, since it has no part path and every file of a draft would
+ * otherwise share one name.
  *
  * @param {Object} attachment the attachment being addressed
  * @returns {String} a name no other attachment answers to
@@ -2128,7 +2129,7 @@ function isDraftOwnFile(attachment) {
 function attachmentKey(attachment) {
   return isDraftOwnFile(attachment)
     ? `draft:${attachment.draftLocalId}/${attachment.id}`
-    : `${attachment.mailRemoteId}/${attachment.attachmentRemoteId}`;
+    : `${attachment.folder || ''}/${attachment.mailRemoteId}/${attachment.attachmentRemoteId}`;
 }
 
 /**
