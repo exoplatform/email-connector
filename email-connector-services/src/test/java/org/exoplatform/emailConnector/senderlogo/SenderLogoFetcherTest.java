@@ -394,6 +394,7 @@ class SenderLogoFetcherTest {
       assertTrue(production.policy().getExemptHosts().isEmpty());
       assertTrue(production.policy().getExemptAddresses().isEmpty());
       assertEquals(SenderLogoFetcher.MAX_REDIRECTS, production.policy().getMaxRedirects());
+      assertEquals(SenderLogoFetcher.PAGE_MAX_BYTES, production.policy().getMaxBytes(), "the ceiling of every read, the page's");
       assertEquals(SenderLogoFetcher.TOTAL_TIMEOUT, production.policy().getTotalTimeout());
       answers.put("/favicon.ico", ok("image/png", PNG));
       assertNull(production.fetch(url("brand.example", "/favicon.ico"), Set.of(SenderLogoUtils.PNG)));

@@ -296,34 +296,6 @@ public final class SenderLogoUtils {
   }
 
   /**
-   * Whether a response's declared {@code Content-Type} is one a logo may carry,
-   * parameters ignored.
-   *
-   * @param contentType the header value
-   * @return true when allowed
-   */
-  public static boolean isAllowedDeclaredType(String contentType) {
-    if (StringUtils.isBlank(contentType)) {
-      return false;
-    }
-    return DECLARED_TYPES.contains(StringUtils.substringBefore(contentType, ";").trim().toLowerCase(Locale.ROOT));
-  }
-
-  /**
-   * Whether a response's declared {@code Content-Type} is a web page's, parameters
-   * ignored: what a home page read for its declared icon must say it is.
-   *
-   * @param contentType the header value
-   * @return true for HTML or XHTML
-   */
-  public static boolean isPageDeclaredType(String contentType) {
-    if (StringUtils.isBlank(contentType)) {
-      return false;
-    }
-    return PAGE_TYPES.contains(StringUtils.substringBefore(contentType, ";").trim().toLowerCase(Locale.ROOT));
-  }
-
-  /**
    * The icon a home page declares (EXO-90909): the first {@code <link>} whose
    * {@code rel} holds {@code icon}, {@code apple-touch-icon} or
    * {@code apple-touch-icon-precomposed} and whose {@code href}, resolved against the
