@@ -287,8 +287,11 @@ public class EmailFilterService {
   /** A stored rule the sync cannot read. */
   public static final String          UNREADABLE                 = "emailConnector.filters.unreadable";
 
-  /** The rule is the one the product provides: it cannot be deleted, nor leave eXo. */
+  /** The rule is the one the product provides: it cannot be deleted. */
   public static final String          PROVIDED                   = "emailConnector.filters.provided";
+
+  /** The rule is the one the product provides: it cannot move to the mail server, which would delete it from eXo. */
+  public static final String          PROVIDED_MOVE              = "emailConnector.filters.provided.move";
 
   /** The most rules one owner may have. */
   public static final int             MAX_FILTERS                = 50;
@@ -650,12 +653,13 @@ public class EmailFilterService {
    *
    * @param username the owner
    * @param id the rule
-   * @throws IllegalArgumentException {@value #PROVIDED} when it is that rule
+   * @param code the refusal's message code
+   * @throws IllegalArgumentException with that code when it is that rule
    */
-  private void checkNotProvided(String username, long id) {
+  private void checkNotProvided(String username, long id, String code) {
     Long providedId = providedFilterId(username, emailFilterStorage.getFilters(username));
     if (providedId != null && providedId == id) {
-      throw new IllegalArgumentException(PROVIDED);
+      throw new IllegalArgumentException(code);
     }
   }
 
@@ -832,7 +836,7 @@ public class EmailFilterService {
                                               ServerRuleConflictException {
     checkOwnMailbox(username, delegationId);
     EmailFilter existing = ownFilter(username, id);
-    checkNotProvided(username, id);
+    checkNotProvided(username, id, PROVIDED);
     if (isLiveHop(existing)) {
       removeHop(username, existing, republish);
     }
@@ -881,7 +885,7 @@ public class EmailFilterService {
    * @throws IllegalArgumentException with a message code for an invalid value, both a
    *           reference and an id, a missing consent, too many rules, a filter that
    *           forwards and cannot run on the mail server, or the "Important mail" rule
-   *           the product provides moving to the mail server ({@value #PROVIDED})
+   *           the product provides moving to the mail server ({@value #PROVIDED_MOVE})
    * @throws ServerRuleUnavailableException when the server cannot be used
    * @throws ServerRuleConflictException when another client's script is in the way, or
    *           eXo's script changed outside eXo
@@ -1058,7 +1062,7 @@ public class EmailFilterService {
    * @throws ObjectNotFoundException when a feature is off, or the filter is not the
    *           caller's
    * @throws IllegalAccessException when the caller may not use their connector
-   * @throws IllegalArgumentException {@value #PROVIDED} when it is the "Important mail"
+   * @throws IllegalArgumentException {@value #PROVIDED_MOVE} when it is the "Important mail"
    *           rule the product provides, whose eXo row would be deleted
    * @throws ServerRuleUnavailableException when the server cannot be used
    * @throws ServerRuleConflictException when eXo's script is in the way
@@ -1076,7 +1080,7 @@ public class EmailFilterService {
     checkOwnMailbox(username, null);
     EmailFilter existing = ownFilter(username, id);
     // Its eXo row would be deleted once the server holds the rule.
-    checkNotProvided(username, id);
+    checkNotProvided(username, id, PROVIDED_MOVE);
     ServerRule rule = serverRuleOf(input);
     if (existing.isEnabled()) {
       // switched off while the server takes it: no owner's disable, its standing

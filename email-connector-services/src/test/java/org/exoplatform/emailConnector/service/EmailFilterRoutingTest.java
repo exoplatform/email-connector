@@ -417,7 +417,7 @@ public class EmailFilterRoutingTest {
                                                                            true,
                                                                            false));
 
-    assertEquals(EmailFilterService.PROVIDED, refused.getMessage());
+    assertEquals(EmailFilterService.PROVIDED_MOVE, refused.getMessage());
     assertTrue(filters.containsKey(existing.getId()), "kept");
     assertTrue(filters.get(existing.getId()).isEnabled(), "as it was");
     verify(emailServerRuleService, never()).saveRule(any(), any(), any(), any(), anyBoolean(), anyBoolean());
