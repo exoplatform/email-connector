@@ -403,11 +403,17 @@ public class UserEmailSettingService {
    * it is handed and a connection carries only the account. The new-mail notification
    * choice ({@code notifyAllCategories}, {@code notifyCategories}) and the default view
    * ({@code defaultCategoryView}) name the add-on's own categories, the same whatever the
-   * account, so they are kept on every reconnection. The address-book options
-   * ({@code carddavEnabled}, {@code carddavAutoPublish}) are about that account's
-   * address book, so they are kept only when the connector and the address are the
-   * stored ones; another account starts with them unset, as its address book is opted
-   * into anew. A value the connection does state is never overwritten.
+   * account, so they are kept on every connection of a connected user, to another account
+   * as well. The address-book options ({@code carddavEnabled}, {@code carddavAutoPublish})
+   * are about that account's address book, so they are kept only when the connector and
+   * the address are the stored ones; another account starts with them unset, as its
+   * address book is opted into anew. A value the connection does state is never
+   * overwritten.
+   * <p>
+   * Only a stored setting is completed from: a disconnection, the user's own or the
+   * platform's ({@link #deleteUserEmailSetting(String)}: a provider change, a managed-mode
+   * change, a user managed mode no longer governs), removes the whole document, so the
+   * connection that follows starts with every preference unset.
    *
    * @param connecting the setting about to be written, completed in place
    * @param stored the user's stored setting, an empty one when there is none: its
