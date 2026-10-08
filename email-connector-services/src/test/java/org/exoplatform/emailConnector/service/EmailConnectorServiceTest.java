@@ -62,6 +62,7 @@ import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.commons.file.services.FileStorageException;
+import org.exoplatform.emailConnector.event.EmailConnectorAuthenticationChangedEvent;
 import org.exoplatform.emailConnector.event.EmailConnectorProviderChangedEvent;
 import org.exoplatform.emailConnector.model.ConnectorForwarding;
 import org.exoplatform.emailConnector.model.EmailConnector;
@@ -945,6 +946,38 @@ public class EmailConnectorServiceTest {
     emailConnectorService.updateEmailConnector(posted, TEST_USER);
 
     assertEquals(List.of(7L), events.stream(EmailConnectorProviderChangedEvent.class).map(EmailConnectorProviderChangedEvent::getEmailConnectorId).toList());
+    assertEquals(List.of(7L),
+                 events.stream(EmailConnectorAuthenticationChangedEvent.class)
+                       .map(EmailConnectorAuthenticationChangedEvent::getEmailConnectorId)
+                       .toList(),
+                 "the managed refusals recorded on the connector are forgotten too (EXO-91017)");
+  }
+
+  /**
+   * EXO-91017. A provider configuration written on the same provider - a corrected
+   * technical account - changes the connector's authentication without disconnecting
+   * anybody: only the change of authentication is announced.
+   */
+  @Test
+  @SneakyThrows
+  void aConfigurationWrittenOnTheSameProviderAnnouncesOnlyTheAuthenticationChange() {
+    grantAdministration();
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+    EmailConnector posted = emailConnector();
+    posted.setId(7L);
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "admin0@global.virt"));
+
+    emailConnectorService.updateEmailConnector(posted, TEST_USER);
+
+    assertEquals(0, events.stream(EmailConnectorProviderChangedEvent.class).count());
+    assertEquals(List.of(7L),
+                 events.stream(EmailConnectorAuthenticationChangedEvent.class)
+                       .map(EmailConnectorAuthenticationChangedEvent::getEmailConnectorId)
+                       .toList());
   }
 
   /** An edit that keeps the provider - or leaves it blank, which keeps it - disconnects nobody. */
@@ -967,6 +1000,9 @@ public class EmailConnectorServiceTest {
     emailConnectorService.updateEmailConnector(blankProvider, TEST_USER);
 
     assertEquals(0, events.stream(EmailConnectorProviderChangedEvent.class).count());
+    assertEquals(0,
+                 events.stream(EmailConnectorAuthenticationChangedEvent.class).count(),
+                 "a save carrying no provider configuration keeps the managed refusals");
   }
 
   /** The same write on the update path, against the id the drawer already knows. */

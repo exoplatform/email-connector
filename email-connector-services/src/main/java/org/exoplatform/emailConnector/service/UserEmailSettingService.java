@@ -706,6 +706,36 @@ public class UserEmailSettingService {
   }
 
   /**
+   * Forgets the managed refusals recorded on a connector whose provider, or whose provider
+   * configuration, an administrator just changed (EXO-91017). The refusal was the answer
+   * of the authentication now replaced: the users it names are offered the connection
+   * again instead of waiting for their next login to retry it. A refusal recorded on
+   * another connector, or one that cannot be read, is left alone.
+   *
+   * @param connectorId the connector whose authentication changed
+   */
+  public void forgetManagedRefusalsOn(long connectorId) {
+    String prefix = connectorId + ":";
+    int forgotten = 0;
+    for (Context context : settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                                    Scope.APPLICATION.getName(),
+                                                                                    EmailConnectorService.EMAIL_CONNECTOR_SCOPE_ID,
+                                                                                    MANAGED_REFUSED_KEY,
+                                                                                    0,
+                                                                                    Integer.MAX_VALUE)) {
+      String username = context.getId();
+      SettingValue<?> value = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, MANAGED_REFUSED_KEY);
+      if (value != null && value.getValue() != null && value.getValue().toString().startsWith(prefix)) {
+        clearManagedRefusal(username);
+        forgotten++;
+      }
+    }
+    if (forgotten > 0) {
+      LOG.info("Forgot {} managed mail refusal(s) on connector {}: its authentication changed", forgotten, connectorId);
+    }
+  }
+
+  /**
    * Disconnects the user's mailbox at their own request.
    * <p>
    * A user managed mode governs cannot: the instance keeps them on the designated

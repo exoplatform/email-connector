@@ -2079,9 +2079,46 @@ public class UserEmailSettingServiceTest {
                                                        null));
   }
 
+  /**
+   * EXO-91017. A change of the connector's authentication forgets the refusals recorded on
+   * it, and only those: a refusal on another connector - one whose id merely starts with
+   * the same digit included - and an unreadable record stay.
+   */
+  @Test
+  void aChangedAuthenticationForgetsOnlyTheRefusalsOfThatConnector() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                Scope.APPLICATION.getName(),
+                                                                EmailConnectorService.EMAIL_CONNECTOR_SCOPE_ID,
+                                                                UserEmailSettingService.MANAGED_REFUSED_KEY,
+                                                                0,
+                                                                Integer.MAX_VALUE))
+        .thenReturn(List.of(Context.USER.id("alice"), Context.USER.id("bob"), Context.USER.id("carol"), Context.USER.id("dave")));
+    givenRefusalStored("alice", "1:alice@bm.example.org");
+    givenRefusalStored("bob", "10:bob@bm.example.org");
+    givenRefusalStored("carol", "1:");
+    givenRefusalStored("dave", "one:dave@bm.example.org");
+
+    userEmailSettingService.forgetManagedRefusalsOn(1L);
+
+    for (String forgotten : List.of("alice", "carol")) {
+      verify(settingService).remove(Context.USER.id(forgotten),
+                                    UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                    UserEmailSettingService.MANAGED_REFUSED_KEY);
+    }
+    for (String kept : List.of("bob", "dave")) {
+      verify(settingService, never()).remove(Context.USER.id(kept),
+                                             UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                             UserEmailSettingService.MANAGED_REFUSED_KEY);
+    }
+  }
+
   private void givenRefusalStored(String stored) {
+    givenRefusalStored(TEST_USER, stored);
+  }
+
+  private void givenRefusalStored(String username, String stored) {
     doReturn(SettingValue.create(stored)).when(settingService)
-                                         .get(Context.USER.id(TEST_USER),
+                                         .get(Context.USER.id(username),
                                               UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
                                               UserEmailSettingService.MANAGED_REFUSED_KEY);
   }
