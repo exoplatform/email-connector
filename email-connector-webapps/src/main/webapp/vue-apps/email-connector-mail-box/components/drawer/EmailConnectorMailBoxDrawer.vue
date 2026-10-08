@@ -134,7 +134,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :drag-source="emailDrag"
           :style="{ width: navigationWidth, minWidth: navigationWidth, backgroundColor: NAVIGATION_BACKGROUND }"
           class="flex-grow-0 flex-shrink-0 fill-height overflow-y-auto overflow-x-hidden border-box-sizing" />
-        <v-divider vertical />
+        <!-- The dividers the user drags (EXO-90575); a rail has a fixed width. -->
+        <v-divider v-if="navigationRail" vertical />
+        <email-connector-mail-box-column-separator
+          v-else
+          :value="shownColumnWidths.navigation"
+          :min="navigationColumnRange.min"
+          :max="navigationColumnRange.max"
+          :label="$t('emailConnector.mailBox.list.drawer.columnSeparator.folders')"
+          @resize="resizeNavigationColumn"
+          @commit="rememberColumnWidths"
+          @reset="resetNavigationColumn" />
         <div
           ref="expandedListPane"
           class="flex-grow-1 flex-shrink-1 fill-height overflow-y-auto overflow-x-hidden"
@@ -192,6 +202,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             </div>
           </template>
         </div>
+        <email-connector-mail-box-column-separator
+          :value="shownColumnWidths.list"
+          :min="listColumnRange.min"
+          :max="listColumnRange.max"
+          :label="$t('emailConnector.mailBox.list.drawer.columnSeparator.list')"
+          placement="end"
+          @resize="resizeListColumn"
+          @commit="rememberColumnWidths"
+          @reset="resetListColumn" />
       </div>
     </template>
     <template v-if="emailBoxDrawer && !loading" #content>
@@ -290,17 +309,17 @@ import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
 import { LIST_TOP_ROW_HEIGHT, SCHEDULED_VIEW, isScheduledView } from '../../js/EmailConnectorMailBoxService.js';
 import listNavigationMixin, { firstOpenableThread, searchRows, threadIndexOf, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
 import emailDragMixin from '../../js/EmailConnectorMailBoxEmailDragMixin.js';
+import columnWidthsMixin, { DEFAULT_LIST_WIDTH_PX } from '../../js/EmailConnectorMailBoxColumnWidths.js';
 
-// The drawer's width in its narrow layout, and the list's in the full-screen left pane:
-// exo-drawer's own default, which both layouts kept until the folder column came.
-const LIST_WIDTH_PX = 420;
+// The drawer's width in its narrow layout: exo-drawer's own default, which is also the
+// full-screen list's default width.
+const LIST_WIDTH_PX = DEFAULT_LIST_WIDTH_PX;
 
-// The full-screen folder column, open and folded to an icon rail (EXO-90415). The left
-// pane is exo-drawer's drawerWidth -- it has two columns in full screen, no third -- so
-// it widens by the column's width: 620 px with the column open, 476 px as a rail.
-const NAVIGATION_WIDTH_PX = 200;
-
-const NAVIGATION_RAIL_WIDTH_PX = 56;
+// The full-screen folder column (EXO-90415) and list are as wide as the user dragged
+// them (EXO-90575, columnWidthsMixin), the column 56 px as a rail
+// (its NAVIGATION_RAIL_WIDTH_PX). The left pane is exo-drawer's drawerWidth -- it has two
+// columns in full screen, no third -- so it is the column's width plus the list's: 620 px
+// with the column open, 476 px as a rail, until the user drags a divider.
 
 // Below this window width the column starts as a rail: at 1280 px the reader would get
 // some 660 px beside an open column.
@@ -408,7 +427,7 @@ const SEARCH_PAGE_SIZE = 20;
 const SEARCH_FETCH_RETRY_MS = 3000;
 
 export default {
-  mixins: [listNavigationMixin, emailDragMixin],
+  mixins: [listNavigationMixin, emailDragMixin, columnWidthsMixin],
   data() {
     return {
       emailBoxDrawer: false,
@@ -939,8 +958,9 @@ export default {
     },
     /**
      * The drawer's width: the list's in the narrow layout; in full screen, the left
-     * pane's -- the folder column and the list side by side (EXO-90415). Follows
-     * exo-drawer's expand flag at once (layoutExpanded).
+     * pane's -- the folder column and the list side by side (EXO-90415), as wide as the
+     * user dragged them (EXO-90575). Follows exo-drawer's expand flag at once
+     * (layoutExpanded).
      *
      * @returns {String} the width, in CSS pixels
      */
@@ -948,15 +968,15 @@ export default {
       if (!this.layoutExpanded) {
         return `${LIST_WIDTH_PX}px`;
       }
-      return `${LIST_WIDTH_PX + (this.navigationRail ? NAVIGATION_RAIL_WIDTH_PX : NAVIGATION_WIDTH_PX)}px`;
+      return `${this.shownColumnWidths.navigation + this.shownColumnWidths.list}px`;
     },
     /**
-     * The folder column's own width, open or as a rail.
+     * The folder column's own width, open (as dragged, EXO-90575) or as a rail.
      *
      * @returns {String} the width, in CSS pixels
      */
     navigationWidth() {
-      return `${this.navigationRail ? NAVIGATION_RAIL_WIDTH_PX : NAVIGATION_WIDTH_PX}px`;
+      return `${this.shownColumnWidths.navigation}px`;
     },
     /**
      * The count each folder of the column shows (EXO-90415): the unread mail of the
@@ -3363,6 +3383,11 @@ export default {
      * list on screen (autoSelectFirstEmail). The placeholder is still set at once, so
      * the reader never renders with nothing to read during the layout's transition.
      * The drawer's width follows at once too (layoutExpanded, EXO-90415).
+     * <p>
+     * The mail being read survives the switch both ways (EXO-90717): full screen
+     * scrolls its list to that mail's row, and going back to the drawer hands the mail
+     * to the mail drawer, the narrow reader, with the list one step back
+     * (handEmailBackToMailDrawer) -- as when the mail was opened in the drawer.
      *
      * @param {Boolean} expanded whether the drawer is now full screen
      * @returns {void}
@@ -3375,9 +3400,14 @@ export default {
       window.setTimeout(() => {
         this.expanded = expanded;
         if (expanded) {
+          const openedBefore = this.email && !this.selectEmailPlaceHolder;
           this.autoSelectFirstEmail();
+          if (openedBefore) {
+            this.$nextTick(() => this.revealOpenedEmailRow());
+          }
         } else {
           this.autoSelectPending = false;
+          this.handEmailBackToMailDrawer();
         }
       }, 200);
       if (expanded) {
@@ -3385,6 +3415,82 @@ export default {
           this.selectEmailPlaceHolder = true;
         }
       }
+    },
+    /**
+     * The key of the list row holding the mail the reader shows -- a conversation's
+     * thread id, or a search hit's folder:UID while a search runs -- or null when the
+     * list on screen does not hold it.
+     *
+     * @returns {String} the row's key, or null
+     */
+    openedEmailRowKey() {
+      const entries = this.navigationEntriesOf(this.navigationEmails);
+      const index = threadIndexOf(entries, this.email);
+      return index >= 0 ? String(entries[index].threadId) : null;
+    },
+    /**
+     * Scrolls the full-screen list to the row of the mail the reader shows, the way the
+     * narrow list was left when that mail was opened there (EXO-90717).
+     *
+     * @returns {void}
+     */
+    revealOpenedEmailRow() {
+      if (!this.expanded || !this.email || this.selectEmailPlaceHolder) {
+        return;
+      }
+      const key = this.openedEmailRowKey();
+      if (key) {
+        this.revealThreadRow(key);
+      }
+    },
+    /**
+     * Going back from full screen to the drawer keeps the mail being read open
+     * (EXO-90717): it is handed to the mail drawer, the narrow reader, as it is -- a
+     * full copy is not fetched, read or counted again -- with the list it belongs to,
+     * the folder it is numbered in, and whether that list is a search's or does not
+     * hold it (a pinned mail, a Scheduled view's), so the mail drawer does not take it
+     * back to the placeholder on the next refresh. Its row is where the list comes back
+     * to once the mail drawer closes (rowToRefocus), as after an opening in the drawer.
+     * <p>
+     * Nothing is handed back with no mail open, the placeholder up, a multi-selection
+     * running, or the drawer closing (close has already emptied the reader): the list
+     * shows as it did.
+     *
+     * @returns {void}
+     */
+    handEmailBackToMailDrawer() {
+      const email = this.email;
+      if (!this.emailBoxDrawer || !email || this.selectEmailPlaceHolder || this.selectMode) {
+        return;
+      }
+      const scheduled = !!email.scheduledRow;
+      const detachedFromList = this.searchActive || this.pinnedEmail || scheduled;
+      let emails = this.emails;
+      if (this.searchActive) {
+        emails = this.mergedSearchResults;
+      } else if (scheduled) {
+        emails = [email];
+      }
+      const threadKey = !this.searchActive && !scheduled && this.openedEmailRowKey();
+      this.rowToRefocus = threadKey
+        ? { threadKey, index: threadRows(this.emails).findIndex(thread => String(thread.threadId) === threadKey) }
+        : null;
+      // The reader of this drawer is gone: whatever it was still loading or waiting on
+      // belongs to the mail drawer from now on.
+      this.supersedeEmailRequest();
+      this.readerLoading = false;
+      this.readerPartial = false;
+      this.pinnedEmail = false;
+      this.email = null;
+      this.threadContext = null;
+      this.$root.$emit('collapse-mail-box-on-email', {
+        email,
+        folder: email.folder || 'INBOX',
+        emails,
+        detachedFromList,
+        syncInProgress: this.syncInProgress,
+        webmailUrl: this.webmailUrl,
+      });
     },
     /**
      * Opens the first mail of the list on screen in the full-screen reader, when the
@@ -3454,11 +3560,22 @@ export default {
     },
     /**
      * The drawer, for listNavigationMixin to tell whether it is the one on top.
+     * <p>
+     * The exo-drawer INSIDE the pinneable-drawer wrapper the ref points at: that inner
+     * drawer is the one exo-drawer pushes into `eXo.openedDrawers`, never the wrapper
+     * (EXO-90577: compared with the wrapper, the mailbox never saw itself on top, and
+     * the arrow keys did nothing in the drawer). Not a walk up the stack top's parents
+     * either: a drawer the mailbox opens over itself -- the composer, the folder picker
+     * -- may sit inside the mailbox's own component tree, and must keep the keys.
+     * Falls back to the ref itself where it is a plain exo-drawer. Depends on the
+     * `ref="drawer"` social's PinneableDrawer.vue puts on its exo-drawer: renamed, the
+     * fallback would silently bring the bug back.
      *
-     * @returns {Object} the exo-drawer
+     * @returns {Object} the exo-drawer registered in `eXo.openedDrawers` when open
      */
     navigationDrawer() {
-      return this.$refs.emailBoxDrawer;
+      const drawer = this.$refs.emailBoxDrawer;
+      return drawer?.$refs?.drawer || drawer;
     },
     /**
      * What every action that takes messages out of the listing does here (delete,
