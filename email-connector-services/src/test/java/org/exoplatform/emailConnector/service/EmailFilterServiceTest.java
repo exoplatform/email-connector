@@ -1641,6 +1641,47 @@ public class EmailFilterServiceTest {
   }
 
   /**
+   * An owner seeded before the id was recorded, whose copy kept the seed's name in their
+   * language and asks its assistant something else: found by that name.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aSeedFromBeforeTheRecordedIdIsFoundByItsNameInTheOwnersLanguage() throws Exception {
+    doReturn(Locale.FRENCH).when(service).seedLocale(USERNAME);
+    when(resourceBundleService.getResourceBundle(EmailFilterService.SEED_BUNDLE, Locale.FRENCH)).thenReturn(new ListResourceBundle() {
+      @Override
+      protected Object[][] getContents() {
+        return new Object[][] { { EmailFilterService.SEED_IMPORTANT_NAME_KEY, "Courrier important : ce qu'il attend de moi" } };
+      }
+    });
+    settings.put(settingKey(Context.USER.id(USERNAME), EmailFilterService.SEED_SCOPE, EmailFilterService.SEED_IMPORTANT_KEY),
+                 EmailFilterService.SEED_IMPORTANT_VERSION);
+    EmailFilter french = stored(rule("Courrier important : ce qu'il attend de moi",
+                                     EmailFilter.KIND_EXO,
+                                     List.of(IMPORTANT),
+                                     List.of(agent())));
+
+    assertTrue(service.getFilters(USERNAME, null).get(0).isProvided());
+    assertEquals(String.valueOf(french.getId()), providedMarker());
+  }
+
+  /**
+   * The reorder answers the rules as the read does: the provided one marked.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theReorderAnswerMarksTheProvidedFilter() throws Exception {
+    EmailFilter seeded = service.getFilters(USERNAME, null).get(0);
+    EmailFilter own = stored(rule("Star", EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of(action(FilterAction.STAR))));
+
+    List<EmailFilter> ordered = service.reorder(USERNAME, null, List.of(own.getId(), seeded.getId()));
+
+    assertEquals(List.of(seeded.getId()), ordered.stream().filter(EmailFilter::isProvided).map(EmailFilter::getId).toList());
+  }
+
+  /**
    * An owner never seeded has no provided rule, and nothing is recorded for them, even
    * with a rule shaped as the seed.
    *

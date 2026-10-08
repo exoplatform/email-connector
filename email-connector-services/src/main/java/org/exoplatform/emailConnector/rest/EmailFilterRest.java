@@ -346,7 +346,8 @@ public class EmailFilterRest {
   @Operation(summary = "Reads the filters eXo runs after each sync of the caller's inbox", method = "GET",
       description = "The eXo group, in the order the rules run: kind EXO (conditions evaluated by eXo) or HOP (also runs at "
           + "delivery: the server sets tagKeyword on the mails it matches, under the server rule serverRuleRef = hop-<id>), "
-          + "the counters, and lastError when the sync switched a rule off. Never reads the mail server: the server group "
+          + "the counters, and lastError when the sync switched a rule off. provided marks the Important mail rule the product gives, "
+          + "which cannot be deleted nor moved to the mail server. Never reads the mail server: the server group "
           + "is GET /server. Own mailbox only.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "403", description = FORBIDDEN_DESCRIPTION),
@@ -537,7 +538,7 @@ public class EmailFilterRest {
   @Secured("users")
   @Operation(summary = "Orders the filters eXo runs after each sync of the caller's inbox", method = "PUT",
       description = "The body is every rule's id, once, in the new order; anything else is 400 "
-          + "(emailConnector.filters.order.invalid). Server rules are ordered on the server.")
+          + "(emailConnector.filters.order.invalid). Server rules are ordered on the server. The answer is the rules as GET returns them.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Ordered"),
       @ApiResponse(responseCode = "400", description = "Not a permutation of the caller's rules"),
       @ApiResponse(responseCode = "403", description = FORBIDDEN_DESCRIPTION),

@@ -436,10 +436,7 @@ public class EmailFilterService {
   public List<EmailFilter> getFilters(String username, Long delegationId) throws ObjectNotFoundException, IllegalAccessException {
     checkOwnMailbox(username, delegationId);
     seedImportantFilter(username);
-    List<EmailFilter> filters = emailFilterStorage.getFilters(username);
-    Long providedId = providedFilterId(username, filters);
-    filters.forEach(filter -> filter.setProvided(providedId != null && providedId.equals(filter.getId())));
-    return filters;
+    return withProvided(username, emailFilterStorage.getFilters(username));
   }
 
   /**
@@ -633,6 +630,19 @@ public class EmailFilterService {
                                           .min(Comparator.comparing(EmailFilter::getId));
     seeded.ifPresent(filter -> markProvided(username, filter.getId()));
     return seeded.map(EmailFilter::getId).orElse(null);
+  }
+
+  /**
+   * Marks, among the owner's rules, the "Important mail" one the product provides.
+   *
+   * @param username the owner
+   * @param filters the owner's rules
+   * @return the rules, marked
+   */
+  private List<EmailFilter> withProvided(String username, List<EmailFilter> filters) {
+    Long providedId = providedFilterId(username, filters);
+    filters.forEach(filter -> filter.setProvided(providedId != null && providedId.equals(filter.getId())));
+    return filters;
   }
 
   /**
@@ -1282,7 +1292,7 @@ public class EmailFilterService {
       throw new IllegalArgumentException(INVALID_ORDER);
     }
     emailFilterStorage.reorder(username, orderedIds, now());
-    return emailFilterStorage.getFilters(username);
+    return withProvided(username, emailFilterStorage.getFilters(username));
   }
 
   /**
