@@ -33,7 +33,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :loading="loading">
       <template #avatar>
         <div>
-          <v-icon size="40" class="warning--text">fa-clock</v-icon>
+          <v-icon size="36" class="warning--text">fa-clock</v-icon>
         </div>
       </template>
       <template #actions>
