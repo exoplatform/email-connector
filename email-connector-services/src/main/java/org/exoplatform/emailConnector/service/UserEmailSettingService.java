@@ -411,9 +411,9 @@ public class UserEmailSettingService {
    * overwritten.
    * <p>
    * Only a stored setting is completed from: a disconnection, the user's own or the
-   * platform's ({@link #deleteUserEmailSetting(String)}: a provider change, a managed-mode
-   * change, a user managed mode no longer governs), removes the whole document, so the
-   * connection that follows starts with every preference unset.
+   * platform's ({@link #deleteUserEmailSetting(String)}: a connector's deletion, a provider
+   * change, a managed-mode change, a user managed mode no longer governs), removes the
+   * whole document, so the connection that follows starts with every preference unset.
    *
    * @param connecting the setting about to be written, completed in place
    * @param stored the user's stored setting, an empty one when there is none: its
