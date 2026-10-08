@@ -15,8 +15,9 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- A running sync is not signalled here: the drawer that holds this toolbar shows
-       it on its header's loading bar, the one indicator the mail app uses. -->
+  <!-- A running sync is signalled on the drawer's header loading bar, the one progress
+       indicator the mail app uses. The full-screen Synchronize button's spinner is that
+       button's own busy state, not a second indicator: it says why it cannot be pressed. -->
   <div class="align-self-center" v-if="!selectMode">
     <v-btn
       :title="$t('emailConnector.mailBox.list.drawer.newEmail.button.title')"
@@ -24,6 +25,23 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       icon>
       <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
     </v-btn>
+    <!-- Synchronize, beside the menu in full screen rather than inside it (EXO-90624);
+         the narrow drawer keeps it in the menu, its header has no room to spare. The
+         wrapper carries the tooltip, which a disabled button cannot show itself (it
+         takes no pointer events). -->
+    <span
+      v-if="syncButton"
+      :title="syncTitle"
+      class="d-inline-flex valign-middle">
+      <v-btn
+        :aria-label="syncTitle"
+        :disabled="syncInProgress"
+        :loading="syncInProgress"
+        icon
+        @click="synchronize()">
+        <v-icon size="20" class="icon-default-color">fa-sync-alt</v-icon>
+      </v-btn>
+    </span>
     <email-connector-mail-box-drawer-action-menu
       :current-folder="currentFolder"
       :available-folders="availableFolders"
@@ -31,7 +49,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :category-view-id="categoryViewId"
       :sync-in-progress="syncInProgress"
       :has-webmail-access="hasWebmailAccess"
-      :hide-views="hideViews" />
+      :hide-views="hideViews"
+      :hide-sync="syncButton" />
   </div>
   <div v-else-if="hasSelectedEmails">
     <template v-if="top">
@@ -310,8 +329,25 @@ export default {
       type: Boolean,
       default: false,
     },
+    // Whether Synchronize is a button beside the ⋮ menu, and out of it: in full screen
+    // (EXO-90624).
+    syncButton: {
+      type: Boolean,
+      default: false,
+    },
   },
   computed: {
+    /**
+     * The Synchronize button's tooltip and accessible name: what it does, or, while a
+     * synchronization runs, that one is running -- the reason it cannot be pressed.
+     *
+     * @returns {String} the translated label
+     */
+    syncTitle() {
+      return this.$t(this.syncInProgress
+        ? 'emailConnector.mailBox.list.drawer.sync.running'
+        : 'emailConnector.mailBox.list.drawer.sync.tooltip');
+    },
     // The listed rows by selection key -- the folder, and the id the row is named by in
     // it: its UID, or its local id when it is a draft, which may have no UID at all
     // (selectionKey).
@@ -630,7 +666,17 @@ export default {
     discardDrafts() {
       this.$root.$emit('open-discard-drafts-confirm-popup', this.selectedDraftRows);
     },
+    /**
+     * Triggers an immediate synchronization of the mailbox, exactly as the ⋮ menu's
+     * entry does (guarded while one runs): the drawer turns its loading bar on and polls
+     * the mailbox until the sync is over, which is what re-enables the button.
+     *
+     * @returns {void}
+     */
     synchronize() {
+      if (this.syncInProgress) {
+        return;
+      }
       this.$root.$emit('synchronize-in-progress');
       this.$emailConnectorMailBoxService.synchronize().then(() => {
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.sync.success'), 'success');
