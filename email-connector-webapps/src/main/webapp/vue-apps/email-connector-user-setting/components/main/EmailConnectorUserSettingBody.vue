@@ -27,7 +27,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <v-list-item>
         <v-list-item-content>
           <v-list-item-title v-if="!userEmailSetting.connected" class="text-wrap">
-            {{ managed ? $t('UserSettings.emailConnector.managed.description') : $t('UserSettings.emailConnector.description') }}
+            {{ description }}
           </v-list-item-title>
           <div v-else>
             <email-connector-icon
@@ -57,8 +57,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               @click="synchronize">
               <v-icon size="20" class="icon-default-color">fa-sync-alt</v-icon>
             </v-btn>
+            <!-- No connect button when the organization's server refused the user's
+                 account (EXO-91017): the description says so instead. -->
             <v-btn
-              v-if="managed && !userEmailSetting.connected"
+              v-if="managed && !userEmailSetting.connected && !refused"
               :loading="connecting"
               :disabled="connecting"
               :aria-label="$t('UserSettings.emailConnector.managed.connect')"
@@ -182,6 +184,15 @@ export default {
     managed() {
       return !!this.userEmailSetting?.managed;
     },
+    refused() {
+      return this.managed && !!this.userEmailSetting?.refused;
+    },
+    description() {
+      if (this.refused) {
+        return this.$t('UserSettings.emailConnector.managed.refused');
+      }
+      return this.managed ? this.$t('UserSettings.emailConnector.managed.description') : this.$t('UserSettings.emailConnector.description');
+    },
     // The add-on's Important category, or null while categories load. The
     // default-view toggle is disabled until it is known, since the toggle
     // stores that category's id.
@@ -255,7 +266,18 @@ export default {
           this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.managed.connected'), 'success');
           document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
         })
-        .catch(error => this.$root.$emit('alert-message', this.$t(error?.code || 'UserSettings.emailConnector.managed.connect.error'), 'error'))
+        .catch(error => this.$emailConnectorCommonService.getUserEmailSetting()
+          .catch(() => null)
+          .then(userEmailSetting => {
+            // A refusal of the user's own account was recorded by this click: its
+            // message, rather than "try again later", and the button goes.
+            if (userEmailSetting?.managed && userEmailSetting?.refused) {
+              this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.managed.refused'), 'warning');
+            } else {
+              this.$root.$emit('alert-message', this.$t(error?.code || 'UserSettings.emailConnector.managed.connect.error'), 'error');
+            }
+            document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
+          }))
         .finally(() => this.connecting = false);
     },
     /**
