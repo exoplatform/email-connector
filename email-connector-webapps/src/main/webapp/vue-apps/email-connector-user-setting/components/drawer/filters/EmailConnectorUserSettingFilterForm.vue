@@ -302,6 +302,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       {{ $t('UserSettings.emailConnector.filters.form.serverOnly') }}
     </div>
     <div
+      v-if="providedRefused"
+      class="error--text mt-4"
+      role="alert">
+      {{ $t('UserSettings.emailConnector.filters.provided.move') }}
+    </div>
+    <div
       v-if="!onCategory || kind !== 'EXO'"
       class="text-subtitle mt-4"
       role="status"
@@ -624,6 +630,15 @@ export default {
       return this.exoDisabled && this.kind !== 'SERVER';
     },
     /**
+     * Whether the filter the product provides would move to the mail server, which would
+     * delete it from eXo: it cannot be saved so.
+     *
+     * @returns {Boolean} true when it cannot be saved for that
+     */
+    providedRefused() {
+      return !!this.filter?.provided && this.kind === 'SERVER';
+    },
+    /**
      * Whether the size is asked of a filter the mail server will not run: only the server
      * checks the size.
      *
@@ -667,7 +682,7 @@ export default {
     valid() {
       const forwardValid = !this.forwardInput || (!!this.forwardDestination && this.forwardConfirmed && !this.forwardNotOnServer);
       const categoryValid = !this.hasAgent || !this.categoryAlways || !!this.categoryId;
-      return this.nameRule(this.name) === true && this.hasAction && this.conditionsValid && !this.exoOnlyRefused && forwardValid
+      return this.nameRule(this.name) === true && this.hasAction && this.conditionsValid && !this.exoOnlyRefused && !this.providedRefused && forwardValid
         && categoryValid;
     },
     /**
