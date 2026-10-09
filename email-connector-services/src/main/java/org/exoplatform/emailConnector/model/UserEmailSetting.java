@@ -83,6 +83,15 @@ public class UserEmailSetting extends UserEmailSettingEntity {
   private Long managedConnectorId;
 
   /**
+   * Set with {@code managed}: whether the connection managed mode made for the user on
+   * the designated connector was refused because of their own account, and still would
+   * be (EXO-91017). The screens then offer no connection and say why. Serialised
+   * outbound only, never stored.
+   */
+  @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+  private boolean refused;
+
+  /**
    * The decoded password, accepted in a request body and never written in a response
    * (EXO-90610): whatever endpoint returns this model, the password stays on the
    * server. Declared here and not on the entity's {@code getEmailPassword()}
