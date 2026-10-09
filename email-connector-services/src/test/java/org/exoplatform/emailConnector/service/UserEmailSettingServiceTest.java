@@ -39,6 +39,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -93,6 +94,7 @@ import org.exoplatform.web.security.security.TokenServiceInitializationException
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
+import org.exoplatform.services.connector.credentials.ConnectorTargetRefusedException;
 import org.exoplatform.emailConnector.exception.CredentialsProviderMissingException;
 
 import io.meeds.social.translation.service.TranslationService;
@@ -1908,5 +1910,233 @@ public class UserEmailSettingServiceTest {
 
     assertFalse(free.isManaged());
     assertNull(free.getManagedConnectorId());
+  }
+
+  /**
+   * EXO-91017. A connection managed mode makes, whose provider says the remote authority
+   * refused the account it named for the user, records the refusal against the connector
+   * and that address, and still fails as before.
+   */
+  @Test
+  @SneakyThrows
+  void aManagedConnectionWhoseTargetIsRefusedRecordsTheRefusal() {
+    givenTheProviderRefusesTheTarget();
+
+    assertThrows(IllegalStateException.class, () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER, true));
+
+    assertEquals("1:eric@bm.example.org", recordedRefusal());
+  }
+
+  /** EXO-91017. The click of a user managed mode governs is a connection managed mode makes. */
+  @Test
+  @SneakyThrows
+  void aGovernedUsersClickWhoseTargetIsRefusedRecordsTheRefusal() {
+    givenTheProviderRefusesTheTarget();
+    when(emailManagedModeService.checkUserMayChangeConnection(TEST_USER, 1L)).thenReturn(1L);
+
+    assertThrows(IllegalStateException.class, () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    assertEquals("1:eric@bm.example.org", recordedRefusal());
+  }
+
+  /** EXO-91017. A connection the user makes outside managed mode records no refusal. */
+  @Test
+  @SneakyThrows
+  void aConnectionOutsideManagedModeWhoseTargetIsRefusedRecordsNothing() {
+    givenTheProviderRefusesTheTarget();
+
+    assertThrows(IllegalStateException.class, () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    assertNoRefusalRecorded();
+  }
+
+  /**
+   * EXO-91017. Any other failure to produce credentials - an unreachable authority, a
+   * refused technical account - is the connector's, not this user's: nothing recorded.
+   */
+  @Test
+  @SneakyThrows
+  void aManagedConnectionWhoseCredentialsCannotBeProducedRecordsNothing() {
+    givenTheProviderBackedConnector();
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any()))
+        .thenThrow(new ConnectorCredentialsException("BlueMind did not answer in time"));
+
+    assertThrows(IllegalStateException.class, () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER, true));
+
+    assertNoRefusalRecorded();
+  }
+
+  /**
+   * EXO-91017. A provider that names no mailbox, on a connection managed mode makes,
+   * records a refusal with no address; outside managed mode, nothing.
+   */
+  @Test
+  @SneakyThrows
+  void aProviderNamingNoMailboxRecordsARefusalOnlyForManagedMode() {
+    givenTheProviderBackedConnector();
+    when(emailCredentialsResolver.targetAccount(1L, "bluemind-sudo", TEST_USER)).thenReturn(" ");
+
+    assertThrows(IllegalArgumentException.class, () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+    assertNoRefusalRecorded();
+
+    assertThrows(IllegalArgumentException.class, () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER, true));
+    assertEquals("1:", recordedRefusal());
+  }
+
+  /** EXO-91017. A connection that succeeds, by managed mode or by the user, clears the refusal. */
+  @Test
+  @SneakyThrows
+  void aSuccessfulConnectionClearsTheRefusal() {
+    connectThroughTheProvider(() -> userEmailSettingService.connectThroughProvider(1L, TEST_USER, true));
+
+    verify(settingService).remove(Context.USER.id(TEST_USER),
+                                  UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                  UserEmailSettingService.MANAGED_REFUSED_KEY);
+  }
+
+  /** EXO-91017. A connection the user makes with their password clears the refusal too. */
+  @Test
+  @SneakyThrows
+  void aTypedConnectionClearsTheRefusal() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
+    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      when(session.getStore()).thenReturn(mock(Store.class));
+
+      userEmailSettingService.connectUserEmailSetting(userEmailSetting(), TEST_USER, false);
+    }
+
+    verify(settingService).remove(Context.USER.id(TEST_USER),
+                                  UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                  UserEmailSettingService.MANAGED_REFUSED_KEY);
+  }
+
+  /**
+   * EXO-91017. The screens read the refusal for the designated connector while the
+   * provider names the same address, without case; another connector, another address,
+   * or none recorded, and the connection is offered again.
+   */
+  @Test
+  @SneakyThrows
+  void theScreensReadTheRefusalWhileTheConnectorAndTheAddressAreTheSame() {
+    EmailConnector designated = providerBackedConnector();
+    designated.setId(7L);
+    when(emailConnectorService.getEmailConnector(7L)).thenReturn(designated);
+    when(emailManagedModeService.designatedConnectorFor(TEST_USER)).thenReturn(7L);
+    when(emailCredentialsResolver.targetAccount(7L, "bluemind-sudo", TEST_USER)).thenReturn("Eric@BM.example.org");
+
+    givenRefusalStored("7:eric@bm.example.org");
+    assertTrue(userEmailSettingService.getUserEmailSettingWithManagedMode(TEST_USER).isRefused());
+
+    givenRefusalStored("8:eric@bm.example.org");
+    assertFalse(userEmailSettingService.getUserEmailSettingWithManagedMode(TEST_USER).isRefused());
+
+    givenRefusalStored("7:eric@bm.example.org");
+    when(emailCredentialsResolver.targetAccount(7L, "bluemind-sudo", TEST_USER)).thenReturn("eric.new@bm.example.org");
+    assertFalse(userEmailSettingService.getUserEmailSettingWithManagedMode(TEST_USER).isRefused());
+
+    givenRefusalStored("7:");
+    when(emailCredentialsResolver.targetAccount(7L, "bluemind-sudo", TEST_USER)).thenReturn(null);
+    assertTrue(userEmailSettingService.getUserEmailSettingWithManagedMode(TEST_USER).isRefused());
+
+    when(emailCredentialsResolver.targetAccount(7L, "bluemind-sudo", TEST_USER))
+        .thenThrow(new ConnectorCredentialsException("no provider"));
+    assertFalse(userEmailSettingService.getUserEmailSettingWithManagedMode(TEST_USER).isRefused());
+
+    when(emailManagedModeService.designatedConnectorFor(TEST_USER)).thenReturn(null);
+    assertFalse(userEmailSettingService.getUserEmailSettingWithManagedMode(TEST_USER).isRefused());
+  }
+
+  /** EXO-91017. No record, or one that cannot be read, is no refusal; nothing else is asked. */
+  @Test
+  void theScreensReadNoRefusalFromNothingOrAnUnreadableRecord() {
+    when(emailManagedModeService.designatedConnectorFor(TEST_USER)).thenReturn(7L);
+
+    assertFalse(userEmailSettingService.getUserEmailSettingWithManagedMode(TEST_USER).isRefused());
+    for (String stored : List.of("", "eric@bm.example.org", ":eric@bm.example.org", "seven:eric@bm.example.org")) {
+      givenRefusalStored(stored);
+      assertFalse(stored, userEmailSettingService.getUserEmailSettingWithManagedMode(TEST_USER).isRefused());
+    }
+    verifyNoInteractions(emailCredentialsResolver);
+  }
+
+  @SneakyThrows
+  private void givenTheProviderBackedConnector() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
+    when(emailCredentialsResolver.targetAccount(1L, "bluemind-sudo", TEST_USER)).thenReturn("eric@bm.example.org");
+  }
+
+  @SneakyThrows
+  private void givenTheProviderRefusesTheTarget() {
+    givenTheProviderBackedConnector();
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any()))
+        .thenThrow(new ConnectorTargetRefusedException("BlueMind refused to act as eric@bm.example.org: status Bad, no message",
+                                                       null));
+  }
+
+  /**
+   * EXO-91017. A change of the connector's authentication forgets the refusals recorded on
+   * it, and only those: a refusal on another connector - one whose id merely starts with
+   * the same digit included - and an unreadable record stay.
+   */
+  @Test
+  void aChangedAuthenticationForgetsOnlyTheRefusalsOfThatConnector() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                Scope.APPLICATION.getName(),
+                                                                EmailConnectorService.EMAIL_CONNECTOR_SCOPE_ID,
+                                                                UserEmailSettingService.MANAGED_REFUSED_KEY,
+                                                                0,
+                                                                Integer.MAX_VALUE))
+        .thenReturn(List.of(Context.USER.id("alice"), Context.USER.id("bob"), Context.USER.id("carol"), Context.USER.id("dave")));
+    givenRefusalStored("alice", "1:alice@bm.example.org");
+    givenRefusalStored("bob", "10:bob@bm.example.org");
+    givenRefusalStored("carol", "1:");
+    givenRefusalStored("dave", "one:dave@bm.example.org");
+
+    userEmailSettingService.forgetManagedRefusalsOn(1L);
+
+    for (String forgotten : List.of("alice", "carol")) {
+      verify(settingService).remove(Context.USER.id(forgotten),
+                                    UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                    UserEmailSettingService.MANAGED_REFUSED_KEY);
+    }
+    for (String kept : List.of("bob", "dave")) {
+      verify(settingService, never()).remove(Context.USER.id(kept),
+                                             UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                             UserEmailSettingService.MANAGED_REFUSED_KEY);
+    }
+  }
+
+  private void givenRefusalStored(String stored) {
+    givenRefusalStored(TEST_USER, stored);
+  }
+
+  private void givenRefusalStored(String username, String stored) {
+    doReturn(SettingValue.create(stored)).when(settingService)
+                                         .get(Context.USER.id(username),
+                                              UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                              UserEmailSettingService.MANAGED_REFUSED_KEY);
+  }
+
+  @SuppressWarnings({ "rawtypes" })
+  private String recordedRefusal() {
+    ArgumentCaptor<SettingValue> value = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(eq(Context.USER.id(TEST_USER)),
+                               eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE),
+                               eq(UserEmailSettingService.MANAGED_REFUSED_KEY),
+                               value.capture());
+    return (String) value.getValue().getValue();
+  }
+
+  private void assertNoRefusalRecorded() {
+    verify(settingService, never()).set(any(Context.class),
+                                        any(Scope.class),
+                                        eq(UserEmailSettingService.MANAGED_REFUSED_KEY),
+                                        any(SettingValue.class));
   }
 }
