@@ -165,9 +165,11 @@ public class EmailManagedEnrollmentService {
 
   /**
    * Rule three: the one-click connect, run for the user - an attachment when they have
-   * no configuration, a switch when they are on another connector. A refusal records
-   * nothing and is retried at the next login; any other exception is the caller's
-   * failure.
+   * no configuration, a switch when they are on another connector. A refusal records no
+   * connection and is retried at the next login; any other exception is the caller's
+   * failure. The connect records one thing on a refusal: when the provider reports the
+   * user's account refused, or names no mailbox, it stores the user's managed refusal
+   * (EXO-91017), which the next connection that succeeds clears.
    *
    * @param connectorId the designated connector
    * @param username the eXo login of the user who logged in
@@ -206,8 +208,10 @@ public class EmailManagedEnrollmentService {
     } catch (IllegalAccessException | IllegalArgumentException | IllegalStateException e) {
       // The connect refused - the feature is off, the connector inactive, the
       // provider names no mailbox for this user, or the mail server would not open
-      // it. Nothing is recorded, and the next login tries again; the administrator's
-      // remedies are an account there or an exclusion.
+      // it. No connection is recorded, and the next login tries again; the
+      // administrator's remedies are an account there or an exclusion. A provider
+      // naming no mailbox, or reporting the user's account refused, has stored the
+      // user's managed refusal (EXO-91017).
       // The whole cause chain, not the outer message: the connect wraps the
       // refusal, and the message that says why is not always the innermost one.
       LOG.info("User {} left unattached: the managed mail connector {} refused ({})", username, connectorId, causeChain(e));
