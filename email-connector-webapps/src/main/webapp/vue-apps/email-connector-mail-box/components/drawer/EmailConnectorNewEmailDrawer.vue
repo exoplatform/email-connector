@@ -170,7 +170,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         v-model="attachments"
         :active="newEmailDrawer"
         :persist="persistAttachment"
-        :unpersist="unpersistAttachment" />
+        :unpersist="unpersistAttachment"
+        :draft-local-id="draftSession.localId" />
       <!-- The read receipt this mail asks for (EXO-90435), said where the user sees it
            before sending, and removable right here as well as from More options. -->
       <!-- Never in the owner's name (EXO-90583): the receipt would come back to them. -->

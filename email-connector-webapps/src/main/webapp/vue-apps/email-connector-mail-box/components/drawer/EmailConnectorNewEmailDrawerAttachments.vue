@@ -42,22 +42,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          uploaded list — so nothing flashes then auto-closes (the old flicker). -->
     <div v-if="items.length" class="d-flex flex-wrap mt-1">
       <div
-        v-for="(attachment, index) in visibleItems"
-        :key="attachment.key"
+        v-for="(item, index) in visibleItems"
+        :key="item.key"
         class="emailAttachmentChip d-flex align-center border-color rounded pa-1 pe-2 me-2 mb-2">
         <email-box-sync-loader
-          v-if="attachment.uploading"
+          v-if="item.uploading"
           :icon-size="20"
           :loader-width="3"
           style="flex: 0 0 auto;" />
         <v-icon
           v-else
           size="20"
-          :color="getIconColor(attachment.mimeType)">
-          {{ getIconClass(attachment.mimeType) }}
+          :color="getIconColor(item.mimeType)">
+          {{ getIconClass(item.mimeType) }}
         </v-icon>
-        <span class="text-truncate ms-2 caption" style="max-width: 160px;">{{ attachment.name }}</span>
-        <span class="text-light-color caption ms-2">{{ humanFileSize(attachment.size) }}</span>
+        <span class="text-truncate ms-2 caption" style="max-width: 160px;">{{ item.name }}</span>
+        <span class="text-light-color caption ms-2">{{ humanFileSize(item.size) }}</span>
         <v-btn
           icon
           x-small
@@ -84,6 +84,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import attachmentOpenMixin from '../../js/EmailConnectorAttachmentOpenMixin.js';
+
 // Folder at the root of the user's Personal Documents where mail attachments land.
 // Two spellings on purpose: the platform stores a folder under a lower-cased JCR
 // node name while keeping the capitalised title for display. The attachments
@@ -95,6 +97,7 @@ const ATTACHMENTS_FOLDER_TITLE = 'Mail Attachments';
 const ATTACHMENTS_FOLDER_PATH = ATTACHMENTS_FOLDER_TITLE.toLowerCase();
 
 export default {
+  mixins: [attachmentOpenMixin],
   props: {
     value: {
       type: Array,
@@ -117,6 +120,12 @@ export default {
       type: Function,
       default: null,
     },
+    // The draft the stored files belong to, which is how their bytes are addressed
+    // when the shared list drawer opens one of them.
+    draftLocalId: {
+      type: String,
+      default: null,
+    },
   },
   data() {
     return {
@@ -135,6 +144,9 @@ export default {
       chipKey: 0,
       // How many files preview as inline chips before the rest fold into "view all".
       maxInlineChips: 5,
+      // The file being opened from the shared list drawer, for the open mixin.
+      attachment: null,
+      downloading: false,
     };
   },
   computed: {
@@ -164,11 +176,13 @@ export default {
     document.addEventListener('open-email-attachments', this.openPicker);
     document.addEventListener('attachment-added', this.onAttachmentAdded);
     document.addEventListener('attachment-removed', this.onAttachmentRemoved);
+    document.addEventListener('attachment-open', this.onAttachmentOpen);
   },
   beforeDestroy() {
     document.removeEventListener('open-email-attachments', this.openPicker);
     document.removeEventListener('attachment-added', this.onAttachmentAdded);
     document.removeEventListener('attachment-removed', this.onAttachmentRemoved);
+    document.removeEventListener('attachment-open', this.onAttachmentOpen);
   },
   methods: {
     // Opens the reused Documents picker drawer. Only reachable when Documents is
@@ -241,7 +255,37 @@ export default {
       const clone = JSON.parse(JSON.stringify(item));
       delete clone.fileDrive;
       delete clone.space;
+      // A stored file is read from its draft, which is named on it: that is what lets
+      // onAttachmentOpen below recognise the file as this draft's and address its
+      // bytes. The URL is for a drawer that opens the file itself without asking
+      // first: it previews from that URL, and opens an empty window without one. A
+      // file still going up has no bytes of its own to show yet.
+      if (item.stored && item.id && this.draftLocalId) {
+        clone.draftLocalId = this.draftLocalId;
+        clone.downloadUrl = this.$emailConnectorMailBoxService.getDraftAttachmentUrl(this.draftLocalId, item.id);
+      }
       return clone;
+    },
+    // The shared list drawer asks before opening a file. One of this draft's own files
+    // is opened here the way a mail's chips open theirs -- the preview, the online
+    // editor on a copy stored in the Drive, or a download -- because the drawer would
+    // otherwise hand the editor the draft's attachment id, which no document answers to.
+    onAttachmentOpen(event) {
+      const attachment = event.detail?.attachment;
+      if (!this.active || !attachment?.draftLocalId || attachment.draftLocalId !== this.draftLocalId) {
+        return;
+      }
+      event.preventDefault();
+      this.attachment = attachment;
+      this.openAttachment();
+    },
+    downloadAttachment(attachment = this.attachment) {
+      if (this.downloading) {
+        return;
+      }
+      this.downloading = true;
+      this.$emailConnectorMailBoxService.downloadAttachment(attachment)
+        .finally(() => this.downloading = false);
     },
     // A file was picked/uploaded through the Documents drawer. The drawer stores it
     // as a platform document (uploadId cleared), so we normalize it to a commons

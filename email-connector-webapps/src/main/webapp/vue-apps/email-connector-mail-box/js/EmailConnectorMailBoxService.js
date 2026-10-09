@@ -2117,6 +2117,22 @@ function isDraftOwnFile(attachment) {
 }
 
 /**
+ * What tells one attachment from another when a copy of it is remembered: a message
+ * part is named by its folder, its mail and its part path, since IMAP numbers the
+ * messages of each folder on their own (see getAttachmentUrl); a draft's own file by
+ * its draft and its id, since it has no part path and every file of a draft would
+ * otherwise share one name.
+ *
+ * @param {Object} attachment the attachment being addressed
+ * @returns {String} a name no other attachment answers to
+ */
+function attachmentKey(attachment) {
+  return isDraftOwnFile(attachment)
+    ? `draft:${attachment.draftLocalId}/${attachment.id}`
+    : `${attachment.folder || ''}/${attachment.mailRemoteId}/${attachment.attachmentRemoteId}`;
+}
+
+/**
  * The content type of an attachment, in the shape the rest of the platform uses.
  * A mail header is not normalised: the server hands back things like 'IMAGE/PNG'
  * and may append parameters, as in 'text/plain; charset=UTF-8'. Comparing that
@@ -2363,7 +2379,7 @@ export function materialiseAttachment(attachment, folderTitles = RECEIVED_FOLDER
  * @returns {Promise} resolved with the id of the created document
  */
 export function materialiseAttachmentAt(attachment, destination, driveName = PERSONAL_DRIVE_NAME, workspace = DEFAULT_WORKSPACE, folderTitlesToEnsure = null) {
-  const key = `${attachment.mailRemoteId}/${attachment.attachmentRemoteId}@${driveName}:${workspace}:${destination}`;
+  const key = `${attachmentKey(attachment)}@${driveName}:${workspace}:${destination}`;
   if (materialisedDocuments[key]) {
     return materialisedDocuments[key];
   }
