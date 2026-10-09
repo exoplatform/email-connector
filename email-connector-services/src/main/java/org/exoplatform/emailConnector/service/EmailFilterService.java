@@ -200,6 +200,15 @@ public class EmailFilterService {
   /** The version of the "Important mail" seed the marker records; a bump never re-seeds. */
   public static final String          SEED_IMPORTANT_VERSION     = "1";
 
+  /** The id of the owner's "Important mail" rule, the one the product provides. */
+  public static final String          SEED_IMPORTANT_ID_KEY      = "seed.important.id";
+
+  /**
+   * The value of {@value #SEED_IMPORTANT_ID_KEY} for an owner who has no provided rule:
+   * the seed was forgone, or its copy was gone before its id was recorded.
+   */
+  public static final String          SEED_IMPORTANT_NONE        = "none";
+
   /** The bundle the seeded rule's name is read from, in the owner's language. */
   public static final String          SEED_BUNDLE                = "locale.portlet.emailConnector.emailConnectorUserSetting";
 
@@ -283,6 +292,12 @@ public class EmailFilterService {
 
   /** A stored rule the sync cannot read. */
   public static final String          UNREADABLE                 = "emailConnector.filters.unreadable";
+
+  /** The rule is the one the product provides: it cannot be deleted. */
+  public static final String          PROVIDED                   = "emailConnector.filters.provided";
+
+  /** The rule is the one the product provides: it cannot move to the mail server, which would delete it from eXo. */
+  public static final String          PROVIDED_MOVE              = "emailConnector.filters.provided.move";
 
   /** The most rules one owner may have. */
   public static final int             MAX_FILTERS                = 50;
@@ -417,7 +432,8 @@ public class EmailFilterService {
 
   /**
    * The caller's eXo rules, in the order they run. The first read seeds the "Important
-   * mail" rule ({@link #ensureImportantFilter}), so the drawer never opens empty.
+   * mail" rule ({@link #ensureImportantFilter}), so the drawer never opens empty; that
+   * rule is marked as provided, and cannot be deleted.
    *
    * @param username the caller, from the request's session
    * @param delegationId the share the request was made from; any value is refused
@@ -429,7 +445,7 @@ public class EmailFilterService {
   public List<EmailFilter> getFilters(String username, Long delegationId) throws ObjectNotFoundException, IllegalAccessException {
     checkOwnMailbox(username, delegationId);
     seedImportantFilter(username);
-    return emailFilterStorage.getFilters(username);
+    return withProvided(username, emailFilterStorage.getFilters(username));
   }
 
   /**
@@ -477,6 +493,7 @@ public class EmailFilterService {
         return false;
       }
       if (emailFilterStorage.getFilters(username).size() >= MAX_FILTERS) {
+        markNoneProvided(username);
         markSeeded(username);
         LOG.info("User {} already has {} mail filters: the Important mail filter is not seeded", username, MAX_FILTERS);
         return false;
@@ -486,6 +503,7 @@ public class EmailFilterService {
       Date now = now();
       filter.setActiveSince(now.getTime());
       EmailFilter saved = saveFilterRow(username, filter, now);
+      markProvided(username, saved.getId());
       markSeeded(username);
       LOG.info("Mail filter {} 'Important mail' seeded, switched off, for user {}", saved.getId(), username);
       return true;
@@ -577,6 +595,97 @@ public class EmailFilterService {
    */
   private void markSeeded(String username) {
     settingService.set(Context.USER.id(username), SEED_SCOPE, SEED_IMPORTANT_KEY, SettingValue.create(SEED_IMPORTANT_VERSION));
+  }
+
+  /**
+   * Records which of the owner's rules is the "Important mail" one the product provides.
+   *
+   * @param username the owner
+   * @param id the rule
+   */
+  private void markProvided(String username, long id) {
+    settingService.set(Context.USER.id(username), SEED_SCOPE, SEED_IMPORTANT_ID_KEY, SettingValue.create(String.valueOf(id)));
+  }
+
+  /**
+   * Records that the owner has no "Important mail" rule the product provides.
+   *
+   * @param username the owner
+   */
+  private void markNoneProvided(String username) {
+    settingService.set(Context.USER.id(username), SEED_SCOPE, SEED_IMPORTANT_ID_KEY, SettingValue.create(SEED_IMPORTANT_NONE));
+  }
+
+  /**
+   * The id of the owner's "Important mail" rule, the one the product provides, as recorded
+   * when it was seeded. An owner seeded before the id was recorded gets it recorded on
+   * this read: the oldest of their rules that runs an assistant and carries the seed's
+   * name, in their language or in English, or the seed's instruction. That search runs
+   * once: when it finds none, {@value #SEED_IMPORTANT_NONE} is recorded, so a rule the
+   * owner makes later is never taken for the provided one.
+   *
+   * @param username the owner
+   * @param filters the owner's rules
+   * @return the id; null when the owner has no such rule
+   */
+  private Long providedFilterId(String username, List<EmailFilter> filters) {
+    SettingValue<?> value = settingService.get(Context.USER.id(username), SEED_SCOPE, SEED_IMPORTANT_ID_KEY);
+    if (value != null && value.getValue() != null && StringUtils.isNotBlank(value.getValue().toString())) {
+      if (SEED_IMPORTANT_NONE.equals(value.getValue().toString().trim())) {
+        return null;
+      }
+      try {
+        return Long.valueOf(value.getValue().toString().trim());
+      } catch (NumberFormatException e) {
+        LOG.warn("The id of the Important mail filter of user {} is not a number: {}", username, value.getValue());
+        return null;
+      }
+    }
+    if (!isSeeded(username)) {
+      return null;
+    }
+    Set<String> names = new HashSet<>(List.of(SEED_IMPORTANT_NAME, seedName(username)));
+    Optional<EmailFilter> seeded = filters.stream()
+                                          .filter(filter -> filter.getId() != null && filter.hasAgent()
+                                              && (names.contains(filter.getName())
+                                                  || filter.getActions()
+                                                           .stream()
+                                                           .anyMatch(action -> SEED_IMPORTANT_INSTRUCTION.equals(action.instruction()))))
+                                          .min(Comparator.comparing(EmailFilter::getId));
+    if (seeded.isPresent()) {
+      markProvided(username, seeded.get().getId());
+      return seeded.get().getId();
+    }
+    markNoneProvided(username);
+    return null;
+  }
+
+  /**
+   * Marks, among the owner's rules, the "Important mail" one the product provides.
+   *
+   * @param username the owner
+   * @param filters the owner's rules
+   * @return the rules, marked
+   */
+  private List<EmailFilter> withProvided(String username, List<EmailFilter> filters) {
+    Long providedId = providedFilterId(username, filters);
+    filters.forEach(filter -> filter.setProvided(providedId != null && providedId.equals(filter.getId())));
+    return filters;
+  }
+
+  /**
+   * Refuses to remove the owner's "Important mail" rule, the one the product provides.
+   *
+   * @param username the owner
+   * @param id the rule
+   * @param code the refusal's message code
+   * @throws IllegalArgumentException with that code when it is that rule
+   */
+  private void checkNotProvided(String username, long id, String code) {
+    Long providedId = providedFilterId(username, emailFilterStorage.getFilters(username));
+    if (providedId != null && providedId == id) {
+      throw new IllegalArgumentException(code);
+    }
   }
 
   /**
@@ -738,6 +847,8 @@ public class EmailFilterService {
    *           the rule is not the caller's
    * @throws IllegalAccessException when the request comes from someone else's mailbox, or
    *           the caller may not use their connector
+   * @throws IllegalArgumentException {@value #PROVIDED} when it is the "Important mail"
+   *           rule the product provides
    * @throws ServerRuleUnavailableException when the server half cannot be removed
    * @throws ServerRuleConflictException when eXo's script changed outside eXo
    */
@@ -750,6 +861,7 @@ public class EmailFilterService {
                                               ServerRuleConflictException {
     checkOwnMailbox(username, delegationId);
     EmailFilter existing = ownFilter(username, id);
+    checkNotProvided(username, id, PROVIDED);
     if (isLiveHop(existing)) {
       removeHop(username, existing, republish);
     }
@@ -796,8 +908,9 @@ public class EmailFilterService {
    *           caller may not use their connector, or the filter forwards where the
    *           forwarding checks do not allow
    * @throws IllegalArgumentException with a message code for an invalid value, both a
-   *           reference and an id, a missing consent, too many rules, or a filter that
-   *           forwards and cannot run on the mail server
+   *           reference and an id, a missing consent, too many rules, a filter that
+   *           forwards and cannot run on the mail server, or the "Important mail" rule
+   *           the product provides moving to the mail server ({@value #PROVIDED_MOVE})
    * @throws ServerRuleUnavailableException when the server cannot be used
    * @throws ServerRuleConflictException when another client's script is in the way, or
    *           eXo's script changed outside eXo
@@ -974,6 +1087,8 @@ public class EmailFilterService {
    * @throws ObjectNotFoundException when a feature is off, or the filter is not the
    *           caller's
    * @throws IllegalAccessException when the caller may not use their connector
+   * @throws IllegalArgumentException {@value #PROVIDED_MOVE} when it is the "Important mail"
+   *           rule the product provides, whose eXo row would be deleted
    * @throws ServerRuleUnavailableException when the server cannot be used
    * @throws ServerRuleConflictException when eXo's script is in the way
    * @throws ServerRuleUnsupportedException when the connector cannot hold the rule
@@ -989,6 +1104,8 @@ public class EmailFilterService {
                                                   ServerRuleUnsupportedException {
     checkOwnMailbox(username, null);
     EmailFilter existing = ownFilter(username, id);
+    // Its eXo row would be deleted once the server holds the rule.
+    checkNotProvided(username, id, PROVIDED_MOVE);
     ServerRule rule = serverRuleOf(input);
     if (existing.isEnabled()) {
       // switched off while the server takes it: no owner's disable, its standing
@@ -1204,7 +1321,7 @@ public class EmailFilterService {
       throw new IllegalArgumentException(INVALID_ORDER);
     }
     emailFilterStorage.reorder(username, orderedIds, now());
-    return emailFilterStorage.getFilters(username);
+    return withProvided(username, emailFilterStorage.getFilters(username));
   }
 
   /**
