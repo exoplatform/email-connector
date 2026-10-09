@@ -203,6 +203,12 @@ public class EmailFilterService {
   /** The id of the owner's "Important mail" rule, the one the product provides. */
   public static final String          SEED_IMPORTANT_ID_KEY      = "seed.important.id";
 
+  /**
+   * The value of {@value #SEED_IMPORTANT_ID_KEY} for an owner who has no provided rule:
+   * the seed was forgone, or its copy was gone before its id was recorded.
+   */
+  public static final String          SEED_IMPORTANT_NONE        = "none";
+
   /** The bundle the seeded rule's name is read from, in the owner's language. */
   public static final String          SEED_BUNDLE                = "locale.portlet.emailConnector.emailConnectorUserSetting";
 
@@ -487,6 +493,7 @@ public class EmailFilterService {
         return false;
       }
       if (emailFilterStorage.getFilters(username).size() >= MAX_FILTERS) {
+        markNoneProvided(username);
         markSeeded(username);
         LOG.info("User {} already has {} mail filters: the Important mail filter is not seeded", username, MAX_FILTERS);
         return false;
@@ -601,10 +608,21 @@ public class EmailFilterService {
   }
 
   /**
+   * Records that the owner has no "Important mail" rule the product provides.
+   *
+   * @param username the owner
+   */
+  private void markNoneProvided(String username) {
+    settingService.set(Context.USER.id(username), SEED_SCOPE, SEED_IMPORTANT_ID_KEY, SettingValue.create(SEED_IMPORTANT_NONE));
+  }
+
+  /**
    * The id of the owner's "Important mail" rule, the one the product provides, as recorded
    * when it was seeded. An owner seeded before the id was recorded gets it recorded on
    * this read: the oldest of their rules that runs an assistant and carries the seed's
-   * name, in their language or in English, or the seed's instruction.
+   * name, in their language or in English, or the seed's instruction. That search runs
+   * once: when it finds none, {@value #SEED_IMPORTANT_NONE} is recorded, so a rule the
+   * owner makes later is never taken for the provided one.
    *
    * @param username the owner
    * @param filters the owner's rules
@@ -613,6 +631,9 @@ public class EmailFilterService {
   private Long providedFilterId(String username, List<EmailFilter> filters) {
     SettingValue<?> value = settingService.get(Context.USER.id(username), SEED_SCOPE, SEED_IMPORTANT_ID_KEY);
     if (value != null && value.getValue() != null && StringUtils.isNotBlank(value.getValue().toString())) {
+      if (SEED_IMPORTANT_NONE.equals(value.getValue().toString().trim())) {
+        return null;
+      }
       try {
         return Long.valueOf(value.getValue().toString().trim());
       } catch (NumberFormatException e) {
@@ -631,8 +652,12 @@ public class EmailFilterService {
                                                            .stream()
                                                            .anyMatch(action -> SEED_IMPORTANT_INSTRUCTION.equals(action.instruction()))))
                                           .min(Comparator.comparing(EmailFilter::getId));
-    seeded.ifPresent(filter -> markProvided(username, filter.getId()));
-    return seeded.map(EmailFilter::getId).orElse(null);
+    if (seeded.isPresent()) {
+      markProvided(username, seeded.get().getId());
+      return seeded.get().getId();
+    }
+    markNoneProvided(username);
+    return null;
   }
 
   /**

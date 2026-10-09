@@ -1682,6 +1682,48 @@ public class EmailFilterServiceTest {
   }
 
   /**
+   * An owner seeded before the id was recorded, whose copy was already gone: the search
+   * finds nothing and records that, once. A rule they make later with the seed's name and
+   * an assistant is theirs: not provided, and deletable.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aSeedGoneBeforeTheRecordedIdIsSettledOnce() throws Exception {
+    settings.put(settingKey(Context.USER.id(USERNAME), EmailFilterService.SEED_SCOPE, EmailFilterService.SEED_IMPORTANT_KEY),
+                 EmailFilterService.SEED_IMPORTANT_VERSION);
+
+    assertTrue(service.getFilters(USERNAME, null).isEmpty());
+    assertEquals(EmailFilterService.SEED_IMPORTANT_NONE, providedMarker(), "settled");
+
+    EmailFilter own = stored(rule(EmailFilterService.SEED_IMPORTANT_NAME, EmailFilter.KIND_EXO, List.of(IMPORTANT), List.of(agent())));
+
+    assertFalse(service.getFilters(USERNAME, null).get(0).isProvided(), "the owner's own rule");
+    assertEquals(EmailFilterService.SEED_IMPORTANT_NONE, providedMarker());
+    service.deleteFilter(USERNAME, null, own.getId(), false);
+    assertFalse(filters.containsKey(own.getId()));
+  }
+
+  /**
+   * An owner who forgoes the seed at the cap has no provided rule, and that is recorded:
+   * none of their rules is taken for it, even one with the seed's name and an assistant.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anOwnerAtTheCapHasNoProvidedFilter() throws Exception {
+    stored(rule(EmailFilterService.SEED_IMPORTANT_NAME, EmailFilter.KIND_EXO, List.of(IMPORTANT), List.of(agent())));
+    for (int i = 1; i < EmailFilterService.MAX_FILTERS; i++) {
+      stored(rule("Rule " + i, EmailFilter.KIND_EXO, List.of(FROM_ACME), List.of(action(FilterAction.STAR))));
+    }
+
+    List<EmailFilter> read = service.getFilters(USERNAME, null);
+
+    assertTrue(read.stream().noneMatch(EmailFilter::isProvided));
+    assertEquals(EmailFilterService.SEED_IMPORTANT_NONE, providedMarker(), "forgone, recorded");
+  }
+
+  /**
    * An owner never seeded has no provided rule, and nothing is recorded for them, even
    * with a rule shaped as the seed.
    *
