@@ -108,7 +108,20 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                   @click="$emit('edit', item)">
                   <v-icon size="18">fas fa-edit</v-icon>
                 </v-btn>
+                <!-- The filter the product provides cannot be deleted. A disabled button
+                     takes no pointer event: its wrapper carries the tooltip. -->
+                <span
+                  v-if="item.provided"
+                  :title="$t('UserSettings.emailConnector.filters.provided')">
+                  <v-btn
+                    :aria-label="$t('UserSettings.emailConnector.filters.provided')"
+                    icon
+                    disabled>
+                    <v-icon size="18">fas fa-trash</v-icon>
+                  </v-btn>
+                </span>
                 <v-btn
+                  v-else
                   :title="$t('UserSettings.emailConnector.filters.delete')"
                   :aria-label="$t('UserSettings.emailConnector.filters.delete')"
                   icon

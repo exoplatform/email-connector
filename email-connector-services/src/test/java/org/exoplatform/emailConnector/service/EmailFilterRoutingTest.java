@@ -58,6 +58,9 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.ObjectProvider;
 
+import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.SettingValue;
+import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.exception.ServerRuleUnavailableException;
 import org.exoplatform.emailConnector.model.EmailFilter;
@@ -121,6 +124,9 @@ public class EmailFilterRoutingTest {
 
   @Mock
   private EmailFilterProposalProvider  proposalProvider;
+
+  @Mock
+  private SettingService               settingService;
 
   @InjectMocks
   private EmailFilterService           service;
@@ -387,6 +393,35 @@ public class EmailFilterRoutingTest {
 
     verify(proposalProvider).onFilterDeleted(USERNAME, existing.getId());
     verify(proposalProvider, never()).onFilterSaved(any(), any(), any());
+  }
+
+  /**
+   * The rule the product provides never moves to the server: its eXo row would be
+   * deleted. Nothing is asked of the server, and the rule stays as it was.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void theProvidedFilterNeverMovesToTheServer() throws Exception {
+    EmailFilter existing = stored(rule(EmailFilter.KIND_EXO, List.of(BODY_INVOICE), action(FilterAction.STAR)));
+    when(settingService.get(Context.USER.id(USERNAME), EmailFilterService.SEED_SCOPE, EmailFilterService.SEED_IMPORTANT_ID_KEY))
+                                                                                                                                  .thenAnswer(invocation -> SettingValue.create(String.valueOf(existing.getId())));
+
+    IllegalArgumentException refused =
+                                     assertThrows(IllegalArgumentException.class,
+                                                  () -> service.saveRouted(USERNAME,
+                                                                           null,
+                                                                           filter(List.of(FROM_ACME), action(FilterAction.STAR)),
+                                                                           null,
+                                                                           existing.getId(),
+                                                                           true,
+                                                                           false));
+
+    assertEquals(EmailFilterService.PROVIDED_MOVE, refused.getMessage());
+    assertTrue(filters.containsKey(existing.getId()), "kept");
+    assertTrue(filters.get(existing.getId()).isEnabled(), "as it was");
+    verify(emailServerRuleService, never()).saveRule(any(), any(), any(), any(), anyBoolean(), anyBoolean());
+    verify(emailFilterStorage, never()).delete(anyLong(), anyString());
   }
 
   /**
@@ -762,6 +797,7 @@ public class EmailFilterRoutingTest {
                            filter.getLastError(),
                            filter.getActiveSince(),
                            filter.getCreatedDate(),
-                           filter.getUpdatedDate());
+                           filter.getUpdatedDate(),
+                           filter.isProvided());
   }
 }
