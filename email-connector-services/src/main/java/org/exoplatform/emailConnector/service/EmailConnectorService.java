@@ -37,6 +37,7 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
+import org.exoplatform.emailConnector.event.EmailConnectorAuthenticationChangedEvent;
 import org.exoplatform.emailConnector.event.EmailConnectorProviderChangedEvent;
 import org.exoplatform.emailConnector.event.UserEmailSettingCleanupEvent;
 import org.exoplatform.emailConnector.model.ConnectorForwarding;
@@ -825,6 +826,12 @@ public class EmailConnectorService {
       // Every user of the connector is disconnected, whoever made the connection: the
       // authentication changed for all of them.
       eventPublisher.publishEvent(new EmailConnectorProviderChangedEvent(previousEmailConnector.getId()));
+    }
+    if (isProviderChange(previousEmailConnector, emailConnector) || MapUtils.isNotEmpty(emailConnector.getProviderConfig())) {
+      // The users managed mode could not connect were refused by the authentication
+      // this save replaces - another provider, or another technical account: they are
+      // offered the connection again.
+      eventPublisher.publishEvent(new EmailConnectorAuthenticationChangedEvent(previousEmailConnector.getId()));
     }
   }
 
