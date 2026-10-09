@@ -388,10 +388,11 @@ public class EmailContactRest {
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (CardDavException e) {
-      // The server's failure, not the caller's -- and answered as a message
-      // code the client can show, never a stack trace. 502 because this
-      // service was the gateway to a server that did not deliver. Reached only
-      // when the queue could not take the publish either (it is full).
+      // The server's failure, not the caller's, so a 5xx: the platform's error
+      // page keeps no message on a 5xx, and the client shows its generic error.
+      // 502 because this service was the gateway to a server that did not
+      // deliver. Reached only when the queue could not take the publish either
+      // (it is full).
       throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "emailConnector.contacts.publish.serverError");
     }
   }
