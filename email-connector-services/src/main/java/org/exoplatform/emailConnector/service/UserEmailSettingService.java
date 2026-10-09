@@ -199,6 +199,7 @@ public class UserEmailSettingService {
     try {
       store = connectWithTypedCredentials(userEmailSetting,
                                           emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId())));
+      keepPreferences(userEmailSetting, getStoredUserEmailSetting(username));
       setUserEmailSetting(userEmailSetting, username, broadcast);
       // A connection the user makes is their own choice, even on the connector managed
       // mode had attached them to.
@@ -357,10 +358,12 @@ public class UserEmailSettingService {
       // Read before the write: the cleanup broadcast wipes the mirror and ends every
       // accepted share, which is right for a rebind and wrong for a repeat connect
       // of the account the user already has.
-      boolean accountChanged = !isConnectedAccount(getUserEmailSetting(username), emailConnectorId, address);
+      UserEmailSetting stored = getUserEmailSetting(username);
+      boolean accountChanged = !isConnectedAccount(stored, emailConnectorId, address);
       UserEmailSetting connected = new UserEmailSetting();
       connected.setEmailConnectorId(String.valueOf(emailConnectorId));
       connected.setEmailAddress(address);
+      keepPreferences(connected, stored);
       setUserEmailSetting(connected, username, accountChanged);
       markConnectedByManagedMode(username, byManagedMode);
       clearManagedRefusal(username);
@@ -390,6 +393,49 @@ public class UserEmailSettingService {
         }
       } catch (MessagingException messagingException) {
         LOG.warn("Error when closing store", messagingException);
+      }
+    }
+  }
+
+  /**
+   * Completes a connection about to be written with the preferences the stored setting
+   * holds, since {@link #setUserEmailSetting} rewrites the whole document from the model
+   * it is handed and a connection carries only the account. The new-mail notification
+   * choice ({@code notifyAllCategories}, {@code notifyCategories}) and the default view
+   * ({@code defaultCategoryView}) name the add-on's own categories, the same whatever the
+   * account, so they are kept on every connection of a connected user, to another account
+   * as well. The address-book options ({@code carddavEnabled}, {@code carddavAutoPublish})
+   * are about that account's address book, so they are kept only when the connector and
+   * the address are the stored ones; another account starts with them unset, as its
+   * address book is opted into anew. A value the connection does state is never
+   * overwritten.
+   * <p>
+   * Only a stored setting is completed from: a disconnection, the user's own or the
+   * platform's ({@link #deleteUserEmailSetting(String)}: a connector's deletion, a provider
+   * change, a managed-mode change, a user managed mode no longer governs), removes the
+   * whole document, so the connection that follows starts with every preference unset.
+   *
+   * @param connecting the setting about to be written, completed in place
+   * @param stored the user's stored setting, an empty one when there is none: its
+   *          preferences are all unset and it names no connector, so nothing is kept
+   */
+  private void keepPreferences(UserEmailSetting connecting, UserEmailSetting stored) {
+    if (connecting.getNotifyAllCategories() == null) {
+      connecting.setNotifyAllCategories(stored.getNotifyAllCategories());
+    }
+    if (connecting.getNotifyCategories() == null) {
+      connecting.setNotifyCategories(stored.getNotifyCategories());
+    }
+    if (connecting.getDefaultCategoryView() == null) {
+      connecting.setDefaultCategoryView(stored.getDefaultCategoryView());
+    }
+    if (StringUtils.equals(stored.getEmailConnectorId(), connecting.getEmailConnectorId())
+        && StringUtils.equalsIgnoreCase(stored.getEmailAddress(), connecting.getEmailAddress())) {
+      if (connecting.getCarddavEnabled() == null) {
+        connecting.setCarddavEnabled(stored.getCarddavEnabled());
+      }
+      if (connecting.getCarddavAutoPublish() == null) {
+        connecting.setCarddavAutoPublish(stored.getCarddavAutoPublish());
       }
     }
   }
