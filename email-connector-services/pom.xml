@@ -46,8 +46,15 @@
       <artifactId>analytics-api</artifactId>
       <scope>provided</scope>
     </dependency>
-    <!-- Provided by the server (lib/httpclient5.jar): the sender logo fetch (EXO-90893)
-         needs a client whose resolver is the address guard, which java.net.http lacks. -->
+    <!-- Provided by the server: the platform's guarded fetcher (io.meeds.commons.http),
+         which reads the sender logos (EXO-90907). -->
+    <dependency>
+      <groupId>io.meeds.commons</groupId>
+      <artifactId>commons-component-common</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <!-- Provided by the server (lib/httpclient5.jar): its public suffix list gives a
+         sender's organisational domain (SenderLogoUtils). -->
     <dependency>
       <groupId>org.apache.httpcomponents.client5</groupId>
       <artifactId>httpclient5</artifactId>
