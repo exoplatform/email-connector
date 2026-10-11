@@ -17,35 +17,12 @@
 package org.exoplatform.emailConnector.senderlogo;
 
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.InetAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
-import java.util.function.Predicate;
 
-import org.apache.commons.lang3.StringUtils;
-import org.apache.hc.client5.http.DnsResolver;
-import org.apache.hc.client5.http.classic.methods.HttpGet;
-import org.apache.hc.client5.http.config.ConnectionConfig;
-import org.apache.hc.client5.http.config.RequestConfig;
-import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
-import org.apache.hc.client5.http.impl.classic.HttpClients;
-import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
-import org.apache.hc.core5.http.ClassicHttpResponse;
-import org.apache.hc.core5.http.Header;
-import org.apache.hc.core5.http.HttpEntity;
-import org.apache.hc.core5.http.HttpHeaders;
-import org.apache.hc.core5.util.Timeout;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -54,6 +31,12 @@ import org.exoplatform.emailConnector.utils.SenderLogoUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.upload.SvgUploadValidator;
+
+import io.meeds.commons.http.SafeFetchException;
+import io.meeds.commons.http.SafeFetchPolicy;
+import io.meeds.commons.http.SafeFetchRequest;
+import io.meeds.commons.http.SafeFetchResponse;
+import io.meeds.commons.http.SafeHttpFetcher;
 
 import jakarta.annotation.PreDestroy;
 
@@ -80,16 +63,15 @@ import jakarta.annotation.PreDestroy;
  * fetched as the favicon is (EXO-90909). The page is parsed by jsoup for that one link
  * ({@code SenderLogoUtils#declaredIconUrl}); nothing else of it is read or kept.
  * <p>
- * <b>Bounds</b> are those of agenda's calendar subscription fetch, tighter:
- * {@link SenderLogoAddressGuard} as the connection manager's resolver (https, port 443,
- * public addresses only, checked at every connection, redirects included), a connect
- * and a read timeout, a deadline over each fetch enforced by cancelling it, a body
- * limit counted on the decoded bytes, two redirects at most, the declared type checked
- * against the image types and the bytes against what they claim. Each fetch has its own
- * deadline, so one domain's lookup -- BIMI logo, favicon, home page, declared icon --
- * takes at most four of them ({@link #TOTAL_TIMEOUT} each), on a background thread.
- * The guard and the fetch mirror agenda's {@code CalendarAddressGuard} and {@code CalendarFeedFetcher}.
- * <b>Nothing of the platform goes out</b>: no cookie, no credentials, no referrer, no retry.
+ * <b>Bounds</b> are the platform's {@link SafeHttpFetcher}'s under this policy: https
+ * on port 443 and public addresses only, judged by the HTTP client's own resolver at
+ * every connection, redirects included; a connect and a read timeout, a deadline over
+ * each fetch, a body limit counted on the decoded bytes, two redirects at most, the
+ * declared type checked against the image types before the body is read and the
+ * bytes against what they claim. Each fetch has its own deadline, so one domain's
+ * lookup -- BIMI logo, favicon, home page, declared icon -- takes at most four of
+ * them ({@link #TOTAL_TIMEOUT} each), on a background thread. <b>Nothing of the
+ * platform goes out</b>: no cookie, no credentials, no referrer, no retry.
  * <p>
  * Any failure -- no DNS, no answer, a refused address, a wrong type, a body too large
  * -- is "no logo"; the caller caches that too.
@@ -98,164 +80,97 @@ import jakarta.annotation.PreDestroy;
 public class SenderLogoFetcher {
 
   /** Largest logo read, in bytes. */
-  public static final int       MAX_BYTES        = 64 * 1024;
+  public static final int          MAX_BYTES       = 64 * 1024;
 
   /** Longest wait for a connection. */
-  static final Duration         CONNECT_TIMEOUT  = Duration.ofSeconds(3);
+  static final Duration            CONNECT_TIMEOUT = Duration.ofSeconds(3);
 
   /** Longest wait between two reads. */
-  static final Duration         READ_TIMEOUT     = Duration.ofSeconds(3);
+  static final Duration            READ_TIMEOUT    = Duration.ofSeconds(3);
 
   /** Longest fetch of one logo, redirects included. */
-  static final Duration         TOTAL_TIMEOUT    = Duration.ofSeconds(6);
+  static final Duration            TOTAL_TIMEOUT   = Duration.ofSeconds(6);
 
   /** Most redirects followed. */
-  static final int              MAX_REDIRECTS    = 2;
+  static final int                 MAX_REDIRECTS   = 2;
 
   /** Where a domain's icon is read, the organisational domain filling the blank. */
-  static final String           ICON_URL         = "https://%s/favicon.ico";
+  static final String              ICON_URL        = "https://%s/favicon.ico";
 
   /**
    * The most of a home page read for the icon it declares, in bytes: its head comes
    * first, and what lies past this limit is never read.
    */
-  static final int              PAGE_MAX_BYTES   = 256 * 1024;
+  static final int                 PAGE_MAX_BYTES  = 256 * 1024;
 
-  private static final String   USER_AGENT       = "eXo-Email-Connector-Sender-Logo/1.0";
+  private static final String      USER_AGENT      = "eXo-Email-Connector-Sender-Logo/1.0";
 
-  private static final String   ACCEPT           = "image/svg+xml, image/png, image/x-icon, image/vnd.microsoft.icon, image/webp, image/jpeg;q=0.9";
+  private static final String      ACCEPT          = "image/svg+xml, image/png, image/x-icon, image/vnd.microsoft.icon, image/webp, image/jpeg;q=0.9";
 
-  private static final String   PAGE_ACCEPT      = "text/html, application/xhtml+xml;q=0.9";
+  private static final String      PAGE_ACCEPT     = "text/html, application/xhtml+xml;q=0.9";
 
-  private static final Set<String> BIMI_TYPES    = Set.of(SenderLogoUtils.SVG);
+  private static final Set<String> BIMI_TYPES      = Set.of(SenderLogoUtils.SVG);
 
-  private static final Set<String> ICON_TYPES    = Set.of(SenderLogoUtils.SVG,
-                                                          SenderLogoUtils.PNG,
-                                                          SenderLogoUtils.ICO,
-                                                          SenderLogoUtils.JPEG,
-                                                          SenderLogoUtils.WEBP);
+  private static final Set<String> ICON_TYPES      = Set.of(SenderLogoUtils.SVG,
+                                                            SenderLogoUtils.PNG,
+                                                            SenderLogoUtils.ICO,
+                                                            SenderLogoUtils.JPEG,
+                                                            SenderLogoUtils.WEBP);
 
-  private static final Log      LOG              = ExoLogger.getLogger(SenderLogoFetcher.class);
+  private static final Log         LOG             = ExoLogger.getLogger(SenderLogoFetcher.class);
 
-  private final SenderLogoAddressGuard   guard;
+  private final SafeHttpFetcher    fetcher;
 
-  private final DnsTxtLookup             dns;
+  private final DnsTxtLookup       dns;
 
-  private final int                      maxBytes;
+  private final int                maxBytes;
 
-  private final int                      pageMaxBytes;
+  private final int                pageMaxBytes;
 
-  private final Duration                 totalTimeout;
+  private final String             iconUrl;
 
-  private final int                      maxRedirects;
-
-  private final String                   iconUrl;
-
-  private final CloseableHttpClient      httpClient;
-
-  private final ScheduledExecutorService deadlines;
-
-  private final SvgUploadValidator       svgValidator     = new SvgUploadValidator(MAX_BYTES);
+  private final SvgUploadValidator svgValidator    = new SvgUploadValidator(MAX_BYTES);
 
   /**
-   * The production fetcher.
+   * The production fetcher: https on port 443, public addresses only, the bounds
+   * above.
    *
    * @param dns the DNS client of the BIMI and DMARC lookups
    */
   @Autowired
   public SenderLogoFetcher(DnsTxtLookup dns) {
-    this(new SenderLogoAddressGuard(),
+    this(SafeFetchPolicy.builder()
+                        .name("email-connector-sender-logo")
+                        .userAgent(USER_AGENT)
+                        .httpsOnly()
+                        .allowedPorts(Set.of(443))
+                        .maxBytes(PAGE_MAX_BYTES)
+                        .maxRedirects(MAX_REDIRECTS)
+                        .connectTimeout(CONNECT_TIMEOUT)
+                        .readTimeout(READ_TIMEOUT)
+                        .totalTimeout(TOTAL_TIMEOUT)
+                        .build(),
          dns,
          MAX_BYTES,
          PAGE_MAX_BYTES,
-         CONNECT_TIMEOUT,
-         READ_TIMEOUT,
-         TOTAL_TIMEOUT,
-         MAX_REDIRECTS,
          ICON_URL);
   }
 
   /**
-   * A fetcher with its guard, DNS and bounds handed in, for the tests.
+   * A fetcher with its policy, DNS and limits handed in, for the tests.
    *
-   * @param guard the address guard
+   * @param policy what may be read and how far a fetch goes
    * @param dns the DNS client
-   * @param maxBytes largest body read
+   * @param maxBytes largest logo read
    * @param pageMaxBytes most of a home page read
-   * @param connectTimeout longest wait for a connection
-   * @param readTimeout longest wait between two reads
-   * @param totalTimeout longest fetch of one logo
-   * @param maxRedirects most redirects followed
    * @param iconUrl where an icon is read, {@code %s} standing for the domain
    */
-  SenderLogoFetcher(SenderLogoAddressGuard guard,
-                    DnsTxtLookup dns,
-                    int maxBytes,
-                    int pageMaxBytes,
-                    Duration connectTimeout,
-                    Duration readTimeout,
-                    Duration totalTimeout,
-                    int maxRedirects,
-                    String iconUrl) {
-    this.guard = guard;
+  SenderLogoFetcher(SafeFetchPolicy policy, DnsTxtLookup dns, int maxBytes, int pageMaxBytes, String iconUrl) {
+    this.fetcher = new SafeHttpFetcher(policy);
     this.dns = dns;
     this.maxBytes = maxBytes;
     this.pageMaxBytes = pageMaxBytes;
-    this.totalTimeout = totalTimeout;
-    this.maxRedirects = maxRedirects;
     this.iconUrl = iconUrl;
-    DnsResolver resolver = new DnsResolver() {
-      /**
-       * Resolves a host through the guard, refusing the addresses it refuses.
-       *
-       * @param host the host
-       * @return the allowed addresses
-       * @throws UnknownHostException when unresolvable or refused
-       */
-      @Override
-      public InetAddress[] resolve(String host) throws UnknownHostException {
-        return guard.resolveAllowed(host);
-      }
-
-      /**
-       * Answers the host itself once the guard allows its addresses.
-       *
-       * @param host the host
-       * @return the host
-       * @throws UnknownHostException when unresolvable or refused
-       */
-      @Override
-      public String resolveCanonicalHostname(String host) throws UnknownHostException {
-        guard.resolveAllowed(host);
-        return host;
-      }
-    };
-    this.httpClient = HttpClients.custom()
-                                 .setConnectionManager(PoolingHttpClientConnectionManagerBuilder.create()
-                                                                                                .setDnsResolver(resolver)
-                                                                                                .setDefaultConnectionConfig(ConnectionConfig.custom()
-                                                                                                                                            .setConnectTimeout(Timeout.of(connectTimeout))
-                                                                                                                                            .setSocketTimeout(Timeout.of(readTimeout))
-                                                                                                                                            .build())
-                                                                                                .setMaxConnTotal(20)
-                                                                                                .setMaxConnPerRoute(2)
-                                                                                                .build())
-                                 .setDefaultRequestConfig(RequestConfig.custom()
-                                                                       .setRedirectsEnabled(false)
-                                                                       .setResponseTimeout(Timeout.of(readTimeout))
-                                                                       .setConnectionRequestTimeout(Timeout.of(connectTimeout))
-                                                                       .build())
-                                 .disableRedirectHandling()
-                                 .disableCookieManagement()
-                                 .disableAuthCaching()
-                                 .disableAutomaticRetries()
-                                 .setUserAgent(USER_AGENT)
-                                 .build();
-    this.deadlines = Executors.newSingleThreadScheduledExecutor(runnable -> {
-      Thread thread = new Thread(runnable, "email-connector-sender-logo-deadline");
-      thread.setDaemon(true);
-      return thread;
-    });
   }
 
   /**
@@ -304,9 +219,8 @@ public class SenderLogoFetcher {
     } catch (URISyntaxException | IllegalArgumentException e) {
       return null; // NOSONAR null is "nothing usable"
     }
-    URI[] landed = new URI[1];
-    byte[] page = fetch(home, SenderLogoUtils::isPageDeclaredType, pageMaxBytes, true, PAGE_ACCEPT, landed);
-    String declared = page == null ? null : SenderLogoUtils.declaredIconUrl(page, landed[0].toString());
+    SafeFetchResponse page = fetch(home, SenderLogoUtils.PAGE_TYPES, pageMaxBytes, true, PAGE_ACCEPT);
+    String declared = page == null ? null : SenderLogoUtils.declaredIconUrl(page.body(), page.uri().toString());
     if (declared == null || declared.equals(favicon)) {
       return null; // NOSONAR as above
     }
@@ -352,16 +266,19 @@ public class SenderLogoFetcher {
   }
 
   /**
-   * Stops the deadline thread and closes the connections.
+   * Closes the connections.
    */
   @PreDestroy
   public void close() {
-    deadlines.shutdownNow();
-    try {
-      httpClient.close();
-    } catch (IOException e) {
-      LOG.debug("The sender logo HTTP client did not close cleanly", e);
-    }
+    fetcher.close();
+  }
+
+  /**
+   * @return the policy the logos are fetched under, for the tests to pin the
+   *         production one
+   */
+  SafeFetchPolicy policy() {
+    return fetcher.getPolicy();
   }
 
   /**
@@ -413,7 +330,7 @@ public class SenderLogoFetcher {
   }
 
   /**
-   * Reads an image, following at most {@link #maxRedirects} redirects, each target
+   * Reads an image, following at most {@link #MAX_REDIRECTS} redirects, each target
    * checked by the guard before it is requested and again by the resolver when the
    * connection opens.
    *
@@ -428,124 +345,36 @@ public class SenderLogoFetcher {
     } catch (URISyntaxException e) {
       return null; // NOSONAR null is "nothing usable"
     }
-    byte[] body = fetch(uri, SenderLogoUtils::isAllowedDeclaredType, maxBytes, false, ACCEPT, new URI[1]);
+    SafeFetchResponse response = fetch(uri, SenderLogoUtils.DECLARED_TYPES, maxBytes, false, ACCEPT);
+    byte[] body = response == null ? null : response.body();
     String type = SenderLogoUtils.sniffImageType(body);
     return type != null && types.contains(type) ? body : null;
   }
 
   /**
-   * Reads a body, following at most {@link #maxRedirects} redirects, each target
-   * checked by the guard before it is requested and again by the resolver when the
-   * connection opens.
+   * Reads a body through the platform's fetcher, which follows at most
+   * {@link #MAX_REDIRECTS} redirects, each target checked by the guard before it is
+   * requested and again by the resolver when the connection opens.
    *
    * @param url the URL
-   * @param declaredType the {@code Content-Type} values accepted
+   * @param declaredTypes the {@code Content-Type} media types accepted
    * @param limit the most bytes read
    * @param keepPrefix whether a longer body is cut at the limit (a page, whose head
    *          comes first) rather than refused (an image, useless cut)
    * @param accept the {@code Accept} header sent
-   * @param landed receives the URL the body was read from, after the redirects
-   * @return the body, or null when nothing usable was read
+   * @return the answer, with the URL it came from, or null when nothing usable was
+   *         read
    */
-  private byte[] fetch(URI url, Predicate<String> declaredType, int limit, boolean keepPrefix, String accept, URI[] landed) {
-    long deadline = System.nanoTime() + totalTimeout.toNanos();
-    URI current = url;
-    for (int hop = 0; hop <= maxRedirects; hop++) {
-      if (!guard.isAllowedTarget(current)) {
-        LOG.debug("A sender logo URL was refused by its shape");
-        return null; // NOSONAR null is "nothing usable"
-      }
-      String[] redirect = new String[1];
-      byte[] body = request(current, new BodyLimits(declaredType, limit, keepPrefix, accept, deadline), redirect);
-      if (redirect[0] == null) {
-        landed[0] = current;
-        return body;
-      }
-      try {
-        current = current.resolve(new URI(redirect[0].trim()));
-      } catch (URISyntaxException | IllegalArgumentException e) {
-        return null; // NOSONAR as above
-      }
+  private SafeFetchResponse fetch(URI url, Set<String> declaredTypes, int limit, boolean keepPrefix, String accept) {
+    SafeFetchRequest request = SafeFetchRequest.get(url).withAccept(accept).withAcceptedContentTypes(declaredTypes).withMaxBytes(limit);
+    if (keepPrefix) {
+      request = request.truncatedAtLimit();
     }
-    LOG.debug("A sender logo URL redirected more than {} times", maxRedirects);
-    return null; // NOSONAR as above
-  }
-
-  /**
-   * One request: the deadline armed, the answer read within the limits.
-   *
-   * @param uri the URL of this hop
-   * @param limits what the answer may be, and the fetch's deadline
-   * @param redirect receives the Location of a redirect answer
-   * @return the body of a 2xx answer, or null for a redirect or a failure
-   */
-  private byte[] request(URI uri, BodyLimits limits, String[] redirect) {
-    long remaining = limits.deadline() - System.nanoTime();
-    if (remaining <= 0) {
+    try {
+      return fetcher.fetch(request);
+    } catch (SafeFetchException e) {
+      LOG.debug("A sender logo URL gave nothing usable: {}", e.getFailure());
       return null; // NOSONAR null is "nothing usable"
     }
-    HttpGet get = new HttpGet(uri);
-    get.setHeader(HttpHeaders.ACCEPT, limits.accept());
-    ScheduledFuture<?> timer = deadlines.schedule(get::cancel, remaining, TimeUnit.NANOSECONDS);
-    try {
-      return httpClient.execute(get, response -> read(get, response, limits, redirect));
-    } catch (IOException | RuntimeException e) {
-      LOG.debug("A sender logo could not be read: {}", e.getClass().getSimpleName());
-      return null; // NOSONAR as above
-    } finally {
-      timer.cancel(false);
-    }
-  }
-
-  /**
-   * Reads an answer: a redirect to follow, a body of an accepted type within the limit
-   * (a page cut at it), or nothing. An answer not read to its end is aborted before the
-   * client closes it, so that a refused or cut body is never downloaded to its
-   * declared length.
-   *
-   * @param get the request, cancelled when its answer is not read to its end
-   * @param response the answer
-   * @param limits what the answer may be, and the fetch's deadline
-   * @param redirect receives the Location of a redirect answer
-   * @return the body, or null
-   * @throws IOException when the body cannot be read
-   */
-  private byte[] read(HttpGet get, ClassicHttpResponse response, BodyLimits limits, String[] redirect) throws IOException {
-    int status = response.getCode();
-    if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
-      Header location = response.getFirstHeader(HttpHeaders.LOCATION);
-      get.cancel();
-      redirect[0] = location == null || StringUtils.isBlank(location.getValue()) ? null : location.getValue();
-      return null; // NOSONAR null is "no body"
-    }
-    HttpEntity entity = response.getEntity();
-    if (status < 200 || status >= 300 || entity == null || !limits.declaredType().test(entity.getContentType())
-        || !limits.keepPrefix() && entity.getContentLength() > limits.limit()) {
-      get.cancel();
-      return null; // NOSONAR as above
-    }
-    ByteArrayOutputStream body = new ByteArrayOutputStream();
-    try (InputStream input = entity.getContent()) {
-      byte[] buffer = new byte[8192];
-      long total = 0;
-      int read;
-      while ((read = input.read(buffer)) != -1) {
-        if (System.nanoTime() >= limits.deadline()) {
-          get.cancel();
-          return null; // NOSONAR as above
-        }
-        if (total + read > limits.limit()) {
-          get.cancel();
-          if (!limits.keepPrefix()) {
-            return null; // NOSONAR as above
-          }
-          body.write(buffer, 0, (int) (limits.limit() - total));
-          return body.toByteArray();
-        }
-        total += read;
-        body.write(buffer, 0, read);
-      }
-    }
-    return body.toByteArray();
   }
 }
