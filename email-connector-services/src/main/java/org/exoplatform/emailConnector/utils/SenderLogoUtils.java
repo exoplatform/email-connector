@@ -63,7 +63,7 @@ public final class SenderLogoUtils {
    * HTML error page answered with a 200, a script, a type left to the browser's
    * guessing -- is refused before its bytes are looked at.
    */
-  private static final Set<String> DECLARED_TYPES      = Set.of(SVG,
+  public static final Set<String>  DECLARED_TYPES      = Set.of(SVG,
                                                                 PNG,
                                                                 JPEG,
                                                                 WEBP,
@@ -72,7 +72,7 @@ public final class SenderLogoUtils {
                                                                 "image/ico");
 
   /** The declared types of a home page read for the icon it declares. */
-  private static final Set<String> PAGE_TYPES          = Set.of("text/html", "application/xhtml+xml");
+  public static final Set<String>  PAGE_TYPES          = Set.of("text/html", "application/xhtml+xml");
 
   /**
    * The {@code rel} tokens that declare a site's icon: {@code icon} (alone or in
@@ -293,34 +293,6 @@ public final class SenderLogoUtils {
     String percent = tags.get("pct");
     boolean enforcing = "quarantine".equalsIgnoreCase(policy) || "reject".equalsIgnoreCase(policy);
     return enforcing && (percent == null || "100".equals(percent.trim()));
-  }
-
-  /**
-   * Whether a response's declared {@code Content-Type} is one a logo may carry,
-   * parameters ignored.
-   *
-   * @param contentType the header value
-   * @return true when allowed
-   */
-  public static boolean isAllowedDeclaredType(String contentType) {
-    if (StringUtils.isBlank(contentType)) {
-      return false;
-    }
-    return DECLARED_TYPES.contains(StringUtils.substringBefore(contentType, ";").trim().toLowerCase(Locale.ROOT));
-  }
-
-  /**
-   * Whether a response's declared {@code Content-Type} is a web page's, parameters
-   * ignored: what a home page read for its declared icon must say it is.
-   *
-   * @param contentType the header value
-   * @return true for HTML or XHTML
-   */
-  public static boolean isPageDeclaredType(String contentType) {
-    if (StringUtils.isBlank(contentType)) {
-      return false;
-    }
-    return PAGE_TYPES.contains(StringUtils.substringBefore(contentType, ";").trim().toLowerCase(Locale.ROOT));
   }
 
   /**

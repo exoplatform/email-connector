@@ -60,18 +60,6 @@ class SenderLogoUtilsTest {
   }
 
   /**
-   * A page is HTML or XHTML by its declared type, parameters ignored, and nothing else.
-   */
-  @Test
-  void tellsAPageByItsDeclaredType() {
-    assertTrue(SenderLogoUtils.isPageDeclaredType("text/html; charset=utf-8"));
-    assertTrue(SenderLogoUtils.isPageDeclaredType("Application/XHTML+XML"));
-    assertFalse(SenderLogoUtils.isPageDeclaredType("text/plain"));
-    assertFalse(SenderLogoUtils.isPageDeclaredType("image/png"));
-    assertFalse(SenderLogoUtils.isPageDeclaredType(null));
-  }
-
-  /**
    * A domain is cached and served under one form only, and only a domain name a mail
    * could come from is one: no address literal, no single label, no path or port, no
    * underscore, no numeric top level.
@@ -153,22 +141,6 @@ class SenderLogoUtilsTest {
     assertTrue(SenderLogoUtils.hasDmarcRecord(List.of("other", "v=DMARC1; p=none")));
     assertFalse(SenderLogoUtils.hasDmarcRecord(List.of("v=spf1 -all")));
     assertFalse(SenderLogoUtils.hasDmarcRecord(null));
-  }
-
-  /**
-   * The declared type must be an image type a logo may be, parameters ignored; an
-   * HTML page, a script or no type at all is refused.
-   */
-  @Test
-  void onlyImageTypesMayBeDeclared() {
-    for (String allowed : new String[] { "image/svg+xml", "IMAGE/PNG", "image/x-icon", "image/vnd.microsoft.icon", "image/ico",
-        "image/jpeg", "image/webp; charset=binary" }) {
-      assertTrue(SenderLogoUtils.isAllowedDeclaredType(allowed), allowed);
-    }
-    for (String refused : new String[] { null, "", "text/html", "application/octet-stream", "image/gif", "text/xml",
-        "application/javascript" }) {
-      assertFalse(SenderLogoUtils.isAllowedDeclaredType(refused), String.valueOf(refused));
-    }
   }
 
   /**
