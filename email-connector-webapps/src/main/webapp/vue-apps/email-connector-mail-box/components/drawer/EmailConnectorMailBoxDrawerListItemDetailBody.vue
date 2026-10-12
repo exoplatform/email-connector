@@ -358,8 +358,12 @@ export default {
         this.iframeVisible = false;
         return;
       }
-      doc.defaultView.addEventListener('pagehide', () => {
-        this.iframeVisible = false;
+      // A persisted pagehide is the whole portal page entering the back/forward cache:
+      // the restored page fires no new load, so the mail must stay shown.
+      doc.defaultView.addEventListener('pagehide', event => {
+        if (!event.persisted) {
+          this.iframeVisible = false;
+        }
       });
       this.sendLinksToNewTab(doc);
       this.keepReferrerPrivate(doc);
