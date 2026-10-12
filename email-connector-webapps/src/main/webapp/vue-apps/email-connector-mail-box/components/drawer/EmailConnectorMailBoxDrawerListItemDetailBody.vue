@@ -344,8 +344,9 @@ export default {
     /**
      * Wire the loaded document, size the iframe to it and only then show it, so a link
      * is never reachable before its target and the referrer policy are settled. A
-     * frame whose document cannot be read (one of another origin, after a navigation
-     * away from the mail it showed) is hidden: what it shows is not the mail. Measured
+     * frame that navigated away from the mail it showed (a sender's script or meta
+     * refresh, to another origin or to a page of the portal) is hidden: what it shows
+     * is not the mail. Measured
      * again after a beat because fonts and lazily loaded images can land after load
      * and each one moves the height.
      *
@@ -467,15 +468,19 @@ export default {
       return decoded.toLowerCase() === 'top' ? doc.body : null;
     },
     /**
-     * The frame's document, when the frame is there and its document can be read.
-     * `contentDocument` is null for a document of another origin, where reading
-     * `contentWindow.document` would throw instead.
+     * The frame's document, when it is the mail this component served. A `srcdoc`
+     * document's URL is `about:srcdoc` (followed by a fragment once an in-message
+     * anchor was followed); any other URL means the frame navigated away, and a
+     * same-origin page or `about:blank` would still be readable. `contentDocument` is
+     * null for a document of another origin, where reading `contentWindow.document`
+     * would throw instead.
      *
-     * @returns {Document|null} the document the frame shows
+     * @returns {Document|null} the mail's document, or null when the frame shows anything else
      */
     frameContentDocument() {
       const iframe = this.$refs.iframe;
-      return (iframe && iframe.contentDocument) || null;
+      const doc = (iframe && iframe.contentDocument) || null;
+      return doc && doc.URL.split('#')[0] === 'about:srcdoc' ? doc : null;
     },
     /**
      * Match the iframe's height to the mail it holds, so the drawer scrolls as one
