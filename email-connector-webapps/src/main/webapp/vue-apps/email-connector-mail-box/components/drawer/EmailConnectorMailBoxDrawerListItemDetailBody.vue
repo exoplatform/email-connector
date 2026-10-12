@@ -476,8 +476,8 @@ export default {
     },
     /**
      * The frame's document, when it is the mail this component served. A `srcdoc`
-     * document's URL is `about:srcdoc` (followed by a fragment once an in-message
-     * anchor was followed); any other URL means the frame navigated away, and a
+     * document's URL is `about:srcdoc` (followed by a fragment when a script of the
+     * mail set one); any other URL means the frame navigated away, and a
      * same-origin page or `about:blank` would still be readable. `contentDocument` is
      * null for a document of another origin, where reading `contentWindow.document`
      * would throw instead.
