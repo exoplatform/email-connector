@@ -344,11 +344,11 @@ export default {
     /**
      * Wire the loaded document, size the iframe to it and only then show it, so a link
      * is never reachable before its target and the referrer policy are settled. A
-     * frame that navigated away from the mail it showed (a sender's script or meta
-     * refresh, to another origin or to a page of the portal) is hidden: what it shows
-     * is not the mail. Measured
-     * again after a beat because fonts and lazily loaded images can land after load
-     * and each one moves the height.
+     * frame that navigates away from the mail it showed (a sender's script or meta
+     * refresh, to another origin or to a page of the portal) is hidden as soon as the
+     * mail is left, not at the next page's load, which waits for that page's own
+     * resources: what it shows is not the mail. Measured again after a beat because
+     * fonts and lazily loaded images can land after load and each one moves the height.
      *
      * @returns {void}
      */
@@ -358,6 +358,9 @@ export default {
         this.iframeVisible = false;
         return;
       }
+      doc.defaultView.addEventListener('pagehide', () => {
+        this.iframeVisible = false;
+      });
       this.sendLinksToNewTab(doc);
       this.keepReferrerPrivate(doc);
       this.wireAnchorLinks(doc);
