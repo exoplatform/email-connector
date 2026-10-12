@@ -100,7 +100,13 @@ export default {
   watch: {
     expandedDrawer() {
       this.$nextTick(() => this.recalculateIframeHeight());
-    }
+    },
+    // A new document is loading: the frame stays hidden, so nothing can be followed in
+    // it, until the load handler has wired it. Between the parse and the load, the
+    // sender's own targets and referrer overrides would apply to a click.
+    sanitizedBody() {
+      this.iframeVisible = false;
+    },
   },
   methods: {
     /**
@@ -109,6 +115,14 @@ export default {
      * the reader lands on the latest message and reaches the attachments row without
      * scrolling past the quoted thread. Folding degrades to the untouched body when
      * no clear quoted boundary is found.
+     * <p>
+     * The document's base targets every link at a new tab, so a click never navigates
+     * the frame itself: a site that refuses to be framed (a `frame-ancestors` policy)
+     * would otherwise replace the mail with its refusal, and the frame, now of another
+     * origin, could no longer be measured from here. The document sends no referrer
+     * on a link leaving it: a `srcdoc` document has no URL of its own, so the link
+     * would otherwise carry the portal's origin, or its page URL under a looser
+     * referrer policy, to the site it opens.
      *
      * @param {string} html the sanitized email body HTML
      * @returns {string} the full HTML document served to the iframe srcdoc
@@ -184,6 +198,8 @@ export default {
         <html>
           <head>
             <meta name="viewport" content="width=device-width, initial-scale=1">
+            <base target="_blank">
+            <meta name="referrer" content="no-referrer">
             <style>${finalCSS}</style>
           </head>
           <body>${renderedBody}</body>
@@ -326,18 +342,141 @@ export default {
       return `<div class="ec-plain-text">${escaper.innerHTML}</div>`;
     },
     /**
-     * Size the iframe to its content once the document is in. Measured again after a
-     * beat because fonts and images land after load and each one moves the height.
+     * Wire the loaded document, size the iframe to it and only then show it, so a link
+     * is never reachable before its target and the referrer policy are settled. A
+     * frame whose document cannot be read (one of another origin, after a navigation
+     * away from the mail it showed) is hidden: what it shows is not the mail. Measured
+     * again after a beat because fonts and lazily loaded images can land after load
+     * and each one moves the height.
      *
      * @returns {void}
      */
     onLoadIframe() {
+      const doc = this.frameContentDocument();
+      if (!doc) {
+        this.iframeVisible = false;
+        return;
+      }
+      this.sendLinksToNewTab(doc);
+      this.keepReferrerPrivate(doc);
+      this.wireAnchorLinks(doc);
       this.recalculateIframeHeight();
+      this.iframeVisible = true;
 
       setTimeout(() => this.recalculateIframeHeight(), 150);
       setTimeout(() => this.recalculateIframeHeight(), 400);
     },
 
+    /**
+     * Leave every link, image map and form of the message to the document's base, which
+     * targets a new tab: the element's own `target`, or a submit button's `formtarget`,
+     * would override it, and the sender's markup reaches the frame as sent, so a `_self`
+     * would navigate the frame and a `_top` the portal page itself. A `mailto:` or
+     * `tel:` link is not singled out: whether a browser with a web handler registered
+     * for the scheme would navigate the frame to the handler's page is unverified, and
+     * the new tab is safe either way.
+     *
+     * @param {Document} doc the frame's loaded document
+     * @returns {void}
+     */
+    sendLinksToNewTab(doc) {
+      doc.querySelectorAll('a[target], area[target], form[target]')
+        .forEach(element => element.removeAttribute('target'));
+      doc.querySelectorAll('[formtarget]')
+        .forEach(element => element.removeAttribute('formtarget'));
+    },
+    /**
+     * Keep the document's no-referrer policy the one in force for every link followed
+     * from the message, whatever the sender's markup says: a `referrerpolicy` attribute
+     * overrides it for that element, and a `meta name="referrer"` anywhere in the body
+     * replaces it for the whole document. The policy is reasserted by inserting a fresh
+     * meta, because the browser applies the policy when a meta is inserted and does not
+     * restore the earlier one when a meta is removed.
+     * <p>
+     * This runs once the document has loaded, so it governs what happens from then on:
+     * a sender's override on a resource the parser fetched while loading (an image) has
+     * already applied, and only cleaning the body before it is served can stop that.
+     *
+     * @param {Document} doc the frame's loaded document
+     * @returns {void}
+     */
+    keepReferrerPrivate(doc) {
+      doc.querySelectorAll('[referrerpolicy]')
+        .forEach(element => element.removeAttribute('referrerpolicy'));
+      doc.querySelectorAll('meta[name="referrer" i]').forEach(meta => meta.remove());
+      const meta = doc.createElement('meta');
+      meta.setAttribute('name', 'referrer');
+      meta.setAttribute('content', 'no-referrer');
+      (doc.head || doc.documentElement).appendChild(meta);
+    },
+    /**
+     * Keep a link to an anchor of the message ("back to top", "jump to section")
+     * scrolling inside the message: the document's base sends every link to a new tab,
+     * which for a fragment would be a blank one. Wired from this component through the
+     * frame's document, and scrolling through the browser, which brings the target
+     * into view through the frame and the drawer alike.
+     *
+     * @param {Document} doc the frame's loaded document
+     * @returns {void}
+     */
+    wireAnchorLinks(doc) {
+      doc.addEventListener('click', event => {
+        const link = event.target && event.target.closest && event.target.closest('a[href], area[href]');
+        // Trimmed as the URL parser trims it, so a fragment written " #top" is one too.
+        const href = link && link.getAttribute('href').trim();
+        if (!href || !href.startsWith('#')) {
+          return;
+        }
+        event.preventDefault();
+        const target = this.fragmentTarget(doc, href.slice(1));
+        if (target) {
+          target.scrollIntoView();
+        }
+      });
+    },
+    /**
+     * The element a fragment names, resolved the way the browser resolves one: for the
+     * fragment as written, then for its percent-decoded form, the element with that id,
+     * else the first `<a>` with that name; failing both, "top" (in any case) is the top
+     * of the document, and so is an empty fragment.
+     *
+     * @param {Document} doc the frame's document
+     * @param {string} fragment the part of the link after the "#"
+     * @returns {Element|null} the element to bring into view, or null when the fragment
+     *          names nothing
+     */
+    fragmentTarget(doc, fragment) {
+      if (!fragment) {
+        return doc.body;
+      }
+      let decoded = fragment;
+      try {
+        decoded = decodeURIComponent(fragment);
+      } catch (e) {
+        // A malformed escape decodes to nothing: the fragment as written is the only
+        // name to try.
+      }
+      const candidates = decoded === fragment ? [fragment] : [fragment, decoded];
+      for (const name of candidates) {
+        const found = doc.getElementById(name)
+          || Array.from(doc.getElementsByName(name)).find(element => element.localName === 'a');
+        if (found) {
+          return found;
+        }
+      }
+      return decoded.toLowerCase() === 'top' ? doc.body : null;
+    },
+    /**
+     * The frame's document, when the frame is there and its document can be read.
+     * `contentDocument` is null for a document of another origin, where reading
+     * `contentWindow.document` would throw instead.
+     *
+     * @returns {Document|null} the document the frame shows
+     */
+    frameContentDocument() {
+      const iframe = this.$refs.iframe;
+      return (iframe && iframe.contentDocument) || null;
+    },
     /**
      * Match the iframe's height to the mail it holds, so the drawer scrolls as one
      * page instead of the mail scrolling inside a fixed frame.
@@ -345,11 +484,7 @@ export default {
      * @returns {void}
      */
     recalculateIframeHeight() {
-      const iframe = this.$refs.iframe;
-      if (!iframe) {
-        return;
-      }
-      const doc = iframe.contentDocument || iframe.contentWindow.document;
+      const doc = this.frameContentDocument();
       if (!doc || !doc.body) {
         return;
       }
@@ -362,10 +497,6 @@ export default {
           img.onload = () => this.recalculateIframeHeight();
         }
       });
-
-      if (!this.iframeVisible) {
-        this.iframeVisible = true;
-      }
 
       if (!this.resizeObserver) {
         this.resizeObserver = new ResizeObserver(() => this.recalculateIframeHeight());
