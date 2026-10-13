@@ -135,7 +135,13 @@ export default {
   watch: {
     expandedDrawer() {
       this.$nextTick(() => this.recalculateIframeHeight());
-    }
+    },
+    // A new document is loading: the frame stays hidden, so nothing can be followed in
+    // it, until the load handler has wired it. Between the parse and the load, the
+    // sender's own targets and referrer overrides would apply to a click.
+    frameDocument() {
+      this.iframeVisible = false;
+    },
   },
   methods: {
     /**
@@ -376,15 +382,35 @@ export default {
       return `<div class="ec-plain-text">${escaper.innerHTML}</div>`;
     },
     /**
-     * Size the iframe to its content once the document is in. Measured again after a
-     * beat because fonts and images land after load and each one moves the height.
+     * Wire the loaded document, size the iframe to it and only then show it, so a link
+     * is never reachable before its target and the referrer policy are settled. A
+     * frame that navigates away from the mail it showed (a sender's script or meta
+     * refresh, to another origin or to a page of the portal) is hidden as soon as the
+     * mail is left, not at the next page's load, which waits for that page's own
+     * resources: what it shows is not the mail. Measured again after a beat because
+     * fonts and lazily loaded images can land after load and each one moves the height.
      *
      * @returns {void}
      */
     onLoadIframe() {
+      const doc = this.frameContentDocument();
+      if (!doc) {
+        this.iframeVisible = false;
+        return;
+      }
+      // A persisted pagehide is the whole portal page entering the back/forward cache:
+      // the restored page fires no new load, so the mail must stay shown.
+      doc.defaultView.addEventListener('pagehide', event => {
+        if (!event.persisted) {
+          this.iframeVisible = false;
+        }
+      });
+      this.sendLinksToNewTab(doc);
+      this.keepReferrerPrivate(doc);
       this.wireQuotedHistoryToggle();
-      this.wireAnchorLinks();
+      this.wireAnchorLinks(doc);
       this.recalculateIframeHeight();
+      this.iframeVisible = true;
 
       setTimeout(() => this.recalculateIframeHeight(), 150);
       setTimeout(() => this.recalculateIframeHeight(), 400);
@@ -427,26 +453,67 @@ export default {
       });
     },
     /**
-     * Keep a link to an anchor of the message ("back to top", "jump to section")
-     * scrolling inside the message: the document's base sends every link to a new tab,
-     * which for a fragment would be a blank one. Wired from this component for the same
-     * reason as the toggle, and scrolling through the browser, which brings the target
-     * into view through the frame and the drawer alike.
+     * Leave every link, image map and form of the message to the document's base, which
+     * targets a new tab: the element's own `target`, or a submit button's `formtarget`,
+     * would override it, and the sender's markup reaches the frame as sent, so a `_self`
+     * would navigate the frame and a `_top` the portal page itself. A `mailto:` or
+     * `tel:` link is not singled out: whether a browser with a web handler registered
+     * for the scheme would navigate the frame to the handler's page is unverified, and
+     * the new tab is safe either way.
      *
+     * @param {Document} doc the frame's loaded document
      * @returns {void}
      */
-    wireAnchorLinks() {
-      const doc = this.frameContentDocument();
-      if (!doc) {
-        return;
-      }
+    sendLinksToNewTab(doc) {
+      doc.querySelectorAll('a[target], area[target], form[target]')
+        .forEach(element => element.removeAttribute('target'));
+      doc.querySelectorAll('[formtarget]')
+        .forEach(element => element.removeAttribute('formtarget'));
+    },
+    /**
+     * Keep the document's no-referrer policy the one in force for every link followed
+     * from the message, whatever the sender's markup says: a `referrerpolicy` attribute
+     * overrides it for that element, and a `meta name="referrer"` anywhere in the body
+     * replaces it for the whole document. The policy is reasserted by inserting a fresh
+     * meta, because the browser applies the policy when a meta is inserted and does not
+     * restore the earlier one when a meta is removed.
+     * <p>
+     * This runs once the document has loaded, so it governs what happens from then on:
+     * a sender's override on a resource the parser fetched while loading (an image) has
+     * already applied, and only cleaning the body before it is served can stop that.
+     *
+     * @param {Document} doc the frame's loaded document
+     * @returns {void}
+     */
+    keepReferrerPrivate(doc) {
+      doc.querySelectorAll('[referrerpolicy]')
+        .forEach(element => element.removeAttribute('referrerpolicy'));
+      doc.querySelectorAll('meta[name="referrer" i]').forEach(meta => meta.remove());
+      const meta = doc.createElement('meta');
+      meta.setAttribute('name', 'referrer');
+      meta.setAttribute('content', 'no-referrer');
+      (doc.head || doc.documentElement).appendChild(meta);
+    },
+    /**
+     * Keep a link to an anchor of the message ("back to top", "jump to section")
+     * scrolling inside the message: the document's base sends every link to a new tab,
+     * which for a fragment would be a blank one. Wired from this component through the
+     * frame's document, and scrolling through the browser, which brings the target
+     * into view through the frame and the drawer alike.
+     *
+     * @param {Document} doc the frame's loaded document
+     * @returns {void}
+     */
+    wireAnchorLinks(doc) {
       doc.addEventListener('click', event => {
-        const link = event.target && event.target.closest && event.target.closest('a[href^="#"]');
-        if (!link) {
+        const link = event.target && event.target.closest && event.target.closest('a[href], area[href]');
+        // Trimmed as the URL parser trims it, so a fragment written " #top" is one too.
+        const href = link && link.getAttribute('href').trim();
+        if (!href || !href.startsWith('#')) {
           return;
         }
         event.preventDefault();
-        const target = this.fragmentTarget(doc, link.getAttribute('href').slice(1));
+        const target = this.fragmentTarget(doc, href.slice(1));
         if (target) {
           target.scrollIntoView();
         }
@@ -485,16 +552,19 @@ export default {
       return decoded.toLowerCase() === 'top' ? doc.body : null;
     },
     /**
-     * The frame's document, when the frame is there and has one.
+     * The frame's document, when it is the mail this component served. A `srcdoc`
+     * document's URL is `about:srcdoc` (followed by a fragment when a script of the
+     * mail set one); any other URL means the frame navigated away, and a
+     * same-origin page or `about:blank` would still be readable. `contentDocument` is
+     * null for a document of another origin, where reading `contentWindow.document`
+     * would throw instead.
      *
-     * @returns {Document|null} the document the frame shows
+     * @returns {Document|null} the mail's document, or null when the frame shows anything else
      */
     frameContentDocument() {
       const iframe = this.$refs.iframe;
-      if (!iframe) {
-        return null;
-      }
-      return iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document) || null;
+      const doc = (iframe && iframe.contentDocument) || null;
+      return doc && doc.URL.split('#')[0] === 'about:srcdoc' ? doc : null;
     },
     /**
      * Match the iframe's height to the mail it holds, so the drawer scrolls as one
@@ -516,10 +586,6 @@ export default {
           img.onload = () => this.recalculateIframeHeight();
         }
       });
-
-      if (!this.iframeVisible) {
-        this.iframeVisible = true;
-      }
 
       if (!this.resizeObserver) {
         this.resizeObserver = new ResizeObserver(() => this.recalculateIframeHeight());
