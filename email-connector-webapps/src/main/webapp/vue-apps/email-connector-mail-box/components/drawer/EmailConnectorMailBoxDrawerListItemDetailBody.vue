@@ -139,7 +139,7 @@ export default {
     // A new document is loading: the frame stays hidden, so nothing can be followed in
     // it, until the load handler has wired it. Between the parse and the load, the
     // sender's own targets and referrer overrides would apply to a click.
-    sanitizedBody() {
+    frameDocument() {
       this.iframeVisible = false;
     },
   },
