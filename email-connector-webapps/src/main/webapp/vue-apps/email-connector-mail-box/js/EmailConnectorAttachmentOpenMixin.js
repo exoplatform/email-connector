@@ -27,6 +27,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
  *   addresses a document by id and an attachment is only a part of a mail;
  * - anything else keeps downloading to the device, which is also what happens when
  *   the Documents add-on isn't installed and there is nothing to open a file with.
+ *
+ * The host holds the attachment as `attachment`: the one it shows, or, when it lists
+ * several, the one being opened. Its `downloadAttachment` is handed that attachment.
  */
 export default {
   data() {
@@ -71,14 +74,17 @@ export default {
         return;
       }
       const service = this.$emailConnectorMailBoxService;
+      // Pinned now: a host listing several files may point `attachment` at another
+      // one before the copy below has completed.
+      const attachment = this.attachment;
       this.opening = true;
       // The tab is opened now, while the click is still being handled: storing the
       // attachment first would spend the user gesture and the browser would then
       // block the pop-up, which reads as the document silently not opening even
       // though it did get stored.
       const editorTab = window.open('', '_blank');
-      this.showOpeningPlaceholder(editorTab);
-      service.materialiseAttachment(this.attachment)
+      this.showOpeningPlaceholder(editorTab, attachment);
+      service.materialiseAttachment(attachment)
         .then(documentId => {
           const url = service.getEditorUrl(documentId, mode);
           if (editorTab) {
@@ -95,7 +101,7 @@ export default {
           }
           const message = this.$t('emailConnector.mailBox.attachment.preview.error');
           this.$root.$emit('alert-message', message, 'error');
-          this.downloadAttachment();
+          this.downloadAttachment(attachment);
         })
         .finally(() => this.opening = false);
     },
@@ -106,15 +112,16 @@ export default {
      * broken window rather than as progress.
      *
      * @param {Window} editorTab the tab opened for the editor, null when blocked
+     * @param {Object} attachment the attachment being opened
      * @returns {void}
      */
-    showOpeningPlaceholder(editorTab) {
+    showOpeningPlaceholder(editorTab, attachment) {
       if (!editorTab) {
         return;
       }
       // the name comes from a mail, so it is not to be trusted as markup
       const name = document.createElement('div');
-      name.textContent = this.attachment.name;
+      name.textContent = attachment.name;
       const label = this.$t('emailConnector.mailBox.attachment.opening', {
         0: name.innerHTML,
       });
