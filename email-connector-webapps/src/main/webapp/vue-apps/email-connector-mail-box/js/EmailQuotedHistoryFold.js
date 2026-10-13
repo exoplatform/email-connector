@@ -106,11 +106,14 @@ const MAX_INTRO_LINES = 3;
 const QUOTED_LINE_PATTERN = /^\s*>/;
 
 /**
- * The unique ids/classes of the injected wrapper and toggle, shared with the CSS
- * added by the host component and with the toggle script below.
+ * The unique ids and classes of the injected wrapper and toggle, shared with the CSS
+ * the host component adds to the frame and with the wiring it does from outside the
+ * frame: the frame runs no script of its own, so the toggle is a plain element here
+ * and the host component attaches its behaviour through the frame's document.
  */
-const HISTORY_ID = 'ec-quoted-history';
-const TOGGLE_ID = 'ec-quoted-toggle';
+export const HISTORY_ID = 'ec-quoted-history';
+export const TOGGLE_ID = 'ec-quoted-toggle';
+export const TOGGLE_OPEN_CLASS = 'ec-open';
 
 /**
  * Outlook's container for the quoted previous message — its "De:/From:" header block and
@@ -257,47 +260,6 @@ function buildToggle(doc, labels) {
   toggle.setAttribute('aria-controls', HISTORY_ID);
   toggle.textContent = labels.show;
   return toggle;
-}
-
-/**
- * Serialize the small self-contained script wiring the toggle to the hidden
- * history container. It runs inside the iframe (srcdoc is parsed fresh, so the
- * script executes) and needs no external dependency; the host component's
- * ResizeObserver picks up the height change on expand/collapse.
- *
- * @param {{show: string, hide: string}} labels localized tooltips
- * @returns {string} the <script> markup
- */
-function buildToggleScript(labels) {
-  // Inner-script string literals use double quotes on purpose: this is free-form
-  // text inside a single template literal (no concatenation), which keeps eslint's
-  // quotes/prefer-template rules happy while the browser sees valid JS.
-  // Inner-script string literals use double quotes on purpose: they are free-form
-  // text inside one template literal (no concatenation), which satisfies eslint's
-  // quotes/prefer-template rules while the browser sees valid JS.
-  // Assembled as an array of single-quoted pieces joined with '' so the injected
-  // ids/labels interleave as data; the inner-script string literals use double
-  // quotes (valid JS) so nothing needs escaping. The opening/closing tags are split
-  // (['<', 'script>']) so no literal </script> sits in this JS source.
-  const json = JSON.stringify({ show: labels.show, hide: labels.hide }).replace(/</g, '\\u003c');
-  const pieces = [
-    '<', 'script>(function(){',
-    'var L=', json, ';',
-    'var t=document.getElementById("', TOGGLE_ID, '");',
-    'var q=document.getElementById("', HISTORY_ID, '");',
-    'if(!t||!q){return;}',
-    'function set(open){',
-    'q.style.display=open?"block":"none";',
-    't.setAttribute("aria-expanded",open?"true":"false");',
-    't.setAttribute("title",open?L.hide:L.show);',
-    't.textContent=open?L.hide:L.show;',
-    't.className="ec-quoted-toggle"+(open?" ec-open":"");',
-    '}',
-    't.addEventListener("click",function(){set(t.getAttribute("aria-expanded")!=="true");});',
-    't.addEventListener("keydown",function(e){if(e.key==="Enter"||e.key===" "){e.preventDefault();set(t.getAttribute("aria-expanded")!=="true");}});',
-    '})();<', '/script>',
-  ];
-  return pieces.join('');
 }
 
 /**
@@ -580,7 +542,7 @@ export function foldPlainTextQuotedHistory(text, labels, parser) {
     doc.body.appendChild(buildPlainTextBlock(doc, visible));
     doc.body.appendChild(buildToggle(doc, safeLabels));
     doc.body.appendChild(history);
-    return doc.body.innerHTML + buildToggleScript(safeLabels);
+    return doc.body.innerHTML;
   } catch (e) {
     // Same rule as everywhere here: on any doubt, the message is shown untouched.
     return null;
@@ -648,7 +610,7 @@ export function foldQuotedHistory(html, labels, parser) {
     if (forwardIsTheMessage(doc.body, rawBoundary)) {
       return html;
     }
-    return doc.body.innerHTML + buildToggleScript(safeLabels);
+    return doc.body.innerHTML;
   } catch (e) {
     return html;
   }
