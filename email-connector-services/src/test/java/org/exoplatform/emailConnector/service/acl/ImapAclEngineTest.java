@@ -212,6 +212,35 @@ class ImapAclEngineTest {
   }
 
   /**
+   * Stalwart stores an Editor granted from eXo ({@code lrswit}) with {@code e} beside
+   * {@code t}: its GETACL answers {@code tewsirl}, the delegate's MYRIGHTS
+   * {@code rlitesw} (both observed on the rig, 2026-09-23). Both read as an Editor, not
+   * as custom rights.
+   */
+  @Test
+  void anEditorStoredWithItsCoupledExpungeStillReadsAsAnEditor() throws MessagingException {
+    when(inbox.getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("tewsirl")) });
+
+    assertEquals(DelegationPreset.EDITOR, engine.listAcl(session(), "INBOX").get(0).preset());
+    assertEquals(DelegationPreset.EDITOR, engine.presetOf(MailboxRights.of("rlitesw")));
+    assertEquals(DelegationPreset.EDITOR, engine.presetOf(MailboxRights.of("lrswit")));
+    assertEquals(DelegationPreset.READER, engine.presetOf(MailboxRights.of("lrs")));
+  }
+
+  /**
+   * Only what coupling implies is forgiven: a set granting more -- administer, delete
+   * the mailbox, expunge without delete-messages -- is never a preset.
+   */
+  @Test
+  void aSetGrantingMoreThanCouplingImpliesIsNeverAPreset() {
+    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrse")), "e without t");
+    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswitea")), "a");
+    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswitex")), "x");
+    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrsw")), "a Reader plus star is neither");
+    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(null));
+  }
+
+  /**
    * GETACL, every entry by letter, legacy letters folded; the native form is the letters
    * and the preset the exact reading.
    */

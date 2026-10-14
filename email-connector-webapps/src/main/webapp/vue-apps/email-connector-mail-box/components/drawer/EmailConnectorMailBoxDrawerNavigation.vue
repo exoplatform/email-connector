@@ -29,7 +29,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :style="{ height: TOP_ROW_HEIGHT }"
       class="text-uppercase caption px-2">
       <span class="flex-grow-1">{{ sections[0].title }}</span>
+      <!-- The user's own folders only: a shared mailbox's folders are its owner's to
+           create, rename and delete (EmailDelegationService#checkOwnFolder). -->
       <v-btn
+        v-if="!$emailConnectorMailBoxService.isSharedMailboxFolder(currentFolder)"
         :title="$t('emailConnector.mailBox.list.drawer.navigation.manageFolders')"
         :aria-label="$t('emailConnector.mailBox.list.drawer.navigation.manageFolders')"
         icon
@@ -153,7 +156,10 @@ export default {
     },
     /** @returns {Array} the column's sections, {key, title, entries}: folders, then any categories */
     sections() {
-      const sections = [{ key: 'folders', title: this.$t('emailConnector.mailBox.list.drawer.menu.folders'), entries: this.folderEntries }];
+      // In a shared mailbox the folders group under their owner's name (plan 7.6).
+      const sharedMailbox = this.$emailConnectorMailBoxService.sharedMailboxOfFolder(this.currentFolder);
+      const title = sharedMailbox ? sharedMailbox.ownerFullName : this.$t('emailConnector.mailBox.list.drawer.menu.folders');
+      const sections = [{ key: 'folders', title, entries: this.folderEntries }];
       if (this.categoryEntries.length) {
         sections.push({ key: 'categories', title: this.$t('emailConnector.mailBox.list.drawer.menu.categories'), entries: this.categoryEntries });
       }
