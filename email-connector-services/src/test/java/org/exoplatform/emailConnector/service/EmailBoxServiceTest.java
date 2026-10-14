@@ -2966,7 +2966,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aSendFromASharedMailboxFilesTheOwnersCopyAfterTheSendersOwn() {
-    SendRig rig = givenASendableMailbox();
+    SendRig rig = givenASendRig();
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
     when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
     when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
@@ -3003,7 +3003,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aSendFromAShareThatIsNotTheSendersSendsNothing() {
-    SendRig rig = givenASendableMailbox();
+    SendRig rig = givenASendRig();
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 7L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 8L)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
 
@@ -3027,7 +3027,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aSendWithNoOwnersSentToFileIntoIsSkipped() {
-    SendRig rig = givenASendableMailbox();
+    SendRig rig = givenASendRig();
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn(null);
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 101L)).thenReturn("CUSTOM:10");
     when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(false);
@@ -3053,7 +3053,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aFailedOwnersCopyLeavesTheSendSuccessful() {
-    SendRig rig = givenASendableMailbox();
+    SendRig rig = givenASendRig();
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
     when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
     when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
@@ -3089,7 +3089,7 @@ public class EmailBoxServiceTest {
    * @return the rig
    */
   @SneakyThrows
-  private SendRig givenASendableMailbox() {
+  private SendRig givenASendRig() {
     // Lenient: a send refused before anything is touched uses none of it.
     lenient().when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
     lenient().when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
