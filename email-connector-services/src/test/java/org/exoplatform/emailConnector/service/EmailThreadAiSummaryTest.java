@@ -163,6 +163,12 @@ public class EmailThreadAiSummaryTest {
   @MockitoBean
   private EmailFolderService      emailFolderService;
 
+  // Delegation (EXO-90499): the guard every write path asks before acting on a folder,
+  // and the source of the shared mailboxes the sync walks. Mocked, so every folder key
+  // in this class is answered as an own-mailbox one -- which is what they all are.
+  @MockitoBean
+  private EmailDelegationService  emailDelegationService;
+
   @MockitoBean
   private UploadService           uploadService;
 
