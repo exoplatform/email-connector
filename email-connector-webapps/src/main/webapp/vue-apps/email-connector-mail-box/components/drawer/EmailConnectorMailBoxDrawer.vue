@@ -3395,8 +3395,10 @@ export default {
      * the reverse of onExpandMailBoxOnEmail. The mail drawer opening clears this
      * drawer's reader, as any opening of it does.
      * <p>
-     * Only a collapse the user asked for: exo-drawer also resets its expand flag when it
-     * closes, and the drawer is closed by then. Nothing is handed over with no mail on
+     * Not when the collapse comes from the drawer closing: exo-drawer also resets its
+     * expand flag when it closes, and the drawer is closed by then. A collapse exo-drawer
+     * makes on its own while the drawer stays open (the window narrowed below its mobile
+     * breakpoint) hands the mail over like the user's own. Nothing is handed over with no mail on
      * screen -- the placeholder, a multi-selection -- nor when the drawer was expanded
      * again meanwhile. Nor while the mail the reader opened on its own is still waiting
      * for its dwell (AUTO_OPEN_MARK_READ_DELAY_MS): the mail drawer reads what it opens
@@ -3408,7 +3410,10 @@ export default {
      * under way when the drawer collapses lands in the list.
      * <p>
      * A full copy, a draft's or a scheduled mail's row is shown as it is; a bare list row,
-     * or a copy that could not be read, is fetched again by its UID. The mail drawer
+     * or a copy that could not be read, is fetched again by its UID. A bare row is only
+     * on screen while the reader's own request for it is on its way, which counts the
+     * opening, so it is read again without counting it (quiet), as the expand direction
+     * does (EXO-90415); a copy that could not be read was never counted. The mail drawer
      * gets the folder's list; the search's, detached, as the narrow search opening gives
      * it; or the mail alone, detached, when neither holds it.
      *
@@ -3434,7 +3439,7 @@ export default {
       }
       if (email.mailRemoteId && (email.unavailable || this.$emailConnectorMailBoxService.isListingRow(email))) {
         this.$root.$emit('open-email-detail-drawer', email.mailRemoteId, emails, this.syncInProgress, this.webmailUrl,
-          detachedFromList, false, folder);
+          detachedFromList, false, folder, !email.unavailable);
       } else {
         this.$root.$emit('open-email-thread-drawer', email, emails, this.syncInProgress, this.webmailUrl, detachedFromList);
       }
