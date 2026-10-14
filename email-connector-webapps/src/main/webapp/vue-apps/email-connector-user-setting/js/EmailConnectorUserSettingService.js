@@ -287,3 +287,155 @@ export function deleteMailFolder(id) {
       });
   });
 }
+
+/**
+ * Who has access to the caller's own mailbox, read live from the mail server
+ * (EXO-90503). The answer carries the server's capabilities beside the grantees, so
+ * an unsupported server can be said to be unsupported rather than shown an empty
+ * list; entries granted outside eXo are in it too, and are the server's, not eXo's.
+ *
+ * @returns {Promise<Object>} {capabilities, ownerMailbox, grantees}
+ */
+export function getGrantedDelegations() {
+  return fetch('/email-connector/rest/user-email-setting/delegations/granted', {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json()
+      .catch(() => ({}))
+      .then(body => {
+        throw new Error(body?.message || 'Error when reading who has access to your mailbox');
+      });
+  });
+}
+
+/**
+ * The mailboxes shared with the caller, in every state. With discovery the caller's
+ * own session walks their mail server's shared namespace first, so a share granted in
+ * the mail server's own interface is offered rather than missed — it costs a
+ * connection, so the settings row reads without it and only the drawer asks for it.
+ *
+ * @param {Boolean} discover whether to walk the mail server as well
+ * @returns {Promise<Array>} the delegation rows
+ */
+export function getReceivedDelegations(discover) {
+  return fetch(`/email-connector/rest/user-email-setting/delegations/received?discover=${!!discover}`, {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => {
+    if (!resp?.ok) {
+      throw new Error('Error when reading the mailboxes shared with you');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * Shares the caller's own mailbox with another eXo user. The access is written on the
+ * mail server now, not when the invitation is answered: only the caller can take it
+ * away afterwards. A refusal carries the server's message code as the error message
+ * ("emailConnector.delegation.*"), so the screen can say why in the user's words.
+ *
+ * @param {String} granteeUsername the eXo username to share with
+ * @param {String} preset READER or EDITOR
+ * @returns {Promise<Object>} the delegation as created
+ */
+export function inviteDelegation(granteeUsername, preset) {
+  return fetch('/email-connector/rest/user-email-setting/delegations', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify({granteeUsername, preset})
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json()
+      .catch(() => ({}))
+      .then(body => {
+        throw new Error(body?.message || 'Error when sharing your mailbox');
+      });
+  });
+}
+
+/**
+ * Removes a grantee's access to the caller's own mailbox, on the mail server. The only
+ * call in this file that takes access away: declining and leaving do not.
+ *
+ * @param {Number} id the delegation id
+ * @returns {Promise<void>} resolved once the access is gone
+ */
+export function revokeDelegation(id) {
+  return fetch(`/email-connector/rest/user-email-setting/delegations/${id}`, {
+    credentials: 'include',
+    method: 'DELETE'
+  }).then(resp => {
+    if (resp?.ok) {
+      return;
+    }
+    return resp.json()
+      .catch(() => ({}))
+      .then(body => {
+        throw new Error(body?.message || 'Error when removing access to your mailbox');
+      });
+  });
+}
+
+/**
+ * Answers a share: accept it, decline it, or leave one already accepted. Three verbs
+ * on one path because the server decides what each means for the row — and none of
+ * them touches the access itself, which stays the owner's to remove.
+ *
+ * @param {Number} id the delegation id
+ * @param {String} answer accept, decline or leave
+ * @returns {Promise<Object>} the delegation as it now stands
+ */
+export function answerDelegation(id, answer) {
+  return fetch(`/email-connector/rest/user-email-setting/delegations/${id}/${answer}`, {
+    credentials: 'include',
+    method: 'PUT'
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json()
+      .catch(() => ({}))
+      .then(body => {
+        throw new Error(body?.message || 'Error when answering a shared mailbox');
+      });
+  });
+}
+
+/**
+ * The caller's own toggles on one shared mailbox. A field left out stays as it is.
+ *
+ * @param {Number} id the delegation id
+ * @param {Object} preferences {badgeIncluded, notifyNewMail}
+ * @returns {Promise<Object>} the delegation as it now stands
+ */
+export function updateDelegationPreferences(id, preferences) {
+  return fetch(`/email-connector/rest/user-email-setting/delegations/${id}/preferences`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify(preferences)
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json()
+      .catch(() => ({}))
+      .then(body => {
+        throw new Error(body?.message || 'Error when saving your preferences on a shared mailbox');
+      });
+  });
+}
