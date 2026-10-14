@@ -44,6 +44,7 @@ import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailFolder;
+import org.exoplatform.emailConnector.model.FolderMessageCounts;
 import org.exoplatform.emailConnector.model.GrantedDelegations;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailFolderView;
@@ -51,11 +52,13 @@ import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.SharedMailbox;
+import org.exoplatform.emailConnector.model.SharedMailboxEntry;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngine;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngineRegistry;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
+import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailDelegationStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
@@ -152,6 +155,8 @@ public class EmailDelegationService {
 
   public static final String      NOT_ACCEPTABLE_MESSAGE     = "emailConnector.delegation.notAcceptable";
 
+  public static final String      NOT_CHANGEABLE_MESSAGE     = "emailConnector.delegation.notChangeable";
+
   public static final String      NOT_PENDING_MESSAGE        = "emailConnector.delegation.notPending";
 
   public static final String      NOT_ACCEPTED_MESSAGE       = "emailConnector.delegation.notAccepted";
@@ -174,6 +179,11 @@ public class EmailDelegationService {
 
   @Autowired
   private EmailFolderStorage      emailFolderStorage;
+
+  // Read for the switcher's unread counts only (getSharedMailboxes): the storage of the
+  // same add-on, and it depends on nothing of this service, so no cycle.
+  @Autowired
+  private EmailBoxStorage         emailBoxStorage;
 
   @Autowired(required = false)
   private IdentityManager         identityManager;
@@ -356,6 +366,93 @@ public class EmailDelegationService {
              delegation.getGranteeId(),
              identifier);
     publish(EmailDelegationEvent.Type.REVOKED, ownerUsername, delegation);
+  }
+
+  /**
+   * Changes the access a grantee holds on the caller's own mailbox to another preset --
+   * the owner's "Change access": Reader to Editor and back, or a share whose letters no
+   * preset names (set in the mail server's own interface) normalised to one.
+   * <p>
+   * The same write as {@link #invite}, on the same session and through the same engine
+   * call: {@link MailboxAclEngine#grant} REPLACES the identifier's entry (RFC 4314 SETACL
+   * sets the rights, it does not add to them), expands the preset into the server's own
+   * vocabulary and caps it by the owner's rights -- no letters are written here, which
+   * keeps a per-mailbox engine (BlueMind, phase 1b) a matter of its own grant. What is
+   * recorded is what the engine says it wrote, and only that: the status, the dates and
+   * the grantee's toggles are left as they stand -- an accepted share stays accepted, a
+   * pending invitation stays pending with its new rights, and a leave made while the
+   * server was asked stays a leave. A share revoked or gone meanwhile is refused as
+   * not changeable.
+   * <p>
+   * Owner only, and only the owner's own rows: the row is resolved with the caller as
+   * owner, so a delegate -- or anybody else -- asking gets "no such delegation", which
+   * does not even say the row exists. A share no longer on the server (revoked, gone)
+   * has nothing to change. The grantee is not notified: nothing on this server tells
+   * them either, and their mailbox's controls follow the stored rights at their next
+   * reading of the share.
+   *
+   * @param ownerUsername the caller, the mailbox's owner
+   * @param id the delegation id
+   * @param preset READER or EDITOR
+   * @return the row as it now stands
+   * @throws ObjectNotFoundException when no such row belongs to the caller as owner
+   * @throws IllegalAccessException when the caller has no connected mailbox
+   * @throws IllegalArgumentException {@code emailConnector.delegation.presetInvalid} for a
+   *           preset that is not grantable, {@code emailConnector.delegation.notChangeable}
+   *           for a share that is no longer on the server, before the write or after it
+   * @throws MailboxAclException when the server refuses or cannot be asked
+   */
+  public EmailDelegation changePreset(String ownerUsername, long id, DelegationPreset preset) throws ObjectNotFoundException,
+                                                                                                IllegalAccessException {
+    if (preset == null || !preset.isGrantable()) {
+      throw new IllegalArgumentException(PRESET_INVALID_MESSAGE);
+    }
+    EmailDelegation delegation = asOwner(ownerUsername, id);
+    if (delegation.getStatus() == DelegationStatus.REVOKED || delegation.getStatus() == DelegationStatus.GONE) {
+      throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
+    }
+    UserEmailSetting ownerSetting = connectedSetting(ownerUsername);
+    EmailConnector connector = connectorOf(ownerSetting);
+    String ownerMailbox = mailboxIdentifier(ownerSetting);
+    if (!connector.getId().equals(delegation.getConnectorId()) || !ownerMailbox.equalsIgnoreCase(delegation.getOwnerMailbox())) {
+      // A row of a mailbox the owner is no longer connected to: writing it would grant
+      // the grantee access to the mailbox the owner is connected to NOW, which this row
+      // never covered.
+      throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
+    }
+    String identifier = StringUtils.isNotBlank(delegation.getGranteeMailbox()) ? delegation.getGranteeMailbox()
+                                                                                : resolveGranteeIdentifier(delegation.getGranteeId(),
+                                                                                                           connector.getId());
+    MailboxAclEngine engine = aclEngineRegistry.engineFor(connector);
+    MailboxAce written;
+    try (MailboxAclSession session = session(connector, ownerUsername, ownerMailbox)) {
+      requireSupported(engine.probe(session));
+      written = engine.grant(session, OWNER_INBOX, identifier, preset, engine.myRights(session, OWNER_INBOX));
+    }
+    MailboxRights granted = written.rights() == null ? MailboxRights.NONE : written.rights();
+    DelegationPreset recorded = written.preset() == null || written.preset() == DelegationPreset.CUSTOM ? preset : written.preset();
+    // Only what was written on the server, and not over a share that ended while the
+    // server was asked: the row read above is as old as the SETACL round-trip, and a
+    // whole-row write from it would undo a leave made meanwhile (stack review N-1).
+    delegation = emailDelegationStorage.updateGrantedRights(ownerUsername,
+                                                           id,
+                                                           recorded,
+                                                           granted.letters(),
+                                                           written.nativeRights(),
+                                                           identifier,
+                                                           new Date());
+    if (delegation == null) {
+      // Revoked or gone meanwhile. The owner's next reconcile reads the server's ACL
+      // and offers the share again if this grant landed after the revoke.
+      throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
+    }
+    LOG.info("Mailbox delegation changed: actor={} ownerMailbox={} grantee={} identifier={} rights={}",
+             ownerUsername,
+             delegation.getOwnerMailbox(),
+             delegation.getGranteeId(),
+             identifier,
+             granted.letters());
+    return delegation;
   }
 
   // ---------------------------------------------------------------------------------
@@ -629,6 +726,84 @@ public class EmailDelegationService {
       return parsed > 0 ? parsed : DEFAULT_MAX_PER_USER;
     } catch (NumberFormatException e) {
       return DEFAULT_MAX_PER_USER;
+    }
+  }
+
+  /**
+   * The shared mailboxes the caller can switch to from the mail drawer's header
+   * (delegation plan 7.3): every ACCEPTED share whose INBOX is registered, with the
+   * folder key it is listed under, the rights last granted, and the unread count of that
+   * INBOX in the caller's mirror.
+   * <p>
+   * Read from eXo's rows alone, with no connection to the mail server: the switcher is
+   * drawn every time the drawer opens, and the rights it shows are the ones every write
+   * guard checks against ({@link #checkRight}), refreshed by the sync, so the chrome and
+   * the guard read the same letters. A share without a registered INBOX (accepted, then
+   * purged by the reconciler) is left out rather than offered with nothing to open.
+   * <p>
+   * Scoped to the caller by construction: only rows whose grantee is the caller, and
+   * only folder rows the caller owns.
+   *
+   * @param granteeUsername the caller
+   * @return the entries, most recently changed share first, never null
+   */
+  public List<SharedMailboxEntry> getSharedMailboxes(String granteeUsername) {
+    if (StringUtils.isBlank(granteeUsername)) {
+      return List.of();
+    }
+    List<EmailDelegation> accepted = emailDelegationStorage.getReceived(granteeUsername)
+                                                           .stream()
+                                                           .filter(delegation -> delegation.getStatus() == DelegationStatus.ACCEPTED)
+                                                           .toList();
+    if (accepted.isEmpty()) {
+      return List.of();
+    }
+    FolderMessageCounts counts = emailBoxStorage.getFolderCounts(granteeUsername);
+    Map<String, Integer> unreadCounts = counts == null || counts.getUnreadCounts() == null ? Map.of()
+                                                                                           : counts.getUnreadCounts();
+    List<SharedMailboxEntry> entries = new ArrayList<>();
+    for (EmailDelegation delegation : accepted) {
+      EmailFolder inbox = emailFolderStorage.getDelegatedFolders(granteeUsername, delegation.getId())
+                                            .stream()
+                                            .filter(folder -> MailFolderView.TYPE_DELEGATED_INBOX.equals(folder.getType()))
+                                            .findFirst()
+                                            .orElse(null);
+      if (inbox == null) {
+        continue;
+      }
+      entries.add(new SharedMailboxEntry(delegation.getId(),
+                                         delegation.getOwnerId(),
+                                         ownerFullName(delegation),
+                                         delegation.getOwnerMailbox(),
+                                         delegation.getPreset(),
+                                         delegation.getRights(),
+                                         delegation.getAffordances(),
+                                         inbox.getKey(),
+                                         unreadCounts.getOrDefault(inbox.getKey(), 0)));
+    }
+    return entries;
+  }
+
+  /**
+   * The name the switcher and the identity cue show for a share's owner: the eXo
+   * profile's full name when the owner is a known user, the mailbox address otherwise. A
+   * profile that cannot be read falls back to the address rather than failing the list.
+   *
+   * @param delegation the share
+   * @return the name, never null
+   */
+  private String ownerFullName(EmailDelegation delegation) {
+    String fallback = StringUtils.defaultString(delegation.getOwnerMailbox());
+    if (StringUtils.isBlank(delegation.getOwnerId()) || identityManager == null) {
+      return fallback;
+    }
+    try {
+      Identity identity = identityManager.getOrCreateUserIdentity(delegation.getOwnerId());
+      String fullName = identity == null || identity.getProfile() == null ? null : identity.getProfile().getFullName();
+      return StringUtils.isBlank(fullName) ? fallback : fullName;
+    } catch (RuntimeException e) {
+      LOG.debug("The display name of mailbox owner {} could not be resolved", delegation.getOwnerId(), e);
+      return fallback;
     }
   }
 
