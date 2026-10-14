@@ -337,10 +337,11 @@ export default {
     },
     // The favorite is pushed to the row's own folder, so every folder offers it but the
     // read-only ones (Trash, Spam), like every other action that writes to the server;
-    // and never on a draft, which may have no message on the server to carry the flag
-    // (the read item's rule, EXO-90438).
+    // never on a draft, which may have no message on the server to carry the flag (the
+    // read item's rule, EXO-90438); and in a shared mailbox only where the user holds w
+    // (canStar, EXO-90550).
     canFavorite() {
-      return !this.readOnly && !this.inDrafts;
+      return this.$emailConnectorMailBoxService.canStar(this.email.folder);
     },
     /**
      * Whether this row sits in a folder the interface may only read (Trash, Spam), in
