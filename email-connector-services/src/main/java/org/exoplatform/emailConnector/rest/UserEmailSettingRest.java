@@ -344,10 +344,10 @@ public class UserEmailSettingRest {
 
   // ---------------------------------------------------------------------------------
   // Mailbox delegation. The mailbox acted on is always the caller's own; a delegation
-  // id resolves only with the caller as its grantee or its owner. Status mapping, this
-  // add-on's convention: IllegalAccessException 401, ObjectNotFoundException 404,
-  // IllegalArgumentException 400 with the code, MailboxAclException 502 with the code,
-  // a caller with no mailbox connected 403 (a refusal of a known caller, backend-spring.md)
+  // id resolves only with the caller as its grantee or its owner. Status mapping:
+  // IllegalAccessException 403 (a refusal of a known caller, a caller with no mailbox
+  // connected among them, backend-spring.md), ObjectNotFoundException 404,
+  // IllegalArgumentException 400 with the code, MailboxAclException 502 with the code
   // (the mail server would not or could not), DelegationRevokedException 410 with the
   // code (the share is gone -- a business state, not an authentication failure).
   // ---------------------------------------------------------------------------------
@@ -364,7 +364,8 @@ public class UserEmailSettingRest {
              method = "GET",
              description = "Reads the ACL of the caller's INBOX on the caller's own session and maps each entry to the eXo user connected on the same connector with that identifier, with the delegation row when one exists (status PENDING, ACCEPTED, DECLINED, REVOKED, AVAILABLE). Entries granted outside eXo appear too; an identifier no eXo user holds is listed raw. When the server does not support sharing, capabilities.supported is false with the reason code and only eXo's own rows are listed.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "No mailbox connected for the caller"),
       @ApiResponse(responseCode = "502", description = "The mail server could not be reached or refused (emailConnector.delegation.*)") })
   public GrantedDelegations getGrantedDelegations(HttpServletRequest request) {
     try {
@@ -429,7 +430,8 @@ public class UserEmailSettingRest {
              description = "Writes an ACL on the caller's INBOX, on the caller's own session, for the identifier the grantee connects to the same connector with (the grantee must be connected there; a mail login is never accepted). The preset is READER (lrs) or EDITOR (lrswit), intersected with the caller's own rights; a, x, e, p and k are never granted. The grant is written now: declining later does not remove it, only the owner does. The grantee is then invited (PENDING).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Self, unknown or unconnected grantee, invalid preset, or already shared (emailConnector.delegation.*)"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "No mailbox connected for the caller"),
       @ApiResponse(responseCode = "502", description = "The mail server does not support ACLs, nothing was left to grant, or SETACL was refused (emailConnector.delegation.*)") })
   public EmailDelegation inviteDelegation(HttpServletRequest request,
                                           @RequestBody
@@ -458,7 +460,8 @@ public class UserEmailSettingRest {
              description = "DELETEACL on the caller's INBOX, on the caller's own session, for the identifier the grant was written to; the delegation goes REVOKED and the grantee's registered folders of the mailbox are dropped. Works on a declined invitation too, which is how an owner answers a decline.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "A share of a mailbox the caller is no longer connected to (emailConnector.delegation.notChangeable)"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "No mailbox connected for the caller"),
       @ApiResponse(responseCode = "404", description = "No such delegation of the caller's mailbox"),
       @ApiResponse(responseCode = "502", description = "The mail server refused DELETEACL (emailConnector.delegation.*)") })
   public void revokeDelegation(HttpServletRequest request,
@@ -494,7 +497,8 @@ public class UserEmailSettingRest {
              description = "Writes the preset (READER or EDITOR) for the grantee on the caller's INBOX and on the other folders the share covers, on the caller's own session, through the same engine call as the grant -- it replaces the grantee's entry (RFC 4314 SETACL), capped by the caller's own rights -- and records what the server holds. The status is unchanged. A narrowing a folder refused is answered 502 emailConnector.delegation.notNarrowed after the rest is recorded. Owner only: a delegation that is not the caller's own is answered 404.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Invalid preset, or a share no longer on the server (emailConnector.delegation.*)"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "No mailbox connected for the caller"),
       @ApiResponse(responseCode = "404", description = "No such delegation of the caller's mailbox"),
       @ApiResponse(responseCode = "502", description = "The mail server refused the change (emailConnector.delegation.*)") })
   public EmailDelegation changeDelegationPreset(HttpServletRequest request,
@@ -531,7 +535,8 @@ public class UserEmailSettingRest {
              description = "Grants the share's own preset on each of the caller's Sent, Archive, Trash and Spam folders the share does not cover yet, on the caller's own session, with each folder's letters (an Editor holds e where mail leaves, never on Trash), and records what the server accepted. Only for a share eXo wrote, still on the server, on a server that grants per folder. Owner only: a delegation that is not the caller's own is answered 404.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "A share that cannot be extended (emailConnector.delegation.notChangeable)"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "No mailbox connected for the caller"),
       @ApiResponse(responseCode = "404", description = "No such delegation of the caller's mailbox"),
       @ApiResponse(responseCode = "502", description = "The mail server could not be asked (emailConnector.delegation.*)") })
   public EmailDelegation extendDelegation(HttpServletRequest request,
@@ -565,7 +570,8 @@ public class UserEmailSettingRest {
              description = "On the caller's own session, finds the owner's mailbox under the Other Users namespace and reads MYRIGHTS on its INBOX. Access confirmed: ACCEPTED, with the path and the letters, and the shared INBOX registered as a folder of the caller (sync opt-in to follow). Access gone: the row goes REVOKED and 410 is answered. A DECLINED or AVAILABLE row is accepted the same way.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Not in an acceptable state, or the cap of shared mailboxes is reached (emailConnector.delegation.*)"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox on the share's connector"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "No mailbox connected for the caller on the share's connector"),
       @ApiResponse(responseCode = "404", description = "No such delegation of the caller's"),
       @ApiResponse(responseCode = "410", description = "The share is no longer on the server (emailConnector.delegation.revoked)"),
       @ApiResponse(responseCode = "502", description = "The mail server could not be asked (emailConnector.delegation.*)") })
