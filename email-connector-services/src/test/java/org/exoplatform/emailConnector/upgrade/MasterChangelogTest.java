@@ -584,7 +584,7 @@ public class MasterChangelogTest {
   }
 
   /**
-   * EXO-90548, decision 3d -- 1.0.0-83 widens EMAIL_DELEGATION.RIGHTS from 16 to 32,
+   * EXO-90548 -- 1.0.0-83 widens EMAIL_DELEGATION.RIGHTS from 16 to 32,
    * keeping an existing row's letters, rolls back to 16 and applies again, to a tag
    * placed immediately before it.
    *
@@ -614,7 +614,7 @@ public class MasterChangelogTest {
   }
 
   /**
-   * EXO-90548, decision 3d -- 1.0.0-83 as MySQL and PostgreSQL would run it, and its
+   * EXO-90548 -- 1.0.0-83 as MySQL and PostgreSQL would run it, and its
    * rollback.
    *
    * @throws Exception when the SQL cannot be generated

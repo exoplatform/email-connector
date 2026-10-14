@@ -467,7 +467,7 @@ public class UserEmailSettingRestTest {
            .andExpect(status().isBadGateway())
            .andExpect(status().reason(MailboxAclException.SERVER_REFUSED));
 
-    // #443-1: a share of a mailbox the owner is no longer connected to is a 400 with its
+    // A share of a mailbox the owner is no longer connected to is a 400 with its
     // code, not a server error.
     doThrow(new IllegalArgumentException(EmailDelegationService.NOT_CHANGEABLE_MESSAGE)).when(emailDelegationService).revoke(SIMPLE_USER, 8L);
     mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/delegations/8").with(testSimpleUser()))
