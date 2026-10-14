@@ -182,6 +182,8 @@ class EmailDelegationServiceTest {
     lenient().when(aclEngineRegistry.engineFor(connector)).thenReturn(engine);
     lenient().when(userEmailSettingService.getUserEmailSetting(OWNER)).thenReturn(setting(CONNECTOR_ID, OWNER_MAILBOX));
     lenient().when(userEmailSettingService.getUserEmailSetting(GRANTEE)).thenReturn(setting(CONNECTOR_ID, GRANTEE_MAILBOX));
+    lenient().when(userEmailSettingService.getStoredEmailAddress(OWNER)).thenReturn(OWNER_MAILBOX);
+    lenient().when(userEmailSettingService.getStoredEmailAddress(GRANTEE)).thenReturn(GRANTEE_MAILBOX);
     lenient().when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     lenient().when(emailDelegationStorage.create(any())).thenAnswer(invocation -> {
       EmailDelegation created = invocation.getArgument(0);
@@ -1533,7 +1535,7 @@ class EmailDelegationServiceTest {
     erin.setGranteeMailbox("erin@acme.com");
     when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(bob, erin));
     when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER, GRANTEE, "erin"));
-    when(userEmailSettingService.getUserEmailSetting("erin")).thenReturn(setting(CONNECTOR_ID, "erin@acme.com"));
+    when(userEmailSettingService.getStoredEmailAddress("erin")).thenReturn("erin@acme.com");
     Map<FolderRole, String> stalwart = new EnumMap<>(FolderRole.class);
     stalwart.put(FolderRole.SENT, "Sent Items");
     stalwart.put(FolderRole.TRASH, "Deleted Items");
@@ -2416,8 +2418,8 @@ class EmailDelegationServiceTest {
     erinRow.setGranteeMailbox("erin@acme.com");
     when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(bobRow, erinRow));
     when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER, GRANTEE, "carol", "erin"));
-    when(userEmailSettingService.getUserEmailSetting("carol")).thenReturn(setting(CONNECTOR_ID, "Carol@Acme.com"));
-    when(userEmailSettingService.getUserEmailSetting("erin")).thenReturn(setting(CONNECTOR_ID, "erin@acme.com"));
+    when(userEmailSettingService.getStoredEmailAddress("carol")).thenReturn("Carol@Acme.com");
+    when(userEmailSettingService.getStoredEmailAddress("erin")).thenReturn("erin@acme.com");
     // The targeted refresh of a share on offer (EXO-90548 review, finding 1).
     when(emailDelegationStorage.updateOfferedRights(eq(OWNER), eq(100L), eq("lrswit"), any())).thenAnswer(invocation -> {
       bobRow.setRights(invocation.getArgument(2));
@@ -2522,7 +2524,7 @@ class EmailDelegationServiceTest {
     aliceRow.setRemoteRoot("Other Users/alice");
     when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(aliceRow));
     when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of("carol"));
-    when(userEmailSettingService.getUserEmailSetting("carol")).thenReturn(setting(CONNECTOR_ID, "carol@acme.com"));
+    when(userEmailSettingService.getStoredEmailAddress("carol")).thenReturn("carol@acme.com");
 
     service.getReceivedDelegations(GRANTEE, true);
 
@@ -3037,7 +3039,7 @@ class EmailDelegationServiceTest {
     when(engine.myRights(any(), eq("Other Users/carol/INBOX"))).thenReturn(MailboxRights.of("lrs"));
     when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of());
     when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of("carol"));
-    when(userEmailSettingService.getUserEmailSetting("carol")).thenReturn(setting(CONNECTOR_ID, "carol@acme.com"));
+    when(userEmailSettingService.getStoredEmailAddress("carol")).thenReturn("carol@acme.com");
 
     service.getReceivedDelegations(GRANTEE, true);
 
@@ -3085,6 +3087,30 @@ class EmailDelegationServiceTest {
 
     verify(emailDelegationStorage, never()).getReceived(anyString());
     assertEquals(List.of(), service.getDelegatedFolderKeys(" "));
+  }
+
+  /**
+   * Mapping the server's identifiers back to people reads each connected user's stored
+   * address and nothing else: no connector, no credential decoded, and nobody the ACL
+   * does not name.
+   */
+  @Test
+  void theOwnersListingNamesPeopleWithoutReadingAnyonesCredentials() throws Exception {
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(OWNER_MAILBOX, MailboxRights.of("lrswipkxtea")),
+                                                              MailboxAce.ofLetters("carol@acme.com", MailboxRights.of("lrs"))));
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of());
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER, "carol", "dave"));
+    when(userEmailSettingService.getStoredEmailAddress("carol")).thenReturn("Carol@Acme.com");
+    when(userEmailSettingService.getStoredEmailAddress("dave")).thenReturn("dave@acme.com");
+
+    GrantedDelegations granted = service.getGrantedDelegations(OWNER);
+
+    assertEquals(1, granted.grantees().size());
+    assertEquals("carol", granted.grantees().get(0).granteeId());
+    verify(userEmailSettingService, never()).getUserEmailSetting("carol");
+    verify(userEmailSettingService, never()).getUserEmailSetting("dave");
+    verify(userEmailSettingService, times(1)).getUserEmailSetting(OWNER);
   }
 
   private EmailDelegation row(DelegationStatus status, DelegationOrigin origin) {
