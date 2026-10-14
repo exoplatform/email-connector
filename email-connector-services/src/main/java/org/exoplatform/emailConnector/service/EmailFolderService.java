@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.service;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
@@ -475,6 +476,117 @@ public class EmailFolderService {
   }
 
   /**
+   * A walk's folders without those of the mailboxes other people share with the user
+   * (EXO-90557). A user's own {@code LIST "*"} returns them too -- Stalwart answers
+   * {@code Shared Folders/alice@acme.com/Inbox} to bob -- and registered as bob's own
+   * they would be mirrored as his mail, pass every write guard as his, and could even
+   * be taken for a built-in by name ({@code .../Sent}). They are the delegation's to
+   * register, at accept, under their share.
+   * <p>
+   * Two ways of knowing them, both needed: the namespaces the server advertises
+   * (NAMESPACE, Other Users and Shared), and, for a server that advertises none
+   * (Stalwart 0.11.8), the shape the delegation engine recognises -- a top-level
+   * container that cannot hold mail itself and has an owner with an INBOX under it,
+   * read here off the walk's own listing rather than by listing again. A user's own
+   * {@code Projects/Acme/Inbox} is not mistaken for one as long as {@code Projects} is
+   * a folder that holds mail, which is the rule the engine applies too.
+   *
+   * @param folders the walk's folders
+   * @param namespaceRoots the Other Users and Shared namespace roots the server
+   *          advertised, possibly empty
+   * @return the folders, minus those under another user's or a shared namespace
+   */
+  public List<DiscoveredFolder> withoutOtherUsersFolders(List<DiscoveredFolder> folders, Collection<String> namespaceRoots) {
+    if (folders == null || folders.isEmpty()) {
+      return folders == null ? List.of() : folders;
+    }
+    Set<String> roots = new HashSet<>();
+    for (String root : namespaceRoots == null ? List.<String> of() : namespaceRoots) {
+      if (StringUtils.isNotBlank(root)) {
+        roots.add(root);
+      }
+    }
+    if (roots.isEmpty()) {
+      // Only for a server that advertises no namespace, as the delegation engine does:
+      // on one that does, a user's own \Noselect container is never taken for a share.
+      roots.addAll(sharedRootsByShape(folders));
+    }
+    if (roots.isEmpty()) {
+      return folders;
+    }
+    return folders.stream().filter(folder -> !underAnyRoot(folder, roots)).toList();
+  }
+
+  /**
+   * The shared-namespace roots a walk's own listing shows: a top-level folder that
+   * cannot hold mail, one of whose children has an INBOX child --
+   * {@code Shared Folders/<owner>/Inbox}.
+   *
+   * @param folders the walk's folders
+   * @return the roots, possibly empty
+   */
+  private Set<String> sharedRootsByShape(List<DiscoveredFolder> folders) {
+    Set<String> roots = new HashSet<>();
+    for (DiscoveredFolder container : folders) {
+      String name = container == null ? null : container.fullName();
+      String delimiter = container == null ? null : container.delimiter();
+      if (StringUtils.isBlank(name) || StringUtils.isEmpty(delimiter) || container.selectable() || name.contains(delimiter)
+          || MailFolder.INBOX.equalsIgnoreCase(name)) {
+        continue;
+      }
+      String prefix = name + delimiter;
+      for (DiscoveredFolder candidate : folders) {
+        String candidateName = candidate == null ? null : candidate.fullName();
+        if (candidateName == null || !candidateName.startsWith(prefix)) {
+          continue;
+        }
+        String[] below = StringUtils.splitByWholeSeparatorPreserveAllTokens(candidateName.substring(prefix.length()), delimiter);
+        if (below.length == 2 && MailFolder.INBOX.equalsIgnoreCase(below[1])) {
+          roots.add(name);
+          break;
+        }
+      }
+    }
+    return roots;
+  }
+
+  /**
+   * Whether a folder is a namespace root or lies under one.
+   *
+   * @param folder the folder
+   * @param roots the roots, without trailing delimiter
+   * @return true when the folder belongs to another user's or a shared namespace
+   */
+  private boolean underAnyRoot(DiscoveredFolder folder, Set<String> roots) {
+    return folder != null && isUnderAnyRoot(folder.fullName(), folder.delimiter(), roots);
+  }
+
+  /**
+   * Whether a folder name is one of the namespace roots a server uses for other users'
+   * and shared mailboxes, or lies under one -- the one spelling of that test, for the
+   * folder walk and for the Trash and Archive finders alike (EXO-90557).
+   *
+   * @param fullName the folder's full name
+   * @param delimiter the folder's hierarchy delimiter, "/" when unknown
+   * @param roots the roots, with or without their trailing delimiter
+   * @return true when the folder is another mailbox's
+   */
+  public static boolean isUnderAnyRoot(String fullName, String delimiter, Collection<String> roots) {
+    if (StringUtils.isBlank(fullName) || roots == null) {
+      return false;
+    }
+    String separator = StringUtils.defaultIfEmpty(delimiter, "/");
+    for (String root : roots) {
+      String bare = StringUtils.removeEnd(root, separator);
+      if (StringUtils.isNotBlank(bare) && (fullName.equals(bare) || fullName.startsWith(bare + separator))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+
+  /**
    * Reconciles the registry with what a walk found. New folders are registered
    * (opt-in off); folders seen again are refreshed and un-missed; folders not seen
    * are marked missing and, if they were missing already, deleted -- one grace walk,
@@ -498,6 +610,12 @@ public class EmailFolderService {
       seenNames.add(discovered.fullName());
       try {
         EmailFolder existing = emailFolderStorage.getFolderByRemoteName(username, discovered.fullName());
+        if (existing != null && existing.getDelegationId() != null) {
+          // A folder of a mailbox somebody shared with the user, registered under its
+          // share: the delegation's, never refreshed or re-typed here as the user's own
+          // (EXO-90557).
+          continue;
+        }
         if (existing == null) {
           EmailFolder folder = new EmailFolder();
           folder.setUserId(username);

@@ -25,6 +25,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+import javax.mail.Store;
+
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
@@ -340,12 +342,21 @@ public class EmailDelegationService {
    * @param id the delegation id
    * @throws ObjectNotFoundException when no such row belongs to the caller as owner
    * @throws IllegalAccessException when the caller has no connected mailbox
+   * @throws IllegalArgumentException {@code emailConnector.delegation.notChangeable} for a
+   *           row of a mailbox the caller is no longer connected to
    * @throws MailboxAclException when the server refuses DELETEACL
    */
   public void revoke(String ownerUsername, long id) throws ObjectNotFoundException, IllegalAccessException {
     EmailDelegation delegation = asOwner(ownerUsername, id);
     UserEmailSetting ownerSetting = connectedSetting(ownerUsername);
     EmailConnector connector = connectorOf(ownerSetting);
+    if (!connector.getId().equals(delegation.getConnectorId())
+        || !mailboxIdentifier(ownerSetting).equalsIgnoreCase(delegation.getOwnerMailbox())) {
+      // A row of a mailbox the owner is no longer connected to (EXO-90557): its DELETEACL
+      // would remove the grantee's entry from the mailbox connected NOW, which this row
+      // never covered.
+      throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
+    }
     String identifier = StringUtils.isNotBlank(delegation.getGranteeMailbox()) ? delegation.getGranteeMailbox()
                                                                                 : resolveGranteeIdentifierOrNull(delegation.getGranteeId(),
                                                                                                                  connector.getId());
@@ -830,6 +841,118 @@ public class EmailDelegationService {
   // ---------------------------------------------------------------------------------
 
   /**
+   * The folder keys of every mailbox somebody shared with the caller -- what the
+   * caller's own reads leave out (EXO-90557): their search, their conversations, their
+   * list's thread counts. Read from eXo's rows, no mail server.
+   *
+   * @param username the caller
+   * @return the {@code CUSTOM:<id>} keys, possibly empty, never null
+   */
+  public List<String> getDelegatedFolderKeys(String username) {
+    if (StringUtils.isBlank(username)) {
+      return List.of();
+    }
+    List<String> keys = new ArrayList<>();
+    for (EmailDelegation delegation : emailDelegationStorage.getReceived(username)) {
+      // Only a share in use has folders: leaving, declining and revoking drop them.
+      if (delegation.getStatus() == DelegationStatus.ACCEPTED) {
+        keys.addAll(getMailboxFolderKeys(username, delegation.getId()));
+      }
+    }
+    return keys;
+  }
+
+  /**
+   * The folder keys of one mailbox shared with the caller.
+   *
+   * @param username the caller
+   * @param delegationId the share
+   * @return the keys, possibly empty, never null
+   */
+  public List<String> getMailboxFolderKeys(String username, long delegationId) {
+    return emailFolderStorage.getDelegatedFolders(username, delegationId).stream().map(EmailFolder::getKey).toList();
+  }
+
+  /**
+   * Re-reads what the server lets the caller do in a mailbox shared with them, on the
+   * caller's own session -- the connection their sync already holds -- at the start of
+   * each pass over it (EXO-90557). The stored rights are what every control and every
+   * write guard reads, and until now they were set at accept and never re-read: a share
+   * the owner narrowed, widened or removed on the server went on answering with what it
+   * was.
+   * <p>
+   * MYRIGHTS on the shared INBOX decides: no read right, or a refusal, and the share is
+   * revoked (its folders dropped, the badge told); otherwise changed letters are
+   * recorded, with the preset they read as, and a move of the right to keep read state
+   * announced ({@link EmailDelegationEvent.Type#RIGHTS_CHANGED}). An unchanged answer
+   * writes nothing.
+   *
+   * @param granteeUsername the caller
+   * @param delegation an accepted share of the caller's
+   * @param store the caller's own connected store
+   * @return the share as it now stands, null when it was revoked
+   */
+  public EmailDelegation refreshGranteeRights(String granteeUsername, EmailDelegation delegation, Store store) {
+    EmailFolder inbox = emailFolderStorage.getDelegatedFolders(granteeUsername, delegation.getId())
+                                          .stream()
+                                          .filter(folder -> MailFolderView.TYPE_DELEGATED_INBOX.equals(folder.getType()))
+                                          .findFirst()
+                                          .orElse(null);
+    if (inbox == null) {
+      return delegation;
+    }
+    EmailConnector connector = emailConnectorService.getEmailConnector(delegation.getConnectorId());
+    if (connector == null) {
+      return delegation;
+    }
+    MailboxAclEngine engine = aclEngineRegistry.engineFor(connector);
+    // The sync's own store, not closed here: the session only borrows it.
+    MailboxAclSession session = new MailboxAclSession(connector, granteeUsername, delegation.getGranteeMailbox(), () -> store, null);
+    MailboxRights rights;
+    try {
+      rights = engine.myRights(session, inbox.getRemoteName());
+    } catch (MailboxAclException e) {
+      if (!MailboxAclException.SERVER_REFUSED.equals(e.getCode())) {
+        LOG.debug("The rights of {} on shared mailbox {} could not be read; kept as they were",
+                  granteeUsername,
+                  delegation.getOwnerMailbox(),
+                  e);
+        return delegation;
+      }
+      rights = MailboxRights.NONE;
+    }
+    if (!rights.canRead()) {
+      // Re-read, like the rights update below: a leave or a revoke made during the pass
+      // stands as it is, and is not announced twice.
+      EmailDelegation current = emailDelegationStorage.getAsGrantee(granteeUsername, delegation.getId());
+      if (current != null && current.getStatus() == DelegationStatus.ACCEPTED) {
+        LOG.info("Mailbox delegation found withdrawn: grantee={} ownerMailbox={}", granteeUsername, delegation.getOwnerMailbox());
+        markRevoked(current, DelegationStatus.REVOKED);
+      }
+      return null;
+    }
+    if (rights.letters().equals(delegation.getRights())) {
+      return delegation;
+    }
+    // Re-read before writing: the row given was read at the start of the pass, and the
+    // storage writes every column back -- a badge or notification choice, an activity
+    // stamp or an owner's revoke made since would otherwise be undone.
+    EmailDelegation current = emailDelegationStorage.getAsGrantee(granteeUsername, delegation.getId());
+    if (current == null || current.getStatus() != DelegationStatus.ACCEPTED) {
+      return null;
+    }
+    boolean keptSeen = current.getMailboxRights().canKeepSeen();
+    current.setRights(rights.letters());
+    current.setPreset(engine.presetOf(rights));
+    current.setLastRightsCheckDate(new Date());
+    EmailDelegation updated = emailDelegationStorage.update(current);
+    if (keptSeen != rights.canKeepSeen()) {
+      publish(EmailDelegationEvent.Type.RIGHTS_CHANGED, null, updated);
+    }
+    return updated;
+  }
+
+  /**
    * The shared mailboxes the caller is subscribed to AND currently in -- what the
    * delegated branch of their sync walks.
    * <p>
@@ -1146,8 +1269,20 @@ public class EmailDelegationService {
         row.setOrigin(DelegationOrigin.SERVER);
         row.setLastRightsCheckDate(new Date());
         row = createOrReread(row);
-      } else if (row != null && (!ace.rights().letters().equals(row.getRights())
-                                 || !StringUtils.equals(ace.nativeRights(), row.getNativeRights()))) {
+      } else if (row != null && (row.getStatus() == DelegationStatus.REVOKED || row.getStatus() == DelegationStatus.GONE)) {
+        // The owner's own ACL names the grantee again (#443-2): the share stands on the
+        // server, so the row is not left dead in eXo -- offered to the grantee again,
+        // with the letters the ACL holds.
+        row.setRights(ace.rights().letters());
+        row.setNativeRights(ace.nativeRights());
+        row = reopen(row);
+      } else if (row != null && row.getStatus() != DelegationStatus.ACCEPTED
+                 && (!ace.rights().letters().equals(row.getRights())
+                     || !StringUtils.equals(ace.nativeRights(), row.getNativeRights()))) {
+        // Not on a share in use (EXO-90557): its stored rights are what the grantee's own
+        // MYRIGHTS answered at their last sync (refreshGranteeRights) -- what their
+        // mailbox's controls and guards read -- and the owner's ACE, which a server may
+        // spell differently, is shown to the owner from the ACL itself, not from the row.
         row.setRights(ace.rights().letters());
         row.setNativeRights(ace.nativeRights());
         row.setLastRightsCheckDate(new Date());
@@ -1238,7 +1373,14 @@ public class EmailDelegationService {
       Set<String> listedRoots = new HashSet<>();
       for (SharedMailbox mailbox : shared) {
         listedRoots.add(mailbox.remoteRoot());
-        if (rowFor(rows, connector.getId(), mailbox) != null) {
+        EmailDelegation known = rowFor(rows, connector.getId(), mailbox);
+        if (known != null) {
+          if (known.getStatus() == DelegationStatus.REVOKED || known.getStatus() == DelegationStatus.GONE) {
+            // The server lists the share again (#443-2): a transient refusal, the stale
+            // rights window, a listing miss -- REVOKED was one negative answer, not the
+            // truth. Offered again, never subscribed on the grantee's behalf.
+            reopen(known);
+          }
           continue;
         }
         if (connected == null) {
@@ -1272,6 +1414,22 @@ public class EmailDelegationService {
         }
       }
     }
+  }
+
+  /**
+   * Offers again a share eXo had ended (REVOKED, GONE) that the server lists again
+   * (#443-2): back to AVAILABLE -- proposed to the grantee, never subscribed on their
+   * behalf -- with its revoke date cleared and its rights checked now.
+   *
+   * @param row the ended row
+   * @return the row as it now stands
+   */
+  private EmailDelegation reopen(EmailDelegation row) {
+    row.setStatus(DelegationStatus.AVAILABLE);
+    row.setRevokedDate(null);
+    row.setLastRightsCheckDate(new Date());
+    LOG.info("Mailbox delegation listed again by the server: grantee={} ownerMailbox={}", row.getGranteeId(), row.getOwnerMailbox());
+    return emailDelegationStorage.update(row);
   }
 
   /**

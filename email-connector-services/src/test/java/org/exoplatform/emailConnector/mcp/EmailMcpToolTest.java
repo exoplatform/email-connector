@@ -107,7 +107,7 @@ class EmailMcpToolTest {
 
   @Test
   void getEmailById() throws Exception {
-    when(emailBoxService.getOwnedEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(buildEmail(EMAIL_ID));
+    when(emailBoxService.getOwnMailboxEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(buildEmail(EMAIL_ID));
 
     EmailModel model = emailMcpTool.getEmailById(EMAIL_ID);
 
@@ -122,7 +122,7 @@ class EmailMcpToolTest {
 
   @Test
   void getEmailByIdNotFoundFails() throws Exception {
-    when(emailBoxService.getOwnedEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(null);
+    when(emailBoxService.getOwnMailboxEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(null);
     assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.getEmailById(EMAIL_ID));
   }
 
@@ -133,7 +133,7 @@ class EmailMcpToolTest {
    */
   @Test
   void getEmailByIdRefusesSomebodyElsesEmail() throws Exception {
-    when(emailBoxService.getOwnedEmailById(eq(EMAIL_ID), eq(USERNAME))).thenThrow(new IllegalAccessException("not yours"));
+    when(emailBoxService.getOwnMailboxEmailById(eq(EMAIL_ID), eq(USERNAME))).thenThrow(new IllegalAccessException("not yours"));
     assertThrows(IllegalAccessException.class, () -> emailMcpTool.getEmailById(EMAIL_ID));
     verify(emailBoxService, never()).getEmailById(anyLong(), any());
   }
@@ -147,7 +147,7 @@ class EmailMcpToolTest {
   void getEmailByIdCarriesTheThreadId() throws Exception {
     Email email = buildEmail(EMAIL_ID);
     email.setThreadId("thread-1");
-    when(emailBoxService.getOwnedEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(email);
+    when(emailBoxService.getOwnMailboxEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(email);
 
     EmailModel model = emailMcpTool.getEmailById(EMAIL_ID);
 
