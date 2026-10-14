@@ -99,7 +99,7 @@ public class EmailBoxRest {
   @Operation(summary = "Gets user emails", method = "GET", description = "Gets the user's emails for a folder (INBOX by default, or SENT / ARCHIVE / DRAFTS / TRASH / JUNK for the in-app folder switch, or CUSTOM:<id> for one of the user's own mirrored folders), optionally restricted to the starred ones")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "403", description = "A right the caller does not hold in that shared mailbox (emailConnector.delegation.right.missing.<letter>)"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public EmailBox getEmailBox(HttpServletRequest request,
@@ -167,7 +167,8 @@ public class EmailBoxRest {
              description = "Opts one of the user's own folders in or out of the mirror. Opting out deletes the mirrored copy. Answers 400 emailConnector.folder.tooMany when the cap is reached, 400 emailConnector.folder.unknown for a folder that is not the caller's")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "A right the caller does not hold in that shared mailbox (emailConnector.delegation.right.missing.<letter>)"), })
   public MailFolderView setFolderSync(HttpServletRequest request,
                                       @Parameter(description = "The folder's registry id", required = true)
                                       @PathVariable("id")
@@ -235,7 +236,8 @@ public class EmailBoxRest {
              description = "Renames the folder on the mail server and updates the registry row in place, so its mirrored messages keep their place. Only the folder's own name changes, never its parent. Answers 400 emailConnector.folder.unknown for a folder that is not the caller's, 400 emailConnector.folder.name.blank / .tooLong / .nested / .reserved for an invalid name, 400 emailConnector.folder.name.duplicate for a name already used, 400 emailConnector.folder.renameFailed when the server refuses")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "A right the caller does not hold in that shared mailbox (emailConnector.delegation.right.missing.<letter>)"), })
   public MailFolderView renameFolder(HttpServletRequest request,
                                      @Parameter(description = "The folder's registry id", required = true)
                                      @PathVariable("id")
@@ -276,7 +278,8 @@ public class EmailBoxRest {
              description = "Deletes the folder on the mail server, permanently, and drops its mirror. Refused with 400 emailConnector.folder.notEmpty while the server still lists mail in it -- empty it first. Answers 400 emailConnector.folder.unknown for a folder that is not the caller's, 400 emailConnector.folder.deleteFailed when the server refuses")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "A right the caller does not hold in that shared mailbox (emailConnector.delegation.right.missing.<letter>)"), })
   public ResponseEntity<String> deleteFolder(HttpServletRequest request,
                                              @Parameter(description = "The folder's registry id", required = true)
                                              @PathVariable("id")
@@ -314,7 +317,8 @@ public class EmailBoxRest {
              description = "Checks one of the user's mirrored folders against the server and syncs it when it changed, on this request. A no-op while a mailbox synchronization is running")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "A right the caller does not hold in that shared mailbox (emailConnector.delegation.right.missing.<letter>)"), })
   public ResponseEntity<String> synchronizeFolder(HttpServletRequest request,
                                                   @Parameter(description = "The folder's registry id", required = true)
                                                   @PathVariable("id")
@@ -355,6 +359,7 @@ public class EmailBoxRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "A right the caller does not hold in that shared mailbox (emailConnector.delegation.right.missing.<letter>)"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public Map<String, Integer> moveEmails(HttpServletRequest request,
                                          @Parameter(description = "The IMAP UIDs to move, numbered within the source folder", required = true)
@@ -408,6 +413,7 @@ public class EmailBoxRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "A right the caller does not hold in that shared mailbox (emailConnector.delegation.right.missing.<letter>)"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public Map<String, Integer> undoMoveEmails(HttpServletRequest request,
                                              @Parameter(description = "The Message-IDs of the emails to put back", required = true)
@@ -848,7 +854,7 @@ public class EmailBoxRest {
   @Operation(summary = "Updates emails read status", method = "PATCH", description = "Marks the given messages read or unread, locally and on the mail server. The folder is part of the address, not a filter: IMAP UIDs are numbered per folder. Returns the number of messages whose remote update failed (their local change is reverted).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "403", description = "A right the caller does not hold in that shared mailbox (emailConnector.delegation.right.missing.<letter>)"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public Map<String, Integer> updateEmailReadStatus(HttpServletRequest request,
@@ -901,8 +907,8 @@ public class EmailBoxRest {
   @Operation(summary = "Stars or unstars emails", method = "PATCH", description = "Sets or clears the IMAP \\Flagged flag ('star') of the given emails, in the folder they are listed in, locally and on the mail server, so the star shows in every mail client. The folder is part of the address: IMAP UIDs are numbered per folder. It is a folder of the caller's own mailbox, or a folder of a mailbox shared with the caller where they hold w (the owner sees the star too), never a shared Trash, Spam or Drafts. Returns the number of emails whose remote update failed (their local change is reverted).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "A folder the star is not offered in (emailConnector.star.folderNotSupported)"),
-      @ApiResponse(responseCode = "401", description = "A right the caller does not hold in that shared folder (emailConnector.delegation.right.missing.w)"),
-      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "A right the caller does not hold in that shared mailbox (emailConnector.delegation.right.missing.<letter>)"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"),
       @ApiResponse(responseCode = "410", description = "The mailbox is no longer shared with the caller"), })
@@ -924,7 +930,7 @@ public class EmailBoxRest {
       response.put("failedUpdates", failedUpdates);
       return response;
     } catch (MailboxRightMissingException e) {
-      // As for the read status: 401 with the missing right named, so the interface can
+      // As for the read status: 403 with the missing right named, so the interface can
       // say which and correct a star control that went stale.
       throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
     } catch (DelegationRevokedException e) {
@@ -953,7 +959,7 @@ public class EmailBoxRest {
   @Operation(summary = "Deletes email", method = "DELETE", description = "Moves the given messages, out of the folder they are listed in, to the Trash folder. The folder is part of the address, not a filter: IMAP UIDs are numbered per folder, so the same id names a different message in INBOX and in SENT. With conversation=true, every other message of those messages' conversations goes along, wherever it is cached (inbox, Sent, archive, the user's folders): the result Gmail gives when a conversation is deleted there.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "403", description = "A right the caller does not hold in that shared mailbox (emailConnector.delegation.right.missing.<letter>)"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public Map<String, Integer> deleteEmail(HttpServletRequest request,
@@ -1010,7 +1016,7 @@ public class EmailBoxRest {
   @Operation(summary = "Archives email", method = "DELETE", description = "Moves the given messages, out of the folder they are listed in, to the Archive folder. The folder is part of the address, not a filter: IMAP UIDs are numbered per folder. Archiving from the Archive folder itself is refused and counted as failed.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "403", description = "A right the caller does not hold in that shared mailbox (emailConnector.delegation.right.missing.<letter>)"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public Map<String, Integer> archiveEmail(HttpServletRequest request,
@@ -1069,6 +1075,7 @@ public class EmailBoxRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "400", description = "Refused by message code, e.g. emailConnector.folder.crossMailbox"),
       @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "A right the caller does not hold in that shared mailbox (emailConnector.delegation.right.missing.<letter>)"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public Map<String, Object> restoreEmail(HttpServletRequest request,
                                           @Parameter(description = "Email remote ids", required = true)
@@ -1120,6 +1127,7 @@ public class EmailBoxRest {
   @Operation(summary = "Permanently deletes trashed emails", method = "DELETE", description = "Removes the given messages from the Trash folder on the mail server, with no copy kept anywhere")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "A right the caller does not hold in that shared mailbox (emailConnector.delegation.right.missing.<letter>)"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public Map<String, Integer> purgeEmail(HttpServletRequest request,
                                          @Parameter(description = "Email remote ids", required = true)
@@ -1176,6 +1184,7 @@ public class EmailBoxRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "400", description = "Refused by message code, e.g. emailConnector.folder.crossMailbox"),
       @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "A right the caller does not hold in that shared mailbox (emailConnector.delegation.right.missing.<letter>)"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public Map<String, Integer> markAsJunk(HttpServletRequest request,
                                          @Parameter(description = "Email remote ids", required = true)
@@ -1237,6 +1246,7 @@ public class EmailBoxRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "400", description = "Refused by message code, e.g. emailConnector.folder.crossMailbox"),
       @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "A right the caller does not hold in that shared mailbox (emailConnector.delegation.right.missing.<letter>)"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public Map<String, Object> restoreFromJunk(HttpServletRequest request,
                                              @Parameter(description = "Email remote ids", required = true)
