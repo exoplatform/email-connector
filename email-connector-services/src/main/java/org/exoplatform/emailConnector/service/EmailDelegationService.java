@@ -1417,7 +1417,8 @@ public class EmailDelegationService {
    * The delegate's letters on one folder of a share: the folder's own, as discovery read
    * them, for a folder beside INBOX (EXO-90548); the share's for its INBOX -- re-read
    * every periodic pass -- and for a row discovery has not read yet, which knows no
-   * better.
+   * better. Either way as eXo acts on them for a delegate: without a {@code w} that is
+   * only Stalwart's coupling of a Reader's {@code s} ({@link MailboxRights#withoutCoupledWrite()}).
    *
    * @param folder the delegated folder
    * @param delegation its share
@@ -1427,9 +1428,9 @@ public class EmailDelegationService {
     // "Discovery has read this folder" is its stamp, not its letters: no letter at all is
     // stored as an empty string, which Oracle reads back as null.
     if (folder != null && MailFolderView.TYPE_DELEGATED.equals(folder.getType()) && folder.getRightsCheckDate() != null) {
-      return MailboxRights.of(StringUtils.defaultString(folder.getRights()));
+      return MailboxRights.of(StringUtils.defaultString(folder.getRights())).withoutCoupledWrite();
     }
-    return delegation.getMailboxRights();
+    return delegation.getMailboxRights().withoutCoupledWrite();
   }
 
   /**

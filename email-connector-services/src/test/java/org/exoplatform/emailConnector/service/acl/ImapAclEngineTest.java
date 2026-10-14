@@ -258,7 +258,9 @@ class ImapAclEngineTest {
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrse")), "e without t");
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswitea")), "a");
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswitex")), "x");
-    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrsw")), "a Reader plus star is neither");
+    // A w beside s alone is Stalwart's coupling of a Reader's s (EXO-90556): a Reader.
+    // Beside another write right it stays a write, and the set is neither preset.
+    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswi")), "a Reader plus star and insert is neither");
     assertEquals(DelegationPreset.CUSTOM, engine.presetOf(null));
   }
 
@@ -757,6 +759,24 @@ class ImapAclEngineTest {
    *
    * @return the session
    */
+  /**
+   * EXO-90556, live on Stalwart 0.11.8 -- a Reader granted {@code lrs} reads back
+   * {@code wsrl}: still a Reader, never CUSTOM (no "set in your mail app" row, no replace
+   * confirmation), and the entry keeps the letters the server answered.
+   */
+  @Test
+  void aStalwartReaderWithItsCoupledWriteReadsAsAReader() throws MessagingException {
+    assertEquals(DelegationPreset.READER, engine.presetOf(MailboxRights.of("wsrl")));
+    assertEquals(DelegationPreset.EDITOR, engine.presetOf(MailboxRights.of("rlitesw")));
+    assertEquals(DelegationPreset.CUSTOM, engine.presetOf(MailboxRights.of("lrswt")), "w and t beside a Reader is neither");
+    // The entry keeps the w the server answered: its letters are read faithfully.
+    when(inbox.getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("wsrl")) });
+    MailboxAce ace = engine.listAcl(session(), "INBOX").get(0);
+    assertEquals(DelegationPreset.READER, ace.preset());
+    assertEquals("lrsw", ace.nativeRights());
+    assertEquals("lrsw", ace.rights().letters());
+  }
+
   private MailboxAclSession session() {
     return session(store);
   }

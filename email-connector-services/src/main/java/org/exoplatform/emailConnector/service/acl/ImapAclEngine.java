@@ -525,9 +525,11 @@ public class ImapAclEngine implements MailboxAclEngine {
    * exactly, or a preset's letters plus only what the server adds by itself because it
    * couples letters (RFC 4314 section 2.1.1). Stalwart answers {@code lrswit} as
    * {@code tewsirl}: it stores {@code e} with {@code t}, so an Editor granted from eXo
-   * read back as CUSTOM (observed on the rig, 2026-09-23). The couplings admitted are
-   * the RFC's legacy ones and nothing else -- {@code e} and {@code d} beside {@code t},
-   * {@code c} beside {@code k} -- so a set granting more than coupling implies
+   * read back as CUSTOM (observed on the rig, 2026-09-23), and it stores a Reader's
+   * {@code s} with {@code w}: {@code lrs} reads back {@code wsrl} (2026-09-24). The
+   * couplings admitted are the RFC's legacy ones and Stalwart's -- {@code e} and
+   * {@code d} beside {@code t}, {@code c} beside {@code k}, {@code w} beside {@code s} --
+   * so a set granting more than coupling implies
    * ({@code a}, {@code x}, {@code e} without {@code t}) is never a preset.
    *
    * @param rights the letters a server answered
@@ -571,7 +573,8 @@ public class ImapAclEngine implements MailboxAclEngine {
   /**
    * Whether a server may add a letter by itself because the granted letters couple it
    * (RFC 4314 section 2.1.1): {@code e} and the legacy {@code d} with {@code t}, the
-   * legacy {@code c} with {@code k}.
+   * legacy {@code c} with {@code k}, and {@code w} with {@code s} -- Stalwart answers a
+   * Reader granted {@code lrs} as {@code wsrl} (EXO-90556).
    *
    * @param letter the extra letter observed
    * @param granted the letters granted
@@ -580,6 +583,8 @@ public class ImapAclEngine implements MailboxAclEngine {
   private static boolean impliedByCoupling(char letter, String granted) {
     return switch (letter) {
     case 'e', 'd' -> granted.indexOf('t') >= 0;
+    // Stalwart stores a Reader's s with w (EXO-90556): lrs reads back wsrl.
+    case 'w' -> granted.indexOf('s') >= 0;
     case 'c' -> granted.indexOf('k') >= 0;
     default -> false;
     };
