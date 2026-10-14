@@ -30,7 +30,7 @@ import org.exoplatform.emailConnector.event.DelegatedFoldersDroppedEvent;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
 /**
- * Stack review #437-1 -- the glue between a share's dropped folders and their mail.
+ * The glue between a share's dropped folders and their mail.
  */
 @ExtendWith(MockitoExtension.class)
 class DelegatedMailPurgeListenerTest {

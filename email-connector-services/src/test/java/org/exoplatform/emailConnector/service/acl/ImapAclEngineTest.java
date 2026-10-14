@@ -549,7 +549,7 @@ class ImapAclEngineTest {
   // ---------------------------------------------------------------------------------
 
   /**
-   * The rule a reviewer checks (PO decision Q-1): an Editor holds {@code e} on every
+   * The rule a reviewer checks: an Editor holds {@code e} on every
    * folder mail leaves from and never on Trash, where it would be permanent deletion; a
    * Reader holds {@code lrs} everywhere; the owner's own rights cap every one.
    */
@@ -654,7 +654,7 @@ class ImapAclEngineTest {
   }
 
   /**
-   * EXO-90548 review -- a role is recognised by name only at the top of the owner's
+   * A role is recognised by name only at the top of the owner's
    * mailbox or directly under INBOX: a nested "Clients/Deleted" or "Old/Junk Mail",
    * listed first, is never taken for the Trash or the Spam and shared.
    */
@@ -672,7 +672,7 @@ class ImapAclEngineTest {
   }
 
   /**
-   * EXO-90548 review -- a top-level role folder wins over a same-role child of INBOX,
+   * A top-level role folder wins over a same-role child of INBOX,
    * whatever the LIST order: a user's "INBOX/Spam" listed first never beats the server's
    * own "Junk Mail".
    */

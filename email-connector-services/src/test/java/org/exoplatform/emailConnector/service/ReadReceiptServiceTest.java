@@ -261,7 +261,7 @@ class ReadReceiptServiceTest {
   }
 
   /**
-   * Stack review #437-2 (decision 1) -- a delegate is never offered to answer a request
+   * A delegate is never offered to answer a request
    * on a shared mailbox's mail, whatever the policy (ALWAYS included) and whatever the
    * folder (its Sent, keyed CUSTOM:, included); and an answer asked for anyway is
    * refused before anything is claimed, sent or written on the owner's copy.

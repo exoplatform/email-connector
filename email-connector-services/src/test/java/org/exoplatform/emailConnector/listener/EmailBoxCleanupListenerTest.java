@@ -61,7 +61,7 @@ public class EmailBoxCleanupListenerTest {
     verify(emailBoxService).deleteUserEmails(USERNAME);
     verify(emailContactService).resetCollectionBackfill(USERNAME);
     verify(emailContactService).releaseCollectedContacts(USERNAME);
-    // #432-3: the mailboxes shared with the user end with the account that read them.
+    // The mailboxes shared with the user end with the account that read them.
     verify(emailDelegationService).endReceivedShares(USERNAME);
   }
 

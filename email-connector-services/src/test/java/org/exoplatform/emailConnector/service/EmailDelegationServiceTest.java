@@ -192,7 +192,7 @@ class EmailDelegationServiceTest {
       return created;
     });
     lenient().when(emailDelegationStorage.update(any())).thenAnswer(invocation -> invocation.getArgument(0));
-    // The grantee's targeted accept (EXO-90548 review, finding 1), answered as the
+    // The grantee's targeted accept, answered as the
     // storage does: accept's own columns on the row the grantee reads, the rest as it is.
     lenient().when(emailDelegationStorage.accept(anyString(), anyLong(), any(), any(), any(), any())).thenAnswer(invocation -> {
       EmailDelegation row = emailDelegationStorage.getAsGrantee(invocation.getArgument(0), invocation.getArgument(1));
@@ -520,7 +520,7 @@ class EmailDelegationServiceTest {
   }
 
   /**
-   * #432-3 -- a disconnected or rebound mailbox ends the shares its user was using, as a
+   * A disconnected or rebound mailbox ends the shares its user was using, as a
    * leave would: eXo-made ones back to DECLINED, server-made ones to AVAILABLE, their
    * folders dropped, the owner told; a pending or declined one is left alone, and no
    * server is asked.
@@ -547,7 +547,7 @@ class EmailDelegationServiceTest {
   }
 
   /**
-   * #432-5 -- a namespace segment names an owner by the local part only when a single
+   * A namespace segment names an owner by the local part only when a single
    * connected user has it: on a preset serving two domains, "anne" is nobody.
    */
   @Test
@@ -570,7 +570,7 @@ class EmailDelegationServiceTest {
   }
 
   /**
-   * #432-6 -- two listings creating the same share at once: the second insert is
+   * Two listings creating the same share at once: the second insert is
    * refused by the unique key, and the row the first created is answered instead of a
    * server error.
    */
@@ -585,7 +585,7 @@ class EmailDelegationServiceTest {
   }
 
   /**
-   * Stack review #441-1 -- a share left, revoked or found withdrawn stops counting in the
+   * A share left, revoked or found withdrawn stops counting in the
    * badge for good: taken up again, it must be chosen again, as a new one is.
    */
   @Test
@@ -696,7 +696,7 @@ class EmailDelegationServiceTest {
   }
 
   /**
-   * EXO-90548 review, finding 1: accept writes its own columns through the targeted
+   * Accept writes its own columns through the targeted
    * write, never the row it read before the server calls. A row the owner revoked while
    * the server was asked is a revocation; one another request accepted meanwhile is
    * answered as it stands; one that went elsewhere is not acceptable.
@@ -924,7 +924,7 @@ class EmailDelegationServiceTest {
   }
 
   /**
-   * Stack review #437-1 -- every way a share's folders are dropped takes the mail
+   * Every way a share's folders are dropped takes the mail
    * mirrored under them too: revoke, leave, a disconnect, and a withdrawal found on the
    * server (here at accept). The keys are read before the rows go, and handed to the
    * mailbox cache on the event.
@@ -1299,7 +1299,7 @@ class EmailDelegationServiceTest {
   }
 
   /**
-   * Stack review N-1 on "Extend access": the grantee leaves while the owner's grants are
+   * On "Extend access": the grantee leaves while the owner's grants are
    * on the wire. Only what the grants wrote is recorded, so the leave stands -- the
    * answer is the row as it now is, never the pre-grant read written back over it.
    */
@@ -1343,7 +1343,7 @@ class EmailDelegationServiceTest {
   }
 
   /**
-   * EXO-90548 review -- the discovery mark is best-effort: a failure to clear the
+   * The discovery mark is best-effort: a failure to clear the
    * throttle's stamp never turns the owner's extend, which has landed on the server and
    * in the row, into an error.
    */
@@ -1357,7 +1357,7 @@ class EmailDelegationServiceTest {
   }
 
   /**
-   * Decision 3b: "Extend access" is offered on a share in use or on offer only. A
+   * "Extend access" is offered on a share in use or on offer only. A
    * declined, available, revoked or gone share is refused before anything reaches the
    * server; a pending one is extended as an accepted one is.
    */
@@ -1433,7 +1433,7 @@ class EmailDelegationServiceTest {
   }
 
   /**
-   * EXO-90548 review -- a server that refuses every folder there was to add answers a
+   * A server that refuses every folder there was to add answers a
    * refusal: nothing is recorded, and the owner is not told the folders are shared.
    */
   @Test
@@ -1463,7 +1463,7 @@ class EmailDelegationServiceTest {
   }
 
   /**
-   * EXO-90548 review -- the owner's folders are listed only when some share could be
+   * The owner's folders are listed only when some share could be
    * extended on a per-folder server: never for a list of shares made on the server or
    * declined, never on a server that grants a whole mailbox at once, and a row of
    * another mailbox is never offered an Extend that would be refused.
@@ -1595,7 +1595,7 @@ class EmailDelegationServiceTest {
   }
 
   /**
-   * The targeted rights-and-roles write (stack review N-1), answered as the storage
+   * The targeted rights-and-roles write, answered as the storage
    * does: the written columns on the row, the rest of it as it stands.
    *
    * @param row the row the write lands on
@@ -1859,7 +1859,7 @@ class EmailDelegationServiceTest {
     assertEquals(List.of(trash.getKey(), custom.getKey()), folders.stream().map(SharedMailboxFolder::key).toList());
     assertEquals(FolderRole.TRASH, folders.get(0).role());
     assertFalse(folders.get(0).affordances().get("delete"), "a Reader deletes nothing from the owner's Trash");
-    // What the band says is the share's own answer, not the folders found (review nit).
+    // What the band says is the share's own answer, not the folders found.
     share.setGrantedRoles(null);
     share.setOrigin(DelegationOrigin.EXO);
     assertTrue(service.getSharedMailboxes(GRANTEE).get(0).inboxOnly(), "a share written before folders were shared");
@@ -2064,7 +2064,7 @@ class EmailDelegationServiceTest {
   }
 
   /**
-   * Stack review N-1 -- the grantee leaves while the owner's SETACL is on the wire. The
+   * The grantee leaves while the owner's SETACL is on the wire. The
    * change of access writes only what the server was told, so the leave stands: the
    * answer is the row as it now is (declined, badge off), never the pre-SETACL read
    * written back over it.
@@ -2175,7 +2175,7 @@ class EmailDelegationServiceTest {
     when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any()))
                                                                                                 .thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
                                                                                                                                  MailboxRights.of("lrs")));
-    // The row as the targeted rights write leaves it (stack review N-1).
+    // The row as the targeted rights write leaves it.
     EmailDelegation reRead = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
     reRead.setRights("lrs");
     when(emailDelegationStorage.updateGrantedRights(eq(OWNER), eq(100L), any(), eq("lrs"), any(), any(), any())).thenReturn(reRead);
@@ -2361,7 +2361,7 @@ class EmailDelegationServiceTest {
   // ---------------------------------------------------------------------------------
 
   /**
-   * Stack review #443-2 -- REVOKED is not terminal: a share the server lists again is
+   * REVOKED is not terminal: a share the server lists again is
    * offered to the grantee again (AVAILABLE), from the grantee's discovery and from the
    * owner's ACL alike, with its revoke date cleared and never subscribed on its own.
    */
@@ -2421,7 +2421,7 @@ class EmailDelegationServiceTest {
     when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER, GRANTEE, "carol", "erin"));
     when(userEmailSettingService.getStoredEmailAddress("carol")).thenReturn("Carol@Acme.com");
     when(userEmailSettingService.getStoredEmailAddress("erin")).thenReturn("erin@acme.com");
-    // The targeted refresh of a share on offer (EXO-90548 review, finding 1).
+    // The targeted refresh of a share on offer.
     when(emailDelegationStorage.updateOfferedRights(eq(OWNER), eq(100L), eq("lrswit"), any())).thenAnswer(invocation -> {
       bobRow.setRights(invocation.getArgument(2));
       bobRow.setNativeRights(invocation.getArgument(3));
@@ -2580,7 +2580,7 @@ class EmailDelegationServiceTest {
 
     EmailDelegation updated = service.updatePreferences(GRANTEE, 100L, true, null);
 
-    // #432-2: the two toggles alone, never the row read before -- a null keeps the
+    // The two toggles alone, never the row read before -- a null keeps the
     // stored toggle, and the rest of the row is not written at all.
     assertSame(stored, updated);
     verify(emailDelegationStorage).updatePreferences(GRANTEE, 100L, true, true);

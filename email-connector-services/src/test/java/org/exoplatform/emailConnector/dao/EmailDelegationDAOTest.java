@@ -124,7 +124,7 @@ public class EmailDelegationDAOTest {
   }
 
   /**
-   * #432-2 -- the grantee's toggles are written alone, in SQL: a revoke committed since
+   * The grantee's toggles are written alone, in SQL: a revoke committed since
    * the grantee's read stays revoked, and only that grantee's row is touched.
    */
   @Test

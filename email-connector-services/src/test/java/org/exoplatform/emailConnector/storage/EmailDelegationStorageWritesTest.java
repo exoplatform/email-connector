@@ -46,7 +46,7 @@ import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.FolderRole;
 
 /**
- * Stack review #432-2 -- what a whole-row write may not put back, in SQL over the shipped
+ * What a whole-row write may not put back, in SQL over the shipped
  * changelog: the activity stamp is the grantee's listing's own, written outside any DTO,
  * and a DTO read before that listing must not rewind it.
  */
@@ -103,7 +103,7 @@ class EmailDelegationStorageWritesTest {
   }
 
   /**
-   * Stack review N-1, in SQL -- the owner's change of access and a grantee's leave
+   * In SQL: the owner's change of access and a grantee's leave
    * committed while the SETACL was on the wire: the rights land, the leave stands
    * (status, badge, response date untouched).
    */
@@ -162,7 +162,7 @@ class EmailDelegationStorageWritesTest {
   }
 
   /**
-   * The per-folder write (EXO-90548 on N-1), in SQL: the rights and the folder roles
+   * The per-folder write, in SQL: the rights and the folder roles
    * land together, a leave made meanwhile stands, another owner's id writes nothing, and
    * a share that ended meanwhile is not written at all.
    */
@@ -208,7 +208,7 @@ class EmailDelegationStorageWritesTest {
   }
 
   /**
-   * EXO-90548 review, finding 1, in SQL: the owner extends a pending share while its
+   * In SQL: the owner extends a pending share while its
    * grantee's accept is on the wire. The accept writes its own columns only, so the
    * folder roles the Extend recorded stand; the server's words recorded by the owner's
    * side are kept, and a preset not given is kept too. An accept of a row revoked
@@ -245,7 +245,7 @@ class EmailDelegationStorageWritesTest {
   }
 
   /**
-   * EXO-90548 review, finding 1, in SQL: the owner's listing refreshes a share on offer
+   * In SQL: the owner's listing refreshes a share on offer
    * to the letters its ACL holds, without touching the folder roles an Extend wrote, and
    * never writes a share in use.
    */

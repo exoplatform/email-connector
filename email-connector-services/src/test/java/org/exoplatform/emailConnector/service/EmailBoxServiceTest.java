@@ -11795,7 +11795,7 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * Stack review #437-1 -- a share revoked or left WHILE its folder is being synced: the
+   * A share revoked or left WHILE its folder is being synced: the
    * pass re-reads the folder after syncing, and a folder dropped in the meantime loses
    * what the sync wrote instead of leaving the owner's mail under a key nothing marks as
    * shared any more.
@@ -11820,7 +11820,7 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * Stack review #437-1 -- the mail of a share's dropped folders is purged, folder by
+   * The mail of a share's dropped folders is purged, folder by
    * folder, with its category links and snapshot; and the pass's sweep purges what the
    * cache still holds under a folder key no registered folder claims, while a key that
    * is still registered is left alone.
@@ -12346,7 +12346,7 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * EXO-90548 review, finding 2 -- a shared mailbox's folder answers as the user's own
+   * A shared mailbox's folder answers as the user's own
    * folder of its role does: archiving out of its Archive and reporting its Spam as spam
    * file a message into the folder it is in, and nothing leaves its Drafts. Each is
    * counted as a failure and nothing is touched, whatever the letters.
@@ -12373,7 +12373,7 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * Decision 3a, whatever the letters -- nothing leaves a shared mailbox's Trash: not an
+   * Whatever the letters, nothing leaves a shared mailbox's Trash: not an
    * Undo of the delete that filed it there, not a move, not an archive. Here the letters
    * on that Trash would allow it (the guard answers yes), and it is refused all the same.
    */
@@ -12888,7 +12888,7 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * EXO-90548 (F6) -- on a server that advertises no namespace (Stalwart), the Trash and
+   * On a server that advertises no namespace (Stalwart), the Trash and
    * Archive finders still skip a subscribed shared tree, recognised by its shape:
    * {@code Shared Folders/allan/INBOX} contains "all", {@code Shared Folders/anne/Trash}
    * is named Trash, and both are listed before the user's own folders.
@@ -13060,7 +13060,7 @@ public class EmailBoxServiceTest {
     // The rights re-read at the start of the pass (EXO-90557) find the share as it was.
     lenient().when(emailDelegationService.refreshGranteeRights(eq(TEST_USER), any(), any())).thenAnswer(invocation -> invocation.getArgument(1));
     when(emailDelegationService.getSyncableFolders(TEST_USER, 100L)).thenReturn(List.of(folder));
-    // Still registered when the pass re-reads it after syncing (stack review #437-1).
+    // Still registered when the pass re-reads it after syncing.
     lenient().when(emailFolderStorage.getFolder(TEST_USER, folder.getId())).thenReturn(folder);
   }
 

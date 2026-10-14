@@ -415,7 +415,7 @@ public class EmailBoxRestTest {
   }
 
   /**
-   * Stack review #437-3 -- a refusal by message code (a move between two mailboxes) is
+   * A refusal by message code (a move between two mailboxes) is
    * a 400 carrying the code, never the 500 an uncaught refusal would be, on delete as on
    * archive.
    */

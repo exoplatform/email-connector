@@ -225,7 +225,7 @@ public class EmailBoxDAOTest {
    * @return the row's generated id
    */
   /**
-   * Stack review #437-1 -- the sweep's query, run on HSQLDB: the distinct custom and
+   * The sweep's query, run on HSQLDB: the distinct custom and
    * shared-mailbox folder keys of one user's cache, never a built-in folder, never
    * somebody else's.
    */
