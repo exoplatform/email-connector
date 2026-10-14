@@ -100,6 +100,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           hide-details
           @change="$emit('badge', !!$event)" />
       </div>
+      <!-- The new-mail notification (EXO-90553): for a share in use, and worded for what
+           it does -- the shared mailbox is only checked while the user keeps opening it,
+           so the notification cannot promise more. -->
+      <template v-if="notifyOffered">
+        <div class="d-flex align-center mt-1">
+          <span class="caption text-wrap">{{ $t('UserSettings.emailConnector.sharedWithMe.notify') }}</span>
+          <v-spacer />
+          <v-switch
+            :input-value="delegation.notifyNewMail"
+            :loading="saving"
+            :disabled="disabled"
+            :aria-label="$t('UserSettings.emailConnector.sharedWithMe.notify')"
+            class="mt-0 pt-0 ms-2 flex-grow-0"
+            dense
+            hide-details
+            @change="$emit('notify', !!$event)" />
+        </div>
+        <div class="caption text-sub-title text-wrap">{{ $t('UserSettings.emailConnector.sharedWithMe.notify.hint') }}</div>
+      </template>
       <div v-if="visibleActions.length" class="d-flex justify-end mt-1">
         <v-btn
           v-for="action in visibleActions"
@@ -172,6 +191,15 @@ export default {
      */
     badgeOffered() {
       return this.delegation.status === 'ACCEPTED' && sharedMailboxCapabilities(this.delegation.affordances).markRead;
+    },
+    /**
+     * Whether the new-mail notification choice applies: a share in use. Any rights will
+     * do, since reading is all it takes to see new mail arrive.
+     *
+     * @returns {Boolean} true when the switch is shown
+     */
+    notifyOffered() {
+      return this.delegation.status === 'ACCEPTED';
     },
     /**
      * The answers shown as buttons.
