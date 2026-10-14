@@ -1937,6 +1937,34 @@ class EmailDelegationServiceTest {
    *
    * @return the row
    */
+  /**
+   * EXO-90556, live on Stalwart 0.11.8 -- a Reader's letters read back {@code rlsw}: the
+   * guard never lets that Reader star or set flags, on a folder of the share or on its
+   * INBOX, while an Editor's folder of the same share keeps its {@code w}.
+   */
+  @Test
+  void aStalwartReaderNeverStarsWhateverItsCoupledWrite() throws Exception {
+    EmailDelegation share = aDovecotShare();
+    share.setRights("rlsw");
+    EmailFolder inbox = sharedInbox(share);
+    EmailFolder sent = delegated(21L, ROOT + "/Sent", true);
+    sent.setRights("rlsw");
+    sent.setRightsCheckDate(new Date());
+    EmailFolder projects = delegated(22L, ROOT + "/Projects", true);
+    projects.setRights("rlitesw");
+    projects.setRightsCheckDate(new Date());
+    when(emailFolderStorage.getFolder(GRANTEE, inbox.getId())).thenReturn(inbox);
+    when(emailFolderStorage.getFolder(GRANTEE, 21L)).thenReturn(sent);
+    when(emailFolderStorage.getFolder(GRANTEE, 22L)).thenReturn(projects);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(share);
+
+    assertThrows(MailboxRightMissingException.class, () -> service.checkRight(GRANTEE, sent.getKey(), MailboxRights.WRITE));
+    assertThrows(MailboxRightMissingException.class, () -> service.checkRight(GRANTEE, inbox.getKey(), MailboxRights.WRITE));
+    service.checkRight(GRANTEE, sent.getKey(), MailboxRights.KEEP_SEEN);
+    service.checkRight(GRANTEE, projects.getKey(), MailboxRights.WRITE);
+    assertFalse(service.rightsOn(GRANTEE, sent.getKey()).affordances().get("star"));
+  }
+
   private EmailDelegation aDovecotShare() {
     EmailDelegation share = accepted("lrswite");
     share.setRemoteRoot(ROOT);
