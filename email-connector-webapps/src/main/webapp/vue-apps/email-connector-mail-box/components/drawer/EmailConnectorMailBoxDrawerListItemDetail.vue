@@ -148,14 +148,16 @@ export default {
     // as its last argument: this drawer's list may be a search's, holding several
     // folders where one number may be several messages, and a bare UID used to open --
     // or read, or act on -- the wrong one (EXO-90416).
-    this.onOpenEmailDetailDrawer = (mailRemoteId, emails, syncInProgress, webmailUrl, detachedFromList, standalone, folder) => {
+    // A quiet opening reads the message without counting it as opened: the opener
+    // already counted it.
+    this.onOpenEmailDetailDrawer = (mailRemoteId, emails, syncInProgress, webmailUrl, detachedFromList, standalone, folder, quiet) => {
       this.detachedFromList = !!detachedFromList;
       // Opened with the mailbox behind it, this drawer sits on an already-dimmed page
       // and the platform's shared overlay covers it. Opened on its own -- from the
       // platform's search, or from the Favorites drawer -- nothing is dimming the
       // page underneath, so it draws its own.
       this.standalone = !!standalone;
-      this.open(mailRemoteId, emails, syncInProgress, webmailUrl, folder);
+      this.open(mailRemoteId, emails, syncInProgress, webmailUrl, folder, !!quiet);
     };
     this.onCloseEmailDetailDrawer = () => this.close();
     this.onUpdateEmailReadStatus = (read, emails, folder) => {
@@ -207,9 +209,11 @@ export default {
       }
     };
     // The same opening, for a row the caller already holds in full — a draft, which
-    // the UID-addressed one above cannot open because it may have no UID.
-    this.onOpenEmailThreadDrawer = (email, emails, syncInProgress, webmailUrl) => {
-      this.detachedFromList = false;
+    // the UID-addressed one above cannot open because it may have no UID. Detached from
+    // the list when the mailbox's full-screen reader hands over, on a collapse, a mail
+    // its list does not hold (EXO-90519).
+    this.onOpenEmailThreadDrawer = (email, emails, syncInProgress, webmailUrl, detachedFromList) => {
+      this.detachedFromList = !!detachedFromList;
       this.standalone = false;
       this.openThreadOn(email, emails, syncInProgress, webmailUrl);
     };
@@ -310,9 +314,10 @@ export default {
      * @param {Boolean} syncInProgress whether a synchronization is running
      * @param {String} webmailUrl the account's webmail, for the toolbar
      * @param {String} folder the folder the UID is numbered in, when the opener knows it
+     * @param {Boolean} quiet whether the opener already counted the message as opened
      * @returns {void}
      */
-    open(mailRemoteId, emails, syncInProgress, webmailUrl, folder = null) {
+    open(mailRemoteId, emails, syncInProgress, webmailUrl, folder = null, quiet = false) {
       this.emailDetailDrawer = true;
       this.selectEmailPlaceHolder = false;
       this.emails = emails;
@@ -323,7 +328,7 @@ export default {
       // With what the list knows of it, so a message already read is not pushed again.
       const listed = (emails || []).find(e => e.mailRemoteId === mailRemoteId && (e.folder || 'INBOX') === ownFolder);
       this.$root.$emit('update-email-read-status', true, [mailRemoteId], ownFolder, listed?.read);
-      this.fetchEmail(mailRemoteId, { folder });
+      this.fetchEmail(mailRemoteId, { folder, quiet });
     },
     /**
      * Opens the reader on a message and fetches the server's full copy of it.
@@ -341,7 +346,8 @@ export default {
      * @param {number} mailRemoteId - the IMAP UID of the message to open
      * @param {Object} options - {folder}: the folder the UID is numbered in, when the
      *        caller knows it. The row the reader opens on is looked up in that folder
-     *        too, because this drawer's list may be a search's (EXO-90416)
+     *        too, because this drawer's list may be a search's (EXO-90416). {quiet}: read
+     *        without counting the message as opened, which its opener already did
      * @returns {Promise<object|null>} the full message, or null when the request was
      *          superseded or failed
      */
@@ -363,7 +369,10 @@ export default {
         this.selectEmailPlaceHolder = false;
       }
       this.loadingEmail = true;
-      return this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder)
+      const read = options.quiet
+        ? this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder, { broadcast: false })
+        : this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder);
+      return read
         .then(email => {
           if (request !== this.emailRequest) {
             return null;
