@@ -3410,12 +3410,12 @@ export default {
      * under way when the drawer collapses lands in the list.
      * <p>
      * A full copy, a draft's or a scheduled mail's row is shown as it is; a bare list row,
-     * or a copy that could not be read, is fetched again by its UID. A bare row is only
-     * on screen while the reader's own request for it is on its way, which counts the
-     * opening, so it is read again without counting it (quiet), as the expand direction
-     * does (EXO-90415); a copy that could not be read was never counted. The mail drawer
-     * gets the folder's list; the search's, detached, as the narrow search opening gives
-     * it; or the mail alone, detached, when neither holds it.
+     * or a copy that could not be read, is fetched again by its UID, quietly, as the
+     * expand direction does (EXO-90415): whatever left that mail in the reader already
+     * counted it as opened -- a click by its read, which the server counts even when the
+     * read then fails, an automatic opening at its dwell, a hand-over by the mail drawer's
+     * own read. The mail drawer gets the folder's list; the search's, detached, as the
+     * narrow search opening gives it; or the mail alone, detached, when neither holds it.
      *
      * @returns {void}
      */
@@ -3439,7 +3439,7 @@ export default {
       }
       if (email.mailRemoteId && (email.unavailable || this.$emailConnectorMailBoxService.isListingRow(email))) {
         this.$root.$emit('open-email-detail-drawer', email.mailRemoteId, emails, this.syncInProgress, this.webmailUrl,
-          detachedFromList, false, folder, !email.unavailable);
+          detachedFromList, false, folder, true);
       } else {
         this.$root.$emit('open-email-thread-drawer', email, emails, this.syncInProgress, this.webmailUrl, detachedFromList);
       }
