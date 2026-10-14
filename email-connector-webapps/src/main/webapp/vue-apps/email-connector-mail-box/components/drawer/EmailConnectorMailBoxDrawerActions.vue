@@ -345,7 +345,7 @@ export default {
      */
     syncTitle() {
       return this.$t(this.syncInProgress
-        ? 'emailConnector.mailBox.list.drawer.sync.running'
+        ? 'emailConnector.mailBox.list.drawer.sync.inProgress.tooltip'
         : 'emailConnector.mailBox.list.drawer.sync.tooltip');
     },
     // The listed rows by selection key -- the folder, and the id the row is named by in

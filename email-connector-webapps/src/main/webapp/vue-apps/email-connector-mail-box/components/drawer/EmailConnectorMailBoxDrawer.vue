@@ -327,14 +327,15 @@ const favoriteKey = (folder, mailRemoteId) => `${folder || 'INBOX'}/${mailRemote
 const FOLDERS_CHANGED_EVENTS = ['email-folders-list-changed', 'email-folders-saved', 'email-folders-updated'];
 
 // The App Center badge push: the one word the server sends every page when a badge's
-// count moved (app-center's ApplicationBadgeService relays the WebSocket frame as this
-// document event, {detail: {message: {badgeName}}}), and this add-on's own badge, as
+// count moved (app-center's ApplicationBadgeWebSocketService sends the WebSocket frame,
+// and social's $socialWebSocket turns it into this document event,
+// {detail: {message: {badgeName}}}), and this add-on's own badge, as
 // EmailApplicationBadgePlugin names it (EXO-90628).
 const BADGE_UPDATED_EVENT = 'appcenter.badge.updated';
 const EMAIL_UNREAD_BADGE = 'emailUnread';
 
-// The CometD channel app-center relays its badge pushes on (its ApplicationBadgeService's
-// COMETD_CHANNEL). A page subscribes to it only once an App Center badge is mounted on it
+// The CometD channel app-center sends its badge pushes on (its
+// ApplicationBadgeWebSocketService's COMETD_CHANNEL). A page subscribes to it only once an App Center badge is mounted on it
 // -- a pinned or topbar application carrying one, or the launcher opened once -- and the
 // detached tab (the app-viewer page) mounts none: the mailbox subscribes itself, on every
 // page (EXO-90628).
@@ -3282,9 +3283,14 @@ export default {
      * burst the server sends. A listing that fails keeps the listed folder: the push says
      * nothing about folders, and a passing error must not send the user to the inbox.
      * <p>
-     * The push is the unread badge's, so it fires when the inbox's unread count moved --
-     * not for a mail synchronized into another folder, one arriving already read, or a
-     * cycle whose arrivals and reads cancel out: those still wait for the next re-read.
+     * The push is the unread badge's. The synchronization sends it when the inbox's
+     * unread count moved -- not for a mail synchronized into another folder, one
+     * arriving already read, or a cycle whose arrivals and reads cancel out: those still
+     * wait for the next re-read. The server also sends it after this page's own reads;
+     * its deletes, archives, junk and moves; an undo; the inbox re-read that follows a
+     * move into it, an undo or a restore; and, for a user who limited notifications to
+     * categories, a category linked or unlinked: each costs one more listing read,
+     * coalesced; the listing stays correct.
      * <p>
      * A row the listing did not hold before is new mail, and the categoriser writes its
      * categories in the minute after the sync: the category watch is armed for it, as
