@@ -402,7 +402,7 @@ public class UserEmailSettingRestTest {
     mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations").with(testSimpleUser())
                                                                   .content(asJsonString(new DelegationInviteRequest("dave", DelegationPreset.READER)))
                                                                   .contentType(MediaType.APPLICATION_JSON))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
   }
 
   /**
@@ -477,7 +477,7 @@ public class UserEmailSettingRestTest {
 
   /**
    * The remaining refusals of the delegation verbs map to the add-on's statuses: no
-   * connected mailbox is 401, a server that would not answer is 502 with its code, a row
+   * connected mailbox is 403, a server that would not answer is 502 with its code, a row
    * that is not the caller's is 404, a verb out of its state is 400 with its code.
    */
   @Test
@@ -486,17 +486,17 @@ public class UserEmailSettingRestTest {
                                                                               new MailboxAclException(MailboxAclException.UNREACHABLE,
                                                                                                       "timeout"));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/granted").with(testSimpleUser()))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/granted").with(testSimpleUser()))
            .andExpect(status().isBadGateway())
            .andExpect(status().reason(MailboxAclException.UNREACHABLE));
 
     doThrow(new IllegalAccessException("not connected")).when(emailDelegationService).revoke(SIMPLE_USER, 8L);
-    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/delegations/8").with(testSimpleUser())).andExpect(status().isUnauthorized());
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/delegations/8").with(testSimpleUser())).andExpect(status().isForbidden());
 
     when(emailDelegationService.accept(SIMPLE_USER, 9L)).thenThrow(new IllegalAccessException("not connected"));
     mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/9/accept").with(testSimpleUser()))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
 
     when(emailDelegationService.accept(SIMPLE_USER, 10L)).thenThrow(new MailboxAclException(MailboxAclException.UNREACHABLE, "timeout"));
     mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/10/accept").with(testSimpleUser()))

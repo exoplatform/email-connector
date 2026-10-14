@@ -346,7 +346,8 @@ public class UserEmailSettingRest {
   // Mailbox delegation. The mailbox acted on is always the caller's own; a delegation
   // id resolves only with the caller as its grantee or its owner. Status mapping, this
   // add-on's convention: IllegalAccessException 401, ObjectNotFoundException 404,
-  // IllegalArgumentException 400 with the code, MailboxAclException 502 with the code
+  // IllegalArgumentException 400 with the code, MailboxAclException 502 with the code,
+  // a caller with no mailbox connected 403 (a refusal of a known caller, backend-spring.md)
   // (the mail server would not or could not), DelegationRevokedException 410 with the
   // code (the share is gone -- a business state, not an authentication failure).
   // ---------------------------------------------------------------------------------
@@ -369,7 +370,7 @@ public class UserEmailSettingRest {
     try {
       return emailDelegationService.getGrantedDelegations(request.getRemoteUser());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (MailboxAclException e) {
       throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getCode());
     }
@@ -436,7 +437,7 @@ public class UserEmailSettingRest {
     try {
       return emailDelegationService.invite(request.getRemoteUser(), invite.getGranteeUsername(), invite.getPreset());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (MailboxAclException e) {
@@ -469,7 +470,7 @@ public class UserEmailSettingRest {
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       // notChangeable: a share of a mailbox the owner is no longer connected to (#443-1).
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
@@ -507,7 +508,7 @@ public class UserEmailSettingRest {
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (MailboxAclException e) {
@@ -542,7 +543,7 @@ public class UserEmailSettingRest {
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (MailboxAclException e) {
@@ -577,7 +578,7 @@ public class UserEmailSettingRest {
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (DelegationRevokedException e) {

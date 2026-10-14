@@ -200,7 +200,7 @@ public class EmailBoxRestTest {
                                          .contentType(MediaType.APPLICATION_JSON)
                                          .content("[1212]")
                                          .with(testSimpleUser()))
-           .andExpect(status().isUnauthorized())
+           .andExpect(status().isForbidden())
            .andExpect(status().reason(MailboxRightMissingException.CODE_PREFIX + "s"));
   }
 
@@ -366,7 +366,7 @@ public class EmailBoxRestTest {
                                                                                     .content(asJsonString(emailIds))
                                                                                     .contentType(MediaType.APPLICATION_JSON)
                                                                                     .accept(MediaType.APPLICATION_JSON))
-           .andExpect(status().isUnauthorized());
+           .andExpect(status().isForbidden());
     when(emailBoxService.updateEmailStarredStatus(emailIds, SIMPLE_USER, "CUSTOM:12", true, true))
         .thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
     mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=true&folder=CUSTOM:12").with(testSimpleUser())
@@ -1560,7 +1560,7 @@ public class EmailBoxRestTest {
    */
   private void expectDelegationRefusals(Supplier<MockHttpServletRequestBuilder> request) throws Exception {
     mockMvc.perform(request.get().with(testSimpleUser()))
-           .andExpect(status().isUnauthorized())
+           .andExpect(status().isForbidden())
            .andExpect(status().reason(MailboxRightMissingException.CODE_PREFIX + MailboxRights.KEEP_SEEN));
     mockMvc.perform(request.get().with(testSimpleUser()))
            .andExpect(status().isGone())
