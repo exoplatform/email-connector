@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.notification.plugin;
 
+import org.exoplatform.emailConnector.event.EmailDelegationEventType;
 import java.util.Locale;
 
 import org.apache.commons.lang3.StringUtils;
@@ -38,17 +39,16 @@ import org.exoplatform.emailConnector.utils.NotificationConstants;
  * {@link #RESPONSE} carries which transition it was, and the sentence is chosen from
  * it in the receiver's language.
  * <p>
- * <b>The owner-facing ones are gated, and the gate is not here.</b> A server that
- * e-mails the owner on every rights change of its own accord -- BlueMind does, four
- * such mails were observed over two phase-0 rounds -- would leave that owner with two
- * messages for one act, so the lifecycle glue asks the engine before dispatching
- * (plan sections 5.1 and 13.F). This plugin renders whatever reaches it; the decision
- * of whether anything should is {@code EmailDelegationNotificationListener}'s, which
- * is the layer that knows the connector.
+ * <b>Nothing is gated here, nor in the lifecycle glue.</b> A server that e-mails the
+ * owner on every rights change of its own accord -- BlueMind does, four such mails were
+ * observed over two phase-0 rounds -- would leave that owner with two messages for one
+ * act, which is why the plan (sections 5.1 and 13.F) named a gate; an answer is not a
+ * rights change, so every answer reaches the owner. This plugin renders whatever
+ * reaches it; who is told is {@code EmailDelegationNotificationListener}'s.
  */
 public class EmailDelegationResponseNotificationPlugin extends BaseEmailDelegationNotificationPlugin {
 
-  /** Which transition: an {@code EmailDelegationEvent.Type} name. */
+  /** Which transition: an {@code EmailDelegationEventType} name. */
   public static final ArgumentLiteral<String> RESPONSE            = new ArgumentLiteral<>(String.class, "response");
 
   private static final String                 TITLE_KEY_PREFIX    = "emailDelegationResponse.notification.title.";

@@ -179,7 +179,7 @@ public class EmailDelegationStorage {
     EmailDelegationEntity entity = emailDelegationDAO.findById(delegation.getId())
                                                      .orElseThrow(() -> new IllegalArgumentException("emailConnector.delegation.notFound"));
     // The activity stamp is touchActivity's alone, written in SQL outside any DTO: a
-    // DTO read before the grantee's last listing must not rewind it (#432-2).
+    // DTO read before the grantee's last listing must not rewind it.
     Date lastActivity = entity.getLastActivityDate();
     toEntity(delegation, entity);
     entity.setLastActivityDate(lastActivity);
@@ -188,7 +188,7 @@ public class EmailDelegationStorage {
   }
 
   /**
-   * The grantee's two toggles, written alone (#432-2): a row-wide write from an earlier
+   * The grantee's two toggles, written alone: a row-wide write from an earlier
    * read would put back whatever the owner changed since -- a status, a revoke date,
    * rights. The update date is stamped.
    *
@@ -204,8 +204,8 @@ public class EmailDelegationStorage {
   }
 
   /**
-   * What an owner's change of access wrote on the server, written alone (stack review
-   * N-1): a row-wide write from the read made before the SETACL round-trip would put
+   * What an owner's change of access wrote on the server, written alone
+   *: a row-wide write from the read made before the SETACL round-trip would put
    * back a leave or a revoke committed meanwhile. A share that ended meanwhile (revoked,
    * gone) is not written.
    *
@@ -282,7 +282,7 @@ public class EmailDelegationStorage {
   }
 
   /**
-   * A grantee's accept, written alone (EXO-90548 review, finding 1): a row-wide write
+   * A grantee's accept, written alone (EXO-90548): a row-wide write
    * from the read made before the server calls would put back the folder roles an
    * owner's Extend wrote meanwhile. Only a row of that grantee still pending, declined
    * or available is written.
@@ -313,8 +313,7 @@ public class EmailDelegationStorage {
   }
 
   /**
-   * The letters the owner's ACL holds for a share on offer, written alone (EXO-90548
-   * review, finding 1). A share in use or ended is not written.
+   * The letters the owner's ACL holds for a share on offer, written alone (EXO-90548). A share in use or ended is not written.
    *
    * @param ownerId the owner, whose row it must be
    * @param id the row id

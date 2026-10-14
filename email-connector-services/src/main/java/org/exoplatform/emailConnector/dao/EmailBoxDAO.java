@@ -1159,8 +1159,7 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
   /**
    * The folder keys of the custom and shared-mailbox folders a user's cache holds mail
-   * under -- for the sweep that purges what no registered folder claims any more (stack
-   * review #437-1).
+   * under -- for the sweep that purges what no registered folder claims any more.
    *
    * @param userId the user
    * @return the distinct {@code CUSTOM:<id>} keys, never null

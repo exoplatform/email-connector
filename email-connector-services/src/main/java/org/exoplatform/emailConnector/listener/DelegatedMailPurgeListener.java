@@ -25,7 +25,7 @@ import org.exoplatform.emailConnector.service.EmailBoxService;
 
 /**
  * Glue: the mail of a shared mailbox's dropped folders goes when the folders go (stack
- * review #437-1). Synchronous, so a revoke or a leave has taken the owner's mail out of
+ * Synchronous, so a revoke or a leave has taken the owner's mail out of
  * the delegate's database by the time it answers.
  */
 @Component

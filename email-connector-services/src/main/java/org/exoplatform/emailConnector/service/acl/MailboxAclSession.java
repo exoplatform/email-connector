@@ -60,39 +60,7 @@ public final class MailboxAclSession implements AutoCloseable {
 
   private static final Log LOG = ExoLogger.getLogger(MailboxAclSession.class);
 
-  /**
-   * Opens the caller's own IMAP store, on demand. Wired by the service to the
-   * caller's own connector and username; the engine never sees how.
-   */
-  @FunctionalInterface
-  public interface StoreOpener {
 
-    /**
-     * @return the connected store
-     * @throws MessagingException when the mailbox cannot be reached
-     * @throws ConnectorCredentialsException when the configured provider cannot
-     *           produce credentials for the caller
-     */
-    Store open() throws MessagingException, ConnectorCredentialsException;
-  }
-
-  /**
-   * Resolves the caller's own HTTP credential material, on demand -- the
-   * {@code Authorization} header value the platform's credentials contract produces
-   * for this connector and user on its HTTP channel, the same one the CardDAV sync
-   * uses. What a vendor REST engine mints its per-call session from; never stored by
-   * anyone.
-   */
-  @FunctionalInterface
-  public interface HttpAuthorizationResolver {
-
-    /**
-     * @return the header value
-     * @throws ConnectorCredentialsException when the configured provider cannot
-     *           produce HTTP material for the caller
-     */
-    String resolve() throws ConnectorCredentialsException;
-  }
 
   private final EmailConnector            connector;
 

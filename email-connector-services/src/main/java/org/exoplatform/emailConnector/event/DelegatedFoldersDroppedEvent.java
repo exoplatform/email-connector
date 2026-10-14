@@ -21,7 +21,7 @@ import java.util.List;
 /**
  * The folders of a shared mailbox were dropped from a delegate's registry -- by a
  * revoke, a leave, a disconnect or a withdrawal found on the server -- and the mail
- * mirrored under their keys must go with them (stack review #437-1). Published by the
+ * mirrored under their keys must go with them. Published by the
  * delegation service, which holds no reference to the mailbox cache; the cache's own
  * service purges on it.
  *

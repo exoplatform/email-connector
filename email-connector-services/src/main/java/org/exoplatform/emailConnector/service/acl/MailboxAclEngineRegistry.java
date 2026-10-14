@@ -47,13 +47,13 @@ import org.exoplatform.services.log.Log;
 @Service
 public class MailboxAclEngineRegistry {
 
-  private static final Log        LOG                    = ExoLogger.getLogger(MailboxAclEngineRegistry.class);
-
   /** The property naming the engine of every preset, unless overridden per preset. */
   public static final String      ENGINE_PROPERTY        = "email.connector.aclEngine";
 
   /** The prefix of the per-preset property: {@code email.connector.aclEngine.<id>}. */
   public static final String      ENGINE_PROPERTY_PREFIX = ENGINE_PROPERTY + ".";
+
+  private static final Log        LOG                    = ExoLogger.getLogger(MailboxAclEngineRegistry.class);
 
   @Autowired
   private List<MailboxAclEngine>  engines;

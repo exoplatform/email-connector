@@ -73,7 +73,7 @@ public class EmailBoxCleanupListener {
   public void handleEmailBoxCleanup(EmailBoxCleanupEvent event) {
     emailBoxService.deleteUserEmails(event.getUsername());
     // The mailboxes shared with the user were read with the account that has just gone:
-    // those in use end as a leave would (#432-3). Their mirrored mail went with the rest.
+    // those in use end as a leave would. Their mirrored mail went with the rest.
     emailDelegationService.endReceivedShares(event.getUsername());
     // The cache the collection reads has just gone, so collection has to be able to
     // start from nothing again. Without this the next mailbox collects nobody: its

@@ -66,6 +66,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.event.DelegatedFoldersDroppedEvent;
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
+import org.exoplatform.emailConnector.event.EmailDelegationEventType;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
@@ -268,7 +269,7 @@ class EmailDelegationServiceTest {
     assertEquals(CONNECTOR_ID, delegation.getConnectorId());
     ArgumentCaptor<EmailDelegationEvent> event = ArgumentCaptor.forClass(EmailDelegationEvent.class);
     verify(eventPublisher).publishEvent(event.capture());
-    assertEquals(EmailDelegationEvent.Type.INVITED, event.getValue().type());
+    assertEquals(EmailDelegationEventType.INVITED, event.getValue().type());
   }
 
   /**
@@ -919,7 +920,7 @@ class EmailDelegationServiceTest {
     verify(emailFolderStorage).deleteDelegatedFolders(GRANTEE, 100L);
     ArgumentCaptor<EmailDelegationEvent> event = ArgumentCaptor.forClass(EmailDelegationEvent.class);
     verify(eventPublisher).publishEvent(event.capture());
-    assertEquals(EmailDelegationEvent.Type.REVOKED, event.getValue().type());
+    assertEquals(EmailDelegationEventType.REVOKED, event.getValue().type());
   }
 
   /**
@@ -2183,7 +2184,7 @@ class EmailDelegationServiceTest {
 
     ArgumentCaptor<EmailDelegationEvent> event = ArgumentCaptor.forClass(EmailDelegationEvent.class);
     verify(eventPublisher).publishEvent(event.capture());
-    assertEquals(EmailDelegationEvent.Type.RIGHTS_CHANGED, event.getValue().type());
+    assertEquals(EmailDelegationEventType.RIGHTS_CHANGED, event.getValue().type());
   }
 
   /**
@@ -2204,7 +2205,7 @@ class EmailDelegationServiceTest {
     assertEquals(DelegationStatus.REVOKED, accepted.getStatus());
     ArgumentCaptor<EmailDelegationEvent> event = ArgumentCaptor.forClass(EmailDelegationEvent.class);
     verify(eventPublisher).publishEvent(event.capture());
-    assertEquals(EmailDelegationEvent.Type.RIGHTS_CHANGED, event.getValue().type());
+    assertEquals(EmailDelegationEventType.RIGHTS_CHANGED, event.getValue().type());
   }
 
   // ---------------------------------------------------------------------------------
@@ -2239,7 +2240,7 @@ class EmailDelegationServiceTest {
     verify(emailDelegationStorage).update(current);
     ArgumentCaptor<EmailDelegationEvent> event = ArgumentCaptor.forClass(EmailDelegationEvent.class);
     verify(eventPublisher).publishEvent(event.capture());
-    assertEquals(EmailDelegationEvent.Type.RIGHTS_CHANGED, event.getValue().type());
+    assertEquals(EmailDelegationEventType.RIGHTS_CHANGED, event.getValue().type());
   }
 
   /**
@@ -2604,7 +2605,7 @@ class EmailDelegationServiceTest {
     service.updatePreferences(GRANTEE, 100L, true, null);
     ArgumentCaptor<EmailDelegationEvent> event = ArgumentCaptor.forClass(EmailDelegationEvent.class);
     verify(eventPublisher).publishEvent(event.capture());
-    assertEquals(EmailDelegationEvent.Type.BADGE_PREFERENCE_CHANGED, event.getValue().type());
+    assertEquals(EmailDelegationEventType.BADGE_PREFERENCE_CHANGED, event.getValue().type());
     assertEquals(GRANTEE, event.getValue().actor());
   }
 
@@ -2778,18 +2779,20 @@ class EmailDelegationServiceTest {
   }
 
   /**
-   * A folder row that is not the caller's, or a delegation row that is not theirs,
-   * resolves to nothing -- ids enumerate nothing here either.
+   * A folder row that is not the caller's resolves to nothing -- ids enumerate nothing
+   * here either -- and a folder of a share that does not resolve is refused as gone.
    */
   @Test
   void aKeyThatIsNotTheCallersResolvesToNothing() throws Exception {
     when(emailFolderStorage.getFolder(GRANTEE, 5L)).thenReturn(null);
     assertNull(service.delegationOf(GRANTEE, "CUSTOM:5"));
 
+    // A folder registered under a share that does not resolve is nobody's own folder:
+    // refused as a share that is gone, never passed as the caller's.
     when(emailFolderStorage.getFolder(GRANTEE, 6L)).thenReturn(delegatedFolder(6L));
     when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(null);
-    assertNull(service.delegationOf(GRANTEE, "CUSTOM:6"));
-    assertDoesNotThrow(() -> service.checkRight(GRANTEE, "CUSTOM:6", MailboxRights.DELETE_MESSAGES));
+    assertThrows(DelegationRevokedException.class, () -> service.delegationOf(GRANTEE, "CUSTOM:6"));
+    assertThrows(DelegationRevokedException.class, () -> service.checkRight(GRANTEE, "CUSTOM:6", MailboxRights.DELETE_MESSAGES));
   }
 
   /**

@@ -22,6 +22,7 @@ import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
+import org.exoplatform.emailConnector.event.EmailDelegationEventType;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
@@ -67,7 +68,7 @@ public class EmailDelegationBadgeListener {
    * @param delegation the row as it now stands
    * @return true when the badge must be re-counted
    */
-  private boolean movesTheBadge(EmailDelegationEvent.Type type, EmailDelegation delegation) {
+  private boolean movesTheBadge(EmailDelegationEventType type, EmailDelegation delegation) {
     return switch (type) {
     case BADGE_PREFERENCE_CHANGED -> true;
     case ACCEPTED, LEFT, REVOKED, RIGHTS_CHANGED -> delegation.isBadgeIncluded();

@@ -34,7 +34,7 @@ import org.exoplatform.emailConnector.utils.NotificationConstants;
  * It goes to the <b>grantee</b>, always: the one server observed to notify by itself
  * mails the <i>owner</i> about rights changes, not the grantee (plan section 5.1 step
  * 5), so there is nothing here to double up on. The owner-facing answer is the other
- * plugin, {@link EmailDelegationResponseNotificationPlugin}, and that one is gated.
+ * plugin, {@link EmailDelegationResponseNotificationPlugin}, sent for every answer.
  * <p>
  * The share exists on the server the moment this is sent -- the grant is written at
  * invite, not at accept -- so the invitation is an invitation to <i>use</i> access

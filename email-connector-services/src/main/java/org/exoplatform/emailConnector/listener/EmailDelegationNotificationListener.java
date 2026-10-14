@@ -25,6 +25,7 @@ import org.exoplatform.commons.api.notification.NotificationContext;
 import org.exoplatform.commons.api.notification.model.PluginKey;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
+import org.exoplatform.emailConnector.event.EmailDelegationEventType;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.notification.plugin.BaseEmailDelegationNotificationPlugin;
 import org.exoplatform.emailConnector.notification.plugin.EmailDelegationInvitationPlugin;
@@ -37,27 +38,16 @@ import org.exoplatform.services.log.Log;
  * Tells the party that did not act what happened to a share (EXO-90503, delegation
  * plan sections 5.1 to 5.4, 7.2).
  * <p>
- * Glue, as every listener in this package is: it decides <b>who</b> is told and
- * <b>whether</b> they are told at all, and the sentence is the plugin's. There is one
- * piece of judgement here and it belongs nowhere else, because nowhere else knows both
- * the recipient and the server:
- * <p>
- * <b>An owner-facing notification is not sent when the mail server already sent one.</b>
- * BlueMind e-mails the mailbox owner on every rights change of its own accord -- four
- * such mails were observed on one account over two phase-0 rounds -- so eXo adding its
- * own would reach that owner twice for one act, on a screen they did not ask twice
- * about (plan sections 5.1 step 5 and 13.F). The engine answers the question without a
- * connection: it is a trait of the server product, and the act that raises an
- * owner-facing notification here is the <i>grantee's</i>, on the grantee's thread,
- * where the owner's mailbox is nobody's to open.
- * <p>
- * The gate is deliberately per <b>recipient</b> and not per transition. An accept or a
- * decline is not literally a rights change, and it is possible that a BlueMind owner
- * therefore hears about a grant twice and about a decline not at all. That is the
- * conservative half of the trade the plan asks for -- "eXo's owner-side notifications
- * are gated on it being false" -- and the owner sees the answer on the sharing screen
- * either way, where the row carries its own status. A per-transition gate would need a
- * second fact about every server that nobody has observed for any of them.
+ * Glue, as every listener in this package is: it decides <b>who</b> is told, and the
+ * sentence is the plugin's. Nothing is gated on the server product: the owner is told
+ * of every answer to a share (accepted, declined, left) through {@link #notifyOwner},
+ * and the grantee of every act of the owner's. BlueMind e-mails the mailbox owner on a
+ * rights change of its own accord -- four such mails were observed on one account over
+ * two phase-0 rounds (plan sections 5.1 step 5 and 13.F) -- but an answer is not a
+ * rights change, and no server has been observed to notify one; the gate the plan
+ * named ({@code MailboxAclCapabilities#serverNotifiesOwner}) therefore has no caller
+ * here, as the service's class comment says. The owner sees the answer on the sharing
+ * screen either way, where the row carries its own status.
  * <p>
  * The grantee-facing ones are never gated: the server notifies the <i>owner</i>, and
  * on the servers observed the grantee is told nothing by anybody but eXo.
@@ -153,7 +143,7 @@ public class EmailDelegationNotificationListener {
    * @param delegation the row
    * @param type the transition
    */
-  private void notifyOwner(EmailDelegation delegation, EmailDelegationEvent.Type type) {
+  private void notifyOwner(EmailDelegation delegation, EmailDelegationEventType type) {
     if (StringUtils.isBlank(delegation.getOwnerId()) || StringUtils.isBlank(delegation.getGranteeId())) {
       return;
     }
@@ -173,7 +163,7 @@ public class EmailDelegationNotificationListener {
     dispatchResponse(delegation.getGranteeId(),
                      delegation.getOwnerId(),
                      delegation,
-                     EmailDelegationEvent.Type.REVOKED);
+                     EmailDelegationEventType.REVOKED);
   }
 
   /**
@@ -184,7 +174,7 @@ public class EmailDelegationNotificationListener {
    * @param delegation the row
    * @param type the transition
    */
-  private void dispatchResponse(String receiver, String actor, EmailDelegation delegation, EmailDelegationEvent.Type type) {
+  private void dispatchResponse(String receiver, String actor, EmailDelegation delegation, EmailDelegationEventType type) {
     NotificationContext ctx = NotificationContextImpl.cloneInstance()
                                                      .append(BaseEmailDelegationNotificationPlugin.RECEIVER, receiver)
                                                      .append(BaseEmailDelegationNotificationPlugin.ACTOR, actor)

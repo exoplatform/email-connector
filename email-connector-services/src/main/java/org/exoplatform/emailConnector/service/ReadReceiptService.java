@@ -547,7 +547,7 @@ public class ReadReceiptService {
    */
   private boolean isAnswerable(Email email, String ownAddress) {
     String folder = StringUtils.defaultIfBlank(email.getFolder(), MailFolder.INBOX);
-    // Never on a shared mailbox's mail (stack review #437-2, decision 1): the receipt
+    // Never on a shared mailbox's mail (decision 1): the receipt
     // would leave in the delegate's name for mail sent to its owner -- telling the
     // requester somebody else reads that mailbox -- and $MDNSent would be set on the
     // owner's copy, so the owner's own clients never ask them. A delegated Sent folder,
