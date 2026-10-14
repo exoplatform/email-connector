@@ -515,6 +515,8 @@ class EmailDelegationServiceTest {
 
     assertEquals(DelegationStatus.DECLINED, delegation.getStatus());
     verify(emailFolderStorage).deleteDelegatedFolders(GRANTEE, 100L);
+    verify(emailDelegationStorage).endShare(GRANTEE, 100L, DelegationStatus.DECLINED);
+    verify(emailDelegationStorage, never()).update(any());
     verify(engine, never()).revoke(any(), any(), any());
     verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
@@ -638,6 +640,7 @@ class EmailDelegationServiceTest {
     when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(row(DelegationStatus.ACCEPTED, DelegationOrigin.SERVER));
 
     assertEquals(DelegationStatus.AVAILABLE, service.leave(GRANTEE, 100L).getStatus());
+    verify(emailDelegationStorage).endShare(GRANTEE, 100L, DelegationStatus.AVAILABLE);
 
     when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(row(DelegationStatus.PENDING, DelegationOrigin.EXO));
     assertEquals(EmailDelegationService.NOT_ACCEPTED_MESSAGE,
@@ -771,6 +774,7 @@ class EmailDelegationServiceTest {
     assertEquals(DelegationStatus.PENDING, pending.getStatus());
     verify(engine, never()).findSharedMailbox(any(), any());
     verify(emailDelegationStorage, never()).update(any());
+    verify(emailDelegationStorage, never()).markRevoked(anyLong(), any());
     verify(emailFolderStorage, never()).createFolder(any());
   }
 
@@ -813,7 +817,8 @@ class EmailDelegationServiceTest {
 
     assertEquals(DelegationRevokedException.REVOKED, thrown.getMessage());
     assertEquals(DelegationStatus.REVOKED, pending.getStatus());
-    verify(emailDelegationStorage).update(pending);
+    verify(emailDelegationStorage).markRevoked(100L, DelegationStatus.REVOKED);
+    verify(emailDelegationStorage, never()).update(any());
     verify(emailFolderStorage, never()).createFolder(any());
   }
 
@@ -917,6 +922,8 @@ class EmailDelegationServiceTest {
     assertEquals(OWNER_MAILBOX, session.getValue().mailboxIdentifier());
     assertEquals(DelegationStatus.REVOKED, accepted.getStatus());
     assertTrue(accepted.getRevokedDate() != null);
+    verify(emailDelegationStorage).markRevoked(100L, DelegationStatus.REVOKED);
+    verify(emailDelegationStorage, never()).update(any());
     verify(emailFolderStorage).deleteDelegatedFolders(GRANTEE, 100L);
     ArgumentCaptor<EmailDelegationEvent> event = ArgumentCaptor.forClass(EmailDelegationEvent.class);
     verify(eventPublisher).publishEvent(event.capture());
@@ -994,6 +1001,7 @@ class EmailDelegationServiceTest {
 
     assertEquals(DelegationStatus.ACCEPTED, accepted.getStatus());
     verify(emailDelegationStorage, never()).update(any());
+    verify(emailDelegationStorage, never()).markRevoked(anyLong(), any());
   }
 
   // ---------------------------------------------------------------------------------
@@ -2378,6 +2386,7 @@ class EmailDelegationServiceTest {
 
     assertEquals(DelegationStatus.AVAILABLE, revokedAtGrantee.getStatus());
     assertNull(revokedAtGrantee.getRevokedDate());
+    verify(emailDelegationStorage).reopen(revokedAtGrantee.getId());
     verify(emailDelegationStorage, never()).create(any());
     verify(emailFolderStorage, never()).createFolder(any());
 
@@ -2542,6 +2551,7 @@ class EmailDelegationServiceTest {
     assertEquals(DelegationPreset.READER, created.getValue().getPreset());
     assertEquals("lrs", created.getValue().getNativeRights());
     assertEquals(DelegationStatus.GONE, aliceRow.getStatus());
+    verify(emailDelegationStorage).markRevoked(aliceRow.getId(), DelegationStatus.GONE);
     verify(emailFolderStorage, never()).createFolder(any());
     verify(engine, never()).subscribe(any(), any());
   }
@@ -2783,7 +2793,7 @@ class EmailDelegationServiceTest {
    * here either -- and a folder of a share that does not resolve is refused as gone.
    */
   @Test
-  void aKeyThatIsNotTheCallersResolvesToNothing() throws Exception {
+  void aKeyThatIsNotTheCallersResolvesToNothingAndAGoneShareIsRefused() throws Exception {
     when(emailFolderStorage.getFolder(GRANTEE, 5L)).thenReturn(null);
     assertNull(service.delegationOf(GRANTEE, "CUSTOM:5"));
 
@@ -2965,6 +2975,7 @@ class EmailDelegationServiceTest {
     assertEquals(MailboxAclException.UNREACHABLE, unreachable.getCode());
     assertEquals(DelegationStatus.PENDING, pending.getStatus());
     verify(emailDelegationStorage, never()).update(any());
+    verify(emailDelegationStorage, never()).markRevoked(anyLong(), any());
     verify(emailFolderStorage, never()).deleteDelegatedFolders(anyString(), anyLong());
   }
 
@@ -2988,7 +2999,8 @@ class EmailDelegationServiceTest {
     assertThrows(DelegationRevokedException.class, () -> service.accept(GRANTEE, 100L));
 
     assertEquals(DelegationStatus.REVOKED, pending.getStatus());
-    verify(emailDelegationStorage).update(pending);
+    verify(emailDelegationStorage).markRevoked(100L, DelegationStatus.REVOKED);
+    verify(emailDelegationStorage, never()).update(any());
   }
 
   /**
@@ -3007,6 +3019,7 @@ class EmailDelegationServiceTest {
     assertEquals(DelegationStatus.ACCEPTED, accepted.getStatus());
     assertNull(accepted.getRevokedDate());
     verify(emailDelegationStorage, never()).update(any());
+    verify(emailDelegationStorage, never()).markRevoked(anyLong(), any());
     verify(eventPublisher, never()).publishEvent(any(EmailDelegationEvent.class));
   }
 
@@ -3028,6 +3041,7 @@ class EmailDelegationServiceTest {
     assertEquals(DelegationStatus.ACCEPTED, accepted.getStatus());
     verify(engine, never()).revoke(any(), any(), any());
     verify(emailDelegationStorage, never()).update(any());
+    verify(emailDelegationStorage, never()).markRevoked(anyLong(), any());
     verify(emailFolderStorage, never()).deleteDelegatedFolders(anyString(), anyLong());
   }
 

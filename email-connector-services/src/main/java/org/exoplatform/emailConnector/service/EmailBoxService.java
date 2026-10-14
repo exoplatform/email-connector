@@ -5125,6 +5125,8 @@ public class EmailBoxService {
    * @param username the mailbox owner
    * @param userEmailSetting the user's connector binding
    * @param customFolder the registered folder to refresh
+   * @throws DelegationRevokedException when the folder is a shared mailbox's and the
+   *           share is found withdrawn on the server
    */
   private void refreshCustomFolder(String username, UserEmailSetting userEmailSetting, EmailFolder customFolder) {
     if (!syncingUsers.add(username)) {
@@ -5153,12 +5155,18 @@ public class EmailBoxService {
                    share.getOwnerMailbox(),
                    username,
                    customFolder.getRemoteName());
-          return;
+          // Said to the delegate now -- the share-gone refusal the drawer already leaves
+          // a mailbox on -- rather than an empty listing served under the owner's name
+          // until a later read fails.
+          throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
         }
         // The delegate is looking at it: no notification, and what they see moves the
         // new-mail boundary with it (EXO-90553).
         syncDelegatedFolder(store, customFolder, username, userEmailSetting, null);
       }
+    } catch (DelegationRevokedException gone) {
+      // Not a failed refresh to answer from the cache: the share is withdrawn.
+      throw gone;
     } catch (Exception e) {
       // Stamped as a check even though it failed: the listing asks for a refresh on
       // every poll of the drawer, two seconds apart for as long as the category watch

@@ -404,6 +404,11 @@ public class EmailDelegationService {
    * in another mail application, and on the folders the grant recorded (EXO-90548). The
    * row goes {@code REVOKED} and the grantee's registered folders of this mailbox are
    * dropped, the mail mirrored under them with them ({@link #dropDelegatedFolders}).
+   * <p>
+   * No transaction spans the drop and the status write. A status write that fails after
+   * the drop leaves the row saying the share is in use while its folders are gone: nothing
+   * of the mailbox is served from them meanwhile, and the next revoke, leave or
+   * reconciliation that finds the share ended writes the status again.
    *
    * @param ownerUsername the caller
    * @param id the delegation id
@@ -444,12 +449,7 @@ public class EmailDelegationService {
     // The folders first: a drop that fails leaves the share as it stands, to be revoked
     // again, rather than a REVOKED row whose mirror is still registered and served.
     dropDelegatedFolders(delegation.getGranteeId(), delegation.getId());
-    delegation.setStatus(DelegationStatus.REVOKED);
-    delegation.setRevokedDate(new Date());
-    // Back off by default: a share taken up again must be chosen again to count
-    // in the badge, as a new one is (plan 7.7).
-    delegation.setBadgeIncluded(false);
-    delegation = emailDelegationStorage.update(delegation);
+    delegation = writeEnded(delegation, DelegationStatus.REVOKED);
     LOG.info("Mailbox delegation revoked: actor={} ownerMailbox={} grantee={} identifier={}",
              ownerUsername,
              delegation.getOwnerMailbox(),
@@ -1247,21 +1247,31 @@ public class EmailDelegationService {
 
   /**
    * A leave's own write: the row back to DECLINED (AVAILABLE for a share discovered on
-   * the server), answered now, and the caller's folders of the mailbox dropped.
+   * the server), answered now, and the caller's folders of the mailbox dropped first
+   * (see {@link #revoke} for the window between the drop and the write).
    *
    * @param granteeUsername the grantee
    * @param delegation an accepted row
    * @return the row as it now stands
    */
   private EmailDelegation endShare(String granteeUsername, EmailDelegation delegation) {
-    delegation.setStatus(delegation.getOrigin() == DelegationOrigin.SERVER ? DelegationStatus.AVAILABLE : DelegationStatus.DECLINED);
-    delegation.setRespondedDate(new Date());
-    // Back off by default: a share taken up again must be chosen again to count
-    // in the badge, as a new one is (plan 7.7).
-    delegation.setBadgeIncluded(false);
+    DelegationStatus status = delegation.getOrigin() == DelegationOrigin.SERVER ? DelegationStatus.AVAILABLE
+                                                                                : DelegationStatus.DECLINED;
     // The folders first (see revoke): a drop that fails leaves the share in use.
     dropDelegatedFolders(granteeUsername, delegation.getId());
-    return emailDelegationStorage.update(delegation);
+    // Only a leave's columns, on a row still in use: the status it returns to, the
+    // answer's instant and the badge opt-out (a share taken up again must be chosen again
+    // to count in the badge, as a new one is, plan 7.7). The row was read before the
+    // server was asked to withdraw the subscription, and the owner's writes meanwhile
+    // (the offered rights, the grantee's identifier) stand.
+    EmailDelegation ended = emailDelegationStorage.endShare(granteeUsername, delegation.getId(), status);
+    if (ended == null) {
+      delegation.setStatus(status);
+      delegation.setRespondedDate(new Date());
+      delegation.setBadgeIncluded(false);
+      return delegation;
+    }
+    return ended;
   }
 
   /**
@@ -1970,14 +1980,17 @@ public class EmailDelegationService {
    * caller's own mailbox.
    * <p>
    * Both lookups are scoped to the caller: the folder row by {@code (id, userId)}, the
-   * delegation by {@code (id, granteeId)}. A key naming somebody else's folder, or a
-   * folder whose delegation is not the caller's, answers null and is then treated as an
-   * own-mailbox key by every caller -- which is safe, because the row it would act on
-   * does not exist for this user either.
+   * delegation by {@code (id, granteeId)}. A key naming somebody else's folder answers
+   * null and is then treated as an own-mailbox key by every caller -- which is safe,
+   * because the row it would act on does not exist for this user either. A folder of the
+   * caller's registered under a share that no longer resolves for them is refused
+   * instead: it is not an own folder, and a null would make it one for every guard.
    *
    * @param username the caller
    * @param folderKey the {@code EMAIL_BOX.FOLDER} discriminator
    * @return the delegation, or null for an own folder
+   * @throws DelegationRevokedException when the folder's share no longer resolves for
+   *           the caller
    */
   public EmailDelegation delegationOf(String username, String folderKey) {
     if (StringUtils.isBlank(username) || !MailFolder.isCustom(folderKey)) {
@@ -2508,11 +2521,17 @@ public class EmailDelegationService {
    * @return the row as it now stands
    */
   private EmailDelegation reopen(EmailDelegation row) {
-    row.setStatus(DelegationStatus.AVAILABLE);
-    row.setRevokedDate(null);
-    row.setLastRightsCheckDate(new Date());
     LOG.info("Mailbox delegation listed again by the server: grantee={} ownerMailbox={}", row.getGranteeId(), row.getOwnerMailbox());
-    return emailDelegationStorage.update(row);
+    // Only the reopening's columns, on a row still ended: the listing that found the
+    // share again read the row before its server calls.
+    EmailDelegation reopened = emailDelegationStorage.reopen(row.getId());
+    if (reopened == null) {
+      row.setStatus(DelegationStatus.AVAILABLE);
+      row.setRevokedDate(null);
+      row.setLastRightsCheckDate(new Date());
+      return row;
+    }
+    return reopened;
   }
 
   /**
@@ -2668,7 +2687,8 @@ public class EmailDelegationService {
   }
 
   /**
-   * Records that the server no longer grants a row's access.
+   * Records that the server no longer grants a row's access: the folders dropped, then the
+   * status written (see {@link #revoke} for the window between the two).
    *
    * @param delegation the row
    * @param status REVOKED or GONE
@@ -2676,14 +2696,9 @@ public class EmailDelegationService {
    */
   private EmailDelegation markRevoked(EmailDelegation delegation, DelegationStatus status) {
     boolean wasInUse = delegation.getStatus() == DelegationStatus.ACCEPTED;
-    delegation.setStatus(status);
-    delegation.setRevokedDate(new Date());
-    // Back off by default: a share taken up again must be chosen again to count
-    // in the badge, as a new one is (plan 7.7).
-    delegation.setBadgeIncluded(false);
     // The folders first (see revoke): a drop that fails leaves the share as it stands.
     dropDelegatedFolders(delegation.getGranteeId(), delegation.getId());
-    EmailDelegation updated = emailDelegationStorage.update(delegation);
+    EmailDelegation updated = writeEnded(delegation, status);
     if (wasInUse) {
       // Found gone by a reconciliation rather than by anybody's act: no notification
       // says so, but a grantee who counted this inbox in their badge must see it stop
@@ -2691,6 +2706,27 @@ public class EmailDelegationService {
       publish(EmailDelegationEventType.RIGHTS_CHANGED, null, updated);
     }
     return updated;
+  }
+
+  /**
+   * The end of a share, written alone: the status, its instant and the badge opt-out --
+   * a share taken up again must be chosen again to count in the badge, as a new one is
+   * (plan 7.7). The row the caller holds was read before the server round trips, and the
+   * grantee's own writes meanwhile (accept, the toggles, the activity stamp) stand.
+   *
+   * @param delegation the row as the caller read it
+   * @param status REVOKED or GONE
+   * @return the row as it now stands; the caller's own, marked, when the row is gone
+   */
+  private EmailDelegation writeEnded(EmailDelegation delegation, DelegationStatus status) {
+    EmailDelegation written = emailDelegationStorage.markRevoked(delegation.getId(), status);
+    if (written == null) {
+      delegation.setStatus(status);
+      delegation.setRevokedDate(new Date());
+      delegation.setBadgeIncluded(false);
+      return delegation;
+    }
+    return written;
   }
 
   // ---------------------------------------------------------------------------------

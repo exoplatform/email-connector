@@ -612,14 +612,6 @@ public class UserEmailSettingService {
   }
 
   /**
-   * The connector a user's stored setting names, read from the document alone: no
-   * password decode, no connector read. What a walk over every user needs, and
-   * nothing more.
-   *
-   * @param username the eXo login
-   * @return the connector id as stored, or null when the user has no mail setting
-   */
-  /**
    * The address a user connects with, as stored, without reading the connector or
    * decoding the credentials next to it -- a database read for mapping a server's
    * identifiers back to people.
@@ -636,6 +628,14 @@ public class UserEmailSettingService {
     return stored == null ? null : StringUtils.trimToNull(stored.getEmailAddress());
   }
 
+  /**
+   * The connector a user's stored setting names, read from the document alone: no
+   * password decode, no connector read. What a walk over every user needs, and
+   * nothing more.
+   *
+   * @param username the eXo login
+   * @return the connector id as stored, or null when the user has no mail setting
+   */
   public String getStoredEmailConnectorId(String username) {
     SettingValue<?> value = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
     if (value == null || value.getValue() == null) {

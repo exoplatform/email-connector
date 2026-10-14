@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
 import java.util.EnumMap;
@@ -293,6 +294,86 @@ class EmailDelegationStorageWritesTest {
     assertNull(emailDelegationStorage.updateGranteeMailbox("alice", unnamed.getId(), "someone@else.org"), "written once");
     assertEquals("ned@acme.com", emailDelegationStorage.getAsOwner("alice", unnamed.getId()).getGranteeMailbox());
     assertNull(emailDelegationStorage.updateGranteeMailbox("mallory", unnamed.getId(), "mallory@acme.com"), "the owner's row only");
+  }
+
+  /**
+   * A share found gone is written alone, in SQL: the status, its instant and the badge
+   * opt-out land, and the grantee's notification choice made meanwhile stands.
+   */
+  @Test
+  void anEndedShareNeverUndoesTheGranteesChoiceMadeMeanwhile() {
+    EmailDelegation stale = emailDelegationStorage.create(acceptedRow("olga"));
+    emailDelegationStorage.updatePreferences("olga", stale.getId(), true, true);
+
+    EmailDelegation ended = emailDelegationStorage.markRevoked(stale.getId(), DelegationStatus.REVOKED);
+
+    assertEquals(DelegationStatus.REVOKED, ended.getStatus());
+    assertNotNull(ended.getRevokedDate());
+    assertFalse(ended.isBadgeIncluded(), "a share taken up again must be chosen again to count");
+    assertTrue(ended.isNotifyNewMail(), "the grantee's choice stands");
+  }
+
+  /**
+   * A leave is written alone, in SQL: the status, the answer's instant and the badge
+   * opt-out land, and the owner's change of access made meanwhile stands.
+   */
+  @Test
+  void aLeaveNeverUndoesAChangeOfAccessMadeMeanwhile() {
+    EmailDelegation stale = emailDelegationStorage.create(acceptedRow("pete"));
+    emailDelegationStorage.updateGrantedRights("alice",
+                                               stale.getId(),
+                                               DelegationPreset.EDITOR,
+                                               "lrswit",
+                                               "lrswite",
+                                               "pete@acme.com",
+                                               new Date(9_000L));
+
+    EmailDelegation left = emailDelegationStorage.endShare("pete", stale.getId(), DelegationStatus.DECLINED);
+
+    assertEquals(DelegationStatus.DECLINED, left.getStatus());
+    assertNotNull(left.getRespondedDate());
+    assertFalse(left.isBadgeIncluded());
+    assertEquals("lrswit", left.getRights(), "the owner's change of access stands");
+    assertEquals(DelegationPreset.EDITOR, left.getPreset());
+  }
+
+  /**
+   * A leave of a share no longer in use writes nothing, in SQL: a revoke committed first
+   * stands.
+   */
+  @Test
+  void aLeaveNeverRevivesARevokedShare() {
+    EmailDelegation stale = emailDelegationStorage.create(acceptedRow("tara"));
+    emailDelegationStorage.markRevoked(stale.getId(), DelegationStatus.REVOKED);
+
+    EmailDelegation left = emailDelegationStorage.endShare("tara", stale.getId(), DelegationStatus.DECLINED);
+
+    assertEquals(DelegationStatus.REVOKED, left.getStatus(), "the revoke stands");
+    assertNull(left.getRespondedDate());
+  }
+
+  /**
+   * A share offered again is written alone, in SQL: back to AVAILABLE with its revocation
+   * cleared and its rights check stamped, the grantee's notification choice untouched; a
+   * share in use is never reopened.
+   */
+  @Test
+  void aShareOfferedAgainClearsItsRevocationAlone() {
+    EmailDelegation row = emailDelegationStorage.create(acceptedRow("ursula"));
+    emailDelegationStorage.updatePreferences("ursula", row.getId(), false, true);
+    emailDelegationStorage.markRevoked(row.getId(), DelegationStatus.GONE);
+
+    EmailDelegation reopened = emailDelegationStorage.reopen(row.getId());
+
+    assertEquals(DelegationStatus.AVAILABLE, reopened.getStatus());
+    assertNull(reopened.getRevokedDate());
+    assertNotNull(reopened.getLastRightsCheckDate());
+    assertTrue(reopened.isNotifyNewMail());
+
+    EmailDelegation inUse = emailDelegationStorage.create(acceptedRow("vera"));
+    assertEquals(DelegationStatus.ACCEPTED,
+                 emailDelegationStorage.reopen(inUse.getId()).getStatus(),
+                 "a share in use is not reopened");
   }
 
   private EmailDelegation acceptedRow(String grantee) {
