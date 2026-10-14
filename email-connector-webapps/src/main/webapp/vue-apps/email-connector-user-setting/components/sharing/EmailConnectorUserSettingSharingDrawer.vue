@@ -92,6 +92,7 @@ export default {
     active: false,
     loading: false,
     loaded: false,
+    loadRequest: 0,
     capabilities: null,
     grantees: [],
     revokingId: null,
@@ -184,8 +185,15 @@ export default {
      */
     load() {
       this.loading = true;
+      // Numbered, so that only the latest read is applied: open, a grant, a revoke, a
+      // change of access and an extension all reload, and an older answer landing after
+      // a newer one would bring back a grantee just revoked.
+      const request = ++this.loadRequest;
       return this.$emailConnectorUserSettingService.getGrantedDelegations()
         .then(answer => {
+          if (request !== this.loadRequest) {
+            return;
+          }
           this.capabilities = answer?.capabilities || null;
           this.grantees = answer?.grantees || [];
           this.loaded = true;
@@ -195,12 +203,19 @@ export default {
           this.$root.$emit('email-sharing-grantees-read', this.supported ? this.grantees.length : null);
         })
         .catch(error => {
+          if (request !== this.loadRequest) {
+            return;
+          }
           this.capabilities = null;
           this.grantees = [];
           this.loaded = false;
           this.showAlert(this.messageOf(error, 'UserSettings.emailConnector.sharing.error'), 'error');
         })
-        .finally(() => this.loading = false);
+        .finally(() => {
+          if (request === this.loadRequest) {
+            this.loading = false;
+          }
+        });
     },
     /**
      * Reloads once a share was granted, while this drawer stays open behind the

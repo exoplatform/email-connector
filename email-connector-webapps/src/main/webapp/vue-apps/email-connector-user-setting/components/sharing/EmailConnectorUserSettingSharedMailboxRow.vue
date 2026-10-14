@@ -67,7 +67,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :disabled="disabled"
               v-bind="attrs"
               icon
-              x-small
               v-on="on">
               <v-icon size="14" class="icon-default-color">fa-ellipsis-v</v-icon>
             </v-btn>
@@ -92,7 +91,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-spacer />
         <v-switch
           :input-value="delegation.badgeIncluded"
-          :loading="saving"
           :disabled="disabled"
           :aria-label="$t('UserSettings.emailConnector.sharedWithMe.badge')"
           class="mt-0 pt-0 ms-2 flex-grow-0"
@@ -109,7 +107,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-spacer />
           <v-switch
             :input-value="delegation.notifyNewMail"
-            :loading="saving"
             :disabled="disabled"
             :aria-label="$t('UserSettings.emailConnector.sharedWithMe.notify')"
             class="mt-0 pt-0 ms-2 flex-grow-0"
