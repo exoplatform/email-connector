@@ -25,6 +25,8 @@ import org.springframework.stereotype.Component;
 import org.exoplatform.emailConnector.dao.EmailFolderDAO;
 import org.exoplatform.emailConnector.entity.EmailFolderEntity;
 import org.exoplatform.emailConnector.model.EmailFolder;
+import org.exoplatform.emailConnector.model.FolderRole;
+import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 
 /**
@@ -121,6 +123,9 @@ public class EmailFolderStorage {
     entity.setDelimiter(folder.getDelimiter());
     entity.setType(folder.getType());
     entity.setDelegationId(folder.getDelegationId());
+    entity.setRole(folder.getRole() == null ? null : folder.getRole().name());
+    entity.setRights(folder.getRights());
+    entity.setRightsCheckDate(folder.getRightsCheckDate());
     entity.setSyncEnabled(false);
     entity.setMissing(false);
     entity.setDiscoveredDate(folder.getDiscoveredDate());
@@ -264,6 +269,33 @@ public class EmailFolderStorage {
   }
 
   /**
+   * Makes a shared mailbox's next discovery run at once (EXO-90548): after the owner
+   * changed what the share covers -- Extend, a change of access, a re-grant -- the
+   * grantee's next pass reads the owner's folders again instead of waiting out the
+   * quarter-hour throttle.
+   *
+   * @param delegationId the share
+   */
+  public void markDiscoveryDue(long delegationId) {
+    emailFolderDAO.markDiscoveryDue(delegationId, MailFolderView.TYPE_DELEGATED_INBOX);
+  }
+
+  /**
+   * Discovery's write on a folder of a shared mailbox: its role and the delegate's own
+   * letters on it, stamped (EXO-90548). A row of the user's own mailbox is never touched.
+   *
+   * @param userId the grantee
+   * @param id the registry id
+   * @param delegationId the delegation the row belongs to
+   * @param role the role in the owner's mailbox, null for none
+   * @param rights the delegate's letters on it
+   * @param when the check time
+   */
+  public void updateDelegatedRights(String userId, long id, long delegationId, FolderRole role, String rights, Date when) {
+    emailFolderDAO.updateDelegatedRights(id, userId, delegationId, role == null ? null : role.name(), rights, when);
+  }
+
+  /**
    * Drops every registered folder of one shared mailbox. The mirrored rows those
    * folders keyed are the caller's to delete, as for {@link #deleteFolder}.
    *
@@ -305,6 +337,9 @@ public class EmailFolderStorage {
                            entity.getLastSeenDate(),
                            entity.getLastSyncDate(),
                            snapshot,
-                           entity.getDelegationId());
+                           entity.getDelegationId(),
+                           FolderRole.of(entity.getRole()),
+                           entity.getRights(),
+                           entity.getRightsCheckDate());
   }
 }

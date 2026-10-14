@@ -16,7 +16,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <!-- The owner's actions on one person's access: change it to a preset (the current
-       one checked; "Set to ..." when the letters read as none), or remove it. -->
+       one checked; "Set to ..." when the letters read as none), share the rest of the
+       mailbox with an Inbox-only share, or remove it. -->
   <v-menu offset-y left>
     <template #activator="{ on, attrs }">
       <v-btn
@@ -40,6 +41,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-icon size="12" color="primary">fa-check</v-icon>
         </v-list-item-action>
       </v-list-item>
+      <template v-if="canExtend">
+        <v-divider class="my-1" />
+        <v-list-item @click="$emit('extend')">
+          <v-list-item-title>{{ extendLabel }}</v-list-item-title>
+        </v-list-item>
+      </template>
       <v-divider class="my-1" />
       <v-list-item @click="$emit('revoke')">
         <v-list-item-title class="error--text">{{ $t('UserSettings.emailConnector.sharing.revoke') }}</v-list-item-title>
@@ -57,6 +64,10 @@ export default {
     // READER or EDITOR, or null when the letters read as no preset.
     currentPreset: { type: String, default: null },
     disabled: { type: Boolean, default: false },
+    // Whether the owner's mailbox has role folders the share does not cover yet (EXO-90548).
+    canExtend: { type: Boolean, default: false },
+    // What an Extend would add, said: "Share Spam too".
+    extendLabel: { type: String, default: '' },
   },
   data: () => ({ PRESETS }),
   methods: {

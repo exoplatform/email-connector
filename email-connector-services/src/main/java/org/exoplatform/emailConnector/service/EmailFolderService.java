@@ -37,6 +37,7 @@ import org.exoplatform.emailConnector.model.EmailFolder;
 import org.exoplatform.emailConnector.model.FolderClassification;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.MailFolderNames;
 import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 import org.exoplatform.services.log.ExoLogger;
@@ -229,68 +230,16 @@ public class EmailFolderService {
   static final Set<String>        IGNORED_ATTRIBUTES                 =
                                                      Set.of("\\noselect", "\\nonexistent", "\\flagged", "\\important");
 
-  // The well-known Drafts folder names, for the servers that never learned SPECIAL-USE,
-  // in the locales the product ships plus the few its users' other clients create.
-  // Matched on the folder's last path segment, for equality -- see the classification
-  // for why this list is not applied as a "contains".
-  static final Set<String>        DRAFTS_FOLDER_NAMES                =
-                                                      Set.of("drafts",
-                                                             "draft",
-                                                             "brouillons",
-                                                             "brouillon",
-                                                             "entwürfe",
-                                                             "entwuerfe",
-                                                             "bozze",
-                                                             "borradores",
-                                                             "rascunhos",
-                                                             "concepten",
-                                                             "utkast",
-                                                             "kladde",
-                                                             "luonnokset");
+  // The well-known Drafts, Trash and Junk folder names, for the servers that never
+  // learned SPECIAL-USE. The lists live in MailFolderNames, so a shared mailbox's role
+  // resolution (FolderRole#ofUsualName) recognises the same names as the user's own
+  // mailbox (EXO-90548). Matched on the folder's last path segment, for equality -- see
+  // the classification for why they are not applied as a "contains".
+  static final Set<String>        DRAFTS_FOLDER_NAMES                = MailFolderNames.DRAFTS;
 
-  // The well-known Trash folder names, same spread of locales plus the "Deleted ..."
-  // names Exchange and its clients create. Last path segment, for equality.
-  static final Set<String>        TRASH_FOLDER_NAMES                 =
-                                                     Set.of("trash",
-                                                            "deleted",
-                                                            "deleted items",
-                                                            "deleted messages",
-                                                            "corbeille",
-                                                            "papierkorb",
-                                                            "cestino",
-                                                            "papelera",
-                                                            "lixeira",
-                                                            "prullenbak",
-                                                            "papperskorg",
-                                                            "papirkurv",
-                                                            "roskakori");
+  static final Set<String>        TRASH_FOLDER_NAMES                 = MailFolderNames.TRASH;
 
-  // The well-known Junk folder names, same spread plus the "Spam" / "Bulk" names the
-  // big providers and their clients create. Last path segment, for equality.
-  static final Set<String>        JUNK_FOLDER_NAMES                  =
-                                                    Set.of("junk",
-                                                           "junk e-mail",
-                                                           "junk-e-mail",
-                                                           "junk email",
-                                                           "junk mail",
-                                                           "spam",
-                                                           "спам",
-                                                           "bulk mail",
-                                                           "courrier indésirable",
-                                                           "indésirables",
-                                                           "pourriel",
-                                                           "spamverdacht",
-                                                           "unerwünscht",
-                                                           "posta indesiderata",
-                                                           "correo no deseado",
-                                                           "no deseado",
-                                                           "lixo eletrônico",
-                                                           "lixo eletronico",
-                                                           "ongewenste e-mail",
-                                                           "skräppost",
-                                                           "roskaposti",
-                                                           "uønsket e-post",
-                                                           "søppelpost");
+  static final Set<String>        JUNK_FOLDER_NAMES                  = MailFolderNames.JUNK;
 
   // The built-in roles in the order they are assigned. INBOX first because its name is
   // protocol-guaranteed; the rest in the order the sync runs them. Order matters only
@@ -520,13 +469,17 @@ public class EmailFolderService {
   /**
    * The shared-namespace roots a walk's own listing shows: a top-level folder that
    * cannot hold mail, one of whose children has an INBOX child --
-   * {@code Shared Folders/<owner>/Inbox}.
+   * {@code Shared Folders/<owner>/Inbox}. Also what the Trash and Archive finders read on
+   * a server that advertises no namespace (EXO-90548).
    *
-   * @param folders the walk's folders
+   * @param folders the walk's folders, possibly null
    * @return the roots, possibly empty
    */
-  private Set<String> sharedRootsByShape(List<DiscoveredFolder> folders) {
+  public Set<String> sharedRootsByShape(List<DiscoveredFolder> folders) {
     Set<String> roots = new HashSet<>();
+    if (folders == null) {
+      return roots;
+    }
     for (DiscoveredFolder container : folders) {
       String name = container == null ? null : container.fullName();
       String delimiter = container == null ? null : container.delimiter();
@@ -1020,7 +973,7 @@ public class EmailFolderService {
     return switch (role) {
       case MailFolder.INBOX -> "inbox".equals(name);
       case MailFolder.SENT -> name.contains("sent") || name.contains("envoyé") || name.contains("envoye");
-      case MailFolder.ARCHIVE -> name.equals("archive") || name.equals("archives") || name.equals("archivage");
+      case MailFolder.ARCHIVE -> MailFolderNames.ARCHIVE.contains(name);
       case MailFolder.ALL_MAIL -> name.contains("all mail") || name.contains("tous les messages");
       case MailFolder.DRAFTS -> DRAFTS_FOLDER_NAMES.contains(lastSegment(folder.fullName()));
       case MailFolder.TRASH -> TRASH_FOLDER_NAMES.contains(lastSegment(folder.fullName()));

@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.model;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -38,6 +39,13 @@ import java.util.Map;
  *          names them
  * @param folderKey the {@code CUSTOM:<id>} key the shared INBOX is listed under
  * @param unreadCount how many messages of that INBOX the delegate's mirror holds unread
+ * @param folders the shared mailbox's other folders the delegate may see -- the owner's
+ *          Sent, Archive, Trash, Spam and the rest the share covers (EXO-90548), roles
+ *          first; empty for a share that covers INBOX only
+ * @param inboxOnly whether eXo wrote the share before it shared the owner's other folders,
+ *          so that only the INBOX is shared and the owner can extend it (EXO-90548 review):
+ *          what the band tells the delegate, rather than what the last discovery happened
+ *          to find. False for a share made in the mail server's own interface
  */
 public record SharedMailboxEntry(Long delegationId,
                                  String ownerId,
@@ -47,5 +55,7 @@ public record SharedMailboxEntry(Long delegationId,
                                  String rights,
                                  Map<String, Boolean> affordances,
                                  String folderKey,
-                                 int unreadCount) {
+                                 int unreadCount,
+                                 List<SharedMailboxFolder> folders,
+                                 boolean inboxOnly) {
 }
