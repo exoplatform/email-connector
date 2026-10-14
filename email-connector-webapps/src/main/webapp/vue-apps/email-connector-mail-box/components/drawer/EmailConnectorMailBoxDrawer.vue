@@ -3409,8 +3409,8 @@ export default {
      * <p>
      * A full copy, a draft's or a scheduled mail's row is shown as it is; a bare list row,
      * or a copy that could not be read, is fetched again by its UID. The mail drawer
-     * gets the list the mail is in -- the folder's, or the search's -- or the mail alone,
-     * detached from the list, when neither holds it.
+     * gets the folder's list; the search's, detached, as the narrow search opening gives
+     * it; or the mail alone, detached, when neither holds it.
      *
      * @returns {void}
      */
