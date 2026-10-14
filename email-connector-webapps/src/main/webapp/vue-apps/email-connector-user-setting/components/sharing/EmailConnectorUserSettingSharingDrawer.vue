@@ -47,6 +47,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :grantee="grantee"
           :disabled="revokingId !== null || changingId !== null"
           @change-preset="askChangePreset(grantee, $event)"
+          @extend="askExtend(grantee)"
           @revoke="openRevoke(grantee)" />
       </v-list>
     </template>
@@ -60,6 +61,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <!-- Setting a preset REPLACES the person's entry on the mail server. On an access
          written there (or with letters no preset names) that drops whatever else it
          held, so it is asked first, saying so. -->
+    <!-- Sharing more of the mailbox is the owner's explicit act, said as what it gives
+         (EXO-90548, PO decision Q-4): never a silent widening. -->
+    <exo-confirm-dialog
+      ref="extendConfirmDialog"
+      :title="$t('UserSettings.emailConnector.sharing.extend.confirm.title')"
+      :message="extendMessage"
+      :ok-label="$t('UserSettings.emailConnector.sharing.extend.confirm.ok')"
+      :cancel-label="$t('UserSettings.emailConnector.sharing.cancel')"
+      @ok="extend" />
     <exo-confirm-dialog
       ref="replaceConfirmDialog"
       :title="$t('UserSettings.emailConnector.sharing.replace.confirm.title')"
@@ -89,8 +99,22 @@ export default {
     changingId: null,
     // The change of access waiting for the replace confirmation: {grantee, preset}.
     pendingChange: null,
+    // The share whose "Share ... too" is being confirmed.
+    extendTarget: null,
+    // The folders the Extend being confirmed adds, by name: kept apart from extendTarget,
+    // which the confirmation clears as it closes, so its text does not empty on the way out.
+    extendNames: '',
   }),
   computed: {
+    /**
+     * What the Extend confirmation says it gives: the folders it would add, by name
+     * (EXO-90548).
+     *
+     * @returns {String} the message
+     */
+    extendMessage() {
+      return this.$t('UserSettings.emailConnector.sharing.extendRoles.confirm.message', { 0: this.extendNames });
+    },
     /**
      * @returns {Boolean} whether the connected mail server can share at all
      */
@@ -273,6 +297,39 @@ export default {
       this.$emailConnectorUserSettingService.changeDelegationPreset(id, preset)
         .then(() => this.showAlert(this.$t('UserSettings.emailConnector.sharing.changed'), 'success'))
         .catch(error => this.showAlert(this.messageOf(error, 'UserSettings.emailConnector.sharing.change.error'), 'error'))
+        .finally(() => {
+          this.changingId = null;
+          this.load();
+          this.$root.$emit('email-delegations-updated');
+        });
+    },
+    /**
+     * A row's "Share ... too": asked first, with what it gives.
+     *
+     * @param {Object} grantee the row
+     * @returns {void}
+     */
+    askExtend(grantee) {
+      this.extendTarget = grantee;
+      this.extendNames = (grantee?.extendableRoles || []).map(role => this.$t(`UserSettings.emailConnector.sharing.role.${role}`)).join(', ');
+      this.$refs.extendConfirmDialog.open();
+    },
+    /**
+     * Extends the share the confirmation was asked for, on the mail server, and shows the
+     * list as the server now holds it.
+     *
+     * @returns {void}
+     */
+    extend() {
+      const id = this.extendTarget?.delegation?.id;
+      this.extendTarget = null;
+      if (!id) {
+        return;
+      }
+      this.changingId = id;
+      this.$emailConnectorUserSettingService.extendDelegation(id)
+        .then(() => this.showAlert(this.$t('UserSettings.emailConnector.sharing.extended'), 'success'))
+        .catch(error => this.showAlert(this.messageOf(error, 'UserSettings.emailConnector.sharing.extend.error'), 'error'))
         .finally(() => {
           this.changingId = null;
           this.load();

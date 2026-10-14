@@ -40,6 +40,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.exoplatform.emailConnector.dao.EmailFolderDAO;
 import org.exoplatform.emailConnector.entity.EmailFolderEntity;
 import org.exoplatform.emailConnector.model.EmailFolder;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolderView;
 
@@ -116,6 +117,89 @@ public class EmailFolderStorageTest {
     assertNull(disabled.getEnabledDate());
     assertNull(disabled.getSnapshot(), "an opt-out forgets the sync memory");
     assertNull(disabled.getLastSyncDate());
+  }
+
+  /**
+   * EXO-90548 -- a delegated folder is registered with its role in the owner's mailbox
+   * and the delegate's own letters on it, and reads them back; a folder of the user's own
+   * mailbox has neither.
+   */
+  @Test
+  void aDelegatedFolderKeepsItsRoleAndLetters() {
+    EmailFolder trash = newFolder("bob", "Shared Folders/alice@acme.com/Trash", "Trash");
+    trash.setType(MailFolderView.TYPE_DELEGATED);
+    trash.setDelegationId(9L);
+    trash.setRole(FolderRole.TRASH);
+    trash.setRights("lrswit");
+    trash.setRightsCheckDate(new Date(5_000L));
+
+    EmailFolder read = emailFolderStorage.getFolder("bob", emailFolderStorage.createFolder(trash).getId());
+
+    assertEquals(FolderRole.TRASH, read.getRole());
+    assertEquals("lrswit", read.getRights());
+    assertEquals(5_000L, read.getRightsCheckDate().getTime());
+    EmailFolder own = emailFolderStorage.getFolder("bob", emailFolderStorage.createFolder(newFolder("bob", "Factures", "Factures")).getId());
+    assertNull(own.getRole());
+    assertNull(own.getRights());
+  }
+
+  /**
+   * EXO-90548 -- discovery's targeted write gives a delegated folder its role and letters
+   * and touches nothing else (the opt-in stays); scoped to the delegation, it never gives
+   * letters to a folder of the user's own mailbox.
+   */
+  @Test
+  void discoveryWritesOnlyTheRoleAndLettersOfADelegatedFolder() {
+    EmailFolder sent = newFolder("frank", "shared/alice/Sent", "Sent");
+    sent.setType(MailFolderView.TYPE_DELEGATED);
+    sent.setDelegationId(4L);
+    EmailFolder created = emailFolderStorage.createFolder(sent);
+    emailFolderStorage.updateSyncEnabled("frank", created.getId(), true, new Date(1_000L));
+    EmailFolder own = emailFolderStorage.createFolder(newFolder("frank", "Sent", "Sent"));
+
+    emailFolderStorage.updateDelegatedRights("frank", created.getId(), 4L, FolderRole.SENT, "lrswite", new Date(2_000L));
+    emailFolderStorage.updateDelegatedRights("frank", own.getId(), 4L, FolderRole.SENT, "lrswite", new Date(2_000L));
+    emailFolderStorage.updateDelegatedRights("frank", created.getId(), 5L, FolderRole.TRASH, "l", new Date(3_000L));
+
+    EmailFolder read = emailFolderStorage.getFolder("frank", created.getId());
+    assertEquals(FolderRole.SENT, read.getRole());
+    assertEquals("lrswite", read.getRights());
+    assertEquals(2_000L, read.getRightsCheckDate().getTime(), "another delegation's write did not land");
+    assertTrue(read.isSyncEnabled(), "the opt-in is left as it was");
+    assertNull(emailFolderStorage.getFolder("frank", own.getId()).getRights(), "an own folder never gets letters");
+  }
+
+  /**
+   * EXO-90548, live on Stalwart -- after the owner extends a share, its discovery is due
+   * at once: the stamp of that share's INBOX row (the throttle's clock) is cleared for
+   * every grantee, and nothing else moves -- not its other folders' letters and stamps,
+   * not another share's INBOX.
+   */
+  @Test
+  void anOwnersChangeMakesThatSharesDiscoveryDueAndNothingElse() {
+    EmailFolder inbox = newFolder("gina", "Shared Folders/alice@stalwart.local/Inbox", "Inbox");
+    inbox.setType(MailFolderView.TYPE_DELEGATED_INBOX);
+    inbox.setDelegationId(7L);
+    inbox.setRightsCheckDate(new Date(1_000L));
+    EmailFolder sent = newFolder("gina", "Shared Folders/alice@stalwart.local/Sent Items", "Sent Items");
+    sent.setType(MailFolderView.TYPE_DELEGATED);
+    sent.setDelegationId(7L);
+    sent.setRights("lrswite");
+    sent.setRightsCheckDate(new Date(2_000L));
+    EmailFolder otherInbox = newFolder("gina", "Shared Folders/carol@stalwart.local/Inbox", "Inbox");
+    otherInbox.setType(MailFolderView.TYPE_DELEGATED_INBOX);
+    otherInbox.setDelegationId(8L);
+    otherInbox.setRightsCheckDate(new Date(3_000L));
+    long inboxId = emailFolderStorage.createFolder(inbox).getId();
+    long sentId = emailFolderStorage.createFolder(sent).getId();
+    long otherId = emailFolderStorage.createFolder(otherInbox).getId();
+
+    emailFolderStorage.markDiscoveryDue(7L);
+
+    assertNull(emailFolderStorage.getFolder("gina", inboxId).getRightsCheckDate(), "that share's discovery is due");
+    assertEquals(2_000L, emailFolderStorage.getFolder("gina", sentId).getRightsCheckDate().getTime(), "its folders' letters stand");
+    assertEquals("lrswite", emailFolderStorage.getFolder("gina", sentId).getRights());
+    assertEquals(3_000L, emailFolderStorage.getFolder("gina", otherId).getRightsCheckDate().getTime(), "another share is not touched");
   }
 
   /**

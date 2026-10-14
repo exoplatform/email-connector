@@ -22,7 +22,7 @@ export * from './EmailConnectorScheduledSendService.js';
 export * from './EmailConnectorReadReceiptService.js';
 // The mailboxes shared with the user, and what their rights let the interface offer.
 export * from './EmailConnectorSharedMailboxes.js';
-import { isSharedMailboxFolder, sharedMailboxAllows, sharedMailboxAllowsMoveOut, sharedMailboxOfFolder } from './EmailConnectorSharedMailboxes.js';
+import { inboxOnlyShareOf, isSharedMailboxFolder, sharedFolderRole, sharedMailboxAllows, sharedMailboxAllowsMoveOut, sharedMailboxCanFileInto, sharedMailboxOfFolder } from './EmailConnectorSharedMailboxes.js';
 import { refusal } from './EmailConnectorScheduledSendService.js';
 
 const presentation = {
@@ -148,6 +148,14 @@ const attachmentMapIconsExtensions = new Map([
 // writable in the next.
 const READ_ONLY_FOLDERS = ['TRASH', 'JUNK'];
 
+// A shared mailbox's folders of these roles are read-only too (EXO-90548 review,
+// finding 2), and more so than the user's own: nothing leaves its Trash (decision 3a,
+// so no Restore either), its Spam has no "Not spam" (that would file into the user's
+// own INBOX, another mailbox), and its Drafts are the owner's unfinished mail, which
+// the user's own draft actions must never touch. The server refuses the same
+// (EmailBoxService#asRoleFolder, #checkDelegatedMove).
+const SHARED_READ_ONLY_ROLES = ['TRASH', 'JUNK', 'DRAFTS'];
+
 /**
  * Whether a folder's messages may only be read, never acted on.
  *
@@ -156,7 +164,7 @@ const READ_ONLY_FOLDERS = ['TRASH', 'JUNK'];
  * @returns {Boolean} true when no mutating action may be offered on those messages
  */
 export function isReadOnlyFolder(folder) {
-  return READ_ONLY_FOLDERS.includes(folder || 'INBOX');
+  return READ_ONLY_FOLDERS.includes(folder || 'INBOX') || SHARED_READ_ONLY_ROLES.includes(sharedFolderRole(folder));
 }
 
 // Folders that offer the Trash actions — restore, and delete permanently.
@@ -198,7 +206,26 @@ const JUNK_ACTION_FOLDERS = ['JUNK'];
  * @returns {Boolean} true when the Junk actions may be offered on those messages
  */
 export function hasJunkActions(folder) {
-  return JUNK_ACTION_FOLDERS.includes(folder || 'INBOX');
+  if (JUNK_ACTION_FOLDERS.includes(folder || 'INBOX')) {
+    return true;
+  }
+  // A shared mailbox's Spam (EXO-90548 review): its Delete files into that mailbox's
+  // own Trash, so it is offered where the letters allow taking mail out and a Trash is
+  // shared -- the reversible delete every Spam folder keeps. "Not spam" is not
+  // (canRestoreFromJunk): it would file into the user's own INBOX, another mailbox.
+  return sharedFolderRole(folder) === 'JUNK' && sharedMailboxAllowsMoveOut(folder) && sharedMailboxCanFileInto(folder, 'TRASH');
+}
+
+/**
+ * Whether "Not spam" may be offered on a Spam message: in the user's own Spam folder
+ * only. Out of a shared mailbox's Spam it would put the owner's mail into the user's
+ * own INBOX -- a move between two mailboxes, which the server refuses (EXO-90548).
+ *
+ * @param {String} folder the folder a row carries; blank means INBOX
+ * @returns {Boolean} true when "Not spam" may be offered on those messages
+ */
+export function canRestoreFromJunk(folder) {
+  return (folder || 'INBOX') === 'JUNK';
 }
 
 /**
@@ -230,7 +257,62 @@ export function isDraftsFolder(folder) {
  * @returns {Boolean} true when "Mark as spam" may be offered on those messages
  */
 export function canMarkAsJunk(folder) {
-  return canMoveOutOf(folder);
+  // In a shared mailbox, only where its owner shares a Spam folder (EXO-90548).
+  return canMoveOutOf(folder) && sharedMailboxCanFileInto(folder, 'JUNK');
+}
+
+/**
+ * Whether a row may be deleted -- filed into the Trash: where mail may be taken out of
+ * its folder (canMoveOutOf), and in a shared mailbox only where its owner shares a Trash
+ * the user may file into (EXO-90548). The one answer the row menu, the swipe, the
+ * reader's toolbar, the bulk toolbar and a drop on the Trash ask.
+ *
+ * @param {String} folder the folder a row carries; blank means INBOX
+ * @returns {Boolean} true when Delete may be offered on those messages
+ */
+export function canDelete(folder) {
+  return canMoveOutOf(folder) && sharedMailboxCanFileInto(folder, 'TRASH');
+}
+
+/**
+ * Whether a row may be archived: where mail may be taken out of its folder, and in a
+ * shared mailbox only where its owner shares an Archive the user may file into -- and
+ * never out of that Archive itself, a copy into the folder the message is in
+ * (EXO-90548). A server with no Archive (Stalwart has none by default) offers none,
+ * even after the owner extends the share.
+ *
+ * @param {String} folder the folder a row carries; blank means INBOX
+ * @returns {Boolean} true when Archive may be offered on those messages
+ */
+export function canArchive(folder) {
+  return canMoveOutOf(folder) && sharedFolderRole(folder) !== 'ARCHIVE' && sharedMailboxCanFileInto(folder, 'ARCHIVE');
+}
+
+/**
+ * Whether "Move to..." may be offered on a row: where mail may be taken out of its
+ * folder and there is somewhere to move it (moveTargets) -- in a shared mailbox, another
+ * folder of that mailbox the user may insert into.
+ *
+ * @param {Array} folders the folder list as the server sent it
+ * @param {String} folder the folder a row carries; blank means INBOX
+ * @returns {Boolean} true when "Move to..." may be offered
+ */
+export function canMoveTo(folders, folder) {
+  return canMoveOutOf(folder) && moveTargets(folders, folder).length > 0;
+}
+
+/**
+ * The shared mailbox whose owner shares only the Inbox, for the hint shown where Delete
+ * and Archive would be: the user may take mail out of that Inbox, but there is no Trash
+ * or Archive of that mailbox to file into until the owner extends the share (EXO-90548).
+ *
+ * @param {String} folder the folder a row carries
+ * @returns {Object} the switcher entry ({ownerFullName, ...}), or null
+ */
+export function inboxOnlyShareHint(folder) {
+  // Only where it is true: the user may take mail out, and neither Delete nor Archive is
+  // there to do it (EXO-90548 review).
+  return inboxOnlyShareOf(folder, canMoveOutOf(folder) && !canDelete(folder) && !canArchive(folder));
 }
 
 /**
@@ -288,6 +370,11 @@ export function folderLabel(folder, translate) {
   if (folder.type === SHARED_INBOX_TYPE) {
     return translate('emailConnector.mailBox.list.drawer.folder.inbox');
   }
+  // Its other folders (EXO-90548): a role folder under the name the user knows it by --
+  // the owner's "Corbeille" is the Trash -- and any other under its own name.
+  if (folder.type === SHARED_FOLDER_TYPE) {
+    return folder.role ? translate(`emailConnector.mailBox.list.drawer.folder.${folder.role.toLowerCase()}`) : (folder.displayName || '');
+  }
   return translate(`emailConnector.mailBox.list.drawer.folder.${(folder.key || 'INBOX').toLowerCase()}`);
 }
 
@@ -296,6 +383,12 @@ export function folderLabel(folder, translate) {
  * server's MailFolderView.TYPE_DELEGATED_INBOX.
  */
 export const SHARED_INBOX_TYPE = 'DELEGATED_INBOX';
+
+/**
+ * The type a shared mailbox's other folders are listed under (EXO-90548) -- the server's
+ * MailFolderView.TYPE_DELEGATED.
+ */
+export const SHARED_FOLDER_TYPE = 'DELEGATED';
 
 /**
  * Whether one of the user's own folders bears the name of the "Scheduled" view: in
@@ -356,6 +449,9 @@ const BUILT_IN_FOLDER_ICONS = {
 export function folderIcon(folder) {
   if (folder?.type === SHARED_INBOX_TYPE) {
     return BUILT_IN_FOLDER_ICONS.INBOX;
+  }
+  if (folder?.type === SHARED_FOLDER_TYPE) {
+    return (folder.role && BUILT_IN_FOLDER_ICONS[folder.role]) || 'fa-folder';
   }
   if (!folder || folder.type === 'CUSTOM') {
     return 'fa-folder';
