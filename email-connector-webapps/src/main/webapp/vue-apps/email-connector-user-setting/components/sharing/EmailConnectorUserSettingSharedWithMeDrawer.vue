@@ -16,69 +16,55 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <!-- The mailboxes other people let you read (EXO-90503, delegation plan 7.2), in the
-       four states they can be in. The drawer walks the mail server when it opens, so a
-       share somebody made in their own webmail is offered here — proposed, never
-       subscribed on your behalf: an unexpected copy of a colleague's mailbox is a
-       surprise nobody wants, and it costs a synchronisation. -->
-  <exo-drawer
-    id="userSettingSharedWithMeDrawer"
-    ref="sharedWithMeDrawer"
-    v-model="drawer"
-    :loading="loading"
-    right
-    allow-expand
-    @closed="close">
-    <template #title>
-      <span>{{ $t('UserSettings.emailConnector.sharedWithMe.drawer.title') }}</span>
-    </template>
-    <template v-if="drawer" #content>
-      <div v-if="loaded && !delegations.length" class="px-4 py-4 text-sub-title text-wrap">
-        {{ $t('UserSettings.emailConnector.sharedWithMe.none') }}
+       four states they can be in: the second tab of the "Mailbox sharing" drawer
+       (EXO-90559), which owns the drawer itself and its close. The file keeps its name
+       so the drawer's history stays readable. The tab walks the mail server when it is
+       first shown, so a share somebody made in their own webmail is offered here --
+       proposed, never subscribed on your behalf: an unexpected copy of a colleague's
+       mailbox is a surprise nobody wants, and it costs a synchronisation. -->
+  <div v-if="active">
+    <v-progress-linear
+      v-if="loading"
+      indeterminate
+      color="primary" />
+    <div v-if="loaded && !delegations.length" class="px-4 py-4 text-sub-title text-wrap">
+      {{ $t('UserSettings.emailConnector.sharedWithMe.none') }}
+    </div>
+    <template v-for="group in groups">
+      <!-- A group's title only when there are several groups: alone, it would repeat
+           the drawer's own title. -->
+      <div
+        v-if="group.rows.length && shownGroups > 1"
+        :key="group.status"
+        class="px-4 pt-4 pb-1 text-caption text-sub-title text-wrap">
+        {{ $t(group.titleKey) }}
       </div>
-      <template v-for="group in groups">
-        <!-- A group's title only when there are several groups: alone, it would repeat
-             the drawer's own title. -->
-        <div
-          v-if="group.rows.length && shownGroups > 1"
-          :key="group.status"
-          class="px-4 pt-4 pb-1 text-caption text-sub-title text-wrap">
-          {{ $t(group.titleKey) }}
-        </div>
-        <v-list
-          v-if="group.rows.length"
-          :key="`${group.status}-list`"
-          class="pa-0">
-          <email-connector-user-setting-shared-mailbox-row
-            v-for="delegation in group.rows"
-            :key="delegation.id"
-            :delegation="delegation"
-            :actions="group.actions"
-            :note="group.noteKey ? $t(group.noteKey) : ''"
-            :saving="savingId === delegation.id"
-            :disabled="savingId !== null"
-            @answer="onAnswer(delegation, $event)"
-            @badge="saveBadge(delegation, $event)" />
-        </v-list>
-      </template>
-      <!-- Leaving is the one answer that takes a mailbox away from the user's screens,
-           so it is asked first; the access itself stays, and the question says so. -->
-      <exo-confirm-dialog
-        ref="leaveConfirmDialog"
-        :title="$t('UserSettings.emailConnector.sharedWithMe.leave.confirm.title', { 0: leavingName })"
-        :message="$t('UserSettings.emailConnector.sharedWithMe.leave.confirm.message', { 0: leavingName })"
-        :ok-label="$t('UserSettings.emailConnector.sharedWithMe.leave')"
-        :cancel-label="$t('UserSettings.emailConnector.sharedWithMe.leave.confirm.cancel')"
-        @ok="confirmLeave" />
+      <v-list
+        v-if="group.rows.length"
+        :key="`${group.status}-list`"
+        class="pa-0">
+        <email-connector-user-setting-shared-mailbox-row
+          v-for="delegation in group.rows"
+          :key="delegation.id"
+          :delegation="delegation"
+          :actions="group.actions"
+          :note="group.noteKey ? $t(group.noteKey) : ''"
+          :saving="savingId === delegation.id"
+          :disabled="savingId !== null"
+          @answer="onAnswer(delegation, $event)"
+          @badge="saveBadge(delegation, $event)" />
+      </v-list>
     </template>
-    <template #footer>
-      <div class="d-flex align-center">
-        <v-spacer />
-        <v-btn class="btn" @click="close">
-          {{ $t('UserSettings.emailConnector.sharedWithMe.drawer.close') }}
-        </v-btn>
-      </div>
-    </template>
-  </exo-drawer>
+    <!-- Leaving is the one answer that takes a mailbox away from the user's screens,
+         so it is asked first; the access itself stays, and the question says so. -->
+    <exo-confirm-dialog
+      ref="leaveConfirmDialog"
+      :title="$t('UserSettings.emailConnector.sharedWithMe.leave.confirm.title', { 0: leavingName })"
+      :message="$t('UserSettings.emailConnector.sharedWithMe.leave.confirm.message', { 0: leavingName })"
+      :ok-label="$t('UserSettings.emailConnector.sharedWithMe.leave')"
+      :cancel-label="$t('UserSettings.emailConnector.sharedWithMe.leave.confirm.cancel')"
+      @ok="confirmLeave" />
+  </div>
 </template>
 
 <script>
@@ -124,7 +110,7 @@ export default {
     'email-connector-user-setting-shared-mailbox-row': EmailConnectorUserSettingSharedMailboxRow,
   },
   data: () => ({
-    drawer: false,
+    active: false,
     loading: false,
     loaded: false,
     delegations: [],
@@ -164,16 +150,10 @@ export default {
       }));
     },
   },
-  created() {
-    this.$root.$on('open-email-shared-with-me-drawer', this.open);
-  },
-  beforeDestroy() {
-    this.$root.$off('open-email-shared-with-me-drawer', this.open);
-  },
   methods: {
     /**
      * Shows a message on the platform's toast, through the document event it listens to,
-     * whichever app this drawer is mounted in (the settings page, or the mailbox's
+     * whichever app the drawer is mounted in (the settings page, or the mailbox's
      * "Manage shared mailboxes").
      *
      * @param {String} message the message
@@ -184,13 +164,13 @@ export default {
       document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: type, alertMessage: message}}));
     },
     /**
-     * Opens the drawer, walking the mail server for shares nobody invited from here.
+     * Shows the tab, walking the mail server for shares nobody invited from here.
+     * Called by the drawer the first time this tab is shown after it opens.
      *
      * @returns {void}
      */
     open() {
-      this.drawer = true;
-      this.$refs.sharedWithMeDrawer.open();
+      this.active = true;
       this.load(true);
     },
     /**
@@ -289,16 +269,6 @@ export default {
       if (delegation) {
         this.answer(delegation, 'leave');
       }
-    },
-    /**
-     * Closes the drawer and tells the settings rows to re-read their counters.
-     *
-     * @returns {void}
-     */
-    close() {
-      this.drawer = false;
-      this.$refs.sharedWithMeDrawer.close();
-      this.$root.$emit('email-delegations-updated');
     },
   },
 };
