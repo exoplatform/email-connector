@@ -450,6 +450,145 @@ public class MasterChangelogTest {
   }
 
   /**
+   * The mailbox-delegation changesets (1.0.0-76 to 1.0.0-80) apply, roll back and apply
+   * again, to a tag placed immediately before 1.0.0-76 for the reason the folder
+   * registry's test gives. What is checked after the rollback is that the table, the
+   * new EMAIL_FOLDER column and the NATIVE_RIGHTS column are gone, and that the
+   * read-receipt answer store before them still stands.
+   *
+   * @throws Exception when a changeset does not apply or roll back
+   */
+  @Test
+  void theDelegationChangesetsRollBackAndReapply() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback76" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-76"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-delegation");
+      assertFalse(columnExists(connection, "EMAIL_FOLDER", "DELEGATION_ID"), "not there before 1.0.0-79");
+      liquibase.update("");
+      assertTrue(tableExists(connection, "EMAIL_DELEGATION"), "1.0.0-77 creates EMAIL_DELEGATION");
+      assertTrue(sequenceExists(connection, "SEQ_EMAIL_DELEGATION_ID"), "1.0.0-76 creates its sequence");
+      assertTrue(columnExists(connection, "EMAIL_FOLDER", "DELEGATION_ID"), "1.0.0-79 adds the folder link");
+      assertTrue(indexExists(connection, "EMAIL_FOLDER", "IDX_EMAIL_FOLDER_DELEGATION"), "and its index");
+      assertTrue(indexExists(connection, "EMAIL_DELEGATION", "UQ_EMAIL_DELEGATION"), "the key");
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "NATIVE_RIGHTS"), "1.0.0-80 adds the server's own vocabulary");
+      assertOneSubscriptionPerGranteeMailboxAndPreset(connection);
+      liquibase.rollback("before-delegation", "");
+      assertFalse(tableExists(connection, "EMAIL_DELEGATION"), "rolling back drops EMAIL_DELEGATION");
+      assertFalse(sequenceExists(connection, "SEQ_EMAIL_DELEGATION_ID"), "and its sequence");
+      assertFalse(columnExists(connection, "EMAIL_FOLDER", "DELEGATION_ID"), "and the folder link");
+      assertTrue(tableExists(connection, "EMAIL_READ_RECEIPT_ANSWER"), "and nothing before them");
+      assertTrue(tableExists(connection, "EMAIL_FOLDER"));
+      liquibase.update("");
+      assertTrue(tableExists(connection, "EMAIL_DELEGATION"), "the changesets apply again after their rollback");
+      assertTrue(columnExists(connection, "EMAIL_FOLDER", "DELEGATION_ID"));
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "NATIVE_RIGHTS"));
+    }
+  }
+
+  /**
+   * The delegation changesets as MySQL and PostgreSQL would run them: the
+   * auto-increment / sequence split, the table options and the binary collation of the
+   * two identifiers on MySQL, the key and the folder link on both, and a rollback that
+   * drops indexes before tables and the column after its index.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theDelegationChangesetsOnMySqlAndPostgreSql() throws Exception {
+    String mysql = offlineUpdateSql("mysql?version=8.0.17", "1.0.0-76");
+    Matcher createMysql = Pattern.compile("CREATE TABLE EMAIL_DELEGATION \\(.*?\\)[^;]*", Pattern.DOTALL).matcher(mysql);
+    assertTrue(createMysql.find(), "no CREATE TABLE EMAIL_DELEGATION in the MySQL SQL: " + mysql);
+    assertTrue(createMysql.group().contains("AUTO_INCREMENT"), "MySQL ids come from an auto-increment: " + createMysql.group());
+    assertFalse(createMysql.group().contains("COLLATE"), "the CREATE carries no modifySql of its own: " + createMysql.group());
+    assertTrue(mysql.contains("ALTER TABLE EMAIL_DELEGATION ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"),
+               "the table options of 1.0.0-78: " + mysql);
+    assertTrue(mysql.contains("MODIFY OWNER_MAILBOX VARCHAR(320) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL"),
+               "the owner identifier keeps its case: " + mysql);
+    assertTrue(mysql.contains("MODIFY GRANTEE_MAILBOX VARCHAR(320) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NULL"),
+               "and so does the grantee's: " + mysql);
+    assertFalse(mysql.contains("SEQ_EMAIL_DELEGATION_ID"), "no sequence on MySQL");
+
+    String postgresql = offlineUpdateSql("postgresql?version=15", "1.0.0-76");
+    assertTrue(postgresql.contains("CREATE SEQUENCE  IF NOT EXISTS SEQ_EMAIL_DELEGATION_ID START WITH 1"), postgresql);
+    assertTrue(postgresql.indexOf("CREATE SEQUENCE") < postgresql.indexOf("CREATE TABLE EMAIL_DELEGATION (ID BIGINT NOT NULL,"),
+               "created before its table, with no auto-increment on the id: " + postgresql);
+    assertFalse(postgresql.contains("utf8mb4"), "no MySQL option leaks to PostgreSQL");
+
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-76").toUpperCase(Locale.ROOT);
+      assertTrue(update.contains("CREATE UNIQUE INDEX UQ_EMAIL_DELEGATION ON EMAIL_DELEGATION(GRANTEE_ID, CONNECTOR_ID, OWNER_MAILBOX)"),
+                 vendor + ": " + update);
+      assertTrue(update.contains("CREATE INDEX IDX_EMAIL_DELEGATION_OWNER ON EMAIL_DELEGATION(OWNER_ID, STATUS)"), vendor + ": " + update);
+      assertTrue(update.contains("CREATE INDEX IDX_EMAIL_DELEGATION_GRANTEE ON EMAIL_DELEGATION(GRANTEE_ID, STATUS)"), vendor + ": " + update);
+      assertTrue(update.contains("ALTER TABLE EMAIL_FOLDER ADD DELEGATION_ID BIGINT"), vendor + ": " + update);
+      assertTrue(update.contains("CREATE INDEX IDX_EMAIL_FOLDER_DELEGATION ON EMAIL_FOLDER(USER_ID, DELEGATION_ID)"), vendor + ": " + update);
+      assertTrue(update.contains("ALTER TABLE EMAIL_DELEGATION ADD NATIVE_RIGHTS VARCHAR(200)"), vendor + " 1.0.0-80: " + update);
+      for (String column : List.of("GRANTEE_ID VARCHAR(250) NOT NULL", "OWNER_MAILBOX VARCHAR(320) NOT NULL", "CONNECTOR_ID BIGINT NOT NULL",
+                                   "PRESET VARCHAR(10) NOT NULL", "RIGHTS VARCHAR(16)", "STATUS VARCHAR(10) NOT NULL",
+                                   "ORIGIN VARCHAR(10) NOT NULL")) {
+        assertTrue(update.contains(column), vendor + " " + column + ": " + update);
+      }
+      assertTrue(Pattern.compile("BADGE_INCLUDED (BOOLEAN|BIT\\(1\\)|TINYINT) DEFAULT (FALSE|0) NOT NULL").matcher(update).find(),
+                 vendor + ": " + update);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-76").toUpperCase(Locale.ROOT);
+      int folderIndex = rollback.indexOf("IDX_EMAIL_FOLDER_DELEGATION");
+      int folderColumn = rollback.indexOf("DROP COLUMN DELEGATION_ID");
+      assertTrue(folderIndex >= 0 && folderColumn > folderIndex, vendor + " rollback drops the folder index, then the column: " + rollback);
+      int key = rollback.indexOf("UQ_EMAIL_DELEGATION");
+      int table = rollback.indexOf("DROP TABLE EMAIL_DELEGATION");
+      assertTrue(key >= 0 && table > key, vendor + " rollback drops the key, then the table: " + rollback);
+      assertTrue(folderColumn < key, vendor + " rollback undoes 1.0.0-79 before 1.0.0-77: " + rollback);
+      int nativeRights = rollback.indexOf("DROP COLUMN NATIVE_RIGHTS");
+      assertTrue(nativeRights >= 0 && nativeRights < folderIndex, vendor + " rollback undoes 1.0.0-80 first: " + rollback);
+    }
+    assertTrue(offlineRollbackSql("postgresql?version=15", "1.0.0-76").contains("DROP SEQUENCE SEQ_EMAIL_DELEGATION_ID"),
+               "and the sequence, where there is one");
+  }
+
+  /**
+   * On the applied schema, the unique key refuses a second subscription of one grantee
+   * to one mailbox on one preset and lets the same grantee's subscription to the same
+   * mailbox on another preset, or another grantee's, through.
+   *
+   * @param connection the database
+   * @throws SQLException when a statement other than the refused one fails
+   */
+  private void assertOneSubscriptionPerGranteeMailboxAndPreset(Connection connection) throws SQLException {
+    String insert = "INSERT INTO EMAIL_DELEGATION (ID, GRANTEE_ID, OWNER_MAILBOX, CONNECTOR_ID, PRESET, STATUS, ORIGIN,"
+        + " BADGE_INCLUDED, NOTIFY_NEW_MAIL, CREATED_DATE, UPDATED_DATE) VALUES (?, ?, ?, ?, 'READER', 'PENDING', 'EXO', FALSE, FALSE,"
+        + " CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
+    try (PreparedStatement statement = connection.prepareStatement(insert)) {
+      insertDelegation(statement, 1, "bob", "alice@acme.com", 7);
+      insertDelegation(statement, 2, "bob", "alice@acme.com", 8);
+      insertDelegation(statement, 3, "carol", "alice@acme.com", 7);
+      assertThrows(SQLException.class, () -> insertDelegation(statement, 4, "bob", "alice@acme.com", 7),
+                   "the same grantee, mailbox and preset twice");
+    }
+    try (Statement statement = connection.createStatement()) {
+      statement.executeUpdate("DELETE FROM EMAIL_DELEGATION");
+    }
+  }
+
+  /**
+   * One row of the key test.
+   *
+   * @param statement the prepared insert
+   * @param id the id
+   * @param grantee the grantee
+   * @param ownerMailbox the owner's identifier
+   * @param connectorId the preset
+   * @throws SQLException when the insert is refused
+   */
+  private void insertDelegation(PreparedStatement statement, long id, String grantee, String ownerMailbox, long connectorId) throws SQLException {
+    statement.setLong(1, id);
+    statement.setString(2, grantee);
+    statement.setString(3, ownerMailbox);
+    statement.setLong(4, connectorId);
+    statement.executeUpdate();
+  }
+
+  /**
    * On the applied schema, the unique index refuses a second answer of one user to one
    * message and lets another user's answer to the same message through.
    *
@@ -708,7 +847,7 @@ public class MasterChangelogTest {
   // (the custom-folder registry, 1.0.0-53 to -56; the sync-state table, 1.0.0-58 and
   // -59; the notification boundary, 1.0.0-61; the scheduled-send table, 1.0.0-62 to
   // -65; the read-receipt columns, 1.0.0-66; the read-receipt answer store, 1.0.0-67
-  // to -69). They are the ones a second evaluation computes ahead of the update in
+  // to -69; mailbox delegation, 1.0.0-76 to -79). They are the ones a second evaluation computes ahead of the update in
   // the pin, and nothing on this list may ever drift.
   private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-53",
                                                               "1.0.0-54",
@@ -724,7 +863,11 @@ public class MasterChangelogTest {
                                                               "1.0.0-66",
                                                               "1.0.0-67",
                                                               "1.0.0-68",
-                                                              "1.0.0-69");
+                                                              "1.0.0-69",
+                                                              "1.0.0-76",
+                                                              "1.0.0-77",
+                                                              "1.0.0-78",
+                                                              "1.0.0-79");
 
   // The changesets whose checksum already depends on where it is computed: every one
   // of them carries a modifySql. Three are covered by validCheckSum ANY (1.0.0-5, -46,
