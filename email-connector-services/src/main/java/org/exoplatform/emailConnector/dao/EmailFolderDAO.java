@@ -294,11 +294,8 @@ public interface EmailFolderDAO extends JpaRepository<EmailFolderEntity, Long> {
   long delegationId);
 
   /**
-   * Every folder of every mailbox shared with the user: {@code DELEGATION_ID IS NOT
-   * NULL}, whatever the share's status.
-   *
-   * @param userId the grantee -- the rows' viewer
-   * @return the folders, never null
+   * Every folder of every mailbox shared with the user, the grantee and the rows'
+   * viewer: {@code DELEGATION_ID IS NOT NULL}, whatever the share's status. Never null.
    */
   @Query("SELECT folder FROM EmailFolderEntity folder WHERE folder.userId = :userId AND folder.delegationId IS NOT NULL")
   List<EmailFolderEntity> findByUserIdAndDelegationIdNotNull(@Param("userId")

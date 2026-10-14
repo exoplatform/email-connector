@@ -291,6 +291,21 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   List<String> acceptable);
 
   /**
+   * The grantee's identifier, and nothing else of the row, where none is recorded yet:
+   * the row by its id, for its owner, the identifier and the write's instant. Answers
+   * the rows written, 1, or 0 when the row already has one or is not the owner's.
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.granteeMailbox = :granteeMailbox, d.updatedDate = :updated"
+      + " WHERE d.id = :id AND d.ownerId = :ownerId AND d.granteeMailbox IS NULL")
+  int updateGranteeMailbox(@Param("id")
+  long id, @Param("ownerId")
+  String ownerId, @Param("granteeMailbox")
+  String granteeMailbox, @Param("updated")
+  Date updated);
+
+  /**
    * The letters the owner's ACL holds for a share on offer, and nothing else of the row
    * (EXO-90548): never on a share in use, whose letters are the
    * grantee's own MYRIGHTS, nor on one that ended; an Extend's folder roles written
@@ -305,25 +320,6 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
    * @param excluded the statuses not written: in use, or ended
    * @return the rows updated
    */
-  @Transactional
-  /**
-   * The grantee's identifier, and nothing else of the row, where none is recorded yet.
-   *
-   * @param id the row
-   * @param ownerId the owner, the row's viewer
-   * @param granteeMailbox the identifier
-   * @param updated the write's instant
-   * @return the rows written: 1, or 0 when the row already has one or is not the owner's
-   */
-  @Modifying(clearAutomatically = true, flushAutomatically = true)
-  @Query("UPDATE EmailDelegationEntity d SET d.granteeMailbox = :granteeMailbox, d.updatedDate = :updated"
-      + " WHERE d.id = :id AND d.ownerId = :ownerId AND d.granteeMailbox IS NULL")
-  int updateGranteeMailbox(@Param("id")
-  long id, @Param("ownerId")
-  String ownerId, @Param("granteeMailbox")
-  String granteeMailbox, @Param("updated")
-  Date updated);
-
   @Transactional
   @Modifying(clearAutomatically = true, flushAutomatically = true)
   @Query("UPDATE EmailDelegationEntity d SET d.rights = :rights, d.nativeRights = :nativeRights, d.lastRightsCheckDate = :checked,"
