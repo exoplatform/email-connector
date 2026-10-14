@@ -317,6 +317,23 @@ public class UserEmailSettingServiceTest {
     verifyNoInteractions(emailConnectorService);
   }
 
+  /**
+   * The stored address is read for mapping a server's identifiers to people: no
+   * connector, and the credentials next to it never decoded.
+   */
+  @Test
+  void theStoredAddressIsReadWithoutTheCredentials() {
+    SettingValue userEmailSettingValue = mock(SettingValue.class);
+    when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenReturn(userEmailSettingValue);
+    when(userEmailSettingValue.getValue()).thenReturn("{\"emailConnectorId\":\"1\",\"emailAddress\":\" Test@Email \",\"emailPassword\":\"cipher\"}");
+
+    assertEquals("Test@Email", userEmailSettingService.getStoredEmailAddress(TEST_USER));
+
+    verifyNoInteractions(codecInitializer, emailConnectorService);
+    when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenReturn(null);
+    assertNull(userEmailSettingService.getStoredEmailAddress(TEST_USER));
+  }
+
   /** EXO-90610. The stored read says whether there is a readable password to keep. */
   @Test
   @SneakyThrows

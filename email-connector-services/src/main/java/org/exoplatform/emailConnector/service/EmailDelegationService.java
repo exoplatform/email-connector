@@ -2223,21 +2223,34 @@ public class EmailDelegationService {
   }
 
   /**
-   * The eXo users connected on a preset, by the identifier they connect with, for
-   * mapping the server's identifiers back to people. Reads every connected setting of
-   * the preset -- a settings-screen read, once per open, over the connected users of one
-   * server.
+   * The eXo users connected on a preset whom the server named, by the identifier they
+   * connect with, for mapping the server's identifiers back to people. Reads the stored
+   * address of each connected user of the preset, nothing else of their setting.
    *
    * @param connectorId the connector preset
    * @return identifier (lower-case) to username
    */
-  private Map<String, String> connectedUsersByIdentifier(long connectorId) {
+  private Map<String, String> connectedUsersByIdentifier(long connectorId, Collection<String> identifiers) {
+    Set<String> wanted = new HashSet<>();
+    for (String identifier : identifiers) {
+      if (StringUtils.isNotBlank(identifier)) {
+        wanted.add(identifier.trim().toLowerCase(Locale.ROOT));
+      }
+    }
     Map<String, String> users = new HashMap<>();
     for (String username : userEmailSettingService.getUserEmailSettingsByEmailConnectorId(connectorId)) {
-      UserEmailSetting setting = userEmailSettingService.getUserEmailSetting(username);
-      String identifier = setting == null ? null : mailboxIdentifier(setting);
-      if (StringUtils.isNotBlank(identifier)) {
-        users.putIfAbsent(identifier.toLowerCase(Locale.ROOT), username);
+      // The stored address alone: no connector read, no credential decoded, for a map
+      // that only names people.
+      String address = userEmailSettingService.getStoredEmailAddress(username);
+      if (address == null) {
+        continue;
+      }
+      String key = address.toLowerCase(Locale.ROOT);
+      String localPart = key.contains("@") ? key.substring(0, key.indexOf('@')) : key;
+      // Only the identifiers the server named, by the address or by its local part (see
+      // ownerFor): the rest of the preset's users are nobody's business here.
+      if (wanted.contains(key) || wanted.contains(localPart)) {
+        users.putIfAbsent(key, username);
       }
     }
     return users;
@@ -2271,7 +2284,7 @@ public class EmailDelegationService {
                                         EmailConnector connector,
                                         List<MailboxAce> acl,
                                         List<EmailDelegation> rows) {
-    Map<String, String> connected = connectedUsersByIdentifier(connector.getId());
+    Map<String, String> connected = connectedUsersByIdentifier(connector.getId(), acl.stream().map(MailboxAce::identifier).toList());
     Map<String, EmailDelegation> rowsByGrantee = new HashMap<>();
     for (EmailDelegation row : rows) {
       if (connector.getId().equals(row.getConnectorId()) && ownerMailbox.equalsIgnoreCase(row.getOwnerMailbox())) {
@@ -2426,7 +2439,7 @@ public class EmailDelegationService {
           continue;
         }
         if (connected == null) {
-          connected = connectedUsersByIdentifier(connector.getId());
+          connected = connectedUsersByIdentifier(connector.getId(), shared.stream().map(SharedMailbox::ownerIdentifier).toList());
         }
         MailboxRights rights;
         try {

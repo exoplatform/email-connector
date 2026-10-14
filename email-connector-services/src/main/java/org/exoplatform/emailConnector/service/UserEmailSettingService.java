@@ -619,6 +619,23 @@ public class UserEmailSettingService {
    * @param username the eXo login
    * @return the connector id as stored, or null when the user has no mail setting
    */
+  /**
+   * The address a user connects with, as stored, without reading the connector or
+   * decoding the credentials next to it -- a database read for mapping a server's
+   * identifiers back to people.
+   *
+   * @param username the eXo login
+   * @return the address as stored, or null when the user has no mail setting
+   */
+  public String getStoredEmailAddress(String username) {
+    SettingValue<?> value = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
+    if (value == null || value.getValue() == null) {
+      return null;
+    }
+    UserEmailSettingEntity stored = JsonUtils.fromJsonString(value.getValue().toString(), UserEmailSettingEntity.class);
+    return stored == null ? null : StringUtils.trimToNull(stored.getEmailAddress());
+  }
+
   public String getStoredEmailConnectorId(String username) {
     SettingValue<?> value = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
     if (value == null || value.getValue() == null) {
