@@ -548,6 +548,33 @@ class EmailDelegationServiceTest {
   }
 
   /**
+   * Stack review #441-1 -- a share left, revoked or found withdrawn stops counting in the
+   * badge for good: taken up again, it must be chosen again, as a new one is.
+   */
+  @Test
+  void aShareThatEndsNoLongerCountsInTheBadge() throws Exception {
+    EmailDelegation left = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    left.setBadgeIncluded(true);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(left);
+    service.leave(GRANTEE, 100L);
+    assertFalse(left.isBadgeIncluded(), "leave");
+
+    EmailDelegation revoked = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    revoked.setBadgeIncluded(true);
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(revoked);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    service.revoke(OWNER, 100L);
+    assertFalse(revoked.isBadgeIncluded(), "revoke");
+
+    EmailDelegation withdrawn = row(DelegationStatus.PENDING, DelegationOrigin.EXO);
+    withdrawn.setBadgeIncluded(true);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(withdrawn);
+    when(engine.findSharedMailbox(any(), eq(OWNER_MAILBOX))).thenReturn(null);
+    assertThrows(DelegationRevokedException.class, () -> service.accept(GRANTEE, 100L));
+    assertFalse(withdrawn.isBadgeIncluded(), "found withdrawn");
+  }
+
+  /**
    * Leaving withdraws the grantee's server-side subscription where the engine has one
    * (BlueMind), as the grantee, best effort: a refusal is logged and the leave stands.
    */
@@ -1045,6 +1072,53 @@ class EmailDelegationServiceTest {
     verify(engine, never()).grant(any(), any(), any(), any(), any());
   }
 
+  /**
+   * EXO-90546 -- a change that moves the right to keep read state is announced, since
+   * the grantee's badge may count this inbox only while it is held.
+   */
+  @Test
+  void changePresetAnnouncesAMoveOfKeepSeen() throws Exception {
+    EmailDelegation readOnly = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    readOnly.setRights("lrp");
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(readOnly);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.myRights(any(), eq(INBOX))).thenReturn(MailboxRights.of("lrswipkxtea"));
+    when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any()))
+                                                                                                .thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
+                                                                                                                                 MailboxRights.of("lrs")));
+    // The row as the targeted rights write leaves it (stack review N-1).
+    EmailDelegation reRead = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    reRead.setRights("lrs");
+    when(emailDelegationStorage.updateGrantedRights(eq(OWNER), eq(100L), any(), eq("lrs"), any(), any(), any())).thenReturn(reRead);
+
+    service.changePreset(OWNER, 100L, DelegationPreset.READER);
+
+    ArgumentCaptor<EmailDelegationEvent> event = ArgumentCaptor.forClass(EmailDelegationEvent.class);
+    verify(eventPublisher).publishEvent(event.capture());
+    assertEquals(EmailDelegationEvent.Type.RIGHTS_CHANGED, event.getValue().type());
+  }
+
+  /**
+   * EXO-90546 -- an accepted share the owner's ACL no longer carries is revoked by the
+   * listing, with no notification; its grantee's badge is still told.
+   */
+  @Test
+  void anAcceptedShareFoundGoneIsAnnounced() throws Exception {
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(OWNER_MAILBOX, MailboxRights.of("lrswipkxtea"))));
+    EmailDelegation accepted = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    accepted.setBadgeIncluded(true);
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(accepted));
+    lenient().when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER));
+
+    service.getGrantedDelegations(OWNER);
+
+    assertEquals(DelegationStatus.REVOKED, accepted.getStatus());
+    ArgumentCaptor<EmailDelegationEvent> event = ArgumentCaptor.forClass(EmailDelegationEvent.class);
+    verify(eventPublisher).publishEvent(event.capture());
+    assertEquals(EmailDelegationEvent.Type.RIGHTS_CHANGED, event.getValue().type());
+  }
+
   // ---------------------------------------------------------------------------------
   // Reading the server's shares
   // ---------------------------------------------------------------------------------
@@ -1238,6 +1312,26 @@ class EmailDelegationServiceTest {
     verify(emailDelegationStorage, never()).update(any());
     when(emailDelegationStorage.getAsGrantee(OWNER, 100L)).thenReturn(null);
     assertThrows(ObjectNotFoundException.class, () -> service.updatePreferences(OWNER, 100L, true, true));
+  }
+
+  /**
+   * EXO-90546 -- flipping "count this mailbox in my unread badge" is announced, so the
+   * badge is re-counted; setting it to the value it already has, or changing only the
+   * notification toggle, announces nothing.
+   */
+  @Test
+  void flippingTheBadgeSwitchIsAnnouncedAndOnlyThen() throws Exception {
+    EmailDelegation accepted = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(accepted);
+
+    service.updatePreferences(GRANTEE, 100L, false, true);
+    verify(eventPublisher, never()).publishEvent(any());
+
+    service.updatePreferences(GRANTEE, 100L, true, null);
+    ArgumentCaptor<EmailDelegationEvent> event = ArgumentCaptor.forClass(EmailDelegationEvent.class);
+    verify(eventPublisher).publishEvent(event.capture());
+    assertEquals(EmailDelegationEvent.Type.BADGE_PREFERENCE_CHANGED, event.getValue().type());
+    assertEquals(GRANTEE, event.getValue().actor());
   }
 
   // ---------------------------------------------------------------------------------
