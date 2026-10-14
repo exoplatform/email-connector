@@ -424,6 +424,12 @@ public class EmailDelegationService {
     String identifier = StringUtils.isNotBlank(delegation.getGranteeMailbox()) ? delegation.getGranteeMailbox()
                                                                                 : resolveGranteeIdentifierOrNull(delegation.getGranteeId(),
                                                                                                                  connector.getId());
+    if (identifier == null && delegation.getStatus() != DelegationStatus.REVOKED) {
+      // Nothing to remove on the server: a row that recorded no identifier whose grantee
+      // has since disconnected. Writing REVOKED here would say the access is gone while
+      // the server still grants it.
+      throw new IllegalArgumentException(NOT_CHANGEABLE_MESSAGE);
+    }
     if (identifier != null && delegation.getStatus() != DelegationStatus.REVOKED) {
       MailboxAclEngine engine = aclEngineRegistry.engineFor(connector);
       try (MailboxAclSession session = session(connector, ownerUsername, mailboxIdentifier(ownerSetting))) {
@@ -432,13 +438,15 @@ public class EmailDelegationService {
         revokeOtherFolders(engine, session, identifier, delegation);
       }
     }
+    // The folders first: a drop that fails leaves the share as it stands, to be revoked
+    // again, rather than a REVOKED row whose mirror is still registered and served.
+    dropDelegatedFolders(delegation.getGranteeId(), delegation.getId());
     delegation.setStatus(DelegationStatus.REVOKED);
     delegation.setRevokedDate(new Date());
     // Back off by default (#441-1): a share taken up again must be chosen again to count
     // in the badge, as a new one is (plan 7.7).
     delegation.setBadgeIncluded(false);
     delegation = emailDelegationStorage.update(delegation);
-    dropDelegatedFolders(delegation.getGranteeId(), delegation.getId());
     LOG.info("Mailbox delegation revoked: actor={} ownerMailbox={} grantee={} identifier={}",
              ownerUsername,
              delegation.getOwnerMailbox(),
@@ -1087,6 +1095,12 @@ public class EmailDelegationService {
       try {
         rights = engine.myRights(session, shared.inboxName());
       } catch (MailboxAclException e) {
+        if (!MailboxAclException.SERVER_REFUSED.equals(e.getCode())) {
+          // A dropped connection, or a server that could not answer, is no refusal: the
+          // row stays as it was and the caller is told the server was unreachable, as
+          // refreshGranteeRights reads the same answer.
+          throw e;
+        }
         markRevoked(delegation, DelegationStatus.REVOKED);
         throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
       }
@@ -1242,9 +1256,9 @@ public class EmailDelegationService {
     // Back off by default (#441-1): a share taken up again must be chosen again to count
     // in the badge, as a new one is (plan 7.7).
     delegation.setBadgeIncluded(false);
-    EmailDelegation updated = emailDelegationStorage.update(delegation);
-    dropDelegatedFolders(granteeUsername, updated.getId());
-    return updated;
+    // The folders first (see revoke): a drop that fails leaves the share in use.
+    dropDelegatedFolders(granteeUsername, delegation.getId());
+    return emailDelegationStorage.update(delegation);
   }
 
   /**
@@ -1474,14 +1488,10 @@ public class EmailDelegationService {
     if (StringUtils.isBlank(username)) {
       return List.of();
     }
-    List<String> keys = new ArrayList<>();
-    for (EmailDelegation delegation : emailDelegationStorage.getReceived(username)) {
-      // Only a share in use has folders: leaving, declining and revoking drop them.
-      if (delegation.getStatus() == DelegationStatus.ACCEPTED) {
-        keys.addAll(getMailboxFolderKeys(username, delegation.getId()));
-      }
-    }
-    return keys;
+    // Every folder registered under a share, whatever the share's status: leaving,
+    // declining and revoking drop them, and a drop that failed must not hand a mirror
+    // back to the caller's own search, conversations and counts.
+    return emailFolderStorage.getDelegatedFolders(username).stream().map(EmailFolder::getKey).toList();
   }
 
   /**
@@ -2277,6 +2287,12 @@ public class EmailDelegationService {
       }
       String granteeId = connected.get(identifier.toLowerCase(Locale.ROOT));
       EmailDelegation row = granteeId == null ? rowByIdentifier(rows, identifier) : rowsByGrantee.get(granteeId);
+      if (row != null && StringUtils.isBlank(row.getGranteeMailbox())) {
+        // A row discovery created before it recorded the grantee's identifier: the ACL
+        // names it, so it is written now, alone, and a later revoke has its entry.
+        EmailDelegation named = emailDelegationStorage.updateGranteeMailbox(ownerUsername, row.getId(), identifier);
+        row = named == null ? row : named;
+      }
       if (row == null && granteeId != null) {
         row = new EmailDelegation();
         row.setGranteeId(granteeId);
@@ -2421,6 +2437,9 @@ public class EmailDelegationService {
         }
         EmailDelegation row = new EmailDelegation();
         row.setGranteeId(granteeUsername);
+        // The grantee's own identifier, the entry a revoke removes: recorded now, so the
+        // owner can still revoke once this grantee has disconnected from eXo.
+        row.setGranteeMailbox(mailboxIdentifier(granteeSetting));
         row.setOwnerId(ownerFor(connected, mailbox.ownerIdentifier()));
         row.setOwnerMailbox(mailbox.ownerIdentifier());
         row.setConnectorId(connector.getId());
@@ -2624,8 +2643,9 @@ public class EmailDelegationService {
     // Back off by default (#441-1): a share taken up again must be chosen again to count
     // in the badge, as a new one is (plan 7.7).
     delegation.setBadgeIncluded(false);
+    // The folders first (see revoke): a drop that fails leaves the share as it stands.
+    dropDelegatedFolders(delegation.getGranteeId(), delegation.getId());
     EmailDelegation updated = emailDelegationStorage.update(delegation);
-    dropDelegatedFolders(updated.getGranteeId(), updated.getId());
     if (wasInUse) {
       // Found gone by a reconciliation rather than by anybody's act: no notification
       // says so, but a grantee who counted this inbox in their badge must see it stop
