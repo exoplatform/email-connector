@@ -28,28 +28,6 @@ import org.exoplatform.emailConnector.model.EmailDelegation;
  * @param actor the username whose action it was
  * @param delegation the row as it now stands
  */
-public record EmailDelegationEvent(Type type, String actor, EmailDelegation delegation) {
+public record EmailDelegationEvent(EmailDelegationEventType type, String actor, EmailDelegation delegation) {
 
-  /** The transitions a listener can tell apart. */
-  public enum Type {
-    /** The owner granted and invited. */
-    INVITED,
-    /** The grantee accepted, the server confirmed. */
-    ACCEPTED,
-    /** The grantee declined; the ACL stays. */
-    DECLINED,
-    /** The grantee left an accepted share; the ACL stays. */
-    LEFT,
-    /** The owner removed the access on the server. */
-    REVOKED,
-    /** The grantee changed whether the share counts in their unread badge. */
-    BADGE_PREFERENCE_CHANGED,
-    /**
-     * What the grantee may do changed without a lifecycle act: the owner changed the
-     * preset and the right to keep read state moved, or a reconciliation found an
-     * accepted share gone from the server. Nobody is notified; the grantee's badge is
-     * re-counted.
-     */
-    RIGHTS_CHANGED
-  }
 }

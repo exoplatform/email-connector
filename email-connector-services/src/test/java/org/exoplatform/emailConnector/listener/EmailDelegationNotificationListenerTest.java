@@ -44,6 +44,7 @@ import org.exoplatform.commons.api.notification.command.NotificationExecutor;
 import org.exoplatform.commons.api.notification.model.PluginKey;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
+import org.exoplatform.emailConnector.event.EmailDelegationEventType;
 import org.exoplatform.emailConnector.model.DelegationPreset;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.notification.plugin.BaseEmailDelegationNotificationPlugin;
@@ -108,7 +109,7 @@ public class EmailDelegationNotificationListenerTest {
    */
   @Test
   void anInvitationGoesToTheGranteeOnEveryServer() {
-    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.INVITED, OWNER, delegation()));
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEventType.INVITED, OWNER, delegation()));
 
     assertEquals(1, dispatched.size(), "the grantee is invited");
     verify(dispatched.get(0)).append(BaseEmailDelegationNotificationPlugin.RECEIVER, GRANTEE);
@@ -122,9 +123,9 @@ public class EmailDelegationNotificationListenerTest {
    */
   @Test
   void theOwnerIsToldHowTheGranteeAnsweredWhenTheServerSaysNothing() {
-    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.ACCEPTED, GRANTEE, delegation()));
-    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.DECLINED, GRANTEE, delegation()));
-    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.LEFT, GRANTEE, delegation()));
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEventType.ACCEPTED, GRANTEE, delegation()));
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEventType.DECLINED, GRANTEE, delegation()));
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEventType.LEFT, GRANTEE, delegation()));
 
     assertEquals(3, dispatched.size(), "the owner is told about each answer");
     verify(dispatched.get(0)).append(BaseEmailDelegationNotificationPlugin.RECEIVER, OWNER);
@@ -148,9 +149,9 @@ public class EmailDelegationNotificationListenerTest {
    */
   @Test
   void theOwnerHearsAboutADeclineOnEveryServer() {
-    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.ACCEPTED, GRANTEE, delegation()));
-    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.DECLINED, GRANTEE, delegation()));
-    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.LEFT, GRANTEE, delegation()));
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEventType.ACCEPTED, GRANTEE, delegation()));
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEventType.DECLINED, GRANTEE, delegation()));
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEventType.LEFT, GRANTEE, delegation()));
 
     assertEquals(3, dispatched.size(), "no answer of the grantee's is a server rights change, so eXo reports all three");
     verify(dispatched.get(1)).append(BaseEmailDelegationNotificationPlugin.RECEIVER, OWNER);
@@ -163,7 +164,7 @@ public class EmailDelegationNotificationListenerTest {
    */
   @Test
   void theGranteeIsAlwaysToldTheirAccessWasRemoved() {
-    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.REVOKED, OWNER, delegation()));
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEventType.REVOKED, OWNER, delegation()));
 
     assertEquals(1, dispatched.size(), "the grantee is told");
     verify(dispatched.get(0)).append(BaseEmailDelegationNotificationPlugin.RECEIVER, GRANTEE);
@@ -181,8 +182,8 @@ public class EmailDelegationNotificationListenerTest {
     EmailDelegation orphan = delegation();
     orphan.setOwnerId(null);
 
-    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.INVITED, GRANTEE, orphan));
-    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.ACCEPTED, GRANTEE, orphan));
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEventType.INVITED, GRANTEE, orphan));
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEventType.ACCEPTED, GRANTEE, orphan));
 
     assertTrue(dispatched.isEmpty(), "there is nobody to name and nobody to tell");
   }

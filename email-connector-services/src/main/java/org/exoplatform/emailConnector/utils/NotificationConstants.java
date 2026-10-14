@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.utils;
 
+import org.exoplatform.emailConnector.event.EmailDelegationEventType;
 public class NotificationConstants {
 
   public static final String TITLE                          = "TITLE";
@@ -58,7 +59,7 @@ public class NotificationConstants {
   /** The preset the share carries, a {@code DelegationPreset} name. */
   public static final String DELEGATION_PRESET              = "DELEGATION_PRESET";
 
-  /** The transition being told about: an {@code EmailDelegationEvent.Type} name. */
+  /** The transition being told about: an {@code EmailDelegationEventType} name. */
   public static final String DELEGATION_RESPONSE            = "DELEGATION_RESPONSE";
 
   /** The delegation row's id, so the interface can open the share it is about. */

@@ -990,8 +990,7 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
       // A refusal of the request itself, by message code -- crossMailbox for a move
-      // between two mailboxes: a 400, never the 500 an uncaught refusal would be (stack
-      // review #437-3).
+      // between two mailboxes: a 400, never the 500 an uncaught refusal would be .
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
@@ -1043,8 +1042,7 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
       // A refusal of the request itself, by message code -- crossMailbox for a move
-      // between two mailboxes: a 400, never the 500 an uncaught refusal would be (stack
-      // review #437-3).
+      // between two mailboxes: a 400, never the 500 an uncaught refusal would be .
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
@@ -1099,8 +1097,7 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
       // A refusal of the request itself, by message code -- crossMailbox for a move
-      // between two mailboxes: a 400, never the 500 an uncaught refusal would be (stack
-      // review #437-3).
+      // between two mailboxes: a 400, never the 500 an uncaught refusal would be .
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
@@ -1213,8 +1210,7 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
       // A refusal of the request itself, by message code -- crossMailbox for a move
-      // between two mailboxes: a 400, never the 500 an uncaught refusal would be (stack
-      // review #437-3).
+      // between two mailboxes: a 400, never the 500 an uncaught refusal would be .
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
@@ -1269,8 +1265,7 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
       // A refusal of the request itself, by message code -- crossMailbox for a move
-      // between two mailboxes: a 400, never the 500 an uncaught refusal would be (stack
-      // review #437-3).
+      // between two mailboxes: a 400, never the 500 an uncaught refusal would be .
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());

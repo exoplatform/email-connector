@@ -165,7 +165,7 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   Date throttleBefore);
 
   /**
-   * The grantee's two toggles, and nothing else of the row (#432-2).
+   * The grantee's two toggles, and nothing else of the row.
    *
    * @param id the row id
    * @param granteeId the grantee, whose row it must be
@@ -186,7 +186,7 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
 
   /**
    * What an owner's change of access wrote on the server, and nothing else of the row
-   * (stack review N-1): the preset, the letters, the server's own words, the identifier
+   * : the preset, the letters, the server's own words, the identifier
    * written and the check stamp. The status, the dates and the grantee's toggles stay as
    * they stand, so a leave committed while the server was being asked is not undone;
    * and a row that ended meanwhile ({@code ended} statuses) is not written at all.
@@ -251,7 +251,7 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   List<String> ended);
 
   /**
-   * A grantee's accept, and nothing else of the row (EXO-90548 review, finding 1): the
+   * A grantee's accept, and nothing else of the row (EXO-90548): the
    * status, where the shared tree is, the grantee's own letters, the server's words only
    * when none were recorded, the preset only when one is given, and the stamps. The
    * owner's columns -- the folder roles and their folders an Extend may have written
@@ -292,7 +292,7 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
 
   /**
    * The letters the owner's ACL holds for a share on offer, and nothing else of the row
-   * (EXO-90548 review, finding 1): never on a share in use, whose letters are the
+   * (EXO-90548): never on a share in use, whose letters are the
    * grantee's own MYRIGHTS, nor on one that ended; an Extend's folder roles written
    * meanwhile are left as they stand.
    *

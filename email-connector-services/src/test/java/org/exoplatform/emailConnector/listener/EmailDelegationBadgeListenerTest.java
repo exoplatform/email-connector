@@ -27,6 +27,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
+import org.exoplatform.emailConnector.event.EmailDelegationEventType;
 import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.service.EmailBoxService;
@@ -49,7 +50,7 @@ class EmailDelegationBadgeListenerTest {
    */
   @Test
   void theSwitchReCountsTheGranteesBadge() {
-    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.BADGE_PREFERENCE_CHANGED,
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEventType.BADGE_PREFERENCE_CHANGED,
                                                               "bob",
                                                               share(false, DelegationStatus.ACCEPTED)));
 
@@ -62,13 +63,13 @@ class EmailDelegationBadgeListenerTest {
    */
   @Test
   void aCountedShareLeftOrRevokedReCountsTheBadge() {
-    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.LEFT,
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEventType.LEFT,
                                                               "bob",
                                                               share(true, DelegationStatus.DECLINED)));
-    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.REVOKED,
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEventType.REVOKED,
                                                               "alice",
                                                               share(true, DelegationStatus.REVOKED)));
-    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.RIGHTS_CHANGED,
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEventType.RIGHTS_CHANGED,
                                                               null,
                                                               share(true, DelegationStatus.GONE)));
 
@@ -81,10 +82,10 @@ class EmailDelegationBadgeListenerTest {
    */
   @Test
   void aShareNotCountedSaysNothing() {
-    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.LEFT,
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEventType.LEFT,
                                                               "bob",
                                                               share(false, DelegationStatus.DECLINED)));
-    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEvent.Type.INVITED,
+    listener.handleDelegationChanged(new EmailDelegationEvent(EmailDelegationEventType.INVITED,
                                                               "alice",
                                                               share(true, DelegationStatus.PENDING)));
 

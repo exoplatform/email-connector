@@ -1979,7 +1979,7 @@ public class EmailBoxService {
     // A revoke, a leave or a withdrawal found by another path can land WHILE this
     // folder is being synced: its row dropped and its mail purged, then this pass
     // re-inserting a window of the owner's mail under a key nothing marks as shared any
-    // more (stack review #437-1). So, as syncCustomFolder does for an opt-out, the row
+    // more. So, as syncCustomFolder does for an opt-out, the row
     // is re-read after the sync, and a folder dropped in the meantime loses what the
     // sync wrote.
     EmailFolder current;
@@ -2157,7 +2157,7 @@ public class EmailBoxService {
 
   /**
    * Purges the mail mirrored under the folders of a shared mailbox that were just
-   * dropped from the delegate's registry (stack review #437-1), with what goes with a
+   * dropped from the delegate's registry, with what goes with a
    * folder's mail -- its category links, its attachments, its sync snapshot.
    *
    * @param username the delegate
@@ -2195,7 +2195,7 @@ public class EmailBoxService {
 
   /**
    * Deletes the mail a user's cache still holds under a folder key whose folder is no
-   * longer registered (stack review #437-1): what a purge that failed, or one from before
+   * longer registered: what a purge that failed, or one from before
    * purges existed, left behind. Such rows are reachable by nothing that knows they are
    * a shared mailbox's -- search, conversations and the agent tools would show them as
    * the user's own. Run once per sync pass; one query for the keys, one registry read
@@ -7066,8 +7066,7 @@ public class EmailBoxService {
     checkDelegatedRight(username, sourceFolder, MailboxRights.DELETE_MESSAGES);
     String destinationKey = destinationKeyOf(username, action, sourceFolder, targetFolder);
     if (!canMoveOutOf(action, asRoleFolder(username, sourceFolder))) {
-      // A shared mailbox's folder by what it is in its owner's mailbox (EXO-90548 review,
-      // finding 2): archiving out of its Archive or reporting its Spam as spam files a
+      // A shared mailbox's folder by what it is in its owner's mailbox (EXO-90548): archiving out of its Archive or reporting its Spam as spam files a
       // message into the folder it is in, and nothing leaves its Trash or its Drafts --
       // the same answers the user's own folders of those roles give.
       LOG.warn("{} is not an operation on the {} folder of a shared mailbox; {} message(s) of user {} were left where they are",
@@ -7275,7 +7274,7 @@ public class EmailBoxService {
 
   /**
    * The key {@link #canMoveOutOf} reads for a folder: a shared mailbox's folder of a role
-   * answers as the user's own folder of that role would (EXO-90548 review, finding 2) --
+   * answers as the user's own folder of that role would (EXO-90548) --
    * its Trash, Drafts, Spam and Archive -- and every other folder as itself.
    *
    * @param username the caller

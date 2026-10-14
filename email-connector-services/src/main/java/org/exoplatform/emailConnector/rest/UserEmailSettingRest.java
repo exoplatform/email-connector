@@ -472,7 +472,7 @@ public class UserEmailSettingRest {
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
-      // notChangeable: a share of a mailbox the owner is no longer connected to (#443-1).
+      // notChangeable: a share of a mailbox the owner is no longer connected to.
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (MailboxAclException e) {
       throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getCode());

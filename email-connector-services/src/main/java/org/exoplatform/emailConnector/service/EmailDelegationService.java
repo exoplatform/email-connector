@@ -41,6 +41,7 @@ import org.springframework.stereotype.Service;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.event.DelegatedFoldersDroppedEvent;
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
+import org.exoplatform.emailConnector.event.EmailDelegationEventType;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
@@ -69,6 +70,8 @@ import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngine;
 import org.exoplatform.emailConnector.service.acl.MailboxAclEngineRegistry;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
+import org.exoplatform.emailConnector.service.acl.HttpAuthorizationResolver;
+import org.exoplatform.emailConnector.service.acl.StoreOpener;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailDelegationStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
@@ -139,8 +142,6 @@ import org.exoplatform.social.core.manager.IdentityManager;
 @Service
 public class EmailDelegationService {
 
-  private static final Log        LOG                        = ExoLogger.getLogger(EmailDelegationService.class);
-
   /** How many shared mailboxes one grantee may have accepted at once. */
   public static final String      MAX_PER_USER_PROPERTY      = "exo.email.delegation.maxPerUser";
 
@@ -192,6 +193,8 @@ public class EmailDelegationService {
   public static final String      TOO_MANY_MESSAGE           = "emailConnector.delegation.tooMany";
 
   public static final String      NOT_FOUND_MESSAGE          = "emailConnector.delegation.notFound";
+
+  private static final Log        LOG                        = ExoLogger.getLogger(EmailDelegationService.class);
 
   @Autowired
   private UserEmailSettingService userEmailSettingService;
@@ -389,7 +392,7 @@ public class EmailDelegationService {
              granteeIdentifier,
              granted.letters(),
              grantedRoles);
-    publish(EmailDelegationEvent.Type.INVITED, ownerUsername, delegation);
+    publish(EmailDelegationEventType.INVITED, ownerUsername, delegation);
     return delegation;
   }
 
@@ -443,7 +446,7 @@ public class EmailDelegationService {
     dropDelegatedFolders(delegation.getGranteeId(), delegation.getId());
     delegation.setStatus(DelegationStatus.REVOKED);
     delegation.setRevokedDate(new Date());
-    // Back off by default (#441-1): a share taken up again must be chosen again to count
+    // Back off by default: a share taken up again must be chosen again to count
     // in the badge, as a new one is (plan 7.7).
     delegation.setBadgeIncluded(false);
     delegation = emailDelegationStorage.update(delegation);
@@ -452,7 +455,7 @@ public class EmailDelegationService {
              delegation.getOwnerMailbox(),
              delegation.getGranteeId(),
              identifier);
-    publish(EmailDelegationEvent.Type.REVOKED, ownerUsername, delegation);
+    publish(EmailDelegationEventType.REVOKED, ownerUsername, delegation);
   }
 
   /**
@@ -567,7 +570,7 @@ public class EmailDelegationService {
     boolean perFolder = delegation.getGrantedRoles() != null && !delegation.grantsWholeMailbox();
     // Only what was written on the server, and not over a share that ended while the
     // server was asked: the row read above is as old as the SETACL round-trip, and a
-    // whole-row write from it would undo a leave made meanwhile (stack review N-1).
+    // whole-row write from it would undo a leave made meanwhile .
     delegation = perFolder ? emailDelegationStorage.updateGrantedRights(ownerUsername,
                                                                        id,
                                                                        recorded,
@@ -599,7 +602,7 @@ public class EmailDelegationService {
              granted.letters());
     if (keptSeen != granted.canKeepSeen()) {
       // The grantee's badge may count this inbox only while s is held (EXO-90546).
-      publish(EmailDelegationEvent.Type.RIGHTS_CHANGED, ownerUsername, delegation);
+      publish(EmailDelegationEventType.RIGHTS_CHANGED, ownerUsername, delegation);
     }
     if (!notNarrowed.isEmpty()) {
       // Said, not swallowed: the owner asked for less access than a folder still gives.
@@ -696,8 +699,8 @@ public class EmailDelegationService {
     MailboxRights inboxRights = written.rights() == null ? MailboxRights.NONE : written.rights();
     DelegationPreset recorded = written.preset() == null || written.preset() == DelegationPreset.CUSTOM ? delegation.getPreset()
                                                                                                         : written.preset();
-    // What the grants wrote, and only that, as changePreset records it (stack review
-    // N-1): the row read above is as old as the ACL round-trips, and a whole-row write
+    // What the grants wrote, and only that, as changePreset records it
+    //: the row read above is as old as the ACL round-trips, and a whole-row write
     // from it would undo a leave or a revoke made meanwhile.
     delegation = emailDelegationStorage.updateGrantedRights(ownerUsername,
                                                            id,
@@ -716,7 +719,7 @@ public class EmailDelegationService {
     // (live on Stalwart: an Extend left the delegate on the Inbox alone).
     markDiscoveryDue(id);
     if (keptSeen != inboxRights.canKeepSeen()) {
-      publish(EmailDelegationEvent.Type.RIGHTS_CHANGED, ownerUsername, delegation);
+      publish(EmailDelegationEventType.RIGHTS_CHANGED, ownerUsername, delegation);
     }
     LOG.info("Mailbox delegation extended: actor={} ownerMailbox={} grantee={} identifier={} folders={}",
              ownerUsername,
@@ -1109,7 +1112,7 @@ public class EmailDelegationService {
       markRevoked(delegation, DelegationStatus.REVOKED);
       throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
     }
-    // Only accept's own columns (EXO-90548 review, finding 1): the row read above is as
+    // Only accept's own columns (EXO-90548): the row read above is as
     // old as the server calls, and an owner's Extend of this pending share may have
     // written its folder roles meanwhile. The server's own words are kept where the
     // owner's side recorded them -- MYRIGHTS answers letters on every engine.
@@ -1152,7 +1155,7 @@ public class EmailDelegationService {
              delegation.getOwnerMailbox(),
              shared.remoteRoot(),
              rights.letters());
-    publish(EmailDelegationEvent.Type.ACCEPTED, granteeUsername, delegation);
+    publish(EmailDelegationEventType.ACCEPTED, granteeUsername, delegation);
     return delegation;
   }
 
@@ -1181,7 +1184,7 @@ public class EmailDelegationService {
     LOG.info("Mailbox delegation declined: actor={} ownerMailbox={} (the server ACL is left in place)",
              granteeUsername,
              delegation.getOwnerMailbox());
-    publish(EmailDelegationEvent.Type.DECLINED, granteeUsername, delegation);
+    publish(EmailDelegationEventType.DECLINED, granteeUsername, delegation);
     return delegation;
   }
 
@@ -1210,13 +1213,13 @@ public class EmailDelegationService {
     LOG.info("Mailbox delegation left: actor={} ownerMailbox={} (the server ACL is left in place)",
              granteeUsername,
              delegation.getOwnerMailbox());
-    publish(EmailDelegationEvent.Type.LEFT, granteeUsername, delegation);
+    publish(EmailDelegationEventType.LEFT, granteeUsername, delegation);
     return delegation;
   }
 
   /**
    * Ends every share the caller is using, as a leave would, when the caller's own mailbox
-   * is disconnected from eXo or bound to another account (#432-3, decision 4): the
+   * is disconnected from eXo or bound to another account (decision 4): the
    * shared mailboxes were read with that account's credentials, and their folders and
    * mirrored mail are wiped with the account's own. Each goes back to what a leave leaves
    * -- DECLINED, or AVAILABLE for one discovered on the server -- so it can be taken up
@@ -1238,7 +1241,7 @@ public class EmailDelegationService {
       LOG.info("Mailbox delegation ended by a mailbox disconnect: grantee={} ownerMailbox={}",
                granteeUsername,
                ended.getOwnerMailbox());
-      publish(EmailDelegationEvent.Type.LEFT, granteeUsername, ended);
+      publish(EmailDelegationEventType.LEFT, granteeUsername, ended);
     }
   }
 
@@ -1253,7 +1256,7 @@ public class EmailDelegationService {
   private EmailDelegation endShare(String granteeUsername, EmailDelegation delegation) {
     delegation.setStatus(delegation.getOrigin() == DelegationOrigin.SERVER ? DelegationStatus.AVAILABLE : DelegationStatus.DECLINED);
     delegation.setRespondedDate(new Date());
-    // Back off by default (#441-1): a share taken up again must be chosen again to count
+    // Back off by default: a share taken up again must be chosen again to count
     // in the badge, as a new one is (plan 7.7).
     delegation.setBadgeIncluded(false);
     // The folders first (see revoke): a drop that fails leaves the share in use.
@@ -1278,7 +1281,7 @@ public class EmailDelegationService {
                                            Boolean notifyNewMail) throws ObjectNotFoundException {
     EmailDelegation delegation = asGrantee(granteeUsername, id);
     boolean badgeChanged = badgeIncluded != null && badgeIncluded != delegation.isBadgeIncluded();
-    // The two toggles alone (#432-2): a whole-row write from this read would put back a
+    // The two toggles alone: a whole-row write from this read would put back a
     // status, a revoke date or rights the owner changed since -- a revoke made while
     // the grantee flipped their badge would come undone.
     EmailDelegation updated = emailDelegationStorage.updatePreferences(granteeUsername,
@@ -1288,7 +1291,7 @@ public class EmailDelegationService {
     if (badgeChanged) {
       // The badge counts this shared inbox, or stops counting it (EXO-90546): whoever
       // shows the badge is told, after the commit, by the listener of this event.
-      publish(EmailDelegationEvent.Type.BADGE_PREFERENCE_CHANGED, granteeUsername, updated);
+      publish(EmailDelegationEventType.BADGE_PREFERENCE_CHANGED, granteeUsername, updated);
     }
     return updated;
   }
@@ -1516,7 +1519,7 @@ public class EmailDelegationService {
    * MYRIGHTS on the shared INBOX decides: no read right, or a refusal, and the share is
    * revoked (its folders dropped, the badge told); otherwise changed letters are
    * recorded, with the preset they read as, and a move of the right to keep read state
-   * announced ({@link EmailDelegationEvent.Type#RIGHTS_CHANGED}). An unchanged answer
+   * announced ({@link EmailDelegationEventType#RIGHTS_CHANGED}). An unchanged answer
    * writes nothing.
    *
    * @param granteeUsername the caller
@@ -1579,7 +1582,7 @@ public class EmailDelegationService {
     current.setLastRightsCheckDate(new Date());
     EmailDelegation updated = emailDelegationStorage.update(current);
     if (keptSeen != rights.canKeepSeen()) {
-      publish(EmailDelegationEvent.Type.RIGHTS_CHANGED, null, updated);
+      publish(EmailDelegationEventType.RIGHTS_CHANGED, null, updated);
     }
     return updated;
   }
@@ -1989,7 +1992,14 @@ public class EmailDelegationService {
     if (folder == null || folder.getDelegationId() == null) {
       return null;
     }
-    return emailDelegationStorage.getAsGrantee(username, folder.getDelegationId());
+    EmailDelegation delegation = emailDelegationStorage.getAsGrantee(username, folder.getDelegationId());
+    if (delegation == null) {
+      // A folder registered under a share that no longer resolves is not the caller's
+      // own folder, which a null here would make it for every guard: refused as a share
+      // that is gone, until the folder row goes with it.
+      throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
+    }
+    return delegation;
   }
 
   /**
@@ -2003,6 +2013,11 @@ public class EmailDelegationService {
   public MailboxRights rightsOn(String username, String folderKey) {
     EmailFolder folder = delegatedFolderOf(username, folderKey);
     EmailDelegation delegation = folder == null ? null : emailDelegationStorage.getAsGrantee(username, folder.getDelegationId());
+    if (folder != null && delegation == null) {
+      // A shared folder whose share no longer resolves (see delegationOf): refused as a
+      // share that is gone, never read as one of the caller's own folders.
+      throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
+    }
     return delegation == null ? null : folderRights(folder, delegation);
   }
 
@@ -2055,6 +2070,11 @@ public class EmailDelegationService {
   public void refreshFolderRights(String username, String folderKey, Store store) {
     EmailFolder folder = delegatedFolderOf(username, folderKey);
     EmailDelegation delegation = folder == null ? null : emailDelegationStorage.getAsGrantee(username, folder.getDelegationId());
+    if (folder != null && delegation == null) {
+      // A shared folder whose share no longer resolves (see delegationOf): refused as a
+      // share that is gone, never read as one of the caller's own folders.
+      throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
+    }
     if (delegation == null || delegation.getStatus() != DelegationStatus.ACCEPTED) {
       return;
     }
@@ -2127,6 +2147,11 @@ public class EmailDelegationService {
   public void checkRight(String username, String folderKey, char right) throws MailboxRightMissingException {
     EmailFolder folder = delegatedFolderOf(username, folderKey);
     EmailDelegation delegation = folder == null ? null : emailDelegationStorage.getAsGrantee(username, folder.getDelegationId());
+    if (folder != null && delegation == null) {
+      // A shared folder whose share no longer resolves (see delegationOf): refused as a
+      // share that is gone, never read as one of the caller's own folders.
+      throw new DelegationRevokedException(DelegationRevokedException.REVOKED);
+    }
     if (delegation == null) {
       return;
     }
@@ -2321,7 +2346,7 @@ public class EmailDelegationService {
         row.setLastRightsCheckDate(new Date());
         row = createOrReread(row);
       } else if (row != null && (row.getStatus() == DelegationStatus.REVOKED || row.getStatus() == DelegationStatus.GONE)) {
-        // The owner's own ACL names the grantee again (#443-2): the share stands on the
+        // The owner's own ACL names the grantee again: the share stands on the
         // server, so the row is not left dead in eXo -- offered to the grantee again,
         // with the letters the ACL holds.
         row.setRights(ace.rights().letters());
@@ -2334,7 +2359,7 @@ public class EmailDelegationService {
         // MYRIGHTS answered at their last sync (refreshGranteeRights) -- what their
         // mailbox's controls and guards read -- and the owner's ACE, which a server may
         // spell differently, is shown to the owner from the ACL itself, not from the row.
-        // Targeted (EXO-90548 review, finding 1): an Extend of a pending share may have
+        // Targeted (EXO-90548): an Extend of a pending share may have
         // written its folder roles since these rows were read.
         EmailDelegation refreshed = emailDelegationStorage.updateOfferedRights(ownerUsername,
                                                                               row.getId(),
@@ -2431,7 +2456,7 @@ public class EmailDelegationService {
         EmailDelegation known = rowFor(rows, connector.getId(), mailbox);
         if (known != null) {
           if (known.getStatus() == DelegationStatus.REVOKED || known.getStatus() == DelegationStatus.GONE) {
-            // The server lists the share again (#443-2): a transient refusal, the stale
+            // The server lists the share again: a transient refusal, the stale
             // rights window, a listing miss -- REVOKED was one negative answer, not the
             // truth. Offered again, never subscribed on the grantee's behalf.
             reopen(known);
@@ -2476,7 +2501,7 @@ public class EmailDelegationService {
 
   /**
    * Offers again a share eXo had ended (REVOKED, GONE) that the server lists again
-   * (#443-2): back to AVAILABLE -- proposed to the grantee, never subscribed on their
+   *: back to AVAILABLE -- proposed to the grantee, never subscribed on their
    * behalf -- with its revoke date cleared and its rights checked now.
    *
    * @param row the ended row
@@ -2492,7 +2517,7 @@ public class EmailDelegationService {
 
   /**
    * Creates a row a listing found, or answers the one a concurrent listing -- another
-   * tab, another node -- created first under the same key (#432-6): the unique key
+   * tab, another node -- created first under the same key: the unique key
    * refuses the second insert, and the share is the same share either way.
    *
    * @param row the row to create
@@ -2534,7 +2559,7 @@ public class EmailDelegationService {
       }
       String localPart = owner.contains("@") ? owner.substring(0, owner.indexOf('@')) : owner;
       if (segment.equals(localPart)) {
-        // Only when it is the one row with that local part (#432-5).
+        // Only when it is the one row with that local part.
         ambiguous = byLocalPart != null;
         byLocalPart = row;
       }
@@ -2556,7 +2581,7 @@ public class EmailDelegationService {
     if (owner != null) {
       return owner;
     }
-    // The local part only when exactly one connected user has it (#432-5): on a preset
+    // The local part only when exactly one connected user has it: on a preset
     // serving several domains, "anne" is nobody in particular.
     String byLocalPart = null;
     for (Map.Entry<String, String> entry : connected.entrySet()) {
@@ -2625,7 +2650,7 @@ public class EmailDelegationService {
 
   /**
    * Drops a share's folders from the delegate's registry, and the mail mirrored under
-   * them with them (stack review #437-1): the keys are read before the rows go, and the
+   * them with them: the keys are read before the rows go, and the
    * mailbox cache purges them on the event. The one way a share's folders are dropped --
    * revoke, leave, a disconnect, a withdrawal found on the server -- so no path can
    * leave the owner's mail in the delegate's database, where it would resurface as the
@@ -2653,7 +2678,7 @@ public class EmailDelegationService {
     boolean wasInUse = delegation.getStatus() == DelegationStatus.ACCEPTED;
     delegation.setStatus(status);
     delegation.setRevokedDate(new Date());
-    // Back off by default (#441-1): a share taken up again must be chosen again to count
+    // Back off by default: a share taken up again must be chosen again to count
     // in the badge, as a new one is (plan 7.7).
     delegation.setBadgeIncluded(false);
     // The folders first (see revoke): a drop that fails leaves the share as it stands.
@@ -2663,7 +2688,7 @@ public class EmailDelegationService {
       // Found gone by a reconciliation rather than by anybody's act: no notification
       // says so, but a grantee who counted this inbox in their badge must see it stop
       // counting (EXO-90546). No actor: the server decided.
-      publish(EmailDelegationEvent.Type.RIGHTS_CHANGED, null, updated);
+      publish(EmailDelegationEventType.RIGHTS_CHANGED, null, updated);
     }
     return updated;
   }
@@ -2719,8 +2744,8 @@ public class EmailDelegationService {
    */
   private MailboxAclSession session(EmailConnector connector, String username, String mailboxIdentifier) {
     String connectorId = String.valueOf(connector.getId());
-    MailboxAclSession.StoreOpener opener = () -> userEmailSettingService.connect(connectorId, username);
-    MailboxAclSession.HttpAuthorizationResolver http = emailCredentialsResolver == null ? null
+    StoreOpener opener = () -> userEmailSettingService.connect(connectorId, username);
+    HttpAuthorizationResolver http = emailCredentialsResolver == null ? null
                                                                                         : () -> emailCredentialsResolver.authorization(connector.getId(),
                                                                                                                                        connector.getAuthProviderName(),
                                                                                                                                        username);
@@ -2824,7 +2849,7 @@ public class EmailDelegationService {
    * @param actor whose action it was
    * @param delegation the row
    */
-  private void publish(EmailDelegationEvent.Type type, String actor, EmailDelegation delegation) {
+  private void publish(EmailDelegationEventType type, String actor, EmailDelegation delegation) {
     if (eventPublisher != null) {
       eventPublisher.publishEvent(new EmailDelegationEvent(type, actor, delegation));
     }
