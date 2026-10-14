@@ -5143,6 +5143,18 @@ public class EmailBoxService {
       if (customFolder.getDelegationId() == null) {
         syncCustomFolder(store, customFolder, username, userEmailSetting);
       } else {
+        // What the server lets the delegate do there, re-read first on the connection
+        // just opened -- one MYRIGHTS, as the periodic pass does before it syncs: a
+        // share the owner withdrew on the server stops here, its mirror dropped, rather
+        // than being served until the next pass to a delegate who still opens it.
+        EmailDelegation share = emailDelegationService.delegationOf(username, customFolder.getKey());
+        if (share != null && emailDelegationService.refreshGranteeRights(username, share, store) == null) {
+          LOG.info("Shared mailbox {} is no longer granted to user {}; folder '{}' is not refreshed",
+                   share.getOwnerMailbox(),
+                   username,
+                   customFolder.getRemoteName());
+          return;
+        }
         // The delegate is looking at it: no notification, and what they see moves the
         // new-mail boundary with it (EXO-90553).
         syncDelegatedFolder(store, customFolder, username, userEmailSetting, null);

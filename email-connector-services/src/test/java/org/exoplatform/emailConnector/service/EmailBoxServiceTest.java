@@ -12141,6 +12141,8 @@ public class EmailBoxServiceTest {
     givenASharedInboxKeyed("CUSTOM:8");
     EmailDelegation share = aNotifyingShare();
     lenient().when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(share);
+    // The rights re-read on open finds the share still granted.
+    lenient().when(emailDelegationService.refreshGranteeRights(eq(TEST_USER), eq(share), any())).thenReturn(share);
     when(emailBoxStorage.getMaxUid(TEST_USER, "CUSTOM:8")).thenReturn(12L);
 
     try (MockedStatic<NotificationContextImpl> contexts = mockStatic(NotificationContextImpl.class)) {
@@ -13000,6 +13002,44 @@ public class EmailBoxServiceTest {
    *
    * @return an accepted Editor share of alice's mailbox
    */
+  /**
+   * Opening a stale folder of a shared mailbox re-reads the delegate's rights on the
+   * connection just opened, before anything is synced: a share withdrawn on the server
+   * is not refreshed, and one still granted is synced as before.
+   */
+  @Test
+  @SneakyThrows
+  void openingAStaleSharedFolderReReadsTheRightsFirst() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    EmailFolder stale = registeredFolder(5L, "Other Users/alice/INBOX", true);
+    stale.setDelegationId(100L);
+    stale.setType(MailFolderView.TYPE_DELEGATED_INBOX);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(stale);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    EmailDelegation share = aSharedMailboxRow();
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:5")).thenReturn(share);
+    when(emailDelegationService.refreshGranteeRights(TEST_USER, share, store)).thenReturn(null, share);
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Other Users/alice/INBOX");
+    lenient().when(store.getFolder("Other Users/alice/INBOX")).thenReturn(remote);
+    when(emailBoxStorage.getSyncEmails(TEST_USER, "CUSTOM:5")).thenReturn(new ArrayList<>());
+
+    emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5");
+
+    verify(emailDelegationService).refreshGranteeRights(TEST_USER, share, store);
+    verify(store, never()).getFolder(anyString());
+    verify(emailBoxStorage).getEmails(TEST_USER, "CUSTOM:5");
+
+    emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5");
+
+    verify(emailDelegationService, times(2)).refreshGranteeRights(TEST_USER, share, store);
+    verify(remote).open(Folder.READ_ONLY);
+  }
+
   private EmailDelegation aSharedMailboxRow() {
     EmailDelegation delegation = new EmailDelegation();
     delegation.setId(100L);
