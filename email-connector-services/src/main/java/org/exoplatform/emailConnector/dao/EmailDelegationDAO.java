@@ -306,6 +306,25 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
    * @return the rows updated
    */
   @Transactional
+  /**
+   * The grantee's identifier, and nothing else of the row, where none is recorded yet.
+   *
+   * @param id the row
+   * @param ownerId the owner, the row's viewer
+   * @param granteeMailbox the identifier
+   * @param updated the write's instant
+   * @return the rows written: 1, or 0 when the row already has one or is not the owner's
+   */
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.granteeMailbox = :granteeMailbox, d.updatedDate = :updated"
+      + " WHERE d.id = :id AND d.ownerId = :ownerId AND d.granteeMailbox IS NULL")
+  int updateGranteeMailbox(@Param("id")
+  long id, @Param("ownerId")
+  String ownerId, @Param("granteeMailbox")
+  String granteeMailbox, @Param("updated")
+  Date updated);
+
+  @Transactional
   @Modifying(clearAutomatically = true, flushAutomatically = true)
   @Query("UPDATE EmailDelegationEntity d SET d.rights = :rights, d.nativeRights = :nativeRights, d.lastRightsCheckDate = :checked,"
       + " d.updatedDate = :updated WHERE d.id = :id AND d.ownerId = :ownerId AND d.status NOT IN :excluded")

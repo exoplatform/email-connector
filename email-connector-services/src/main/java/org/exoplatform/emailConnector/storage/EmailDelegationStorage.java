@@ -322,6 +322,20 @@ public class EmailDelegationStorage {
    * @param nativeRights the server's own words for them
    * @return the row as it now stands, null when nothing was written
    */
+  /**
+   * The grantee's identifier, written alone and only where none is recorded: a row
+   * discovery created before it recorded one, named by the owner's ACL.
+   *
+   * @param ownerId the owner
+   * @param id the row
+   * @param granteeMailbox the identifier the ACL carries
+   * @return the row as it now stands, null when it already had one or is not the owner's
+   */
+  public EmailDelegation updateGranteeMailbox(String ownerId, long id, String granteeMailbox) {
+    int updated = emailDelegationDAO.updateGranteeMailbox(id, ownerId, granteeMailbox, new Date());
+    return updated == 0 ? null : getAsOwner(ownerId, id);
+  }
+
   public EmailDelegation updateOfferedRights(String ownerId, long id, String rights, String nativeRights) {
     Date now = new Date();
     int updated = emailDelegationDAO.updateOfferedRights(id,

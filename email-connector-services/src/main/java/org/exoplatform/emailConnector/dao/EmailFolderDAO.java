@@ -294,6 +294,17 @@ public interface EmailFolderDAO extends JpaRepository<EmailFolderEntity, Long> {
   long delegationId);
 
   /**
+   * Every folder of every mailbox shared with the user: {@code DELEGATION_ID IS NOT
+   * NULL}, whatever the share's status.
+   *
+   * @param userId the grantee -- the rows' viewer
+   * @return the folders, never null
+   */
+  @Query("SELECT folder FROM EmailFolderEntity folder WHERE folder.userId = :userId AND folder.delegationId IS NOT NULL")
+  List<EmailFolderEntity> findByUserIdAndDelegationIdNotNull(@Param("userId")
+  String userId);
+
+  /**
    * The accept's write for a row the own-mailbox walk registered first: the delegation
    * it now belongs to and its type, nothing else -- the opt-in and the sync memory are
    * left as they were, for the reason every writer here gives.

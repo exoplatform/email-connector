@@ -2317,12 +2317,9 @@ class EmailDelegationServiceTest {
    */
   @Test
   void theDelegatedFolderKeysSpanEveryShare() {
-    EmailDelegation first = accepted("lrs");
-    EmailDelegation second = accepted("lrs");
-    second.setId(101L);
-    when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of(first, second));
-    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(delegatedFolder(12L)));
-    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 101L)).thenReturn(List.of(delegatedFolder(13L)));
+    EmailFolder ofAnotherShare = delegatedFolder(13L);
+    ofAnotherShare.setDelegationId(101L);
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE)).thenReturn(List.of(delegatedFolder(12L), ofAnotherShare));
 
     assertEquals(List.of("CUSTOM:12", "CUSTOM:13"), service.getDelegatedFolderKeys(GRANTEE));
   }
@@ -2937,6 +2934,159 @@ class EmailDelegationServiceTest {
    * @param origin who wrote the grant
    * @return the row, id 100
    */
+  // ---------------------------------------------------------------------------------
+  // Ending a share, naming its entry, reading the server's answer
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * A connection that drops while accept asks the server what the grantee may do is no
+   * refusal: the row stays pending and the caller is told the server was unreachable.
+   */
+  @Test
+  void acceptReportsAnUnreachableServerAndLeavesTheRow() throws Exception {
+    EmailDelegation pending = row(DelegationStatus.PENDING, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(pending);
+    when(emailDelegationStorage.count(GRANTEE, DelegationStatus.ACCEPTED)).thenReturn(0L);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.findSharedMailbox(any(), eq(OWNER_MAILBOX))).thenReturn(new SharedMailbox("alice",
+                                                                                           "Other Users/alice",
+                                                                                           "Other Users/alice/INBOX",
+                                                                                           "/"));
+    when(engine.myRights(any(), eq("Other Users/alice/INBOX"))).thenThrow(new MailboxAclException(MailboxAclException.UNREACHABLE,
+                                                                                                   "connection dropped"));
+
+    MailboxAclException unreachable = assertThrows(MailboxAclException.class, () -> service.accept(GRANTEE, 100L));
+
+    assertEquals(MailboxAclException.UNREACHABLE, unreachable.getCode());
+    assertEquals(DelegationStatus.PENDING, pending.getStatus());
+    verify(emailDelegationStorage, never()).update(any());
+    verify(emailFolderStorage, never()).deleteDelegatedFolders(anyString(), anyLong());
+  }
+
+  /**
+   * The server refusing MYRIGHTS on the shared inbox is a withdrawal: the row goes
+   * revoked, as before.
+   */
+  @Test
+  void acceptMarksRevokedWhenMyRightsIsRefused() throws Exception {
+    EmailDelegation pending = row(DelegationStatus.PENDING, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(pending);
+    when(emailDelegationStorage.count(GRANTEE, DelegationStatus.ACCEPTED)).thenReturn(0L);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.findSharedMailbox(any(), eq(OWNER_MAILBOX))).thenReturn(new SharedMailbox("alice",
+                                                                                           "Other Users/alice",
+                                                                                           "Other Users/alice/INBOX",
+                                                                                           "/"));
+    when(engine.myRights(any(), eq("Other Users/alice/INBOX"))).thenThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED,
+                                                                                                   "NO"));
+
+    assertThrows(DelegationRevokedException.class, () -> service.accept(GRANTEE, 100L));
+
+    assertEquals(DelegationStatus.REVOKED, pending.getStatus());
+    verify(emailDelegationStorage).update(pending);
+  }
+
+  /**
+   * The folders go before the status: a drop that fails leaves the share as it stood, to
+   * be revoked again, never a revoked row whose mirror is still registered and served.
+   */
+  @Test
+  void revokeKeepsTheShareWhenDroppingItsFoldersFails() throws Exception {
+    EmailDelegation accepted = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    doThrow(new IllegalStateException("database")).when(emailFolderStorage).deleteDelegatedFolders(GRANTEE, 100L);
+
+    assertThrows(IllegalStateException.class, () -> service.revoke(OWNER, 100L));
+
+    assertEquals(DelegationStatus.ACCEPTED, accepted.getStatus());
+    assertNull(accepted.getRevokedDate());
+    verify(emailDelegationStorage, never()).update(any());
+    verify(eventPublisher, never()).publishEvent(any(EmailDelegationEvent.class));
+  }
+
+  /**
+   * A row that recorded no identifier, whose grantee has since disconnected, names no
+   * entry to remove: the revoke is refused as not changeable rather than recorded while
+   * the server still grants the access.
+   */
+  @Test
+  void revokeRefusesAShareWhoseEntryItCannotName() throws Exception {
+    EmailDelegation accepted = row(DelegationStatus.ACCEPTED, DelegationOrigin.SERVER);
+    accepted.setGranteeMailbox(null);
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted);
+    when(userEmailSettingService.getUserEmailSetting(GRANTEE)).thenReturn(null);
+
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> service.revoke(OWNER, 100L));
+
+    assertEquals(EmailDelegationService.NOT_CHANGEABLE_MESSAGE, refused.getMessage());
+    assertEquals(DelegationStatus.ACCEPTED, accepted.getStatus());
+    verify(engine, never()).revoke(any(), any(), any());
+    verify(emailDelegationStorage, never()).update(any());
+    verify(emailFolderStorage, never()).deleteDelegatedFolders(anyString(), anyLong());
+  }
+
+  /**
+   * A row discovery creates records the grantee's own identifier, the entry a revoke
+   * removes once this grantee has disconnected from eXo.
+   */
+  @Test
+  void discoveryRecordsTheGranteesOwnIdentifierOnTheRowsItCreates() throws Exception {
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.listSharedMailboxes(any())).thenReturn(List.of(new SharedMailbox("carol", "Other Users/carol", "Other Users/carol/INBOX", "/")));
+    when(engine.myRights(any(), eq("Other Users/carol/INBOX"))).thenReturn(MailboxRights.of("lrs"));
+    when(emailDelegationStorage.getReceived(GRANTEE)).thenReturn(List.of());
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of("carol"));
+    when(userEmailSettingService.getUserEmailSetting("carol")).thenReturn(setting(CONNECTOR_ID, "carol@acme.com"));
+
+    service.getReceivedDelegations(GRANTEE, true);
+
+    ArgumentCaptor<EmailDelegation> created = ArgumentCaptor.forClass(EmailDelegation.class);
+    verify(emailDelegationStorage).create(created.capture());
+    assertEquals(GRANTEE_MAILBOX, created.getValue().getGranteeMailbox());
+  }
+
+  /**
+   * The owner's listing names, on the server's own ACL, a row that recorded no
+   * identifier: the identifier is written, alone, so a later revoke has its entry.
+   */
+  @Test
+  void theOwnersListingRecordsTheIdentifierOfARowThatHadNone() throws Exception {
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(OWNER_MAILBOX, MailboxRights.of("lrswipkxtea")),
+                                                              MailboxAce.ofLetters(GRANTEE_MAILBOX, MailboxRights.of("lrswit"))));
+    EmailDelegation unnamed = row(DelegationStatus.ACCEPTED, DelegationOrigin.SERVER);
+    unnamed.setGranteeMailbox(null);
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(unnamed));
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER, GRANTEE));
+    when(emailDelegationStorage.updateGranteeMailbox(OWNER, 100L, GRANTEE_MAILBOX)).thenAnswer(invocation -> {
+      unnamed.setGranteeMailbox(invocation.getArgument(2));
+      return unnamed;
+    });
+
+    GrantedDelegations granted = service.getGrantedDelegations(OWNER);
+
+    verify(emailDelegationStorage).updateGranteeMailbox(OWNER, 100L, GRANTEE_MAILBOX);
+    assertEquals(GRANTEE_MAILBOX, unnamed.getGranteeMailbox());
+    assertEquals(DelegationStatus.ACCEPTED, unnamed.getStatus());
+    assertEquals(1, granted.grantees().size());
+  }
+
+  /**
+   * Every folder registered under a mailbox shared with the caller stays out of their
+   * own search, conversations and counts, whatever the share's status: a drop that
+   * failed must not hand a mirror back.
+   */
+  @Test
+  void getDelegatedFolderKeysCoversEveryRegisteredSharedFolder() {
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE)).thenReturn(List.of(delegatedFolder(12L), delegatedFolder(13L)));
+
+    assertEquals(List.of("CUSTOM:12", "CUSTOM:13"), service.getDelegatedFolderKeys(GRANTEE));
+
+    verify(emailDelegationStorage, never()).getReceived(anyString());
+    assertEquals(List.of(), service.getDelegatedFolderKeys(" "));
+  }
+
   private EmailDelegation row(DelegationStatus status, DelegationOrigin origin) {
     EmailDelegation delegation = new EmailDelegation();
     delegation.setId(100L);

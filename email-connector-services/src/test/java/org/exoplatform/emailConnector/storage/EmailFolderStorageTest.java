@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -141,6 +142,32 @@ public class EmailFolderStorageTest {
     EmailFolder own = emailFolderStorage.getFolder("bob", emailFolderStorage.createFolder(newFolder("bob", "Factures", "Factures")).getId());
     assertNull(own.getRole());
     assertNull(own.getRights());
+  }
+
+  /**
+   * Every folder registered under any mailbox shared with the user is listed, whatever
+   * the share; the user's own folders and another user's shared ones are not.
+   */
+  @Test
+  void everyFolderOfEverySharedMailboxIsListed() {
+    EmailFolder aliceTrash = newFolder("quinn", "Shared Folders/alice@acme.com/Trash", "Trash");
+    aliceTrash.setType(MailFolderView.TYPE_DELEGATED);
+    aliceTrash.setDelegationId(39L);
+    EmailFolder carolInbox = newFolder("quinn", "Shared Folders/carol@acme.com/INBOX", "INBOX");
+    carolInbox.setType(MailFolderView.TYPE_DELEGATED_INBOX);
+    carolInbox.setDelegationId(40L);
+    EmailFolder erinInbox = newFolder("rosa", "Shared Folders/erin@acme.com/INBOX", "INBOX");
+    erinInbox.setType(MailFolderView.TYPE_DELEGATED_INBOX);
+    erinInbox.setDelegationId(41L);
+    emailFolderStorage.createFolder(aliceTrash);
+    emailFolderStorage.createFolder(carolInbox);
+    emailFolderStorage.createFolder(erinInbox);
+    emailFolderStorage.createFolder(newFolder("quinn", "Factures", "Factures"));
+
+    List<String> listed = emailFolderStorage.getDelegatedFolders("quinn").stream().map(EmailFolder::getRemoteName).sorted().toList();
+
+    assertEquals(List.of("Shared Folders/alice@acme.com/Trash", "Shared Folders/carol@acme.com/INBOX"), listed);
+    assertEquals(List.of(), emailFolderStorage.getDelegatedFolders("nobody"));
   }
 
   /**

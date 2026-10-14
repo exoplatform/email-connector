@@ -275,6 +275,26 @@ class EmailDelegationStorageWritesTest {
    * @param grantee the grantee's username
    * @return the unsaved row
    */
+  /**
+   * The grantee's identifier is written alone, once, and only where none is recorded:
+   * a row that has one keeps it, and another owner's row is never reached.
+   */
+  @Test
+  void theGranteesIdentifierIsRecordedOnceAndOnlyWhereNoneIs() {
+    EmailDelegation unnamed = acceptedRow("ned");
+    unnamed.setGranteeMailbox(null);
+    unnamed = emailDelegationStorage.create(unnamed);
+
+    EmailDelegation named = emailDelegationStorage.updateGranteeMailbox("alice", unnamed.getId(), "ned@acme.com");
+
+    assertEquals("ned@acme.com", named.getGranteeMailbox());
+    assertEquals(DelegationStatus.ACCEPTED, named.getStatus(), "nothing else of the row moves");
+    assertEquals("lrs", named.getRights());
+    assertNull(emailDelegationStorage.updateGranteeMailbox("alice", unnamed.getId(), "someone@else.org"), "written once");
+    assertEquals("ned@acme.com", emailDelegationStorage.getAsOwner("alice", unnamed.getId()).getGranteeMailbox());
+    assertNull(emailDelegationStorage.updateGranteeMailbox("mallory", unnamed.getId(), "mallory@acme.com"), "the owner's row only");
+  }
+
   private EmailDelegation acceptedRow(String grantee) {
     EmailDelegation row = new EmailDelegation();
     row.setGranteeId(grantee);
