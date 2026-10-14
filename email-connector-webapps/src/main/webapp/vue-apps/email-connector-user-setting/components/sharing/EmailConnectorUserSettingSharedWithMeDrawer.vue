@@ -49,8 +49,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :delegation="delegation"
           :actions="group.actions"
           :note="group.noteKey ? $t(group.noteKey) : ''"
-          :saving="savingId === delegation.id"
-          :disabled="savingId !== null"
+          :saving="!!savingIds[delegation.id]"
+          :disabled="!!savingIds[delegation.id]"
           @answer="onAnswer(delegation, $event)"
           @badge="saveBadge(delegation, $event)"
           @notify="saveNotify(delegation, $event)" />
@@ -117,7 +117,7 @@ export default {
     // The latest load's number: an older answer landing after a newer one is dropped.
     loadRequest: 0,
     delegations: [],
-    savingId: null,
+    savingIds: {},
     // The share whose "Leave" is being confirmed.
     leaving: null,
   }),
@@ -219,7 +219,7 @@ export default {
      * @returns {void}
      */
     answer(delegation, action) {
-      this.savingId = delegation.id;
+      this.$set(this.savingIds, delegation.id, true);
       this.$emailConnectorUserSettingService.answerDelegation(delegation.id, action)
         .then(() => {
           const message = this.$t(`UserSettings.emailConnector.sharedWithMe.${action}.done`);
@@ -233,7 +233,7 @@ export default {
           this.showAlert(message, 'error');
         })
         .finally(() => {
-          this.savingId = null;
+          this.$delete(this.savingIds, delegation.id);
           this.load(false);
           this.$root.$emit('email-delegations-updated');
         });
@@ -250,12 +250,10 @@ export default {
      * @returns {void}
      */
     saveBadge(delegation, included) {
-      this.savingId = delegation.id;
       this.$emailConnectorUserSettingService.updateDelegationPreferences(delegation.id, {badgeIncluded: !!included})
         .then(() => this.showAlert(this.$t('UserSettings.emailConnector.preferences.saved'), 'success'))
         .catch(() => this.showAlert(this.$t('UserSettings.emailConnector.preferences.error'), 'error'))
         .finally(() => {
-          this.savingId = null;
           this.load(false);
         });
     },
@@ -269,12 +267,10 @@ export default {
      * @returns {void}
      */
     saveNotify(delegation, notify) {
-      this.savingId = delegation.id;
       this.$emailConnectorUserSettingService.updateDelegationPreferences(delegation.id, {notifyNewMail: !!notify})
         .then(() => this.showAlert(this.$t('UserSettings.emailConnector.preferences.saved'), 'success'))
         .catch(() => this.showAlert(this.$t('UserSettings.emailConnector.preferences.error'), 'error'))
         .finally(() => {
-          this.savingId = null;
           this.load(false);
         });
     },

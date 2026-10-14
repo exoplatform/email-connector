@@ -25,7 +25,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :disabled="disabled"
         v-bind="attrs"
         icon
-        x-small
         v-on="on">
         <v-icon size="14" class="icon-default-color">fa-ellipsis-v</v-icon>
       </v-btn>
