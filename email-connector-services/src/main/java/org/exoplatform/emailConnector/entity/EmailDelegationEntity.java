@@ -38,10 +38,12 @@ import lombok.NoArgsConstructor;
  * and neither is any credential: the owner grants with their own session, the grantee
  * reads with theirs.
  * <p>
- * Two writers cross on this row -- the owner's lifecycle (revoke) and the grantee's
- * (accept, decline, preferences, activity stamp) -- so it is {@link DynamicUpdate}: a
- * read-modify-save flushes the columns that changed and not a snapshot of the whole
- * row taken before the other side wrote.
+ * Two writers cross on this row -- the owner's lifecycle (revoke, the offered rights, the
+ * grantee's identifier) and the grantee's (accept, leave, the toggles, the activity
+ * stamp) -- so each lifecycle step writes only its own columns, by an update scoped to
+ * the row and to the side writing it, never a snapshot of the whole row read before the
+ * other side wrote. {@link DynamicUpdate} keeps the whole-row saves that remain (a row's
+ * creation, the owner's grant, a decline of a pending offer) to the columns they change.
  */
 @Data
 @NoArgsConstructor

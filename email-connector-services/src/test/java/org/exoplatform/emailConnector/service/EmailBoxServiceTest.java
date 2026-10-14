@@ -12998,14 +12998,10 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * The delegation row a delegated folder key resolves to.
-   *
-   * @return an accepted Editor share of alice's mailbox
-   */
-  /**
    * Opening a stale folder of a shared mailbox re-reads the delegate's rights on the
    * connection just opened, before anything is synced: a share withdrawn on the server
-   * is not refreshed, and one still granted is synced as before.
+   * is not refreshed and the listing is refused as gone, and one still granted is synced
+   * as before.
    */
   @Test
   @SneakyThrows
@@ -13028,11 +13024,15 @@ public class EmailBoxServiceTest {
     lenient().when(store.getFolder("Other Users/alice/INBOX")).thenReturn(remote);
     when(emailBoxStorage.getSyncEmails(TEST_USER, "CUSTOM:5")).thenReturn(new ArrayList<>());
 
-    emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5");
+    DelegationRevokedException gone = assertThrows(DelegationRevokedException.class,
+                                                   () -> emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5"));
 
+    // Withdrawn: said now, as the share-gone refusal the drawer leaves a mailbox on,
+    // never an empty listing under the owner's name.
+    assertEquals(DelegationRevokedException.REVOKED, gone.getMessage());
     verify(emailDelegationService).refreshGranteeRights(TEST_USER, share, store);
     verify(store, never()).getFolder(anyString());
-    verify(emailBoxStorage).getEmails(TEST_USER, "CUSTOM:5");
+    verify(emailBoxStorage, never()).getEmails(TEST_USER, "CUSTOM:5");
 
     emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5");
 
@@ -13040,6 +13040,11 @@ public class EmailBoxServiceTest {
     verify(remote).open(Folder.READ_ONLY);
   }
 
+  /**
+   * The delegation row a delegated folder key resolves to.
+   *
+   * @return an accepted Editor share of alice's mailbox
+   */
   private EmailDelegation aSharedMailboxRow() {
     EmailDelegation delegation = new EmailDelegation();
     delegation.setId(100L);

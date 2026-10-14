@@ -313,15 +313,6 @@ public class EmailDelegationStorage {
   }
 
   /**
-   * The letters the owner's ACL holds for a share on offer, written alone (EXO-90548). A share in use or ended is not written.
-   *
-   * @param ownerId the owner, whose row it must be
-   * @param id the row id
-   * @param rights the letters the owner's ACL holds
-   * @param nativeRights the server's own words for them
-   * @return the row as it now stands, null when nothing was written
-   */
-  /**
    * The grantee's identifier, written alone and only where none is recorded: a row
    * discovery created before it recorded one, named by the owner's ACL.
    *
@@ -335,6 +326,15 @@ public class EmailDelegationStorage {
     return updated == 0 ? null : getAsOwner(ownerId, id);
   }
 
+  /**
+   * The letters the owner's ACL holds for a share on offer, written alone (EXO-90548). A share in use or ended is not written.
+   *
+   * @param ownerId the owner, whose row it must be
+   * @param id the row id
+   * @param rights the letters the owner's ACL holds
+   * @param nativeRights the server's own words for them
+   * @return the row as it now stands, null when nothing was written
+   */
   public EmailDelegation updateOfferedRights(String ownerId, long id, String rights, String nativeRights) {
     Date now = new Date();
     int updated = emailDelegationDAO.updateOfferedRights(id,
@@ -347,6 +347,55 @@ public class EmailDelegationStorage {
                                                                  DelegationStatus.REVOKED.name(),
                                                                  DelegationStatus.GONE.name()));
     return updated == 0 ? null : getAsOwner(ownerId, id);
+  }
+
+  /**
+   * A share the server no longer grants, written alone: the status (REVOKED or GONE), the
+   * revocation instant and the badge opt-out, by the row's id, whichever side found it
+   * gone. Nothing else of the row is written.
+   *
+   * @param id the row
+   * @param status REVOKED or GONE
+   * @return the row as it now stands, null when there is no such row
+   */
+  public EmailDelegation markRevoked(long id, DelegationStatus status) {
+    Date now = new Date();
+    emailDelegationDAO.markRevoked(id, status.name(), now, now);
+    return emailDelegationDAO.findById(id).map(this::fromEntity).orElse(null);
+  }
+
+  /**
+   * A leave, written alone: the status the share returns to, the answer's instant and
+   * the badge opt-out, on the grantee's row while it is in use. Nothing else of the row
+   * is written.
+   *
+   * @param granteeId the grantee, whose row it must be
+   * @param id the row
+   * @param status DECLINED, or AVAILABLE for a share discovered on the server
+   * @return the row as it now stands, null when it is not that grantee's
+   */
+  public EmailDelegation endShare(String granteeId, long id, DelegationStatus status) {
+    Date now = new Date();
+    emailDelegationDAO.endShare(id, granteeId, status.name(), now, now, DelegationStatus.ACCEPTED.name());
+    return getAsGrantee(granteeId, id);
+  }
+
+  /**
+   * A share offered again, written alone: back to AVAILABLE, its revocation instant
+   * cleared and its rights check stamped now, while the row stands ended, whichever
+   * listing found it again. Nothing else of the row is written.
+   *
+   * @param id the row
+   * @return the row as it now stands, null when there is no such row
+   */
+  public EmailDelegation reopen(long id) {
+    Date now = new Date();
+    emailDelegationDAO.reopen(id,
+                              DelegationStatus.AVAILABLE.name(),
+                              now,
+                              now,
+                              List.of(DelegationStatus.REVOKED.name(), DelegationStatus.GONE.name()));
+    return emailDelegationDAO.findById(id).map(this::fromEntity).orElse(null);
   }
 
   /**

@@ -241,13 +241,6 @@ public class EmailFolderStorage {
   }
 
   /**
-   * The folders of one shared mailbox, as registered for its grantee.
-   *
-   * @param userId the grantee -- the rows' viewer
-   * @param delegationId the delegation the folders belong to
-   * @return the folders, by display name, never null
-   */
-  /**
    * Every folder registered under any mailbox shared with the user, whatever the share's
    * status: {@code DELEGATION_ID IS NOT NULL}.
    *
@@ -258,6 +251,13 @@ public class EmailFolderStorage {
     return emailFolderDAO.findByUserIdAndDelegationIdNotNull(userId).stream().map(this::fromEntity).toList();
   }
 
+  /**
+   * The folders of one shared mailbox, as registered for its grantee.
+   *
+   * @param userId the grantee -- the rows' viewer
+   * @param delegationId the delegation the folders belong to
+   * @return the folders, by display name, never null
+   */
   public List<EmailFolder> getDelegatedFolders(String userId, long delegationId) {
     return emailFolderDAO.findByUserIdAndDelegationId(userId, delegationId).stream().map(this::fromEntity).toList();
   }

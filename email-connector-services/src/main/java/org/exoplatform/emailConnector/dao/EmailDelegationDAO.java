@@ -332,4 +332,55 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   Date checked, @Param("updated")
   Date updated, @Param("excluded")
   List<String> excluded);
+
+  /**
+   * A share the server no longer grants, and nothing else of the row: the status (REVOKED
+   * or GONE), the revocation instant, the badge opt-out and the write's instant, by the
+   * row's id, whichever side found it gone. Answers the rows written, 1, or 0 when the
+   * row already stands as asked.
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.status = :status, d.revokedDate = :revoked, d.badgeIncluded = false,"
+      + " d.updatedDate = :updated WHERE d.id = :id AND d.status <> :status")
+  int markRevoked(@Param("id")
+  long id, @Param("status")
+  String status, @Param("revoked")
+  Date revoked, @Param("updated")
+  Date updated);
+
+  /**
+   * A leave, and nothing else of the row: the status the share returns to, the answer's
+   * instant, the badge opt-out and the write's instant, by the row's id, for its grantee,
+   * while the share is in use. Answers the rows written, 1, or 0 when the row is not that
+   * grantee's or is no longer in use.
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.status = :status, d.respondedDate = :responded, d.badgeIncluded = false,"
+      + " d.updatedDate = :updated WHERE d.id = :id AND d.granteeId = :granteeId AND d.status = :inUse")
+  int endShare(@Param("id")
+  long id, @Param("granteeId")
+  String granteeId, @Param("status")
+  String status, @Param("responded")
+  Date responded, @Param("updated")
+  Date updated, @Param("inUse")
+  String inUse);
+
+  /**
+   * A share offered again, and nothing else of the row: the status back to AVAILABLE, the
+   * revocation instant cleared, the rights check and the write stamped, by the row's id,
+   * while the row stands ended, whichever listing found it again. Answers the rows
+   * written, 1, or 0 when the row is not ended.
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.status = :status, d.revokedDate = NULL, d.lastRightsCheckDate = :checked,"
+      + " d.updatedDate = :updated WHERE d.id = :id AND d.status IN :ended")
+  int reopen(@Param("id")
+  long id, @Param("status")
+  String status, @Param("checked")
+  Date checked, @Param("updated")
+  Date updated, @Param("ended")
+  List<String> ended);
 }
