@@ -114,6 +114,8 @@ export default {
     active: false,
     loading: false,
     loaded: false,
+    // The latest load's number: an older answer landing after a newer one is dropped.
+    loadRequest: 0,
     delegations: [],
     savingId: null,
     // The share whose "Leave" is being confirmed.
@@ -182,17 +184,30 @@ export default {
      * @returns {Promise} resolved once the list is on screen
      */
     load(discover) {
+      const request = ++this.loadRequest;
       this.loading = true;
       return this.$emailConnectorUserSettingService.getReceivedDelegations(discover)
         .then(delegations => {
+          if (request !== this.loadRequest) {
+            // A slower, older load (the discovery walk) answering after a newer one: its
+            // rows are stale and would flip a switch the user just saved.
+            return;
+          }
           this.delegations = delegations || [];
           this.loaded = true;
         })
         .catch(() => {
+          if (request !== this.loadRequest) {
+            return;
+          }
           const message = this.$t('UserSettings.emailConnector.sharedWithMe.error');
           this.showAlert(message, 'error');
         })
-        .finally(() => this.loading = false);
+        .finally(() => {
+          if (request === this.loadRequest) {
+            this.loading = false;
+          }
+        });
     },
     /**
      * Accepts, declines or leaves a share. None of the three touches the access
