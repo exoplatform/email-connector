@@ -207,9 +207,11 @@ export default {
       }
     };
     // The same opening, for a row the caller already holds in full — a draft, which
-    // the UID-addressed one above cannot open because it may have no UID.
-    this.onOpenEmailThreadDrawer = (email, emails, syncInProgress, webmailUrl) => {
-      this.detachedFromList = false;
+    // the UID-addressed one above cannot open because it may have no UID. Detached from
+    // the list when the mailbox's full-screen reader hands over, on a collapse, a mail
+    // its list does not hold (EXO-90519).
+    this.onOpenEmailThreadDrawer = (email, emails, syncInProgress, webmailUrl, detachedFromList) => {
+      this.detachedFromList = !!detachedFromList;
       this.standalone = false;
       this.openThreadOn(email, emails, syncInProgress, webmailUrl);
     };
