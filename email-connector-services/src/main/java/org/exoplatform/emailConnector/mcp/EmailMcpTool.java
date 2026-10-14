@@ -271,6 +271,12 @@ public class EmailMcpTool implements McpToolPlugin {
                                               String folder,
                                               Integer limit) throws IllegalAccessException {
     try {
+      // Own built-in folders only: a CUSTOM:<id> key would reach the user's registered
+      // folders, which from EXO-90457 include the INBOX of a mailbox somebody else
+      // shared with them -- and this tool's description never says it may read those.
+      if (MailFolder.isCustom(folder)) {
+        throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
+      }
       EmailSearchResultPage page = emailBoxService.searchEmails(getCurrentUserName(),
                                                                 query,
                                                                 from,
