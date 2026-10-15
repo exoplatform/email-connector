@@ -1589,7 +1589,7 @@ class EmailDelegationServiceTest {
     sent.setRights("lrswite");
     sent.setMissing(true);
     assertFalse(service.getSharedMailboxes(GRANTEE).get(0).sentCopy(), "the owner's Sent no longer listed");
-    // From the rows the list already holds (EXO-90551 review): no share re-read per entry.
+    // From the rows the list already holds: no share re-read per entry.
     verify(emailDelegationStorage, never()).getAsGrantee(eq(GRANTEE), anyLong());
   }
 
