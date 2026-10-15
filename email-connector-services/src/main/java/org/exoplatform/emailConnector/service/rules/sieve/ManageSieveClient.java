@@ -31,6 +31,9 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import javax.mail.PasswordAuthentication;
 import javax.net.ssl.SSLParameters;
@@ -51,11 +54,13 @@ import org.exoplatform.emailConnector.service.rules.sieve.ManageSieveException.K
  * as if they came through the tunnel.
  * <p>
  * Every read is bounded: a socket timeout on every read and a deadline on every
- * operation (greeting to capabilities, or one command to its final line), so a server
- * trickling bytes cannot hold the caller's thread; and a cap on each literal, quoted
- * string and atom, on the tokens of a line, the lines of a response and the octets of a
- * whole response, so it cannot exhaust memory either. The server's own text reaches an
- * exception message only on one line and truncated.
+ * operation (the TCP connect, the TLS handshake and the capabilities around it, or one
+ * command to its final line). At the deadline a watchdog closes the socket, so a server
+ * trickling bytes cannot hold the caller's thread, not even inside the handshake the JDK
+ * reads on its own. A cap on each literal, quoted string and atom, on the tokens of a
+ * line, the lines of a response and the octets of a whole response keeps it from
+ * exhausting memory either. The server's own text reaches an exception message only on
+ * one line and truncated.
  * <p>
  * Not thread-safe: one instance is one conversation, owned by one caller.
  */
@@ -108,14 +113,23 @@ public final class ManageSieveClient implements AutoCloseable {
 
   private static final byte[] CRLF                           = { '\r', '\n' };
 
+  /**
+   * Closes the socket of an operation that outlives its deadline. One daemon thread for
+   * every client: a task only closes a socket, and a cancelled one leaves the queue.
+   */
+  private static final ScheduledThreadPoolExecutor DEADLINE_WATCHDOG = deadlineWatchdog();
+
   /** The host the client connected to, also the name the certificate must match. */
   private final String        host;
 
   /** The port the client connected to. */
   private final int           port;
 
-  /** The current socket: the clear one until STARTTLS, the TLS one after. */
-  private Socket              socket;
+  /**
+   * The current socket: the clear one until STARTTLS, the TLS one after. The watchdog
+   * thread reads it to close it.
+   */
+  private volatile Socket     socket;
 
   /** The input of the current socket. */
   private InputStream         in;
@@ -137,6 +151,12 @@ public final class ManageSieveClient implements AutoCloseable {
 
   /** The octets read so far in the current response. */
   private long                responseOctets;
+
+  /** The watchdog task of the current operation, null between operations. */
+  private ScheduledFuture<?>  deadlineWatch;
+
+  /** Whether the watchdog closed the socket because an operation outlived its deadline. */
+  private volatile boolean    expired;
 
   /**
    * A client bound to an endpoint, not connected yet.
@@ -373,13 +393,8 @@ public final class ManageSieveClient implements AutoCloseable {
    */
   @Override
   public void close() {
-    if (socket != null) {
-      try {
-        socket.close();
-      } catch (IOException e) {
-        // Nothing left to release.
-      }
-    }
+    endOperation();
+    closeSocket();
   }
 
   /**
@@ -393,10 +408,10 @@ public final class ManageSieveClient implements AutoCloseable {
   private void open(SSLSocketFactory tlsSocketFactory,
                     int connectTimeoutMillis,
                     int readTimeoutMillis) throws ManageSieveException {
+    Socket plain = new Socket();
+    socket = plain;
     startOperation();
     try {
-      Socket plain = new Socket();
-      socket = plain;
       plain.connect(new InetSocketAddress(host, port), connectTimeoutMillis);
       plain.setSoTimeout(readTimeoutMillis);
       bindStreams();
@@ -412,24 +427,40 @@ public final class ManageSieveClient implements AutoCloseable {
       if (pushedBack >= 0 || in.available() > 0) {
         throw new ManageSieveException(Kind.PROTOCOL, "The ManageSieve server sent data ahead of the TLS handshake");
       }
-      SSLSocket tls = (SSLSocket) tlsSocketFactory.createSocket(plain, host, port, true);
-      socket = tls;
-      try {
-        SSLParameters parameters = tls.getSSLParameters();
-        parameters.setEndpointIdentificationAlgorithm("HTTPS");
-        tls.setSSLParameters(parameters);
-        tls.setSoTimeout(readTimeoutMillis);
-        tls.startHandshake();
-      } catch (IOException | RuntimeException e) {
-        closeAfterFailure(tls, e);
-        throw e;
-      }
+      startTls(tlsSocketFactory, plain, readTimeoutMillis);
       bindStreams();
       Response afterTls = readResponse();
       requireOk(afterTls, "capabilities after STARTTLS");
       capabilities = capabilitiesOf(afterTls);
     } catch (IOException e) {
       throw unavailable("connect", e);
+    } finally {
+      endOperation();
+    }
+  }
+
+  /**
+   * Layers TLS over the connected socket and runs the handshake, the certificate and the
+   * host name both verified. The handshake reads through the JDK, not through
+   * {@link #read()}: only the watchdog bounds it.
+   *
+   * @param tlsSocketFactory the TLS layer
+   * @param plain the connected clear socket
+   * @param readTimeoutMillis the read timeout
+   * @throws IOException when the handshake fails, or the watchdog closed the socket
+   */
+  private void startTls(SSLSocketFactory tlsSocketFactory, Socket plain, int readTimeoutMillis) throws IOException {
+    SSLSocket tls = (SSLSocket) tlsSocketFactory.createSocket(plain, host, port, true);
+    socket = tls;
+    try {
+      SSLParameters parameters = tls.getSSLParameters();
+      parameters.setEndpointIdentificationAlgorithm("HTTPS");
+      tls.setSSLParameters(parameters);
+      tls.setSoTimeout(readTimeoutMillis);
+      tls.startHandshake();
+    } catch (IOException | RuntimeException e) {
+      closeAfterFailure(tls, e);
+      throw e;
     }
   }
 
@@ -446,6 +477,21 @@ public final class ManageSieveClient implements AutoCloseable {
     } catch (IOException e) {
       failure.addSuppressed(e);
     }
+  }
+
+  /**
+   * The watchdog's executor: one daemon thread, cancelled tasks removed at once.
+   *
+   * @return the executor
+   */
+  private static ScheduledThreadPoolExecutor deadlineWatchdog() {
+    ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, task -> {
+      Thread thread = new Thread(task, "managesieve-deadline");
+      thread.setDaemon(true);
+      return thread;
+    });
+    executor.setRemoveOnCancelPolicy(true);
+    return executor;
   }
 
   /**
@@ -496,6 +542,8 @@ public final class ManageSieveClient implements AutoCloseable {
       return readResponse();
     } catch (IOException e) {
       throw unavailable(name, e);
+    } finally {
+      endOperation();
     }
   }
 
@@ -521,10 +569,46 @@ public final class ManageSieveClient implements AutoCloseable {
   }
 
   /**
-   * Starts the clock of one operation.
+   * Starts the clock of one operation and arms the watchdog that closes the socket when
+   * it runs out.
    */
   private void startOperation() {
+    endOperation();
     deadlineNanos = System.nanoTime() + operationTimeoutMillis * 1_000_000L;
+    deadlineWatch = DEADLINE_WATCHDOG.schedule(this::expire, operationTimeoutMillis, TimeUnit.MILLISECONDS);
+  }
+
+  /**
+   * Disarms the watchdog of the operation that just ended.
+   */
+  private void endOperation() {
+    if (deadlineWatch != null) {
+      deadlineWatch.cancel(false);
+      deadlineWatch = null;
+    }
+  }
+
+  /**
+   * Run by the watchdog: the operation outlived its deadline, its socket is closed and
+   * the blocked read or handshake fails.
+   */
+  private void expire() {
+    expired = true;
+    closeSocket();
+  }
+
+  /**
+   * Closes the current socket, from the caller's thread or the watchdog's.
+   */
+  private void closeSocket() {
+    Socket current = socket;
+    if (current != null) {
+      try {
+        current.close();
+      } catch (IOException e) {
+        // Nothing left to release.
+      }
+    }
   }
 
   /**
@@ -548,7 +632,7 @@ public final class ManageSieveClient implements AutoCloseable {
    */
   private ManageSieveException unavailable(String name, IOException e) {
     close();
-    String reason = e instanceof SocketTimeoutException ? " timed out" : " failed";
+    String reason = expired || e instanceof SocketTimeoutException ? " timed out" : " failed";
     return new ManageSieveException(Kind.UNAVAILABLE, "ManageSieve " + name + reason + " on " + host + ":" + port, e);
   }
 

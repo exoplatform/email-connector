@@ -331,6 +331,30 @@ class ManageSieveClientTest {
   }
 
   /**
+   * A server that trickles its TLS handshake, each read within the read timeout, hits the
+   * operation deadline too: the JDK reads the handshake without the client's own read,
+   * so only the watchdog that closes the socket at the deadline bounds it.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  @Timeout(value = 10, threadMode = ThreadMode.SEPARATE_THREAD)
+  void testATricklingHandshakeHitsTheOperationDeadline() throws Exception {
+    server.trickleHandshake(200);
+    long start = System.nanoTime();
+    ManageSieveException e = assertThrows(ManageSieveException.class,
+                                          () -> ManageSieveClient.connect("localhost",
+                                                                          server.getPort(),
+                                                                          FakeManageSieveServer.clientTlsFactory(),
+                                                                          5000,
+                                                                          1000,
+                                                                          1500));
+    assertEquals(Kind.UNAVAILABLE, e.getKind());
+    assertTrue(e.getMessage().contains("timed out"), e.getMessage());
+    assertTrue((System.nanoTime() - start) / 1_000_000 < 4000);
+  }
+
+  /**
    * Each size limit of a response is enforced by its own guard, told apart by its
    * message: whole-response octets (counted on every octet, and on a literal before it
    * is allocated), lines, tokens per line, atom length, quoted-string length, and a

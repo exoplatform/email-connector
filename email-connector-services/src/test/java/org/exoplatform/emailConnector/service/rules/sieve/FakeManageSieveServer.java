@@ -126,6 +126,8 @@ public final class FakeManageSieveServer implements AutoCloseable {
 
   private volatile long        trickleMillis;
 
+  private volatile long        handshakeTrickleMillis;
+
   /** Released when the server stops, ending every paced wait at once. */
   private final CountDownLatch stopped           = new CountDownLatch(1);
 
@@ -313,6 +315,19 @@ public final class FakeManageSieveServer implements AutoCloseable {
   }
 
   /**
+   * Makes the server answer {@code STARTTLS} with OK, then, instead of a TLS handshake,
+   * the header of a 16 KiB handshake record followed by its body one octet per interval,
+   * forever: each of the client's handshake reads succeeds, the record never completes.
+   *
+   * @param intervalMillis the pause between two octets
+   * @return this server
+   */
+  public FakeManageSieveServer trickleHandshake(long intervalMillis) {
+    this.handshakeTrickleMillis = intervalMillis;
+    return this;
+  }
+
+  /**
    * Makes a command answer a fixed line instead of executing.
    *
    * @param command the command, e.g. {@code CHECKSCRIPT}
@@ -489,6 +504,16 @@ public final class FakeManageSieveServer implements AutoCloseable {
           continue;
         }
         send(out, "OK \"Begin TLS negotiation now\"\r\n" + (injectAfterStarttls ? "OK \"injected\"\r\n" : ""));
+        if (handshakeTrickleMillis > 0) {
+          out.write(new byte[] { 0x16, 0x03, 0x03, 0x40, 0x00 });
+          while (true) {
+            out.write(0);
+            out.flush();
+            if (stopped.await(handshakeTrickleMillis, TimeUnit.MILLISECONDS)) {
+              return;
+            }
+          }
+        }
         SSLSocket upgraded = (SSLSocket) tls.getSocketFactory().createSocket(plain, null, plain.getPort(), false);
         upgraded.setUseClientMode(false);
         connection.current = upgraded;
