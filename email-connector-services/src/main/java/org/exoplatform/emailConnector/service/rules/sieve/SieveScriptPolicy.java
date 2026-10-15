@@ -20,7 +20,11 @@ import static org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript.
 import static org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript.SCRIPT_NAME;
 import static org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript.WRAPPER_NAME;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -34,7 +38,7 @@ import org.exoplatform.services.log.Log;
  * How eXo publishes its script on a server that runs <b>one</b> active script per
  * account, without ever destroying what another client put there.
  * <p>
- * The four cases, in the order they are evaluated from {@code LISTSCRIPTS}:
+ * The cases, in the order they are evaluated from {@code LISTSCRIPTS}:
  * <ol>
  * <li><b>No active script</b>: store {@value ExoSieveScript#SCRIPT_NAME} and activate
  * it.</li>
@@ -44,16 +48,29 @@ import org.exoplatform.services.log.Log;
  * <li><b>Another script is active and the server advertises {@code include}</b>
  * (RFC 6609): store eXo's script and a wrapper including both, and activate the
  * wrapper. The other script is never modified, renamed or re-uploaded.</li>
+ * <li><b>Another script is active and already includes
+ * {@value ExoSieveScript#SCRIPT_NAME}</b>, itself or through the personal scripts it
+ * includes, at any depth (a user who merged eXo's script into their own): store eXo's
+ * script and nothing else. The other script stays active, unwrapped, since a wrapper
+ * would run eXo's script twice.</li>
  * <li><b>Another script is active and {@code include} is not advertised</b>: refuse,
  * {@link ServerRuleConflictException#SERVER_CONFLICT}. Nothing is written.</li>
  * </ol>
+ * A foreign script that reaches {@value ExoSieveScript#WRAPPER_NAME} through its
+ * includes is refused with {@link ServerRuleConflictException#SERVER_CONFLICT}: wrapping
+ * it would make the wrapper include itself, which RFC 6609 forbids. So is a script eXo's
+ * wrapper already runs once it reaches either of eXo's scripts: running it alone again
+ * would mean activating a script eXo does not own. The foreign script is always read for
+ * its includes, and one that cannot be read is refused, since neither can be ruled
+ * out.
  * Two rules added for the automatic reply:
  * <ul>
  * <li><b>Vacation-token refusal.</b> RFC 5230 §4.6 lets {@code vacation} run once per
  * script execution, and an included script runs inside the same execution; a wrapper
  * next to a foreign script that has its own {@code vacation} would fail at delivery —
- * implicit keep, no reply at all, silently. So before wrapping a script that emits a
- * reply, the foreign script and the personal scripts it includes (one level) are read
+ * implicit keep, no reply at all, silently, and so would a foreign script that includes
+ * eXo's. So before publishing a script that emits a reply next to a foreign one, the
+ * foreign script and the personal scripts it includes (one level) are read
  * and scanned for the token; found, eXo refuses with
  * {@link ServerRuleConflictException#MANAGED_ELSEWHERE}. Detection, never parsing, and
  * never by name: a foreign out-of-office is "an active script eXo does not own" plus the
@@ -105,7 +122,12 @@ public class SieveScriptPolicy {
     /** eXo's script was active and was replaced in place. */
     EXO_ACTIVE,
     /** Another script is active through eXo's wrapper, next to eXo's script. */
-    WRAPPED
+    WRAPPED,
+    /**
+     * Another script is active and already includes eXo's script, which was replaced in
+     * place; the other script stays active, unwrapped.
+     */
+    INCLUDED_BY_FOREIGN
   }
 
   /**
@@ -170,7 +192,11 @@ public class SieveScriptPolicy {
         }
         return new PublishOutcome(PolicyCase.WRAPPER_REMOVED, SCRIPT_NAME, null, false, hash);
       }
-      requireNoForeignVacation(client, scripts, foreign, script);
+      String foreignText = readForeign(client, foreign, script);
+      if (!ownScriptsReached(client, scripts, foreign, foreignText).isEmpty()) {
+        throw new ServerRuleConflictException(ServerRuleConflictException.SERVER_CONFLICT, foreign);
+      }
+      requireNoForeignVacation(client, scripts, foreign, foreignText, script);
       client.checkScript(text);
       put(client, SCRIPT_NAME, text);
       put(client, WRAPPER_NAME, wrapper(foreign, exoFirst));
@@ -187,9 +213,17 @@ public class SieveScriptPolicy {
     if (!client.getCapabilities().hasExtension(INCLUDE_EXTENSION) || !includable(active)) {
       throw new ServerRuleConflictException(ServerRuleConflictException.SERVER_CONFLICT, active);
     }
-    requireNoForeignVacation(client, scripts, active, script);
+    String foreignText = readForeign(client, active, script);
+    Set<String> reached = ownScriptsReached(client, scripts, active, foreignText);
+    if (reached.contains(WRAPPER_NAME)) {
+      throw new ServerRuleConflictException(ServerRuleConflictException.SERVER_CONFLICT, active);
+    }
+    requireNoForeignVacation(client, scripts, active, foreignText, script);
     client.checkScript(text);
     put(client, SCRIPT_NAME, text);
+    if (reached.contains(SCRIPT_NAME)) {
+      return new PublishOutcome(PolicyCase.INCLUDED_BY_FOREIGN, active, active, false, hash);
+    }
     put(client, WRAPPER_NAME, wrapper(active, exoFirst));
     activate(client, WRAPPER_NAME);
     return new PublishOutcome(PolicyCase.WRAPPED, WRAPPER_NAME, active, exoFirst, hash);
@@ -257,6 +291,66 @@ public class SieveScriptPolicy {
   }
 
   /**
+   * Reads the foreign active script, whose includes and vacation eXo must know before
+   * running next to it.
+   *
+   * @param client the client
+   * @param foreign the foreign active script
+   * @param script eXo's script
+   * @return the foreign script's text
+   * @throws ManageSieveException when the server fails
+   * @throws ServerRuleConflictException when it is listed as active yet cannot be read:
+   *           {@link ServerRuleConflictException#MANAGED_ELSEWHERE} when eXo's script
+   *           emits a reply, {@link ServerRuleConflictException#SERVER_CONFLICT} otherwise
+   */
+  private static String readForeign(ManageSieveClient client,
+                                    String foreign,
+                                    ExoSieveScript script) throws ManageSieveException, ServerRuleConflictException {
+    try {
+      return client.getScript(foreign);
+    } catch (ManageSieveException e) {
+      if (e.getKind() != ManageSieveException.Kind.REFUSED) {
+        throw e;
+      }
+      throw new ServerRuleConflictException(script.emitsVacation() ? ServerRuleConflictException.MANAGED_ELSEWHERE
+                                                                   : ServerRuleConflictException.SERVER_CONFLICT,
+                                            foreign);
+    }
+  }
+
+  /**
+   * eXo's scripts the foreign script reaches through its personal includes, at any
+   * depth: each script the account holds is read once, and a missing or {@code :global}
+   * include is not followed, since neither can be one of eXo's.
+   *
+   * @param client the client
+   * @param scripts the account's scripts
+   * @param foreign the foreign script's name
+   * @param foreignText the foreign script's text
+   * @return {@value ExoSieveScript#SCRIPT_NAME}, {@value ExoSieveScript#WRAPPER_NAME},
+   *         both or neither
+   * @throws ManageSieveException when an included script cannot be read
+   */
+  private static Set<String> ownScriptsReached(ManageSieveClient client,
+                                               List<SieveScriptInfo> scripts,
+                                               String foreign,
+                                               String foreignText) throws ManageSieveException {
+    Set<String> reached = new HashSet<>();
+    Set<String> visited = new HashSet<>(Set.of(foreign));
+    Deque<String> texts = new ArrayDeque<>(List.of(foreignText));
+    while (!texts.isEmpty()) {
+      for (String included : SieveTokenScan.includedPersonalScripts(texts.pop())) {
+        if (isOwn(included)) {
+          reached.add(included);
+        } else if (exists(scripts, included) && visited.add(included)) {
+          texts.push(client.getScript(included));
+        }
+      }
+    }
+    return reached;
+  }
+
+  /**
    * The vacation-token refusal: when eXo's script emits a reply, the foreign script and
    * the personal scripts it includes must not carry {@code vacation}. Recall first: when
    * absence cannot be established — a {@code :global} include ManageSieve cannot read,
@@ -267,6 +361,7 @@ public class SieveScriptPolicy {
    * @param client the client
    * @param scripts the account's scripts
    * @param foreign the foreign active script
+   * @param text the foreign script's text
    * @param script eXo's script
    * @throws ManageSieveException when a script cannot be read
    * @throws ServerRuleConflictException {@link ServerRuleConflictException#MANAGED_ELSEWHERE}
@@ -275,19 +370,10 @@ public class SieveScriptPolicy {
   private void requireNoForeignVacation(ManageSieveClient client,
                                         List<SieveScriptInfo> scripts,
                                         String foreign,
+                                        String text,
                                         ExoSieveScript script) throws ManageSieveException, ServerRuleConflictException {
     if (!script.emitsVacation()) {
       return;
-    }
-    String text;
-    try {
-      text = client.getScript(foreign);
-    } catch (ManageSieveException e) {
-      if (e.getKind() != ManageSieveException.Kind.REFUSED) {
-        throw e;
-      }
-      // Listed as active yet unreadable: absence of a vacation cannot be established.
-      throw new ServerRuleConflictException(ServerRuleConflictException.MANAGED_ELSEWHERE, foreign);
     }
     if (SieveTokenScan.containsWord(text, VACATION_TOKEN) || SieveTokenScan.hasUnreadableInclude(text)) {
       throw new ServerRuleConflictException(ServerRuleConflictException.MANAGED_ELSEWHERE, foreign);

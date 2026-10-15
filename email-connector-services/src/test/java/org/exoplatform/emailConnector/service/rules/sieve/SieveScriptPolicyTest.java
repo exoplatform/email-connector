@@ -223,8 +223,9 @@ class SieveScriptPolicyTest {
   }
 
   /**
-   * An active foreign script GETSCRIPT cannot find is unreadable: absence of a vacation
-   * cannot be established, so eXo refuses.
+   * An active foreign script GETSCRIPT cannot find is unreadable: neither the absence of
+   * a vacation nor that of an include of eXo's scripts can be established, so eXo
+   * refuses, as managed elsewhere when it would publish a reply, as a conflict otherwise.
    *
    * @throws Exception on failure
    */
@@ -233,6 +234,8 @@ class SieveScriptPolicyTest {
     server.script(FOREIGN, FILTERS_ONLY, true).refuse("GETSCRIPT", "NO (NONEXISTENT) \"There is no script by that name\"");
     ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class, () -> publish(replyOn()));
     assertEquals(ServerRuleConflictException.MANAGED_ELSEWHERE, e.getMessage());
+    e = assertThrows(ServerRuleConflictException.class, () -> publish(replyOff()));
+    assertEquals(ServerRuleConflictException.SERVER_CONFLICT, e.getMessage());
     assertNoWrite();
   }
 
@@ -266,7 +269,7 @@ class SieveScriptPolicyTest {
 
   /**
    * The refusal bites only when eXo's script emits a reply: a switched-off reply wraps
-   * next to a foreign vacation, and the foreign script is not even read.
+   * next to a foreign vacation. The foreign script is read once, for its includes only.
    *
    * @throws Exception on failure
    */
@@ -274,7 +277,117 @@ class SieveScriptPolicyTest {
   void testNoRefusalWhenEXoEmitsNoReply() throws Exception {
     server.script(FOREIGN, "vacation \"Away\";\r\n", true);
     assertEquals(PolicyCase.WRAPPED, publish(replyOff()).policyCase());
-    assertEquals(List.of(), server.getCommands("GETSCRIPT"));
+    assertEquals(List.of("GETSCRIPT " + FOREIGN), server.getCommands("GETSCRIPT"));
+  }
+
+  /**
+   * A foreign active script that already includes eXo's script, itself or through a
+   * script it includes, keeps running alone: eXo's script is replaced in place, no
+   * wrapper is written and nothing is activated, so eXo's script never runs twice. With
+   * or without a reply, as long as the foreign scripts carry no vacation of their own.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testAForeignScriptIncludingEXosScriptIsUpdatedInPlace() throws Exception {
+    String merged = "require [\"include\", \"fileinto\"];\r\ninclude :personal \"exo-rules\";\r\nfileinto \"Archive\";\r\n";
+    for (ExoSieveScript script : List.of(replyOn(), replyOff())) {
+      server.close();
+      server = new FakeManageSieveServer();
+      server.script(FOREIGN, merged, true);
+      PublishOutcome outcome = publish(script);
+      assertEquals(PolicyCase.INCLUDED_BY_FOREIGN, outcome.policyCase());
+      assertEquals(FOREIGN, outcome.activeScript());
+      assertEquals(FOREIGN, server.getActive());
+      assertEquals(script.toScript(), server.getScripts().get(SCRIPT_NAME));
+      assertEquals(merged, server.getScripts().get(FOREIGN));
+      assertNull(server.getScripts().get(WRAPPER_NAME));
+      assertEquals(List.of("CHECKSCRIPT", "PUTSCRIPT"), verbs("CHECKSCRIPT", "PUTSCRIPT", "SETACTIVE", "DELETESCRIPT"));
+    }
+    server.close();
+    server = new FakeManageSieveServer();
+    server.script(FOREIGN, "require [\"include\"];\r\ninclude :personal \"mine\";\r\n", true)
+          .script("mine", "require [\"include\"];\r\ninclude :personal \"exo-rules\";\r\nkeep;\r\n", false);
+    assertEquals(PolicyCase.INCLUDED_BY_FOREIGN, publish(replyOff()).policyCase());
+    assertNull(server.getScripts().get(WRAPPER_NAME));
+    assertEquals(List.of(), server.getCommands("SETACTIVE"));
+  }
+
+  /**
+   * A foreign script that includes eXo's script and carries its own vacation is still
+   * refused when eXo publishes a reply: both would run in one execution. So is an include
+   * of eXo's script reached through a script the foreign one includes, since an included
+   * script that includes again is where the vacation rule stops reading.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testAForeignVacationNextToAnIncludeOfEXosScriptIsStillRefused() throws Exception {
+    for (Map<String, String> account : List.of(Map.of(FOREIGN,
+                                                      "require [\"include\", \"vacation\"];\r\ninclude :personal \"exo-rules\";\r\n"
+                                                          + "vacation \"Away\";\r\n"),
+                                               Map.of(FOREIGN,
+                                                      "require [\"include\"];\r\ninclude :personal \"mine\";\r\n",
+                                                      "mine",
+                                                      "require [\"include\"];\r\ninclude :personal \"exo-rules\";\r\n"))) {
+      server.close();
+      server = new FakeManageSieveServer();
+      account.forEach((name, text) -> server.script(name, text, FOREIGN.equals(name)));
+      ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class, () -> publish(replyOn()));
+      assertEquals(ServerRuleConflictException.MANAGED_ELSEWHERE, e.getMessage());
+      assertNoWrite();
+    }
+  }
+
+  /**
+   * A foreign script that includes eXo's wrapper, itself or through a script it includes,
+   * is refused: wrapping it would make the wrapper include itself (RFC 6609). Nothing is
+   * written, with or without a reply.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testAForeignScriptIncludingTheWrapperIsRefused() throws Exception {
+    for (Map<String, String> account : List.of(Map.of(FOREIGN, "require [\"include\"];\r\ninclude :personal \"exo-main\";\r\n"),
+                                               Map.of(FOREIGN,
+                                                      "require [\"include\"];\r\ninclude :personal \"mine\";\r\n",
+                                                      "mine",
+                                                      "require [\"include\"];\r\ninclude :personal \"exo-main\";\r\n"))) {
+      for (ExoSieveScript script : List.of(replyOn(), replyOff())) {
+        server.close();
+        server = new FakeManageSieveServer();
+        account.forEach((name, text) -> server.script(name, text, FOREIGN.equals(name)));
+        server.script(WRAPPER_NAME, SieveScriptPolicy.wrapper(FOREIGN, true), false);
+        ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class, () -> publish(script));
+        assertEquals(ServerRuleConflictException.SERVER_CONFLICT, e.getMessage());
+        assertEquals(FOREIGN, e.getScriptName());
+        assertNoWrite();
+        assertEquals(FOREIGN, server.getActive());
+      }
+    }
+  }
+
+  /**
+   * A script eXo's wrapper runs that now includes eXo's script or the wrapper is
+   * refused: the wrapper would run eXo's script twice, or include itself, and handing
+   * the active slot back to the other script would write a script eXo does not own.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testAWrappedScriptThatIncludesEXosScriptsIsRefused() throws Exception {
+    for (String own : List.of(SCRIPT_NAME, WRAPPER_NAME)) {
+      server.close();
+      server = new FakeManageSieveServer();
+      server.script(FOREIGN, "require [\"include\"];\r\ninclude :personal \"" + own + "\";\r\n", false)
+            .script(SCRIPT_NAME, replyOff().toScript(), false)
+            .script(WRAPPER_NAME, SieveScriptPolicy.wrapper(FOREIGN, true), true);
+      ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class, () -> publish(replyOff()));
+      assertEquals(ServerRuleConflictException.SERVER_CONFLICT, e.getMessage());
+      assertEquals(FOREIGN, e.getScriptName());
+      assertNoWrite();
+      assertEquals(WRAPPER_NAME, server.getActive());
+    }
   }
 
   /**
