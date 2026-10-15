@@ -38,13 +38,16 @@ import jakarta.annotation.PostConstruct;
 
 /**
  * Makes a cached mail a content link of type {@code email}, so that a mail can
- * be the source of an AI chat (the chat resolves its source chip through the
- * content-link search) and be linked from other contents.
+ * be the source of an AI chat and be linked from other contents.
  * <p>
- * A mail is private to its mailbox owner, and this plugin only ever resolves the
- * caller's own mails: another user's mail, an unknown id or a non-numeric id
- * resolve to nothing. A delegate's access to a shared mailbox is not considered,
- * the owned lookup it relies on does not know delegation.
+ * Social's content-link service resolves a mail id, the numeric keyword the AI
+ * chat's source chip searches for, without calling {@link #search}: it reads the
+ * title from {@link #getContentTitle} and the access from the mail's ACL plugin
+ * through {@code UserACL}. A mail is private to its mailbox owner, and this
+ * plugin only ever gives the title of the caller's own mails: another user's
+ * mail, an unknown id or a non-numeric id resolve to nothing. A delegate's access
+ * to a shared mailbox is not considered, the owned lookup it relies on does not
+ * know delegation.
  */
 @Component
 public class EmailContentLinkPlugin implements ContentLinkPlugin {
@@ -94,35 +97,26 @@ public class EmailContentLinkPlugin implements ContentLinkPlugin {
   }
 
   /**
-   * Resolves a mail of the searching user.
+   * Answers nothing, whatever the keyword.
    * <p>
-   * A numeric keyword is a mail id and resolves to that mail only when the user
-   * owns it. A text keyword resolves to nothing: the only owner-scoped text
-   * search over the mailbox cache loads the whole mailbox in memory and answers
-   * with IMAP UIDs, not with the ids a content link carries, so it is not used
-   * from a picker that fires on every keystroke.
+   * A mail id never reaches this method: Social's content-link service resolves a
+   * numeric keyword itself, through {@link #getContentTitle} and the mail's ACL
+   * plugin, and calls a plugin's search for a text keyword only. A text keyword
+   * resolves to nothing: the only owner-scoped text search over the mailbox cache
+   * loads the whole mailbox in memory and answers with IMAP UIDs, not with the ids
+   * a content link carries, so it is not used from a picker that fires on every
+   * keystroke.
    *
-   * @param keyword the searched keyword, a mail id to resolve anything
-   * @param identity the searching user
+   * @param keyword the searched text (unused)
+   * @param identity the searching user (unused)
    * @param locale the user locale (unused)
-   * @param offset the results offset
-   * @param limit the results limit
-   * @return the user's own mail with that id, or an empty list
+   * @param offset the results offset (unused)
+   * @param limit the results limit (unused)
+   * @return an empty list
    */
   @Override
   public List<ContentLinkSearchResult> search(String keyword, Identity identity, Locale locale, int offset, int limit) {
-    String username = identity == null ? null : identity.getUserId();
-    if (offset > 0 || limit <= 0 || !isId(StringUtils.trim(keyword))) {
-      return Collections.emptyList();
-    }
-    Email email = getOwnedEmail(StringUtils.trim(keyword), username);
-    if (email == null) {
-      return Collections.emptyList();
-    }
-    return Collections.singletonList(new ContentLinkSearchResult(OBJECT_TYPE,
-                                                                 String.valueOf(email.getId()),
-                                                                 getTitle(email),
-                                                                 EXTENSION.getIcon()));
+    return Collections.emptyList();
   }
 
   /**

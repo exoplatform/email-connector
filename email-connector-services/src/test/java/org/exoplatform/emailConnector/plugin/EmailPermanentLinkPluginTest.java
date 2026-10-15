@@ -34,6 +34,7 @@ import org.exoplatform.services.security.Identity;
 
 import io.meeds.portal.permlink.model.PermanentLinkObject;
 import io.meeds.portal.permlink.service.PermanentLinkService;
+import jakarta.annotation.PostConstruct;
 
 @ExtendWith(MockitoExtension.class)
 class EmailPermanentLinkPluginTest {
@@ -51,10 +52,15 @@ class EmailPermanentLinkPluginTest {
   private EmailPermanentLinkPlugin plugin;
 
   /**
-   * The plugin registers itself for the {@code email} type.
+   * The plugin registers itself for the {@code email} type. The container calls
+   * {@code init()}: the reflective check kills the mutant without
+   * {@code @PostConstruct}, which calling {@code init()} by hand cannot.
+   *
+   * @throws Exception never
    */
   @Test
-  void initRegistersThePlugin() {
+  void initRegistersThePlugin() throws Exception {
+    assertTrue(EmailPermanentLinkPlugin.class.getMethod("init").isAnnotationPresent(PostConstruct.class));
     plugin.init();
     verify(permanentLinkService).addPlugin(plugin);
     assertEquals("email", plugin.getObjectType());

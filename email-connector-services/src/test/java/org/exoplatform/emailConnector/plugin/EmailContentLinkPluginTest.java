@@ -26,7 +26,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import java.util.List;
 import java.util.Locale;
 
 import org.junit.jupiter.api.AfterEach;
@@ -44,8 +43,8 @@ import org.exoplatform.services.security.ConversationState;
 import org.exoplatform.services.security.Identity;
 
 import io.meeds.social.cms.model.ContentLinkExtension;
-import io.meeds.social.cms.model.ContentLinkSearchResult;
 import io.meeds.social.cms.service.ContentLinkPluginService;
+import jakarta.annotation.PostConstruct;
 
 @ExtendWith(MockitoExtension.class)
 class EmailContentLinkPluginTest {
@@ -90,10 +89,15 @@ class EmailContentLinkPluginTest {
   }
 
   /**
-   * The plugin registers itself in Social's content-link registry.
+   * The plugin registers itself in Social's content-link registry. The container
+   * calls {@code init()}: the reflective check kills the mutant without
+   * {@code @PostConstruct}, which calling {@code init()} by hand cannot.
+   *
+   * @throws Exception never
    */
   @Test
-  void initRegistersThePlugin() {
+  void initRegistersThePlugin() throws Exception {
+    assertTrue(EmailContentLinkPlugin.class.getMethod("init").isAnnotationPresent(PostConstruct.class));
     plugin.init();
     verify(contentLinkPluginService).addPlugin(plugin);
   }
@@ -113,58 +117,16 @@ class EmailContentLinkPluginTest {
   }
 
   /**
-   * The owner searching their mail id finds it, with its subject as title.
+   * The search answers nothing and reads no mail, whether the keyword is the
+   * caller's own mail id, a text or the caller anonymous: Social resolves a mail
+   * id through {@link EmailContentLinkPlugin#getContentTitle} and never sends it
+   * here.
    */
   @Test
-  void searchFindsOwnMail() {
-    List<ContentLinkSearchResult> results = plugin.search(String.valueOf(EMAIL_ID), new Identity(OWNER), Locale.ENGLISH, 0, 10);
-    assertEquals(1, results.size());
-    assertEquals("email", results.get(0).getObjectType());
-    assertEquals(String.valueOf(EMAIL_ID), results.get(0).getObjectId());
-    assertEquals("Quarterly report", results.get(0).getTitle());
-  }
-
-  /**
-   * Another user searching the owner's mail id gets nothing.
-   */
-  @Test
-  void searchOfAnotherUsersMailIsEmpty() {
-    assertTrue(plugin.search(String.valueOf(EMAIL_ID), new Identity(OTHER_USER), Locale.ENGLISH, 0, 10).isEmpty());
-  }
-
-  /**
-   * Even if the owned lookup ever returned a mail it should have refused, the
-   * plugin does not hand it to a user who does not own it.
-   *
-   * @throws Exception never
-   */
-  @Test
-  void searchNeverReturnsAMailOwnedBySomebodyElse() throws Exception {
-    Email foreign = new Email();
-    foreign.setId(7L);
-    foreign.setUserId(OWNER);
-    foreign.setSubject("Secret");
-    when(emailBoxService.getOwnedEmailById(7L, OTHER_USER)).thenReturn(foreign);
-    assertTrue(plugin.search("7", new Identity(OTHER_USER), Locale.ENGLISH, 0, 10).isEmpty());
-  }
-
-  /**
-   * An id matching no mail resolves to nothing.
-   */
-  @Test
-  void searchOfUnknownIdIsEmpty() {
-    assertTrue(plugin.search("999", new Identity(OWNER), Locale.ENGLISH, 0, 10).isEmpty());
-  }
-
-  /**
-   * A text keyword, an anonymous caller or an id beyond the long range resolve
-   * to nothing, without reading any mail.
-   */
-  @Test
-  void searchOfTextOrAnonymousIsEmpty() {
+  void searchAnswersNothing() {
+    assertTrue(plugin.search(String.valueOf(EMAIL_ID), new Identity(OWNER), Locale.ENGLISH, 0, 10).isEmpty());
     assertTrue(plugin.search("report", new Identity(OWNER), Locale.ENGLISH, 0, 10).isEmpty());
     assertTrue(plugin.search(String.valueOf(EMAIL_ID), null, Locale.ENGLISH, 0, 10).isEmpty());
-    assertTrue(plugin.search("99999999999999999999", new Identity(OWNER), Locale.ENGLISH, 0, 10).isEmpty());
     verifyNoInteractions(emailBoxService);
   }
 
@@ -184,6 +146,45 @@ class EmailContentLinkPluginTest {
   void titleOfSomebodyElsesMailIsNone() {
     ConversationState.setCurrent(new ConversationState(new Identity(OTHER_USER)));
     assertNull(plugin.getContentTitle(String.valueOf(EMAIL_ID), Locale.ENGLISH));
+  }
+
+  /**
+   * An id matching no mail of the current user resolves to nothing.
+   */
+  @Test
+  void titleOfUnknownIdIsNone() {
+    ConversationState.setCurrent(new ConversationState(new Identity(OWNER)));
+    assertNull(plugin.getContentTitle("999", Locale.ENGLISH));
+  }
+
+  /**
+   * A non-numeric id, a negative one or one beyond the long range resolves to
+   * nothing, without reading any mail.
+   */
+  @Test
+  void titleOfNonNumericIdIsNone() {
+    ConversationState.setCurrent(new ConversationState(new Identity(OWNER)));
+    assertNull(plugin.getContentTitle("report", Locale.ENGLISH));
+    assertNull(plugin.getContentTitle("-42", Locale.ENGLISH));
+    assertNull(plugin.getContentTitle("99999999999999999999", Locale.ENGLISH));
+    verifyNoInteractions(emailBoxService);
+  }
+
+  /**
+   * Even if the owned lookup ever returned a mail it should have refused, the
+   * plugin does not give its title to a user who does not own it.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void titleIsNeverGivenForAMailOwnedBySomebodyElse() throws Exception {
+    Email foreign = new Email();
+    foreign.setId(7L);
+    foreign.setUserId(OWNER);
+    foreign.setSubject("Secret");
+    when(emailBoxService.getOwnedEmailById(7L, OTHER_USER)).thenReturn(foreign);
+    ConversationState.setCurrent(new ConversationState(new Identity(OTHER_USER)));
+    assertNull(plugin.getContentTitle("7", Locale.ENGLISH));
   }
 
   /**
