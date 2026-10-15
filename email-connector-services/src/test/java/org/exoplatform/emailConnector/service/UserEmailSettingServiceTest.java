@@ -2462,6 +2462,48 @@ public class UserEmailSettingServiceTest {
                                         any(SettingValue.class));
   }
 
+  /**
+   * EXO-90824. The PO's scenario end to end, over a setting store that keeps what is
+   * written: the user disconnects, then connects again in one click, and gets every
+   * preference of that account back, with nothing left set aside. Pins the order of the
+   * disconnection, whose removal forgets what was set aside: setting aside before the
+   * removal would lose it.
+   */
+  @Test
+  @SneakyThrows
+  @SuppressWarnings({ "rawtypes", "unchecked" })
+  void aDisconnectionThenAOneClickConnectionKeepsThePreferences() {
+    Map<String, String> settings = new java.util.HashMap<>();
+    settings.put(UserEmailSettingService.USER_EMAIL_SETTING_KEY,
+                 String.format(STORED_WITH_PREFERENCES, "eric@bm.example.org"));
+    doAnswer(invocation -> settings.put(invocation.getArgument(2),
+                                        String.valueOf(((SettingValue) invocation.getArgument(3)).getValue())))
+        .when(settingService)
+        .set(eq(Context.USER.id(TEST_USER)), eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE), anyString(), any(SettingValue.class));
+    doAnswer(invocation -> settings.remove(invocation.getArgument(2)))
+        .when(settingService)
+        .remove(eq(Context.USER.id(TEST_USER)), eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE), anyString());
+    when(settingService.get(eq(Context.USER.id(TEST_USER)), eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE), anyString()))
+        .thenAnswer(invocation -> {
+          String value = settings.get(invocation.getArgument(2));
+          return value == null ? null : SettingValue.create(value);
+        });
+
+    userEmailSettingService.disconnectUserEmailSetting(TEST_USER);
+    assertNull(settings.get(UserEmailSettingService.USER_EMAIL_SETTING_KEY));
+    connectThroughTheProvider(() -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    UserEmailSettingEntity written = JsonUtils.fromJsonString(settings.get(UserEmailSettingService.USER_EMAIL_SETTING_KEY),
+                                                              UserEmailSettingEntity.class);
+    assertEquals("eric@bm.example.org", written.getEmailAddress());
+    assertEquals(Boolean.FALSE, written.getNotifyAllCategories());
+    assertEquals(List.of(3L, 4L), written.getNotifyCategories());
+    assertEquals(5L, written.getDefaultCategoryView());
+    assertEquals(Boolean.TRUE, written.getCarddavEnabled());
+    assertEquals(Boolean.TRUE, written.getCarddavAutoPublish());
+    assertNull(settings.get(UserEmailSettingService.DISCONNECTED_PREFERENCES_KEY));
+  }
+
   private void preferencesSetAside(String json) {
     SettingValue value = mock(SettingValue.class);
     when(value.getValue()).thenReturn(json);
