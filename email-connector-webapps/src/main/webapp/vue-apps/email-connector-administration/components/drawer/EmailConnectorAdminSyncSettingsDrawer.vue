@@ -164,6 +164,7 @@ do not, because turning one off only stops a READ (see their subtitles).
           </v-list-item-content>
           <v-list-item-action class="my-0">
             <v-switch
+              :key="sharedMailboxSentCopyRender"
               :input-value="sharedMailboxSentCopyEnabled"
               :loading="savingSharedMailboxSentCopy"
               :disabled="savingSharedMailboxSentCopy"
@@ -217,6 +218,7 @@ export default {
       savingCustomFolders: false,
       sharedMailboxSentCopyEnabled: true,
       savingSharedMailboxSentCopy: false,
+      sharedMailboxSentCopyRender: 0,
     };
   },
   created() {
@@ -393,7 +395,9 @@ export default {
     /**
      * Saves the switch of the copy into a shared mailbox owner's Sent folder on change
      * (EXO-90551). Nothing already filed is touched either way, so it saves on change,
-     * like the custom-folders switch.
+     * like the custom-folders switch. A refused save re-creates the switch, which shows
+     * the stored value again: the switch keeps the value it was flipped to, and its
+     * input-value prop, unchanged by a refusal, would not reset it.
      *
      * @param {Boolean} enabled the new switch value
      * @returns {void}
@@ -402,7 +406,10 @@ export default {
       this.savingSharedMailboxSentCopy = true;
       this.$emailConnectorAdministrationService.updateSharedMailboxSentCopyEnabled(enabled)
         .then(() => this.sharedMailboxSentCopyEnabled = enabled)
-        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error'))
+        .catch(() => {
+          this.sharedMailboxSentCopyRender++;
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error');
+        })
         .finally(() => this.savingSharedMailboxSentCopy = false);
     },
   },
