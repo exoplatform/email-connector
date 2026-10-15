@@ -34,6 +34,7 @@ import java.util.Locale;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import javax.mail.PasswordAuthentication;
 import javax.net.ssl.SSLParameters;
@@ -129,7 +130,7 @@ public final class ManageSieveClient implements AutoCloseable {
    * The current socket: the clear one until STARTTLS, the TLS one after. The watchdog
    * thread reads it to close it.
    */
-  private volatile Socket     socket;
+  private final AtomicReference<Socket> socket = new AtomicReference<>();
 
   /** The input of the current socket. */
   private InputStream         in;
@@ -380,7 +381,8 @@ public final class ManageSieveClient implements AutoCloseable {
    */
   public void logout() {
     try {
-      if (socket != null && !socket.isClosed()) {
+      Socket current = socket.get();
+      if (current != null && !current.isClosed()) {
         write("LOGOUT");
         readResponse();
       }
@@ -412,7 +414,7 @@ public final class ManageSieveClient implements AutoCloseable {
                     int connectTimeoutMillis,
                     int readTimeoutMillis) throws ManageSieveException {
     Socket plain = new Socket();
-    socket = plain;
+    socket.set(plain);
     startOperation();
     try {
       plain.connect(new InetSocketAddress(host, port), connectTimeoutMillis);
@@ -455,7 +457,7 @@ public final class ManageSieveClient implements AutoCloseable {
    */
   private void startTls(SSLSocketFactory tlsSocketFactory, Socket plain, int readTimeoutMillis) throws IOException {
     SSLSocket tls = (SSLSocket) tlsSocketFactory.createSocket(plain, host, port, true);
-    socket = tls;
+    socket.set(tls);
     try {
       SSLParameters parameters = tls.getSSLParameters();
       parameters.setEndpointIdentificationAlgorithm("HTTPS");
@@ -504,8 +506,9 @@ public final class ManageSieveClient implements AutoCloseable {
    * @throws IOException when the socket has no streams
    */
   private void bindStreams() throws IOException {
-    in = new BufferedInputStream(socket.getInputStream());
-    out = new BufferedOutputStream(socket.getOutputStream());
+    Socket current = socket.get();
+    in = new BufferedInputStream(current.getInputStream());
+    out = new BufferedOutputStream(current.getOutputStream());
     pushedBack = -1;
   }
 
@@ -611,7 +614,7 @@ public final class ManageSieveClient implements AutoCloseable {
    * Closes the current socket, from the caller's thread or the watchdog's.
    */
   private void closeSocket() {
-    Socket current = socket;
+    Socket current = socket.get();
     if (current != null) {
       try {
         current.close();

@@ -142,32 +142,86 @@ public class SieveScriptPolicy {
       return new SievePublishOutcome(SievePolicyCase.EXO_ACTIVE, SCRIPT_NAME, null, false, hash);
     }
     if (WRAPPER_NAME.equals(active)) {
-      String foreign = wrappedScript(client.getScript(WRAPPER_NAME));
-      if (!exists(scripts, foreign)) {
-        // The script the wrapper included is gone: running the wrapper would fail at
-        // delivery, so eXo's script takes over alone, as in case 1.
-        client.checkScript(text);
-        put(client, SCRIPT_NAME, text);
-        activate(client, SCRIPT_NAME);
-        try {
-          delete(client, WRAPPER_NAME);
-        } catch (ManageSieveException e) {
-          // eXo's script is stored and active: an inactive wrapper left behind is inert,
-          // and failing here would hide that the publish took effect.
-          LOG.debug("Could not delete the inactive {} script", WRAPPER_NAME, e);
-        }
-        return new SievePublishOutcome(SievePolicyCase.WRAPPER_REMOVED, SCRIPT_NAME, null, false, hash);
-      }
-      String foreignText = readForeign(client, foreign, script);
-      if (!ownScriptsReached(client, scripts, foreign, foreignText).isEmpty()) {
-        throw conflict(ServerRuleConflictException.SERVER_CONFLICT, foreign);
-      }
-      requireNoForeignVacation(client, scripts, foreign, foreignText, script);
+      return publishUnderWrapper(client, scripts, script, text, hash, exoFirst);
+    }
+    return publishNextToForeign(client, scripts, active, script, text, hash, exoFirst);
+  }
+
+  /**
+   * Publishes eXo's script while eXo's wrapper is the active script: the wrapper is
+   * rewritten around the script it already includes, or dropped when that script is
+   * gone.
+   *
+   * @param client an authenticated client
+   * @param scripts the account's scripts
+   * @param script the script to publish
+   * @param text the script's text
+   * @param hash the text's hash
+   * @param exoFirst whether eXo's script is included first
+   * @return what was done
+   * @throws ManageSieveException when the server refuses a command or fails
+   * @throws ServerRuleConflictException when the wrapped script reaches one of eXo's
+   *           scripts, or a vacation elsewhere cannot be ruled out
+   */
+  private SievePublishOutcome publishUnderWrapper(ManageSieveClient client,
+                                                  List<SieveScriptInfo> scripts,
+                                                  ExoSieveScript script,
+                                                  String text,
+                                                  String hash,
+                                                  boolean exoFirst) throws ManageSieveException,
+                                                                    ServerRuleConflictException {
+    String foreign = wrappedScript(client.getScript(WRAPPER_NAME));
+    if (!exists(scripts, foreign)) {
+      // The script the wrapper included is gone: running the wrapper would fail at
+      // delivery, so eXo's script takes over alone, as in case 1.
       client.checkScript(text);
       put(client, SCRIPT_NAME, text);
-      put(client, WRAPPER_NAME, wrapper(foreign, exoFirst));
-      return new SievePublishOutcome(SievePolicyCase.WRAPPED, WRAPPER_NAME, foreign, exoFirst, hash);
+      activate(client, SCRIPT_NAME);
+      try {
+        delete(client, WRAPPER_NAME);
+      } catch (ManageSieveException e) {
+        // eXo's script is stored and active: an inactive wrapper left behind is inert,
+        // and failing here would hide that the publish took effect.
+        LOG.debug("Could not delete the inactive {} script", WRAPPER_NAME, e);
+      }
+      return new SievePublishOutcome(SievePolicyCase.WRAPPER_REMOVED, SCRIPT_NAME, null, false, hash);
     }
+    String foreignText = readForeign(client, foreign, script);
+    if (!ownScriptsReached(client, scripts, foreign, foreignText).isEmpty()) {
+      throw conflict(ServerRuleConflictException.SERVER_CONFLICT, foreign);
+    }
+    requireNoForeignVacation(client, scripts, foreign, foreignText, script);
+    client.checkScript(text);
+    put(client, SCRIPT_NAME, text);
+    put(client, WRAPPER_NAME, wrapper(foreign, exoFirst));
+    return new SievePublishOutcome(SievePolicyCase.WRAPPED, WRAPPER_NAME, foreign, exoFirst, hash);
+  }
+
+  /**
+   * Publishes eXo's script while another client's script is active: eXo's script is
+   * stored and either included in place by that script, or wrapped with it.
+   *
+   * @param client an authenticated client
+   * @param scripts the account's scripts
+   * @param active the other client's active script
+   * @param script the script to publish
+   * @param text the script's text
+   * @param hash the text's hash
+   * @param exoFirst whether eXo's script is included first
+   * @return what was done
+   * @throws ManageSieveException when the server refuses a command or fails
+   * @throws ServerRuleConflictException when the active script cannot be read, included
+   *           or wrapped, reaches eXo's wrapper, or a vacation elsewhere cannot be ruled
+   *           out
+   */
+  private SievePublishOutcome publishNextToForeign(ManageSieveClient client,
+                                                   List<SieveScriptInfo> scripts,
+                                                   String active,
+                                                   ExoSieveScript script,
+                                                   String text,
+                                                   String hash,
+                                                   boolean exoFirst) throws ManageSieveException,
+                                                                     ServerRuleConflictException {
     if (active.isEmpty()) {
       // A nameless active script (what Stalwart's JMAP out-of-office creates) can be
       // neither read nor included by name: with a reply to publish it is an

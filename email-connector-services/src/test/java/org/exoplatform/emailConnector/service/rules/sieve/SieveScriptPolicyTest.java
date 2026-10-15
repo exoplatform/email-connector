@@ -324,8 +324,11 @@ class SieveScriptPolicyTest {
   @Test
   void testAForeignVacationNextToAnIncludeOfEXosScriptIsStillRefused() throws Exception {
     for (Map<String, String> account : List.of(Map.of(FOREIGN,
-                                                      "require [\"include\", \"vacation\"];\r\ninclude :personal \"exo-rules\";\r\n"
-                                                          + "vacation \"Away\";\r\n"),
+                                                      """
+                                                          require ["include", "vacation"];\r
+                                                          include :personal "exo-rules";\r
+                                                          vacation "Away";\r
+                                                          """),
                                                Map.of(FOREIGN,
                                                       "require [\"include\"];\r\ninclude :personal \"mine\";\r\n",
                                                       "mine",
