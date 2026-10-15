@@ -1357,7 +1357,7 @@ public class EmailDelegationService {
     FolderMessageCounts counts = emailBoxStorage.getFolderCounts(granteeUsername);
     Map<String, Integer> unreadCounts = counts == null || counts.getUnreadCounts() == null ? Map.of()
                                                                                            : counts.getUnreadCounts();
-    // Read once for the whole list (EXO-90551 review): the switcher is drawn every time
+    // Read once for the whole list: the switcher is drawn every time
     // the drawer opens.
     boolean sentCopyEnabled = isSentCopyEnabled();
     List<SharedMailboxEntry> entries = new ArrayList<>();
