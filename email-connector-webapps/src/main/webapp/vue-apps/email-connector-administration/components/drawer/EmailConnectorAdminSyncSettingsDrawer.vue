@@ -166,8 +166,6 @@ do not, because turning one off only stops a READ (see their subtitles).
             <v-switch
               :key="sharedMailboxSentCopyRender"
               :input-value="sharedMailboxSentCopyEnabled"
-              :loading="savingSharedMailboxSentCopy"
-              :disabled="savingSharedMailboxSentCopy"
               @change="onSharedMailboxSentCopyChange" />
           </v-list-item-action>
         </v-list-item>
@@ -218,6 +216,7 @@ export default {
       savingCustomFolders: false,
       sharedMailboxSentCopyEnabled: true,
       savingSharedMailboxSentCopy: false,
+      queuedSharedMailboxSentCopy: null,
       sharedMailboxSentCopyRender: 0,
     };
   },
@@ -395,14 +394,20 @@ export default {
     /**
      * Saves the switch of the copy into a shared mailbox owner's Sent folder on change
      * (EXO-90551). Nothing already filed is touched either way, so it saves on change,
-     * like the custom-folders switch. A refused save re-creates the switch, which shows
-     * the stored value again: the switch keeps the value it was flipped to, and its
-     * input-value prop, unchanged by a refusal, would not reset it.
+     * like the custom-folders switch. The switch shows its new value at once, with no
+     * pending state: a change made while a save runs is kept and saved after it, so the
+     * last value chosen is the one stored. A refused save re-creates the switch, which
+     * shows the stored value again: the switch keeps the value it was flipped to, and
+     * its input-value prop, unchanged by a refusal, would not reset it.
      *
      * @param {Boolean} enabled the new switch value
      * @returns {void}
      */
     onSharedMailboxSentCopyChange(enabled) {
+      if (this.savingSharedMailboxSentCopy) {
+        this.queuedSharedMailboxSentCopy = enabled;
+        return;
+      }
       this.savingSharedMailboxSentCopy = true;
       this.$emailConnectorAdministrationService.updateSharedMailboxSentCopyEnabled(enabled)
         .then(() => this.sharedMailboxSentCopyEnabled = enabled)
@@ -410,7 +415,14 @@ export default {
           this.sharedMailboxSentCopyRender++;
           this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error');
         })
-        .finally(() => this.savingSharedMailboxSentCopy = false);
+        .finally(() => {
+          this.savingSharedMailboxSentCopy = false;
+          const queued = this.queuedSharedMailboxSentCopy;
+          this.queuedSharedMailboxSentCopy = null;
+          if (queued !== null && queued !== this.sharedMailboxSentCopyEnabled) {
+            this.onSharedMailboxSentCopyChange(queued);
+          }
+        });
     },
   },
 };
