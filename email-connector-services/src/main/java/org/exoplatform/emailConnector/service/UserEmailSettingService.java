@@ -444,8 +444,8 @@ public class UserEmailSettingService {
    * @param stored the user's stored setting, read before its removal
    * @param username the eXo login disconnecting
    */
-  private void setAsideDisconnectedPreferences(UserEmailSetting stored, String username) {
-    if (stored.getEmailConnectorId() == null) {
+  private void setAsideDisconnectedPreferences(UserEmailSettingEntity stored, String username) {
+    if (stored == null || stored.getEmailConnectorId() == null) {
       return;
     }
     UserEmailSettingEntity preferences = new UserEmailSettingEntity();
@@ -865,7 +865,9 @@ public class UserEmailSettingService {
    * The user's notification choice, default view and address-book options are set aside
    * under {@link #DISCONNECTED_PREFERENCES_KEY}, for their next connection to keep: on a
    * connector whose provider asks for nothing, disconnecting and connecting again is the
-   * only way to reconnect.
+   * only way to reconnect. A disconnection with no setting to read - nothing connected,
+   * or a stored document that cannot be parsed - removes what is stored and leaves what an
+   * earlier disconnection set aside in place.
    *
    * <p>
    * Runs in its own transaction, as {@link #deleteUserEmailSetting(String)} does: the
@@ -877,9 +879,31 @@ public class UserEmailSettingService {
   @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
   public void disconnectUserEmailSetting(String username) throws ManagedConnectionLockedException {
     emailManagedModeService.checkUserMayChangeConnection(username, null);
-    UserEmailSetting stored = getStoredUserEmailSetting(username);
+    UserEmailSettingEntity stored = settingToSetAside(username);
     removeUserEmailSetting(username);
     setAsideDisconnectedPreferences(stored, username);
+  }
+
+  /**
+   * The stored setting as written, with no password decode: setting aside carries no
+   * credential.
+   *
+   * @param username the eXo login disconnecting
+   * @return the stored document, an empty one when there is none or it cannot be parsed
+   */
+  private UserEmailSettingEntity settingToSetAside(String username) {
+    SettingValue<?> value = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
+    if (value == null || value.getValue() == null) {
+      return new UserEmailSettingEntity();
+    }
+    try {
+      return JsonUtils.fromJsonString(value.getValue().toString(), UserEmailSettingEntity.class);
+    } catch (Exception e) {
+      // Exception, not RuntimeException: a malformed document surfaces as Jackson's
+      // checked exception, thrown sneakily. The disconnection still removes it.
+      LOG.warn("Cannot read the mail setting of user {}; disconnected with no preferences set aside", username, e);
+      return new UserEmailSettingEntity();
+    }
   }
 
   /**
@@ -890,12 +914,12 @@ public class UserEmailSettingService {
   @Transactional(propagation = Propagation.REQUIRES_NEW)
   public void deleteUserEmailSetting(String username) {
     removeUserEmailSetting(username);
+    forgetDisconnectedPreferences(username);
   }
 
   private void removeUserEmailSetting(String username) {
     settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
     settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONNECTED_BY_MANAGED_MODE_KEY);
-    forgetDisconnectedPreferences(username);
     // The signature belongs to the mail account's composer, so disconnecting the
     // mailbox takes it along -- its stored document AND its uploaded image file,
     // which nothing else would ever clean up.

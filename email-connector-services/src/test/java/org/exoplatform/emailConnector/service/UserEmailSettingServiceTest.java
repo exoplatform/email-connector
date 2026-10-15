@@ -2373,6 +2373,27 @@ public class UserEmailSettingServiceTest {
                                         any(Scope.class),
                                         eq(UserEmailSettingService.DISCONNECTED_PREFERENCES_KEY),
                                         any(SettingValue.class));
+    verify(settingService, never()).remove(any(Context.class),
+                                           any(Scope.class),
+                                           eq(UserEmailSettingService.DISCONNECTED_PREFERENCES_KEY));
+  }
+
+  /**
+   * EXO-90824. A user's disconnection whose stored document cannot be parsed still
+   * removes it, and sets nothing aside.
+   */
+  @Test
+  @SneakyThrows
+  void aDisconnectionOfAnUnreadableSettingRemovesItAndSetsNothingAside() {
+    storedDocument(TEST_USER, "{not json");
+
+    userEmailSettingService.disconnectUserEmailSetting(TEST_USER);
+
+    verify(settingService).remove(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY));
+    verify(settingService, never()).set(any(Context.class),
+                                        any(Scope.class),
+                                        eq(UserEmailSettingService.DISCONNECTED_PREFERENCES_KEY),
+                                        any(SettingValue.class));
   }
 
   /**
@@ -2465,14 +2486,44 @@ public class UserEmailSettingServiceTest {
   /**
    * EXO-90824. The PO's scenario end to end, over a setting store that keeps what is
    * written: the user disconnects, then connects again in one click, and gets every
-   * preference of that account back, with nothing left set aside. Pins the order of the
-   * disconnection, whose removal forgets what was set aside: setting aside before the
-   * removal would lose it.
+   * preference of that account back, with nothing left set aside.
    */
   @Test
   @SneakyThrows
-  @SuppressWarnings({ "rawtypes", "unchecked" })
   void aDisconnectionThenAOneClickConnectionKeepsThePreferences() {
+    Map<String, String> settings = settingStore();
+
+    userEmailSettingService.disconnectUserEmailSetting(TEST_USER);
+    assertNull(settings.get(UserEmailSettingService.USER_EMAIL_SETTING_KEY));
+    connectThroughTheProvider(() -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    assertThePreferencesAreKept(settings);
+  }
+
+  /**
+   * EXO-90824. A second disconnection - a double click on Disconnect, a client retry -
+   * finds nothing connected and leaves what the first one set aside, so the connection
+   * that follows still gets every preference back.
+   */
+  @Test
+  @SneakyThrows
+  void aSecondDisconnectionKeepsWhatTheFirstSetAside() {
+    Map<String, String> settings = settingStore();
+
+    userEmailSettingService.disconnectUserEmailSetting(TEST_USER);
+    userEmailSettingService.disconnectUserEmailSetting(TEST_USER);
+    connectThroughTheProvider(() -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    assertThePreferencesAreKept(settings);
+  }
+
+  /**
+   * A setting store that keeps what is written, holding a connected user's setting.
+   *
+   * @return the store, by setting key
+   */
+  @SuppressWarnings({ "rawtypes", "unchecked" })
+  private Map<String, String> settingStore() {
     Map<String, String> settings = new java.util.HashMap<>();
     settings.put(UserEmailSettingService.USER_EMAIL_SETTING_KEY,
                  String.format(STORED_WITH_PREFERENCES, "eric@bm.example.org"));
@@ -2489,10 +2540,10 @@ public class UserEmailSettingServiceTest {
           return value == null ? null : SettingValue.create(value);
         });
 
-    userEmailSettingService.disconnectUserEmailSetting(TEST_USER);
-    assertNull(settings.get(UserEmailSettingService.USER_EMAIL_SETTING_KEY));
-    connectThroughTheProvider(() -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+    return settings;
+  }
 
+  private void assertThePreferencesAreKept(Map<String, String> settings) {
     UserEmailSettingEntity written = JsonUtils.fromJsonString(settings.get(UserEmailSettingService.USER_EMAIL_SETTING_KEY),
                                                               UserEmailSettingEntity.class);
     assertEquals("eric@bm.example.org", written.getEmailAddress());
