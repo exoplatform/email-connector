@@ -82,6 +82,7 @@ import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.exception.ReadReceiptConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
+import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.ReadReceiptAction;
 import org.exoplatform.emailConnector.model.ReadReceiptPrompt;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
@@ -385,7 +386,7 @@ public class EmailBoxRestTest {
   void aSendFromASharedMailboxAnswersTheOwnersCopy() throws Exception {
     Email email = new Email();
     email.setTo(List.of(new EmailRecipient()));
-    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(5L))).thenReturn(EmailBoxService.OwnerCopy.FILED);
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(5L))).thenReturn(OwnerCopy.FILED);
     mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=5").with(testSimpleUser())
                                                                  .content(asJsonString(email))
                                                                  .contentType(MediaType.APPLICATION_JSON)
@@ -409,7 +410,7 @@ public class EmailBoxRestTest {
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.ownerCopy").doesNotExist());
     // The composer's draft path answers the same (EXO-90551).
-    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), eq(5L))).thenReturn(EmailBoxService.OwnerCopy.SKIPPED);
+    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), eq(5L))).thenReturn(OwnerCopy.SKIPPED);
     mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/d1/send?delegationId=5").with(testSimpleUser())
                                                                            .content(asJsonString(email))
                                                                            .contentType(MediaType.APPLICATION_JSON)
