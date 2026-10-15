@@ -99,7 +99,10 @@ public class ManageSieveConnector {
    * over TLS, authenticated. The caller closes it, ideally with
    * {@link ManageSieveClient#logout()}.
    *
-   * @param connector the user's connector preset
+   * @param connector the user's connector preset: the one the user's email setting is
+   *          bound to, which the caller checks with
+   *          {@code UserEmailSettingService#canConnect(connectorId, username)} before
+   *          calling, since the credentials resolver trusts the pair it is given
    * @param username the eXo user the conversation acts as, resolved by the caller from
    *          the session and never from a request parameter
    * @return the authenticated client

@@ -408,6 +408,20 @@ class SieveScriptPolicyTest {
   }
 
   /**
+   * The name of the script a conflict is about comes from the server and goes back to
+   * the user: it is made printable and capped as any server text.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testAConflictNamesTheScriptPrintably() throws Exception {
+    server.sieveExtensions("fileinto vacation").script("their\u202Erules\u2028" + "x".repeat(300), FILTERS_ONLY, true);
+    ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class, () -> publish(replyOn()));
+    assertEquals(ServerRuleConflictException.SERVER_CONFLICT, e.getMessage());
+    assertEquals(("their rules " + "x".repeat(300)).substring(0, ManageSieveClient.MAX_MESSAGE_CHARS) + "…", e.getScriptName());
+  }
+
+  /**
    * Case 2 through the wrapper: re-publishing keeps the included script, re-generates the
    * wrapper and does not re-activate anything.
    *

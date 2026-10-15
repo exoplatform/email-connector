@@ -60,7 +60,8 @@ public class ServerRuleConflictException extends Exception {
   /**
    * The script the conflict is about, to name it to the user.
    *
-   * @return the name as the server stores it
+   * @return the name as the server stores it, made printable and capped by the policy
+   *         that refused
    */
   public String getScriptName() {
     return scriptName;

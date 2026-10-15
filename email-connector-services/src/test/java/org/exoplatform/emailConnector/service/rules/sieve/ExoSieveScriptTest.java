@@ -217,6 +217,23 @@ class ExoSieveScriptTest {
   }
 
   /**
+   * A window day has a four-digit year: a later year is written with a sign, which sorts
+   * before the digits in the script's date comparison, so the reply would start at once
+   * or never fire. The bound holds for a header read back from the server too, which is
+   * then not eXo's to interpret.
+   */
+  @Test
+  void testAWindowDayHasAFourDigitYear() {
+    assertCode("emailConnector.absence.window.invalid", () -> vacation(true, LocalDate.of(20261, 10, 15), null, "Away", "t"));
+    assertCode("emailConnector.absence.window.invalid", () -> vacation(true, null, LocalDate.of(10000, 1, 1), "Away", "t"));
+    assertCode("emailConnector.absence.window.invalid", () -> vacation(true, LocalDate.of(-1, 1, 1), null, "Away", "t"));
+    assertEquals(LocalDate.of(9999, 12, 31), vacation(true, null, LocalDate.of(9999, 12, 31), "Away", "t").end());
+    String text = window("Europe/Paris", LocalDate.of(2026, 10, 15), null);
+    assertTrue(ExoSieveScript.parse(text).isPresent());
+    assertEquals(Optional.empty(), ExoSieveScript.parse(text.replace("\"start\":\"2026-10-15\"", "\"start\":\"+20261-10-15\"")));
+  }
+
+  /**
    * text → model → text is byte-equal, and the model survives.
    */
   @Test

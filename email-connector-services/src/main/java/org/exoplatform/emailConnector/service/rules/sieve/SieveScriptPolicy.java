@@ -194,7 +194,7 @@ public class SieveScriptPolicy {
       }
       String foreignText = readForeign(client, foreign, script);
       if (!ownScriptsReached(client, scripts, foreign, foreignText).isEmpty()) {
-        throw new ServerRuleConflictException(ServerRuleConflictException.SERVER_CONFLICT, foreign);
+        throw conflict(ServerRuleConflictException.SERVER_CONFLICT, foreign);
       }
       requireNoForeignVacation(client, scripts, foreign, foreignText, script);
       client.checkScript(text);
@@ -206,17 +206,17 @@ public class SieveScriptPolicy {
       // A nameless active script (what Stalwart's JMAP out-of-office creates) can be
       // neither read nor included by name: with a reply to publish it is an
       // out-of-office managed elsewhere, without one a script eXo cannot wrap.
-      throw new ServerRuleConflictException(script.emitsVacation() ? ServerRuleConflictException.MANAGED_ELSEWHERE
-                                                                   : ServerRuleConflictException.SERVER_CONFLICT,
-                                            active);
+      throw conflict(script.emitsVacation() ? ServerRuleConflictException.MANAGED_ELSEWHERE
+                                            : ServerRuleConflictException.SERVER_CONFLICT,
+                     active);
     }
     if (!client.getCapabilities().hasExtension(INCLUDE_EXTENSION) || !includable(active)) {
-      throw new ServerRuleConflictException(ServerRuleConflictException.SERVER_CONFLICT, active);
+      throw conflict(ServerRuleConflictException.SERVER_CONFLICT, active);
     }
     String foreignText = readForeign(client, active, script);
     Set<String> reached = ownScriptsReached(client, scripts, active, foreignText);
     if (reached.contains(WRAPPER_NAME)) {
-      throw new ServerRuleConflictException(ServerRuleConflictException.SERVER_CONFLICT, active);
+      throw conflict(ServerRuleConflictException.SERVER_CONFLICT, active);
     }
     requireNoForeignVacation(client, scripts, active, foreignText, script);
     client.checkScript(text);
@@ -277,7 +277,7 @@ public class SieveScriptPolicy {
         return foreign;
       }
     }
-    throw new ServerRuleConflictException(ServerRuleConflictException.MODIFIED_OUTSIDE, WRAPPER_NAME);
+    throw conflict(ServerRuleConflictException.MODIFIED_OUTSIDE, WRAPPER_NAME);
   }
 
   /**
@@ -312,9 +312,9 @@ public class SieveScriptPolicy {
       if (e.getKind() != ManageSieveException.Kind.REFUSED) {
         throw e;
       }
-      throw new ServerRuleConflictException(script.emitsVacation() ? ServerRuleConflictException.MANAGED_ELSEWHERE
-                                                                   : ServerRuleConflictException.SERVER_CONFLICT,
-                                            foreign);
+      throw conflict(script.emitsVacation() ? ServerRuleConflictException.MANAGED_ELSEWHERE
+                                            : ServerRuleConflictException.SERVER_CONFLICT,
+                     foreign);
     }
   }
 
@@ -376,20 +376,32 @@ public class SieveScriptPolicy {
       return;
     }
     if (SieveTokenScan.containsWord(text, VACATION_TOKEN) || SieveTokenScan.hasUnreadableInclude(text)) {
-      throw new ServerRuleConflictException(ServerRuleConflictException.MANAGED_ELSEWHERE, foreign);
+      throw conflict(ServerRuleConflictException.MANAGED_ELSEWHERE, foreign);
     }
     for (String included : SieveTokenScan.includedPersonalScripts(text)) {
       if (isOwn(included) || included.equals(foreign)) {
         continue;
       }
       if (!exists(scripts, included)) {
-        throw new ServerRuleConflictException(ServerRuleConflictException.MANAGED_ELSEWHERE, foreign);
+        throw conflict(ServerRuleConflictException.MANAGED_ELSEWHERE, foreign);
       }
       String includedText = client.getScript(included);
       if (SieveTokenScan.containsWord(includedText, VACATION_TOKEN) || SieveTokenScan.includesAnything(includedText)) {
-        throw new ServerRuleConflictException(ServerRuleConflictException.MANAGED_ELSEWHERE, foreign);
+        throw conflict(ServerRuleConflictException.MANAGED_ELSEWHERE, foreign);
       }
     }
+  }
+
+  /**
+   * A conflict about a script the server named, its name made printable and capped as
+   * any server text, since the REST layer returns it to the user.
+   *
+   * @param code the conflict code
+   * @param scriptName the name as the server stores it
+   * @return the exception to throw
+   */
+  private static ServerRuleConflictException conflict(String code, String scriptName) {
+    return new ServerRuleConflictException(code, ManageSieveClient.printable(scriptName));
   }
 
   /**
