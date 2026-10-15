@@ -21,7 +21,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.DateTimeException;
 import java.time.LocalDate;
-import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -373,12 +372,12 @@ public final class ExoSieveScript {
     List<String> tests = new ArrayList<>();
     ZoneId zone = vacation.zoneId();
     if (vacation.start() != null) {
-      ZoneOffset offset = vacation.start().atStartOfDay(zone).getOffset();
+      ZoneOffset offset = midnightOffset(vacation.start(), zone);
       tests.add("currentdate :zone " + quote(offset(offset)) + " :value \"ge\" \"date\" "
           + quote(vacation.start().toString()));
     }
     if (vacation.end() != null) {
-      ZoneOffset offset = vacation.end().atTime(LocalTime.MAX).atZone(zone).getOffset();
+      ZoneOffset offset = midnightOffset(vacation.end().plusDays(1), zone);
       tests.add("currentdate :zone " + quote(offset(offset)) + " :value \"le\" \"date\" "
           + quote(vacation.end().toString()));
     }
@@ -396,6 +395,25 @@ public final class ExoSieveScript {
       script.append("         ").append(tests.get(1)).append(") {").append(EOL);
     }
     script.append("  ").append(action).append(EOL).append('}').append(EOL);
+  }
+
+  /**
+   * The fixed offset whose date turns to {@code day} at the very instant the zone starts
+   * that day: {@code day}'s midnight minus that instant. On an ordinary day it is the
+   * zone's offset. Where the clocks change at midnight it is the offset in force just
+   * before the change, since the zone's day starts at its old midnight: on 2026-03-29 in
+   * Asia/Beirut, +02:00, where the offset of the day's first hour, +03:00, would start
+   * the date an hour early. A window's start uses its first day, its end the day after
+   * its last one.
+   *
+   * @param day the day whose start the date must follow
+   * @param zone the zone the day is in
+   * @return the offset
+   */
+  static ZoneOffset midnightOffset(LocalDate day, ZoneId zone) {
+    long zoneStart = day.atStartOfDay(zone).toEpochSecond();
+    long midnight = day.atStartOfDay().toEpochSecond(ZoneOffset.UTC);
+    return ZoneOffset.ofTotalSeconds(Math.toIntExact(midnight - zoneStart));
   }
 
   /**
@@ -439,8 +457,9 @@ public final class ExoSieveScript {
    * Bounds: the subject is one line of at most {@value #MAX_SUBJECT_LENGTH} characters,
    * the text at most {@value #MAX_TEXT_LENGTH}, no NUL anywhere; the handle is a token
    * of letters, digits, dots, underscores and dashes; the window's days are the user's
-   * own calendar days in {@code zone}, one UTC offset computed per boundary so a window
-   * across a DST change stays exact.
+   * own calendar days in {@code zone}, each boundary written with the fixed offset whose
+   * date changes at the zone's own midnight, so a window across a DST change, or one
+   * whose boundary falls on a change at midnight, starts and ends on the zone's day.
    *
    * @param enabled whether the reply is on; a disabled reply keeps its text in the header
    *          and emits no Sieve

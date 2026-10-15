@@ -110,6 +110,24 @@ class ExoSieveScriptTest {
   }
 
   /**
+   * Where the clocks change at midnight, a boundary's offset is the one in force just
+   * before the change, so the date turns at the zone's own midnight instead of an hour
+   * early: a start on the change day, an end the day before a fall-back midnight, and an
+   * end the day before a spring-forward midnight, where the offset at the next day's
+   * first instant would be the wrong one. Exact as far as the engine computes the date
+   * part of {@code currentdate} at the given {@code :zone} (RFC 5260 §4.1), which no test
+   * here runs.
+   */
+  @Test
+  void testABoundaryOnAMidnightClockChangeFollowsTheZonesDay() {
+    assertTrue(window("Asia/Beirut", LocalDate.of(2026, 3, 29), null).contains("currentdate :zone \"+0200\" :value \"ge\" \"date\" \"2026-03-29\""));
+    assertTrue(window("Asia/Beirut", null, LocalDate.of(2026, 10, 24)).contains("currentdate :zone \"+0200\" :value \"le\" \"date\" \"2026-10-24\""));
+    assertTrue(window("Asia/Beirut", null, LocalDate.of(2026, 3, 28)).contains("currentdate :zone \"+0200\" :value \"le\" \"date\" \"2026-03-28\""));
+    assertTrue(window("America/Santiago", LocalDate.of(2026, 9, 6), null).contains("currentdate :zone \"-0400\" :value \"ge\" \"date\" \"2026-09-06\""));
+    assertTrue(window("America/Havana", LocalDate.of(2026, 3, 8), null).contains("currentdate :zone \"-0500\" :value \"ge\" \"date\" \"2026-03-08\""));
+  }
+
+  /**
    * Hostile subject and text stay inside their quoted strings: once the strings are
    * removed, the script holds exactly the allowlisted commands and nothing else.
    */
@@ -277,6 +295,18 @@ class ExoSieveScriptTest {
     ExoSieveScript two = ExoSieveScript.empty().withVacation(vacation(true, null, null, "Away", "two"));
     assertEquals(ExoSieveScript.sha256(one.toScript()), one.hash());
     assertNotEquals(one.hash(), two.hash());
+  }
+
+  /**
+   * The script of an enabled reply with a window in a zone.
+   *
+   * @param zone the zone
+   * @param start the first day, or null
+   * @param end the last day, or null
+   * @return the script text
+   */
+  private static String window(String zone, LocalDate start, LocalDate end) {
+    return ExoSieveScript.empty().withVacation(new Vacation(true, start, end, zone, "Away", "Away", HANDLE, 7)).toScript();
   }
 
   /**
