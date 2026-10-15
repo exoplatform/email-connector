@@ -271,12 +271,6 @@ class EmailDelegationStorageWritesTest {
   }
 
   /**
-   * An accepted Reader share of alice's mailbox for the given grantee.
-   *
-   * @param grantee the grantee's username
-   * @return the unsaved row
-   */
-  /**
    * The grantee's identifier is written alone, once, and only where none is recorded:
    * a row that has one keeps it, and another owner's row is never reached.
    */
@@ -376,6 +370,12 @@ class EmailDelegationStorageWritesTest {
                  "a share in use is not reopened");
   }
 
+  /**
+   * An accepted Reader share of alice's mailbox for the given grantee.
+   *
+   * @param grantee the grantee's username
+   * @return the unsaved row
+   */
   private EmailDelegation acceptedRow(String grantee) {
     EmailDelegation row = new EmailDelegation();
     row.setGranteeId(grantee);

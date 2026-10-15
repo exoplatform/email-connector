@@ -691,7 +691,7 @@ public class EmailDelegationService {
       Set<FolderRole> added = grantRoleFolders(engine, session, identifier, delegation.getPreset(), EnumSet.copyOf(missing), roleFolders);
       if (missing.stream().noneMatch(added::contains)) {
         // The server refused every folder there was to add: said as the refusal it is,
-        // never recorded or answered as a success (EXO-90548 review).
+        // never recorded or answered as a success.
         throw new MailboxAclException(MailboxAclException.SERVER_REFUSED, "roles " + missing);
       }
       granted.addAll(added);
@@ -747,7 +747,7 @@ public class EmailDelegationService {
 
   /**
    * {@link #isExtendable} for the mailbox the owner is connected to now: extend refuses a
-   * row of another connector or mailbox, so the list never offers it (EXO-90548 review).
+   * row of another connector or mailbox, so the list never offers it.
    *
    * @param delegation the share, or null
    * @param connector the owner's connector
@@ -1377,7 +1377,7 @@ public class EmailDelegationService {
                                          inbox.getKey(),
                                          unreadCounts.getOrDefault(inbox.getKey(), 0),
                                          otherFolders(folders, delegation),
-                                         // What an Extend can change (EXO-90548 review): a share
+                                         // What an Extend can change: a share
                                          // eXo wrote before folders were shared. One made in the
                                          // mail server's interface records no roles either, and
                                          // may well cover its Trash.
@@ -2864,8 +2864,8 @@ public class EmailDelegationService {
   }
 
   /**
-   * Makes a share's discovery due at the grantee's next pass, best-effort (EXO-90548
-   * review): the owner's change has landed on the server and in the row by then, and
+   * Makes a share's discovery due at the grantee's next pass, best-effort: the
+   * owner's change has landed on the server and in the row by then, and
    * clearing a throttle's stamp must not turn it into an error -- at worst the grantee
    * waits for the quarter-hour.
    *

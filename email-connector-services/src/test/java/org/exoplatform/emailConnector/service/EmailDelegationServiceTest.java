@@ -1932,12 +1932,6 @@ class EmailDelegationServiceTest {
   private static final String ROOT = "shared/alice@acme.com";
 
   /**
-   * An accepted Editor share on Dovecot, whose owner map names the owner's Trash
-   * "Corbeille" and Sent "Sent".
-   *
-   * @return the row
-   */
-  /**
    * EXO-90556, live on Stalwart 0.11.8 -- a Reader's letters read back {@code rlsw}: the
    * guard never lets that Reader star or set flags, on a folder of the share or on its
    * INBOX, while an Editor's folder of the same share keeps its {@code w}.
@@ -1965,6 +1959,12 @@ class EmailDelegationServiceTest {
     assertFalse(service.rightsOn(GRANTEE, sent.getKey()).affordances().get("star"));
   }
 
+  /**
+   * An accepted Editor share on Dovecot, whose owner map names the owner's Trash
+   * "Corbeille" and Sent "Sent".
+   *
+   * @return the row
+   */
   private EmailDelegation aDovecotShare() {
     EmailDelegation share = accepted("lrswite");
     share.setRemoteRoot(ROOT);

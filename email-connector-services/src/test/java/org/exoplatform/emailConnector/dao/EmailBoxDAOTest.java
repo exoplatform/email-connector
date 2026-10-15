@@ -217,14 +217,6 @@ public class EmailBoxDAOTest {
   }
 
   /**
-   * Persists one cached message in a given folder, pinned to a Message-ID.
-   *
-   * @param remoteId the IMAP UID, within that folder
-   * @param folder the {@link MailFolder} discriminator
-   * @param mailHeaderId the Message-ID the row remembers
-   * @return the row's generated id
-   */
-  /**
    * The sweep's query, run on HSQLDB: the distinct custom and
    * shared-mailbox folder keys of one user's cache, never a built-in folder, never
    * somebody else's.
@@ -244,6 +236,14 @@ public class EmailBoxDAOTest {
     assertEquals(List.of("CUSTOM:1", "CUSTOM:9"), emailBoxDAO.findCustomFolderKeysByUserId(USERNAME).stream().sorted().toList());
   }
 
+  /**
+   * Persists one cached message in a given folder, pinned to a Message-ID.
+   *
+   * @param remoteId the IMAP UID, within that folder
+   * @param folder the {@link MailFolder} discriminator
+   * @param mailHeaderId the Message-ID the row remembers
+   * @return the row's generated id
+   */
   private Long persistEmailCarrying(long remoteId, String folder, String mailHeaderId) {
     Long id = persistEmail(remoteId, folder, "body", Boolean.FALSE);
     EmailBoxEntity email = entityManager.find(EmailBoxEntity.class, id);

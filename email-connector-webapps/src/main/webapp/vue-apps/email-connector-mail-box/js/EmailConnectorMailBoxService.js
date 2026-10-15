@@ -148,9 +148,8 @@ const attachmentMapIconsExtensions = new Map([
 // writable in the next.
 const READ_ONLY_FOLDERS = ['TRASH', 'JUNK'];
 
-// A shared mailbox's folders of these roles are read-only too (EXO-90548 review,
-// finding 2), and more so than the user's own: nothing leaves its Trash (decision 3a,
-// so no Restore either), its Spam has no "Not spam" (that would file into the user's
+// A shared mailbox's folders of these roles are read-only too, and more so than the
+// user's own: nothing leaves its Trash (so no Restore either), its Spam has no "Not spam" (that would file into the user's
 // own INBOX, another mailbox), and its Drafts are the owner's unfinished mail, which
 // the user's own draft actions must never touch. The server refuses the same
 // (EmailBoxService#asRoleFolder, #checkDelegatedMove).
@@ -209,7 +208,7 @@ export function hasJunkActions(folder) {
   if (JUNK_ACTION_FOLDERS.includes(folder || 'INBOX')) {
     return true;
   }
-  // A shared mailbox's Spam (EXO-90548 review): its Delete files into that mailbox's
+  // A shared mailbox's Spam: its Delete files into that mailbox's
   // own Trash, so it is offered where the letters allow taking mail out and a Trash is
   // shared -- the reversible delete every Spam folder keeps. "Not spam" is not
   // (canRestoreFromJunk): it would file into the user's own INBOX, another mailbox.
@@ -328,7 +327,7 @@ export function canMoveTo(folders, folder) {
  */
 export function inboxOnlyShareHint(folder) {
   // Only where it is true: the user may take mail out, and neither Delete nor Archive is
-  // there to do it (EXO-90548 review).
+  // there to do it.
   return inboxOnlyShareOf(folder, canMoveOutOf(folder) && !canDelete(folder) && !canArchive(folder));
 }
 

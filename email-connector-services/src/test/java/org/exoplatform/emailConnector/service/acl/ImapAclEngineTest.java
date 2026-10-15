@@ -430,14 +430,6 @@ class ImapAclEngineTest {
   }
 
   /**
-   * THE second phase-0 pin (plan, section 13.C): NAMESPACE answers nothing -- Stalwart
-   * v0.11.8 advertised none -- yet the session's own LIST shows
-   * {@code Shared Folders/alice@stalwart.local/INBOX}. The prefix is read from that
-   * LIST and the share is discovered; the user's own folders ({@code INBOX},
-   * {@code Archive}, a {@code Customers/Acme} tree) are not mistaken for one. Reverting
-   * the fallback fails this test on the count.
-   */
-  /**
    * The pin for the defect this replaced, reproduced from the Stalwart rig
    * (2026-09-22). That server does not advertise NAMESPACE and answers the NAMESPACE
    * command anyway -- {@code (("" "/")) (("Shared Folders" "/")) NIL} -- so
@@ -476,6 +468,14 @@ class ImapAclEngineTest {
                  "and the owner's INBOX is matched case-insensitively -- Stalwart names it Inbox");
   }
 
+  /**
+   * THE second phase-0 pin (plan, section 13.C): NAMESPACE answers nothing -- Stalwart
+   * v0.11.8 advertised none -- yet the session's own LIST shows
+   * {@code Shared Folders/alice@stalwart.local/INBOX}. The prefix is read from that
+   * LIST and the share is discovered; the user's own folders ({@code INBOX},
+   * {@code Archive}, a {@code Customers/Acme} tree) are not mistaken for one. Reverting
+   * the fallback fails this test on the count.
+   */
   @Test
   void listSharedMailboxesFallsBackToTheSessionsListWithoutNamespace() throws MessagingException {
     when(store.getUserNamespaces(isNull())).thenReturn(new Folder[0]);
@@ -755,11 +755,6 @@ class ImapAclEngineTest {
   }
 
   /**
-   * A session over the mocked IMAP store.
-   *
-   * @return the session
-   */
-  /**
    * EXO-90556, live on Stalwart 0.11.8 -- a Reader granted {@code lrs} reads back
    * {@code wsrl}: still a Reader, never CUSTOM (no "set in your mail app" row, no replace
    * confirmation), and the entry keeps the letters the server answered.
@@ -777,6 +772,11 @@ class ImapAclEngineTest {
     assertEquals("lrsw", ace.rights().letters());
   }
 
+  /**
+   * A session over the mocked IMAP store.
+   *
+   * @return the session
+   */
   private MailboxAclSession session() {
     return session(store);
   }
