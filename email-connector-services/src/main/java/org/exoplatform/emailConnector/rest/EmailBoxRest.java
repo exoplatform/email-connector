@@ -101,7 +101,8 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "A right the caller does not hold in that shared mailbox (emailConnector.delegation.right.missing.<letter>)"),
       @ApiResponse(responseCode = "404", description = "Not found"),
-      @ApiResponse(responseCode = "409", description = "Conflict"), })
+      @ApiResponse(responseCode = "409", description = "Conflict"),
+      @ApiResponse(responseCode = "410", description = "The mailbox is no longer shared with the caller (emailConnector.delegation.revoked)"), })
   public EmailBox getEmailBox(HttpServletRequest request,
                               @Parameter(description = "Folder to list: INBOX, SENT, ARCHIVE, DRAFTS, TRASH, JUNK or CUSTOM:<id>")
                               @RequestParam(value = "folder", required = false, defaultValue = "INBOX")

@@ -101,9 +101,10 @@ public final class MailboxRights {
   /**
    * The rights this add-on will ever write to a server on a user's behalf: what a
    * Reader or an Editor needs and nothing that lets a delegate re-share ({@code a}),
-   * destroy the mailbox ({@code x}), create mailboxes ({@code k}), expunge irreversibly
-   * ({@code e}) or post ({@code p}). A preset is intersected with this before anything
-   * else, whatever the client asked for.
+   * destroy the mailbox ({@code x}), create mailboxes ({@code k}) or post ({@code p}).
+   * Expunging ({@code e}) is added only where mail leaves a folder, never on Trash
+   * ({@link #GRANTABLE_WHERE_MAIL_LEAVES}). A preset is intersected with this before
+   * anything else, whatever the client asked for.
    */
   public static final MailboxRights  GRANTABLE       = of("lrswit");
 
