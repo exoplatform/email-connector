@@ -43,7 +43,8 @@ import lombok.NoArgsConstructor;
  * stamp) -- so each lifecycle step writes only its own columns, by an update scoped to
  * the row and to the side writing it, never a snapshot of the whole row read before the
  * other side wrote. {@link DynamicUpdate} keeps the whole-row saves that remain (a row's
- * creation, the owner's grant, a decline of a pending offer) to the columns they change.
+ * creation, the owner's grant, a decline of a pending offer, the grantee's rights
+ * refresh on a row re-read after the server call) to the columns they change.
  */
 @Data
 @NoArgsConstructor

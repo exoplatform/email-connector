@@ -427,7 +427,7 @@ public class UserEmailSettingRest {
   @Secured("users")
   @Operation(summary = "Shares the caller's own mailbox with another eXo user",
              method = "POST",
-             description = "Writes an ACL on the caller's INBOX, on the caller's own session, for the identifier the grantee connects to the same connector with (the grantee must be connected there; a mail login is never accepted). The preset is READER (lrs) or EDITOR (lrswit), intersected with the caller's own rights; a, x, e, p and k are never granted. The grant is written now: declining later does not remove it, only the owner does. The grantee is then invited (PENDING).")
+             description = "Writes an ACL on the caller's INBOX, on the caller's own session, for the identifier the grantee connects to the same connector with (the grantee must be connected there; a mail login is never accepted). The preset is READER (lrs) or EDITOR (lrswite, e so that mail can leave the INBOX; never e on Trash), intersected with the caller's own rights; a, x, p and k are never granted. The grant is written now: declining later does not remove it, only the owner does. The grantee is then invited (PENDING).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Self, unknown or unconnected grantee, invalid preset, or already shared (emailConnector.delegation.*)"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
