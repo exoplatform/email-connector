@@ -355,6 +355,24 @@ class ManageSieveClientTest {
   }
 
   /**
+   * The server's text reaches a message, and its response code an exception, without a
+   * control, line separator, paragraph separator or format character: NEL (U+0085), a
+   * line separator (U+2028) and a right-to-left override (U+202E) all become spaces.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testServerTextIsMadePrintable() throws Exception {
+    assertEquals("a b c d", ManageSieveClient.printable("a\u0085b\u2028c\u202Ed"));
+    server.refuse("GETSCRIPT", "NO (TRY\u0085LATER) \"x\u2028y\u202Ez\"");
+    try (ManageSieveClient client = server.authenticatedClient()) {
+      ManageSieveException e = assertThrows(ManageSieveException.class, () -> client.getScript("exo-rules"));
+      assertFalse(e.getResponseCode().matches("(?s).*[\\p{Cc}\\p{Zl}\\p{Zp}\\p{Cf}].*"), e.getResponseCode());
+      assertTrue(e.getMessage().endsWith(": x y z"), e.getMessage());
+    }
+  }
+
+  /**
    * Each size limit of a response is enforced by its own guard, told apart by its
    * message: whole-response octets (counted on every octet, and on a literal before it
    * is allocated), lines, tokens per line, atom length, quoted-string length, and a

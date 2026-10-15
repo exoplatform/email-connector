@@ -456,7 +456,8 @@ public final class ExoSieveScript {
    * <p>
    * Bounds: the subject is one line of at most {@value #MAX_SUBJECT_LENGTH} characters,
    * the text at most {@value #MAX_TEXT_LENGTH}, no NUL anywhere; the handle is a token
-   * of letters, digits, dots, underscores and dashes; the window's days are the user's
+   * of letters, digits, dots, underscores and dashes; a window day has a four-digit
+   * year; the window's days are the user's
    * own calendar days in {@code zone}, each boundary written with the fixed offset whose
    * date changes at the zone's own midnight, so a window across a DST change, or one
    * whose boundary falls on a change at midnight, starts and ends on the zone's day.
@@ -489,6 +490,12 @@ public final class ExoSieveScript {
 
     /** The largest {@code :days} accepted. */
     public static final int      MAX_DAYS           = 365;
+
+    /**
+     * The latest year a window day may fall in: a later one is written with a sign
+     * ({@code +10000-01-01}), which sorts before the digits in the script's comparison.
+     */
+    public static final int      MAX_YEAR           = 9999;
 
     /** The characters and length a reply handle may carry. */
     private static final Pattern HANDLE_PATTERN     = Pattern.compile("[A-Za-z0-9._-]{1,64}");
@@ -524,10 +531,21 @@ public final class ExoSieveScript {
       if (days < 1 || days > MAX_DAYS) {
         throw new IllegalArgumentException("emailConnector.absence.days.invalid");
       }
-      if (start != null && end != null && start.isAfter(end)) {
+      if ((start != null && end != null && start.isAfter(end)) || !fourDigitYear(start) || !fourDigitYear(end)) {
         throw new IllegalArgumentException("emailConnector.absence.window.invalid");
       }
       validateZone(zone, start, end);
+    }
+
+    /**
+     * Whether a window day, when there is one, is written with four digits, as the
+     * script's date comparison needs.
+     *
+     * @param day the day, may be null
+     * @return true when null or in years 0 to {@value #MAX_YEAR}
+     */
+    private static boolean fourDigitYear(LocalDate day) {
+      return day == null || (day.getYear() >= 0 && day.getYear() <= MAX_YEAR);
     }
 
     /**

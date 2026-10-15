@@ -249,8 +249,8 @@ public final class ManageSieveClient implements AutoCloseable {
    * @param credentials the login, and the password or the session id a provider
    *          presents as one
    * @throws ManageSieveException {@link Kind#UNSUPPORTED_MECHANISM} when the server does
-   *           not offer {@code PLAIN} after TLS, {@link Kind#AUTHENTICATION} when it
-   *           refuses the credentials or there are none
+   *           not offer {@code PLAIN} after TLS, {@link Kind#NO_CREDENTIALS} when there
+   *           are none, {@link Kind#AUTHENTICATION} when it refuses them
    */
   public void authenticatePlain(PasswordAuthentication credentials) throws ManageSieveException {
     if (!capabilities.supportsSasl(SASL_PLAIN)) {
@@ -612,14 +612,15 @@ public final class ManageSieveClient implements AutoCloseable {
   }
 
   /**
-   * The server's text made safe for a log line: control characters replaced by spaces,
-   * truncated.
+   * The server's text made safe for a log line or a user-facing name: control, line
+   * separator, paragraph separator and format characters (the bidirectional overrides
+   * among them) replaced by spaces, truncated.
    *
    * @param text the server's text
    * @return one line of at most {@value #MAX_MESSAGE_CHARS} characters
    */
   static String printable(String text) {
-    String line = text.replaceAll("\\p{Cntrl}", " ");
+    String line = text.replaceAll("[\\p{Cc}\\p{Zl}\\p{Zp}\\p{Cf}]", " ");
     return line.length() > MAX_MESSAGE_CHARS ? line.substring(0, MAX_MESSAGE_CHARS) + "…" : line;
   }
 
@@ -728,7 +729,7 @@ public final class ManageSieveClient implements AutoCloseable {
       if (index >= line.size() || line.get(index).type != TokenType.ATOM) {
         throw new ManageSieveException(Kind.PROTOCOL, "Malformed ManageSieve response code");
       }
-      code = line.get(index).value.toUpperCase(Locale.ROOT);
+      code = printable(line.get(index).value).toUpperCase(Locale.ROOT);
       while (index < line.size() && line.get(index).type != TokenType.RPAREN) {
         index++;
       }
