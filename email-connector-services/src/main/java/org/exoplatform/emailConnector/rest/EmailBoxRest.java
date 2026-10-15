@@ -59,6 +59,7 @@ import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
@@ -1458,7 +1459,7 @@ public class EmailBoxRest {
       if (email == null || email.getTo() == null || email.getTo().isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      EmailBoxService.OwnerCopy ownerCopy = emailBoxService.sendEmail(email, request.getRemoteUser(), delegationId);
+      OwnerCopy ownerCopy = emailBoxService.sendEmail(email, request.getRemoteUser(), delegationId);
       Map<String, String> response = new HashMap<>();
       if (ownerCopy != null) {
         response.put("ownerCopy", ownerCopy.name());
@@ -1550,7 +1551,7 @@ public class EmailBoxRest {
       // The path is what names the draft; a body claiming a different id would be two
       // answers to one question, and the addressable one wins.
       draft.setDraftLocalId(draftLocalId);
-      EmailBoxService.OwnerCopy ownerCopy = emailBoxService.sendDraft(draft, request.getRemoteUser(), delegationId);
+      OwnerCopy ownerCopy = emailBoxService.sendDraft(draft, request.getRemoteUser(), delegationId);
       Map<String, String> response = new HashMap<>();
       if (ownerCopy != null) {
         response.put("ownerCopy", ownerCopy.name());
