@@ -16,15 +16,15 @@
  */
 package org.exoplatform.emailConnector.service.rules.sieve;
 
-import static org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport.SUPPORTED_ELEMENT;
-import static org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport.unsupported;
+import static org.exoplatform.emailConnector.model.ServerRuleElementSupport.SUPPORTED_ELEMENT;
+import static org.exoplatform.emailConnector.model.ServerRuleElementSupport.unsupported;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
-import org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport;
-import org.exoplatform.emailConnector.model.ServerRuleCapabilities.VocabularySource;
+import org.exoplatform.emailConnector.model.ServerRuleElementSupport;
+import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
 
 /**
  * What a Sieve server can do, derived from the capabilities it advertised <b>after</b>
@@ -76,10 +76,10 @@ public final class SieveCapabilityDerivation {
    */
   public static ServerRuleCapabilities derive(ManageSieveCapabilities capabilities) {
     if (!capabilities.supportsSasl(ManageSieveClient.SASL_PLAIN)) {
-      return ServerRuleCapabilities.unsupported(NO_PLAIN, VocabularySource.DYNAMIC);
+      return ServerRuleCapabilities.unsupported(NO_PLAIN, ServerRuleVocabularySource.DYNAMIC);
     }
-    Map<String, ElementSupport> elements = new LinkedHashMap<>();
-    ElementSupport vacation = needs(capabilities, "vacation");
+    Map<String, ServerRuleElementSupport> elements = new LinkedHashMap<>();
+    ServerRuleElementSupport vacation = needs(capabilities, "vacation");
     elements.put(ServerRuleCapabilities.VACATION, vacation);
     elements.put(ServerRuleCapabilities.VACATION_DATE_WINDOW,
                  vacation.supported() ? both(needs(capabilities, "date"), needs(capabilities, "relational")) : vacation);
@@ -92,21 +92,21 @@ public final class SieveCapabilityDerivation {
         ServerRuleCapabilities.MESSAGE_SIZE, ServerRuleCapabilities.IS_LIST, ServerRuleCapabilities.IS_AUTOMATED }) {
       elements.put(core, SUPPORTED_ELEMENT);
     }
-    ElementSupport body = needs(capabilities, "body");
+    ServerRuleElementSupport body = needs(capabilities, "body");
     elements.put(ServerRuleCapabilities.BODY, body);
     elements.put(ServerRuleCapabilities.SUBJECT_OR_BODY, body);
     elements.put(ServerRuleCapabilities.HAS_ATTACHMENT, unsupported(NO_ATTACHMENT_TEST));
     elements.put(ServerRuleCapabilities.ATTACHMENT_NAME, unsupported(NO_ATTACHMENT_TEST));
     elements.put(ServerRuleCapabilities.ATTACHMENT_SIZE, unsupported(NO_ATTACHMENT_TEST));
-    ElementSupport fileinto = needs(capabilities, "fileinto");
+    ServerRuleElementSupport fileinto = needs(capabilities, "fileinto");
     elements.put(ServerRuleCapabilities.MOVE_TO_FOLDER, fileinto);
     elements.put(ServerRuleCapabilities.MARK_JUNK, fileinto);
     elements.put(ServerRuleCapabilities.DELETE, fileinto);
-    ElementSupport flags = needs(capabilities, "imap4flags");
+    ServerRuleElementSupport flags = needs(capabilities, "imap4flags");
     elements.put(ServerRuleCapabilities.MARK_READ, flags);
     elements.put(ServerRuleCapabilities.STAR, flags);
     elements.put(ServerRuleCapabilities.TAG, flags);
-    return new ServerRuleCapabilities(true, null, false, false, VocabularySource.DYNAMIC, elements);
+    return new ServerRuleCapabilities(true, null, false, false, ServerRuleVocabularySource.DYNAMIC, elements);
   }
 
   /**
@@ -116,7 +116,7 @@ public final class SieveCapabilityDerivation {
    * @param extension the extension
    * @return supported when advertised, else unsupported naming the extension
    */
-  private static ElementSupport needs(ManageSieveCapabilities capabilities, String extension) {
+  private static ServerRuleElementSupport needs(ManageSieveCapabilities capabilities, String extension) {
     return capabilities.hasExtension(extension) ? SUPPORTED_ELEMENT : unsupported(MISSING_EXTENSION + extension);
   }
 
@@ -127,7 +127,7 @@ public final class SieveCapabilityDerivation {
    * @param second the second answer
    * @return supported when both are
    */
-  private static ElementSupport both(ElementSupport first, ElementSupport second) {
+  private static ServerRuleElementSupport both(ServerRuleElementSupport first, ServerRuleElementSupport second) {
     return first.supported() ? second : first;
   }
 }

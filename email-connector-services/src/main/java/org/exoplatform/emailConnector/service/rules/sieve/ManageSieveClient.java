@@ -40,7 +40,7 @@ import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 
-import org.exoplatform.emailConnector.service.rules.sieve.ManageSieveException.Kind;
+import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
 
 /**
  * The subset of ManageSieve (RFC 5804) eXo needs to publish its own Sieve script: one
@@ -179,10 +179,11 @@ public final class ManageSieveClient implements AutoCloseable {
    * @param connectTimeoutMillis the TCP connect timeout
    * @param readTimeoutMillis the timeout of every read
    * @return the connected client, over TLS
-   * @throws ManageSieveException {@link Kind#UNAVAILABLE} when the server cannot be
-   *           reached or the TLS handshake fails, {@link Kind#TLS_REQUIRED} when it does
-   *           not offer {@code STARTTLS}, {@link Kind#PROTOCOL} when its answers are
-   *           malformed
+   * @throws ManageSieveException {@link ManageSieveErrorKind#UNAVAILABLE} when the server
+   *           cannot be reached or the TLS handshake fails,
+   *           {@link ManageSieveErrorKind#TLS_REQUIRED} when it does not offer
+   *           {@code STARTTLS}, {@link ManageSieveErrorKind#PROTOCOL} when its answers
+   *           are malformed
    */
   public static ManageSieveClient connect(String host,
                                           int port,
@@ -248,17 +249,18 @@ public final class ManageSieveClient implements AutoCloseable {
    *
    * @param credentials the login, and the password or the session id a provider
    *          presents as one
-   * @throws ManageSieveException {@link Kind#UNSUPPORTED_MECHANISM} when the server does
-   *           not offer {@code PLAIN} after TLS, {@link Kind#NO_CREDENTIALS} when there
-   *           are none, {@link Kind#AUTHENTICATION} when it refuses them
+   * @throws ManageSieveException {@link ManageSieveErrorKind#UNSUPPORTED_MECHANISM} when
+   *           the server does not offer {@code PLAIN} after TLS,
+   *           {@link ManageSieveErrorKind#NO_CREDENTIALS} when there are none,
+   *           {@link ManageSieveErrorKind#AUTHENTICATION} when it refuses them
    */
   public void authenticatePlain(PasswordAuthentication credentials) throws ManageSieveException {
     if (!capabilities.supportsSasl(SASL_PLAIN)) {
-      throw new ManageSieveException(Kind.UNSUPPORTED_MECHANISM,
+      throw new ManageSieveException(ManageSieveErrorKind.UNSUPPORTED_MECHANISM,
                                      "The ManageSieve server does not offer SASL PLAIN after STARTTLS");
     }
     if (credentials == null || credentials.getUserName() == null || credentials.getPassword() == null) {
-      throw new ManageSieveException(Kind.NO_CREDENTIALS, "No credentials to authenticate with");
+      throw new ManageSieveException(ManageSieveErrorKind.NO_CREDENTIALS, "No credentials to authenticate with");
     }
     byte[] loginBytes = credentials.getUserName().getBytes(StandardCharsets.UTF_8);
     byte[] passwordBytes = credentials.getPassword().getBytes(StandardCharsets.UTF_8);
@@ -266,16 +268,16 @@ public final class ManageSieveClient implements AutoCloseable {
     System.arraycopy(loginBytes, 0, message, 1, loginBytes.length);
     System.arraycopy(passwordBytes, 0, message, loginBytes.length + 2, passwordBytes.length);
     String initialResponse = Base64.getEncoder().encodeToString(message);
-    Response response = command("AUTHENTICATE", "AUTHENTICATE " + string(SASL_PLAIN) + " " + string(initialResponse));
-    if (response.status == Status.NO && "TRYLATER".equals(response.code)) {
-      throw new ManageSieveException(Kind.UNAVAILABLE,
-                                     response.code,
+    ManageSieveResponse response = command("AUTHENTICATE", "AUTHENTICATE " + string(SASL_PLAIN) + " " + string(initialResponse));
+    if (response.status() == ManageSieveStatus.NO && "TRYLATER".equals(response.code())) {
+      throw new ManageSieveException(ManageSieveErrorKind.UNAVAILABLE,
+                                     response.code(),
                                      "The ManageSieve server asked to authenticate later",
                                      null);
     }
-    if (response.status == Status.NO) {
-      throw new ManageSieveException(Kind.AUTHENTICATION,
-                                     response.code,
+    if (response.status() == ManageSieveStatus.NO) {
+      throw new ManageSieveException(ManageSieveErrorKind.AUTHENTICATION,
+                                     response.code(),
                                      "The ManageSieve server refused the credentials",
                                      null);
     }
@@ -289,16 +291,16 @@ public final class ManageSieveClient implements AutoCloseable {
    * @throws ManageSieveException when the server refuses or breaks the protocol
    */
   public List<SieveScriptInfo> listScripts() throws ManageSieveException {
-    Response response = command(CMD_LISTSCRIPTS, CMD_LISTSCRIPTS);
+    ManageSieveResponse response = command(CMD_LISTSCRIPTS, CMD_LISTSCRIPTS);
     requireOk(response, CMD_LISTSCRIPTS);
     List<SieveScriptInfo> scripts = new ArrayList<>();
-    for (List<Token> line : response.lines) {
-      if (line.isEmpty() || line.get(0).type != TokenType.STRING) {
-        throw new ManageSieveException(Kind.PROTOCOL, "Malformed " + CMD_LISTSCRIPTS + " line");
+    for (List<ManageSieveToken> line : response.lines()) {
+      if (line.isEmpty() || line.get(0).type() != ManageSieveTokenType.STRING) {
+        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "Malformed " + CMD_LISTSCRIPTS + " line");
       }
-      boolean active = line.size() > 1 && line.get(1).type == TokenType.ATOM
-          && "ACTIVE".equalsIgnoreCase(line.get(1).value);
-      scripts.add(new SieveScriptInfo(line.get(0).value, active));
+      boolean active = line.size() > 1 && line.get(1).type() == ManageSieveTokenType.ATOM
+          && "ACTIVE".equalsIgnoreCase(line.get(1).value());
+      scripts.add(new SieveScriptInfo(line.get(0).value(), active));
     }
     return scripts;
   }
@@ -308,17 +310,17 @@ public final class ManageSieveClient implements AutoCloseable {
    *
    * @param name the script name
    * @return the script text
-   * @throws ManageSieveException {@link Kind#REFUSED} with {@code NONEXISTENT} when the
-   *           script does not exist
+   * @throws ManageSieveException {@link ManageSieveErrorKind#REFUSED} with
+   *           {@code NONEXISTENT} when the script does not exist
    */
   public String getScript(String name) throws ManageSieveException {
-    Response response = command("GETSCRIPT", "GETSCRIPT " + string(name));
+    ManageSieveResponse response = command("GETSCRIPT", "GETSCRIPT " + string(name));
     requireOk(response, "GETSCRIPT");
-    if (response.lines.size() != 1 || response.lines.get(0).size() != 1
-        || response.lines.get(0).get(0).type != TokenType.STRING) {
-      throw new ManageSieveException(Kind.PROTOCOL, "Malformed GETSCRIPT answer");
+    if (response.lines().size() != 1 || response.lines().get(0).size() != 1
+        || response.lines().get(0).get(0).type() != ManageSieveTokenType.STRING) {
+      throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "Malformed GETSCRIPT answer");
     }
-    return response.lines.get(0).get(0).value;
+    return response.lines().get(0).get(0).value();
   }
 
   /**
@@ -327,8 +329,8 @@ public final class ManageSieveClient implements AutoCloseable {
    *
    * @param name the script name
    * @param content the script text
-   * @throws ManageSieveException {@link Kind#REFUSED} when the server refuses it (a
-   *           compile error, a quota)
+   * @throws ManageSieveException {@link ManageSieveErrorKind#REFUSED} when the server
+   *           refuses it (a compile error, a quota)
    */
   public void putScript(String name, String content) throws ManageSieveException {
     requireOk(command("PUTSCRIPT", "PUTSCRIPT " + string(name) + " " + literal(content)), "PUTSCRIPT");
@@ -341,7 +343,8 @@ public final class ManageSieveClient implements AutoCloseable {
    * @param content the script text
    * @return true when the server checked it, false when it offers no
    *         {@code CHECKSCRIPT} and nothing was sent
-   * @throws ManageSieveException {@link Kind#REFUSED} when the script does not compile
+   * @throws ManageSieveException {@link ManageSieveErrorKind#REFUSED} when the script
+   *           does not compile
    */
   public boolean checkScript(String content) throws ManageSieveException {
     if (!capabilities.supportsCheckScript()) {
@@ -415,21 +418,22 @@ public final class ManageSieveClient implements AutoCloseable {
       plain.connect(new InetSocketAddress(host, port), connectTimeoutMillis);
       plain.setSoTimeout(readTimeoutMillis);
       bindStreams();
-      Response greeting = readResponse();
+      ManageSieveResponse greeting = readResponse();
       requireOk(greeting, "greeting");
       ManageSieveCapabilities clearText = capabilitiesOf(greeting);
       if (!clearText.starttls()) {
-        throw new ManageSieveException(Kind.TLS_REQUIRED,
+        throw new ManageSieveException(ManageSieveErrorKind.TLS_REQUIRED,
                                        "The ManageSieve server does not offer STARTTLS; eXo never talks to it in clear");
       }
       write("STARTTLS");
       requireOk(readResponse(), "STARTTLS");
       if (pushedBack >= 0 || in.available() > 0) {
-        throw new ManageSieveException(Kind.PROTOCOL, "The ManageSieve server sent data ahead of the TLS handshake");
+        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL,
+                                       "The ManageSieve server sent data ahead of the TLS handshake");
       }
       startTls(tlsSocketFactory, plain, readTimeoutMillis);
       bindStreams();
-      Response afterTls = readResponse();
+      ManageSieveResponse afterTls = readResponse();
       requireOk(afterTls, "capabilities after STARTTLS");
       capabilities = capabilitiesOf(afterTls);
     } catch (IOException e) {
@@ -512,15 +516,15 @@ public final class ManageSieveClient implements AutoCloseable {
    * @return the capabilities
    * @throws ManageSieveException when a line holds something else than strings
    */
-  private static ManageSieveCapabilities capabilitiesOf(Response response) throws ManageSieveException {
+  private static ManageSieveCapabilities capabilitiesOf(ManageSieveResponse response) throws ManageSieveException {
     List<List<String>> lines = new ArrayList<>();
-    for (List<Token> line : response.lines) {
+    for (List<ManageSieveToken> line : response.lines()) {
       List<String> values = new ArrayList<>();
-      for (Token token : line) {
-        if (token.type != TokenType.STRING) {
-          throw new ManageSieveException(Kind.PROTOCOL, "Malformed capability line");
+      for (ManageSieveToken token : line) {
+        if (token.type() != ManageSieveTokenType.STRING) {
+          throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "Malformed capability line");
         }
-        values.add(token.value);
+        values.add(token.value());
       }
       lines.add(values);
     }
@@ -533,9 +537,10 @@ public final class ManageSieveClient implements AutoCloseable {
    * @param name the command name, the only part of it that may appear in an error
    * @param line the command line, possibly ending with a literal
    * @return the response
-   * @throws ManageSieveException {@link Kind#UNAVAILABLE} on an I/O error or a timeout
+   * @throws ManageSieveException {@link ManageSieveErrorKind#UNAVAILABLE} on an I/O error
+   *           or a timeout
    */
-  private Response command(String name, String line) throws ManageSieveException {
+  private ManageSieveResponse command(String name, String line) throws ManageSieveException {
     startOperation();
     try {
       write(line);
@@ -552,20 +557,25 @@ public final class ManageSieveClient implements AutoCloseable {
    *
    * @param response the response
    * @param name the command name
-   * @throws ManageSieveException {@link Kind#REFUSED} on {@code NO},
-   *           {@link Kind#PROTOCOL} on {@code BYE}
+   * @throws ManageSieveException {@link ManageSieveErrorKind#REFUSED} on {@code NO},
+   *           {@link ManageSieveErrorKind#PROTOCOL} on {@code BYE}
    */
-  private void requireOk(Response response, String name) throws ManageSieveException {
-    if (response.status == Status.OK) {
+  private void requireOk(ManageSieveResponse response, String name) throws ManageSieveException {
+    if (response.status() == ManageSieveStatus.OK) {
       return;
     }
-    String detail = response.message == null ? "" : ": " + printable(response.message);
-    if (response.status == Status.BYE) {
+    String detail = response.message() == null ? "" : ": " + printable(response.message());
+    if (response.status() == ManageSieveStatus.BYE) {
       close();
-      throw new ManageSieveException(Kind.PROTOCOL, response.code, "The ManageSieve server closed the connection on " + name
-          + detail, null);
+      throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL,
+                                     response.code(),
+                                     "The ManageSieve server closed the connection on " + name + detail,
+                                     null);
     }
-    throw new ManageSieveException(Kind.REFUSED, response.code, "The ManageSieve server refused " + name + detail, null);
+    throw new ManageSieveException(ManageSieveErrorKind.REFUSED,
+                                   response.code(),
+                                   "The ManageSieve server refused " + name + detail,
+                                   null);
   }
 
   /**
@@ -634,7 +644,9 @@ public final class ManageSieveClient implements AutoCloseable {
   private ManageSieveException unavailable(String name, IOException e) {
     close();
     String reason = expired || e instanceof SocketTimeoutException ? " timed out" : " failed";
-    return new ManageSieveException(Kind.UNAVAILABLE, "ManageSieve " + name + reason + " on " + host + ":" + port, e);
+    return new ManageSieveException(ManageSieveErrorKind.UNAVAILABLE,
+                                    "ManageSieve " + name + reason + " on " + host + ":" + port,
+                                    e);
   }
 
   /**
@@ -694,20 +706,20 @@ public final class ManageSieveClient implements AutoCloseable {
    * @throws IOException when the socket fails
    * @throws ManageSieveException when the response is malformed or too large
    */
-  private Response readResponse() throws IOException, ManageSieveException {
+  private ManageSieveResponse readResponse() throws IOException, ManageSieveException {
     responseOctets = 0;
-    List<List<Token>> lines = new ArrayList<>();
+    List<List<ManageSieveToken>> lines = new ArrayList<>();
     while (true) {
-      List<Token> line = readLine();
-      if (!line.isEmpty() && line.get(0).type == TokenType.ATOM) {
-        Status status = statusOf(line.get(0).value);
+      List<ManageSieveToken> line = readLine();
+      if (!line.isEmpty() && line.get(0).type() == ManageSieveTokenType.ATOM) {
+        ManageSieveStatus status = statusOf(line.get(0).value());
         if (status != null) {
           return finalLine(status, line, lines);
         }
       }
       lines.add(line);
       if (lines.size() > MAX_RESPONSE_LINES) {
-        throw new ManageSieveException(Kind.PROTOCOL, "The ManageSieve response is too long");
+        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "The ManageSieve response is too long");
       }
     }
   }
@@ -721,25 +733,28 @@ public final class ManageSieveClient implements AutoCloseable {
    * @return the response
    * @throws ManageSieveException when the line is malformed
    */
-  private static Response finalLine(Status status, List<Token> line, List<List<Token>> lines) throws ManageSieveException {
+  private static ManageSieveResponse finalLine(ManageSieveStatus status,
+                                               List<ManageSieveToken> line,
+                                               List<List<ManageSieveToken>> lines) throws ManageSieveException {
     int index = 1;
     String code = null;
-    if (index < line.size() && line.get(index).type == TokenType.LPAREN) {
+    if (index < line.size() && line.get(index).type() == ManageSieveTokenType.LPAREN) {
       index++;
-      if (index >= line.size() || line.get(index).type != TokenType.ATOM) {
-        throw new ManageSieveException(Kind.PROTOCOL, "Malformed ManageSieve response code");
+      if (index >= line.size() || line.get(index).type() != ManageSieveTokenType.ATOM) {
+        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "Malformed ManageSieve response code");
       }
-      code = printable(line.get(index).value).toUpperCase(Locale.ROOT);
-      while (index < line.size() && line.get(index).type != TokenType.RPAREN) {
+      code = printable(line.get(index).value()).toUpperCase(Locale.ROOT);
+      while (index < line.size() && line.get(index).type() != ManageSieveTokenType.RPAREN) {
         index++;
       }
       if (index >= line.size()) {
-        throw new ManageSieveException(Kind.PROTOCOL, "Unterminated ManageSieve response code");
+        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "Unterminated ManageSieve response code");
       }
       index++;
     }
-    String message = index < line.size() && line.get(index).type == TokenType.STRING ? line.get(index).value : null;
-    return new Response(status, code, message, lines);
+    String message = index < line.size() && line.get(index).type() == ManageSieveTokenType.STRING ? line.get(index).value()
+                                                                                                 : null;
+    return new ManageSieveResponse(status, code, message, lines);
   }
 
   /**
@@ -748,11 +763,11 @@ public final class ManageSieveClient implements AutoCloseable {
    * @param atom the atom
    * @return the status, or null when the atom is not one
    */
-  private static Status statusOf(String atom) {
+  private static ManageSieveStatus statusOf(String atom) {
     return switch (atom.toUpperCase(Locale.ROOT)) {
-    case "OK" -> Status.OK;
-    case "NO" -> Status.NO;
-    case "BYE" -> Status.BYE;
+    case "OK" -> ManageSieveStatus.OK;
+    case "NO" -> ManageSieveStatus.NO;
+    case "BYE" -> ManageSieveStatus.BYE;
     default -> null;
     };
   }
@@ -764,8 +779,8 @@ public final class ManageSieveClient implements AutoCloseable {
    * @throws IOException when the socket fails
    * @throws ManageSieveException when a token is malformed or too large
    */
-  private List<Token> readLine() throws IOException, ManageSieveException {
-    List<Token> tokens = new ArrayList<>();
+  private List<ManageSieveToken> readLine() throws IOException, ManageSieveException {
+    List<ManageSieveToken> tokens = new ArrayList<>();
     while (true) {
       int c = read();
       if (c == ' ') {
@@ -773,7 +788,7 @@ public final class ManageSieveClient implements AutoCloseable {
       }
       if (c == '\r') {
         if (read() != '\n') {
-          throw new ManageSieveException(Kind.PROTOCOL, "Bare CR in a ManageSieve response");
+          throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "Bare CR in a ManageSieve response");
         }
         return tokens;
       }
@@ -782,7 +797,7 @@ public final class ManageSieveClient implements AutoCloseable {
       }
       tokens.add(readToken(c));
       if (tokens.size() > MAX_TOKENS_PER_LINE) {
-        throw new ManageSieveException(Kind.PROTOCOL, "The ManageSieve response line is too long");
+        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "The ManageSieve response line is too long");
       }
     }
   }
@@ -796,13 +811,13 @@ public final class ManageSieveClient implements AutoCloseable {
    * @throws IOException when the socket fails
    * @throws ManageSieveException when the token is malformed or too large
    */
-  private Token readToken(int c) throws IOException, ManageSieveException {
+  private ManageSieveToken readToken(int c) throws IOException, ManageSieveException {
     return switch (c) {
-    case '"' -> new Token(TokenType.STRING, readQuoted());
-    case '{' -> new Token(TokenType.STRING, readLiteral());
-    case '(' -> new Token(TokenType.LPAREN, "(");
-    case ')' -> new Token(TokenType.RPAREN, ")");
-    default -> new Token(TokenType.ATOM, readAtom(c));
+    case '"' -> new ManageSieveToken(ManageSieveTokenType.STRING, readQuoted());
+    case '{' -> new ManageSieveToken(ManageSieveTokenType.STRING, readLiteral());
+    case '(' -> new ManageSieveToken(ManageSieveTokenType.LPAREN, "(");
+    case ')' -> new ManageSieveToken(ManageSieveTokenType.RPAREN, ")");
+    default -> new ManageSieveToken(ManageSieveTokenType.ATOM, readAtom(c));
     };
   }
 
@@ -824,11 +839,11 @@ public final class ManageSieveClient implements AutoCloseable {
         c = read();
       }
       if (c == '\r' || c == '\n') {
-        throw new ManageSieveException(Kind.PROTOCOL, "Line break in a ManageSieve quoted string");
+        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "Line break in a ManageSieve quoted string");
       }
       value.write(c);
       if (value.size() > MAX_SERVER_QUOTED_OCTETS) {
-        throw new ManageSieveException(Kind.PROTOCOL, "ManageSieve quoted string too long");
+        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "ManageSieve quoted string too long");
       }
     }
   }
@@ -849,7 +864,8 @@ public final class ManageSieveClient implements AutoCloseable {
       count = count * 10 + (c - '0');
       digits++;
       if (count > MAX_LITERAL_OCTETS) {
-        throw new ManageSieveException(Kind.PROTOCOL, "ManageSieve literal larger than " + MAX_LITERAL_OCTETS + " octets");
+        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL,
+                                       "ManageSieve literal larger than " + MAX_LITERAL_OCTETS + " octets");
       }
       c = read();
     }
@@ -857,10 +873,11 @@ public final class ManageSieveClient implements AutoCloseable {
       c = read();
     }
     if (digits == 0 || c != '}' || read() != '\r' || read() != '\n') {
-      throw new ManageSieveException(Kind.PROTOCOL, "Malformed ManageSieve literal");
+      throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "Malformed ManageSieve literal");
     }
     if (responseOctets + count > MAX_RESPONSE_OCTETS) {
-      throw new ManageSieveException(Kind.PROTOCOL, "ManageSieve response larger than " + MAX_RESPONSE_OCTETS + " octets");
+      throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL,
+                                     "ManageSieve response larger than " + MAX_RESPONSE_OCTETS + " octets");
     }
     byte[] octets = new byte[(int) count];
     int offset = 0;
@@ -895,7 +912,7 @@ public final class ManageSieveClient implements AutoCloseable {
     while (c != ' ' && c != '\r' && c != '\n' && c != '(' && c != ')' && c != '"' && c != '{') {
       atom.append((char) c);
       if (atom.length() > MAX_ATOM_OCTETS) {
-        throw new ManageSieveException(Kind.PROTOCOL, "ManageSieve atom too long");
+        throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL, "ManageSieve atom too long");
       }
       c = read();
     }
@@ -923,7 +940,8 @@ public final class ManageSieveClient implements AutoCloseable {
       throw new EOFException("ManageSieve connection closed by the server");
     }
     if (++responseOctets > MAX_RESPONSE_OCTETS) {
-      throw new ManageSieveException(Kind.PROTOCOL, "ManageSieve response larger than " + MAX_RESPONSE_OCTETS + " octets");
+      throw new ManageSieveException(ManageSieveErrorKind.PROTOCOL,
+                                     "ManageSieve response larger than " + MAX_RESPONSE_OCTETS + " octets");
     }
     return c;
   }
@@ -937,35 +955,5 @@ public final class ManageSieveClient implements AutoCloseable {
     if (System.nanoTime() - deadlineNanos > 0) {
       throw new SocketTimeoutException("ManageSieve operation deadline exceeded");
     }
-  }
-
-  /** The final status of a response. */
-  private enum Status {
-    OK, NO, BYE
-  }
-
-  /** What a response token is. */
-  private enum TokenType {
-    ATOM, STRING, LPAREN, RPAREN
-  }
-
-  /**
-   * One token of a response line.
-   *
-   * @param type what the token is
-   * @param value its text, a quoted string or literal unescaped
-   */
-  private record Token(TokenType type, String value) {
-  }
-
-  /**
-   * One response.
-   *
-   * @param status the final status
-   * @param code the response code, upper-case, or null
-   * @param message the human-readable text, or null
-   * @param lines the data lines before the final one
-   */
-  private record Response(Status status, String code, String message, List<List<Token>> lines) {
   }
 }

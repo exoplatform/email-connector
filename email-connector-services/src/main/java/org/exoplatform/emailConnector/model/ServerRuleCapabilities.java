@@ -21,6 +21,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
+
 /**
  * What a mail server's rules engine can do for one connector, as its engine answers
  * {@code probe}: one record shared by the automatic reply and the server rules, so that
@@ -44,8 +46,8 @@ public record ServerRuleCapabilities(boolean supported,
                                      String reasonCode,
                                      boolean readsForeignRules,
                                      boolean publishConflict,
-                                     VocabularySource vocabularySource,
-                                     Map<String, ElementSupport> elements) {
+                                     ServerRuleVocabularySource vocabularySource,
+                                     Map<String, ServerRuleElementSupport> elements) {
 
   /** The automatic reply itself. */
   public static final String       VACATION               = "vacation";
@@ -153,38 +155,6 @@ public record ServerRuleCapabilities(boolean supported,
                                                                     DELETE,
                                                                     TAG);
 
-  /** Where an engine's element answers come from. */
-  public enum VocabularySource {
-    /** A fixed model, the same on every server of that family. */
-    FIXED,
-    /** Read from the server per connector, e.g. the Sieve {@code SIEVE} capability line. */
-    DYNAMIC,
-    /** No engine: nothing is supported. */
-    NONE
-  }
-
-  /**
-   * One element's answer.
-   *
-   * @param supported whether the element can be used
-   * @param reasonKey why not, a message key; null when supported
-   */
-  public record ElementSupport(boolean supported, String reasonKey) {
-
-    /** The answer for a supported element. */
-    public static final ElementSupport SUPPORTED_ELEMENT = new ElementSupport(true, null);
-
-    /**
-     * The answer for an unsupported element.
-     *
-     * @param reasonKey the message key explaining why
-     * @return the answer
-     */
-    public static ElementSupport unsupported(String reasonKey) {
-      return new ElementSupport(false, reasonKey);
-    }
-  }
-
   /**
    * Keeps the element map unmodifiable and in insertion order.
    *
@@ -207,9 +177,9 @@ public record ServerRuleCapabilities(boolean supported,
    * @param vocabularySource where the answer comes from
    * @return the capabilities
    */
-  public static ServerRuleCapabilities unsupported(String reasonCode, VocabularySource vocabularySource) {
-    Map<String, ElementSupport> elements = new LinkedHashMap<>();
-    ALL_ELEMENTS.forEach(element -> elements.put(element, ElementSupport.unsupported(reasonCode)));
+  public static ServerRuleCapabilities unsupported(String reasonCode, ServerRuleVocabularySource vocabularySource) {
+    Map<String, ServerRuleElementSupport> elements = new LinkedHashMap<>();
+    ALL_ELEMENTS.forEach(element -> elements.put(element, ServerRuleElementSupport.unsupported(reasonCode)));
     return new ServerRuleCapabilities(false, reasonCode, false, false, vocabularySource, elements);
   }
 
@@ -220,7 +190,7 @@ public record ServerRuleCapabilities(boolean supported,
    * @return true when the engine lists it as supported
    */
   public boolean isSupported(String element) {
-    ElementSupport support = elements.get(element);
+    ServerRuleElementSupport support = elements.get(element);
     return supported && support != null && support.supported();
   }
 

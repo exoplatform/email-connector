@@ -30,7 +30,10 @@ import java.util.regex.Pattern;
 
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
+import org.exoplatform.emailConnector.constant.SievePolicyCase;
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
+import org.exoplatform.emailConnector.model.SievePublishOutcome;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -110,43 +113,6 @@ public class SieveScriptPolicy {
       + "require [\"include\"];\n") + "include :personal \"((?:[^\"\\\\]|\\\\.)*)\";\n"
       + "include :personal \"((?:[^\"\\\\]|\\\\.)*)\";\n");
 
-  /** Which case of the policy a publish took. */
-  public enum PolicyCase {
-    /** No script was active; eXo's script is now. */
-    NO_ACTIVE_SCRIPT,
-    /**
-     * eXo's wrapper was active around a script that no longer exists; eXo's script now
-     * runs alone and the wrapper is gone.
-     */
-    WRAPPER_REMOVED,
-    /** eXo's script was active and was replaced in place. */
-    EXO_ACTIVE,
-    /** Another script is active through eXo's wrapper, next to eXo's script. */
-    WRAPPED,
-    /**
-     * Another script is active and already includes eXo's script, which was replaced in
-     * place; the other script stays active, unwrapped.
-     */
-    INCLUDED_BY_FOREIGN
-  }
-
-  /**
-   * What a publish did.
-   *
-   * @param policyCase the case taken
-   * @param activeScript the script now active
-   * @param foreignScript the other script the wrapper includes, null when none
-   * @param exoFirst whether the wrapper runs eXo's script first; false when no wrapper
-   * @param scriptHash the SHA-256 of the text of {@value ExoSieveScript#SCRIPT_NAME} as
-   *          stored
-   */
-  public record PublishOutcome(PolicyCase policyCase,
-                               String activeScript,
-                               String foreignScript,
-                               boolean exoFirst,
-                               String scriptHash) {
-  }
-
   /**
    * Publishes eXo's script according to the policy.
    *
@@ -157,7 +123,7 @@ public class SieveScriptPolicy {
    * @throws ServerRuleConflictException when publishing would replace or break another
    *           client's script; nothing was written
    */
-  public PublishOutcome publish(ManageSieveClient client,
+  public SievePublishOutcome publish(ManageSieveClient client,
                                 ExoSieveScript script) throws ManageSieveException, ServerRuleConflictException {
     String text = script.toScript(SieveStringEncoding.forCapabilities(client.getCapabilities()));
     String hash = ExoSieveScript.sha256(text);
@@ -168,12 +134,12 @@ public class SieveScriptPolicy {
       client.checkScript(text);
       put(client, SCRIPT_NAME, text);
       activate(client, SCRIPT_NAME);
-      return new PublishOutcome(PolicyCase.NO_ACTIVE_SCRIPT, SCRIPT_NAME, null, false, hash);
+      return new SievePublishOutcome(SievePolicyCase.NO_ACTIVE_SCRIPT, SCRIPT_NAME, null, false, hash);
     }
     if (SCRIPT_NAME.equals(active)) {
       client.checkScript(text);
       put(client, SCRIPT_NAME, text);
-      return new PublishOutcome(PolicyCase.EXO_ACTIVE, SCRIPT_NAME, null, false, hash);
+      return new SievePublishOutcome(SievePolicyCase.EXO_ACTIVE, SCRIPT_NAME, null, false, hash);
     }
     if (WRAPPER_NAME.equals(active)) {
       String foreign = wrappedScript(client.getScript(WRAPPER_NAME));
@@ -190,7 +156,7 @@ public class SieveScriptPolicy {
           // and failing here would hide that the publish took effect.
           LOG.debug("Could not delete the inactive {} script", WRAPPER_NAME, e);
         }
-        return new PublishOutcome(PolicyCase.WRAPPER_REMOVED, SCRIPT_NAME, null, false, hash);
+        return new SievePublishOutcome(SievePolicyCase.WRAPPER_REMOVED, SCRIPT_NAME, null, false, hash);
       }
       String foreignText = readForeign(client, foreign, script);
       if (!ownScriptsReached(client, scripts, foreign, foreignText).isEmpty()) {
@@ -200,7 +166,7 @@ public class SieveScriptPolicy {
       client.checkScript(text);
       put(client, SCRIPT_NAME, text);
       put(client, WRAPPER_NAME, wrapper(foreign, exoFirst));
-      return new PublishOutcome(PolicyCase.WRAPPED, WRAPPER_NAME, foreign, exoFirst, hash);
+      return new SievePublishOutcome(SievePolicyCase.WRAPPED, WRAPPER_NAME, foreign, exoFirst, hash);
     }
     if (active.isEmpty()) {
       // A nameless active script (what Stalwart's JMAP out-of-office creates) can be
@@ -222,11 +188,11 @@ public class SieveScriptPolicy {
     client.checkScript(text);
     put(client, SCRIPT_NAME, text);
     if (reached.contains(SCRIPT_NAME)) {
-      return new PublishOutcome(PolicyCase.INCLUDED_BY_FOREIGN, active, active, false, hash);
+      return new SievePublishOutcome(SievePolicyCase.INCLUDED_BY_FOREIGN, active, active, false, hash);
     }
     put(client, WRAPPER_NAME, wrapper(active, exoFirst));
     activate(client, WRAPPER_NAME);
-    return new PublishOutcome(PolicyCase.WRAPPED, WRAPPER_NAME, active, exoFirst, hash);
+    return new SievePublishOutcome(SievePolicyCase.WRAPPED, WRAPPER_NAME, active, exoFirst, hash);
   }
 
   /**
@@ -309,7 +275,7 @@ public class SieveScriptPolicy {
     try {
       return client.getScript(foreign);
     } catch (ManageSieveException e) {
-      if (e.getKind() != ManageSieveException.Kind.REFUSED) {
+      if (e.getKind() != ManageSieveErrorKind.REFUSED) {
         throw e;
       }
       throw conflict(script.emitsVacation() ? ServerRuleConflictException.MANAGED_ELSEWHERE

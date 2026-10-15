@@ -32,10 +32,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import org.exoplatform.emailConnector.exception.ServerRuleConflictException;
-import org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript.Vacation;
-import org.exoplatform.emailConnector.service.rules.sieve.ManageSieveException.Kind;
-import org.exoplatform.emailConnector.service.rules.sieve.SieveScriptPolicy.PolicyCase;
-import org.exoplatform.emailConnector.service.rules.sieve.SieveScriptPolicy.PublishOutcome;
+import org.exoplatform.emailConnector.model.SieveVacation;
+import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
+import org.exoplatform.emailConnector.constant.SievePolicyCase;
+import org.exoplatform.emailConnector.model.SievePublishOutcome;
 
 /**
  * The one-active-script policy against a ManageSieve server over a real socket: the
@@ -92,8 +92,8 @@ class SieveScriptPolicyTest {
   void testCase1NoActiveScript() throws Exception {
     server.script("old", "keep;", false);
     ExoSieveScript script = replyOn();
-    PublishOutcome outcome = publish(script);
-    assertEquals(PolicyCase.NO_ACTIVE_SCRIPT, outcome.policyCase());
+    SievePublishOutcome outcome = publish(script);
+    assertEquals(SievePolicyCase.NO_ACTIVE_SCRIPT, outcome.policyCase());
     assertEquals(SCRIPT_NAME, server.getActive());
     assertEquals(script.toScript(), server.getScripts().get(SCRIPT_NAME));
     assertEquals(script.hash(), outcome.scriptHash());
@@ -109,8 +109,8 @@ class SieveScriptPolicyTest {
   @Test
   void testCase2ExoScriptActiveIsReplacedInPlace() throws Exception {
     server.script(SCRIPT_NAME, replyOff().toScript(), true);
-    PublishOutcome outcome = publish(replyOn());
-    assertEquals(PolicyCase.EXO_ACTIVE, outcome.policyCase());
+    SievePublishOutcome outcome = publish(replyOn());
+    assertEquals(SievePolicyCase.EXO_ACTIVE, outcome.policyCase());
     assertEquals(replyOn().toScript(), server.getScripts().get(SCRIPT_NAME));
     assertEquals(List.of(), server.getCommands("SETACTIVE"));
   }
@@ -125,8 +125,8 @@ class SieveScriptPolicyTest {
   @Test
   void testCase3WrapsTheForeignScriptReplyFirst() throws Exception {
     server.script(FOREIGN, FILTERS_ONLY, true);
-    PublishOutcome outcome = publish(replyOn());
-    assertEquals(PolicyCase.WRAPPED, outcome.policyCase());
+    SievePublishOutcome outcome = publish(replyOn());
+    assertEquals(SievePolicyCase.WRAPPED, outcome.policyCase());
     assertEquals(FOREIGN, outcome.foreignScript());
     assertTrue(outcome.exoFirst());
     assertEquals(WRAPPER_NAME, server.getActive());
@@ -200,7 +200,7 @@ class SieveScriptPolicyTest {
     server.script(FOREIGN, FILTERS_ONLY, false)
           .script(SCRIPT_NAME, replyOff().toScript(), false)
           .script(WRAPPER_NAME, SieveScriptPolicy.wrapper(FOREIGN, true).replace("\r\n", "\n"), true);
-    assertEquals(PolicyCase.WRAPPED, publish(replyOn()).policyCase());
+    assertEquals(SievePolicyCase.WRAPPED, publish(replyOn()).policyCase());
   }
 
   /**
@@ -248,8 +248,8 @@ class SieveScriptPolicyTest {
   @Test
   void testPublishUsesTheServersStringEncoding() throws Exception {
     ExoSieveScript script = ExoSieveScript.empty()
-                                          .withVacation(new Vacation(true, null, null, null, "Away", "C:\\temp", "exo-vacation-1", 7));
-    PublishOutcome outcome = publish(script);
+                                          .withVacation(new SieveVacation(true, null, null, null, "Away", "C:\\temp", "exo-vacation-1", 7));
+    SievePublishOutcome outcome = publish(script);
     String stored = server.getScripts().get(SCRIPT_NAME);
     assertEquals(script.toScript(SieveStringEncoding.ENCODED_CHARACTER), stored);
     assertTrue(stored.contains("C:${unicode:5C}temp"));
@@ -264,7 +264,7 @@ class SieveScriptPolicyTest {
   @Test
   void testAVacationInACommentIsNotRefused() throws Exception {
     server.script(FOREIGN, "# vacation: see the webmail\r\nkeep;\r\n", true);
-    assertEquals(PolicyCase.WRAPPED, publish(replyOn()).policyCase());
+    assertEquals(SievePolicyCase.WRAPPED, publish(replyOn()).policyCase());
   }
 
   /**
@@ -276,7 +276,7 @@ class SieveScriptPolicyTest {
   @Test
   void testNoRefusalWhenEXoEmitsNoReply() throws Exception {
     server.script(FOREIGN, "vacation \"Away\";\r\n", true);
-    assertEquals(PolicyCase.WRAPPED, publish(replyOff()).policyCase());
+    assertEquals(SievePolicyCase.WRAPPED, publish(replyOff()).policyCase());
     assertEquals(List.of("GETSCRIPT " + FOREIGN), server.getCommands("GETSCRIPT"));
   }
 
@@ -295,8 +295,8 @@ class SieveScriptPolicyTest {
       server.close();
       server = new FakeManageSieveServer();
       server.script(FOREIGN, merged, true);
-      PublishOutcome outcome = publish(script);
-      assertEquals(PolicyCase.INCLUDED_BY_FOREIGN, outcome.policyCase());
+      SievePublishOutcome outcome = publish(script);
+      assertEquals(SievePolicyCase.INCLUDED_BY_FOREIGN, outcome.policyCase());
       assertEquals(FOREIGN, outcome.activeScript());
       assertEquals(FOREIGN, server.getActive());
       assertEquals(script.toScript(), server.getScripts().get(SCRIPT_NAME));
@@ -308,7 +308,7 @@ class SieveScriptPolicyTest {
     server = new FakeManageSieveServer();
     server.script(FOREIGN, "require [\"include\"];\r\ninclude :personal \"mine\";\r\n", true)
           .script("mine", "require [\"include\"];\r\ninclude :personal \"exo-rules\";\r\nkeep;\r\n", false);
-    assertEquals(PolicyCase.INCLUDED_BY_FOREIGN, publish(replyOff()).policyCase());
+    assertEquals(SievePolicyCase.INCLUDED_BY_FOREIGN, publish(replyOff()).policyCase());
     assertNull(server.getScripts().get(WRAPPER_NAME));
     assertEquals(List.of(), server.getCommands("SETACTIVE"));
   }
@@ -432,8 +432,8 @@ class SieveScriptPolicyTest {
     server.script(FOREIGN, FILTERS_ONLY, false)
           .script(SCRIPT_NAME, replyOff().toScript(), false)
           .script(WRAPPER_NAME, SieveScriptPolicy.wrapper(FOREIGN, false), true);
-    PublishOutcome outcome = publish(replyOn());
-    assertEquals(PolicyCase.WRAPPED, outcome.policyCase());
+    SievePublishOutcome outcome = publish(replyOn());
+    assertEquals(SievePolicyCase.WRAPPED, outcome.policyCase());
     assertEquals(SieveScriptPolicy.wrapper(FOREIGN, true), server.getScripts().get(WRAPPER_NAME));
     assertEquals(replyOn().toScript(), server.getScripts().get(SCRIPT_NAME));
     assertEquals(FILTERS_ONLY, server.getScripts().get(FOREIGN));
@@ -465,8 +465,8 @@ class SieveScriptPolicyTest {
   @Test
   void testWrapperAroundADeletedScriptFallsBackToCase1() throws Exception {
     server.script(SCRIPT_NAME, replyOff().toScript(), false).script(WRAPPER_NAME, SieveScriptPolicy.wrapper(FOREIGN, true), true);
-    PublishOutcome outcome = publish(replyOn());
-    assertEquals(PolicyCase.WRAPPER_REMOVED, outcome.policyCase());
+    SievePublishOutcome outcome = publish(replyOn());
+    assertEquals(SievePolicyCase.WRAPPER_REMOVED, outcome.policyCase());
     assertEquals(SCRIPT_NAME, server.getActive());
     assertNull(server.getScripts().get(WRAPPER_NAME));
   }
@@ -482,8 +482,8 @@ class SieveScriptPolicyTest {
     server.script(SCRIPT_NAME, replyOff().toScript(), false)
           .script(WRAPPER_NAME, SieveScriptPolicy.wrapper(FOREIGN, true), true)
           .refuse("DELETESCRIPT", "NO \"Not now\"");
-    PublishOutcome outcome = publish(replyOn());
-    assertEquals(PolicyCase.WRAPPER_REMOVED, outcome.policyCase());
+    SievePublishOutcome outcome = publish(replyOn());
+    assertEquals(SievePolicyCase.WRAPPER_REMOVED, outcome.policyCase());
     assertEquals(SCRIPT_NAME, server.getActive());
     assertEquals(replyOn().hash(), outcome.scriptHash());
   }
@@ -512,7 +512,7 @@ class SieveScriptPolicyTest {
   void testACheckScriptRefusalWritesNothing() throws Exception {
     server.refuse("CHECKSCRIPT", "NO \"line 4: error\"");
     ManageSieveException e = assertThrows(ManageSieveException.class, () -> publish(replyOn()));
-    assertEquals(Kind.REFUSED, e.getKind());
+    assertEquals(ManageSieveErrorKind.REFUSED, e.getKind());
     assertNoWrite();
   }
 
@@ -524,7 +524,7 @@ class SieveScriptPolicyTest {
   @Test
   void testPublishesWithoutCheckScriptWhenNotAdvertised() throws Exception {
     server.advertiseVersion(false);
-    assertEquals(PolicyCase.NO_ACTIVE_SCRIPT, publish(replyOn()).policyCase());
+    assertEquals(SievePolicyCase.NO_ACTIVE_SCRIPT, publish(replyOn()).policyCase());
     assertEquals(List.of(), server.getCommands("CHECKSCRIPT"));
   }
 
@@ -580,7 +580,7 @@ class SieveScriptPolicyTest {
    * @return the outcome
    * @throws Exception on failure
    */
-  private PublishOutcome publish(ExoSieveScript script) throws Exception {
+  private SievePublishOutcome publish(ExoSieveScript script) throws Exception {
     ManageSieveClient client = server.authenticatedClient();
     try {
       return policy.publish(client, script);
@@ -620,7 +620,7 @@ class SieveScriptPolicyTest {
    * @return the script
    */
   private static ExoSieveScript replyOn() {
-    return ExoSieveScript.empty().withVacation(new Vacation(true, null, null, null, "Away", "Back on Monday", "exo-vacation-1", 7));
+    return ExoSieveScript.empty().withVacation(new SieveVacation(true, null, null, null, "Away", "Back on Monday", "exo-vacation-1", 7));
   }
 
   /**
@@ -630,6 +630,6 @@ class SieveScriptPolicyTest {
    */
   private static ExoSieveScript replyOff() {
     return ExoSieveScript.empty()
-                         .withVacation(new Vacation(false, null, null, null, "Away", "Back on Monday", "exo-vacation-1", 7));
+                         .withVacation(new SieveVacation(false, null, null, null, "Away", "Back on Monday", "exo-vacation-1", 7));
   }
 }

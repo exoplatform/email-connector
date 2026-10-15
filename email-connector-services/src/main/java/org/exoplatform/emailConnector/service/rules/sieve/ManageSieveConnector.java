@@ -30,7 +30,7 @@ import org.springframework.stereotype.Component;
 
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
-import org.exoplatform.emailConnector.service.rules.sieve.ManageSieveException.Kind;
+import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 
@@ -117,7 +117,7 @@ public class ManageSieveConnector {
     try {
       return authenticated(endpoint, connector, username);
     } catch (ManageSieveException e) {
-      if (e.getKind() != Kind.AUTHENTICATION) {
+      if (e.getKind() != ManageSieveErrorKind.AUTHENTICATION) {
         throw e;
       }
       emailCredentialsResolver.invalidate(connector.getId(),
@@ -169,7 +169,8 @@ public class ManageSieveConnector {
    * @param endpoint the server the material is for, passed to the authenticator
    * @return the login and password
    * @throws ConnectorCredentialsException when the provider cannot produce material
-   * @throws ManageSieveException {@link Kind#NO_CREDENTIALS} when the material is empty
+   * @throws ManageSieveException {@link ManageSieveErrorKind#NO_CREDENTIALS} when the
+   *           material is empty
    */
   private PasswordAuthentication credentials(EmailConnector connector,
                                              String username,
@@ -187,7 +188,8 @@ public class ManageSieveConnector {
                                                                                                        null,
                                                                                                        null);
     if (credentials == null || credentials.getUserName() == null || credentials.getPassword() == null) {
-      throw new ManageSieveException(Kind.NO_CREDENTIALS, "The credentials provider produced no login and password");
+      throw new ManageSieveException(ManageSieveErrorKind.NO_CREDENTIALS,
+                                     "The credentials provider produced no login and password");
     }
     return credentials;
   }
@@ -205,7 +207,7 @@ public class ManageSieveConnector {
     try {
       return SSLContext.getDefault().getSocketFactory();
     } catch (NoSuchAlgorithmException e) {
-      throw new ManageSieveException(Kind.UNAVAILABLE, "No default TLS context", e);
+      throw new ManageSieveException(ManageSieveErrorKind.UNAVAILABLE, "No default TLS context", e);
     }
   }
 }
