@@ -158,6 +158,7 @@ import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
@@ -15494,19 +15495,6 @@ public class EmailBoxService {
     }
     String key = emailDelegationService.ownerSentFolderKey(username, delegationId);
     return key != null && emailConnectorService.isSharedMailboxSentCopyEnabled() ? key : null;
-  }
-
-  /**
-   * What became of the copy of a shared-mailbox send in its owner's Sent folder
-   * (EXO-90551), as the send answers it.
-   */
-  public enum OwnerCopy {
-    /** Filed in the owner's Sent. */
-    FILED,
-    /** The mail went out; the copy could not be filed. */
-    FAILED,
-    /** Not filed by design: no Sent shared, no i there, or switched off. */
-    SKIPPED
   }
 
   /**

@@ -131,6 +131,7 @@ import javax.mail.SendFailedException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
 import org.exoplatform.emailConnector.model.EmailScheduledSend;
+import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.ScheduledSendError;
 import org.exoplatform.emailConnector.model.ScheduledSendStatus;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
@@ -2981,7 +2982,7 @@ public class EmailBoxServiceTest {
         MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
       sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(rig.session());
 
-      assertEquals(EmailBoxService.OwnerCopy.FILED, emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 100L));
+      assertEquals(OwnerCopy.FILED, emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 100L));
 
       ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
       transportMock.verify(() -> Transport.send(sent.capture()));
@@ -3036,8 +3037,8 @@ public class EmailBoxServiceTest {
         MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
       sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(rig.session());
 
-      assertEquals(EmailBoxService.OwnerCopy.SKIPPED, emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 100L), "no Sent to file into");
-      assertEquals(EmailBoxService.OwnerCopy.SKIPPED, emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 101L), "switched off");
+      assertEquals(OwnerCopy.SKIPPED, emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 100L), "no Sent to file into");
+      assertEquals(OwnerCopy.SKIPPED, emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 101L), "switched off");
 
       transportMock.verify(() -> Transport.send(any(Message.class)), times(2));
       verify(rig.ownSent(), times(2)).appendMessages(any(Message[].class));
@@ -3066,7 +3067,7 @@ public class EmailBoxServiceTest {
         MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
       sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(rig.session());
 
-      assertEquals(EmailBoxService.OwnerCopy.FAILED, emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 100L));
+      assertEquals(OwnerCopy.FAILED, emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 100L));
 
       transportMock.verify(() -> Transport.send(any(Message.class)));
       verify(rig.ownSent()).appendMessages(any(Message[].class));
@@ -8315,7 +8316,7 @@ public class EmailBoxServiceTest {
     when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
 
     try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
-      assertEquals(EmailBoxService.OwnerCopy.FILED, emailBoxService.sendDraft(draft("draft-1"), TEST_USER, 100L));
+      assertEquals(OwnerCopy.FILED, emailBoxService.sendDraft(draft("draft-1"), TEST_USER, 100L));
 
       ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
       transportMock.verify(() -> Transport.send(sent.capture()));
