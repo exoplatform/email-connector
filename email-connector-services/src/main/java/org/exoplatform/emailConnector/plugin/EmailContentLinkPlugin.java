@@ -45,9 +45,10 @@ import jakarta.annotation.PostConstruct;
  * title from {@link #getContentTitle} and the access from the mail's ACL plugin
  * through {@code UserACL}. A mail is private to its mailbox owner, and this
  * plugin only ever gives the title of the caller's own mails: another user's
- * mail, an unknown id or a non-numeric id resolve to nothing. A delegate's access
- * to a shared mailbox is not considered, the owned lookup it relies on does not
- * know delegation.
+ * mail, an unknown id or a non-numeric id resolve to nothing. A shared mailbox's
+ * mail is cached as the delegate's own row while the share lasts, so that row's id
+ * resolves for the delegate, as everywhere the owned lookup serves, and the owner's
+ * row id does not; revoking, leaving or losing the share drops those rows.
  */
 @Component
 public class EmailContentLinkPlugin implements ContentLinkPlugin {
@@ -102,10 +103,10 @@ public class EmailContentLinkPlugin implements ContentLinkPlugin {
    * A mail id never reaches this method: Social's content-link service resolves a
    * numeric keyword itself, through {@link #getContentTitle} and the mail's ACL
    * plugin, and calls a plugin's search for a text keyword only. A text keyword
-   * resolves to nothing: the only owner-scoped text search over the mailbox cache
-   * loads the whole mailbox in memory and answers with IMAP UIDs, not with the ids
-   * a content link carries, so it is not used from a picker that fires on every
-   * keystroke.
+   * resolves to nothing: the mailbox's text searches answer with IMAP UIDs, not with
+   * the ids a content link carries, and the one over the mailbox cache loads the
+   * user's cached mail in memory, so neither is used from a picker that fires on
+   * every keystroke.
    *
    * @param keyword the searched text (unused)
    * @param identity the searching user (unused)
