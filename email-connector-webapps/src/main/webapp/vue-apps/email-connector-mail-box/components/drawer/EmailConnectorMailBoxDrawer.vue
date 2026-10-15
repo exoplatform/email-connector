@@ -1548,9 +1548,8 @@ export default {
     /**
      * Expands this drawer on the mail the mail drawer was showing -- the mail drawer's
      * expand button (EXO-90415). There is one full-screen layout, this one: expanding a
-     * mail opened over the list lands in it with that mail open, and collapsing hands it
-     * back to the mail drawer (handOverEmailOnCollapse, EXO-90519). The mail drawer
-     * closes itself right after.
+     * mail opened over the list lands in it with that mail open, and collapsing comes
+     * back to the list, as in Gmail. The mail drawer closes itself right after.
      * <p>
      * The mail is put in the reader before the layout switches, so updateExpand finds
      * one open and neither shows the placeholder nor opens the first mail of the list.
@@ -3363,8 +3362,7 @@ export default {
      * (EXO-90414): the one already open when there is one, otherwise the first of the
      * list on screen (autoSelectFirstEmail). The placeholder is still set at once, so
      * the reader never renders with nothing to read during the layout's transition.
-     * The drawer's width follows at once too (layoutExpanded, EXO-90415). Collapsing
-     * keeps the mail the reader shows open, in the mail drawer (EXO-90519).
+     * The drawer's width follows at once too (layoutExpanded, EXO-90415).
      *
      * @param {Boolean} expanded whether the drawer is now full screen
      * @returns {void}
@@ -3380,68 +3378,12 @@ export default {
           this.autoSelectFirstEmail();
         } else {
           this.autoSelectPending = false;
-          this.handOverEmailOnCollapse();
         }
       }, 200);
       if (expanded) {
         if (!this.email) {
           this.selectEmailPlaceHolder = true;
         }
-      }
-    },
-    /**
-     * Opens the mail drawer on the mail the full-screen reader was showing, once the
-     * drawer is back to its narrow layout, which has no reader of its own (EXO-90519):
-     * the reverse of onExpandMailBoxOnEmail. The mail drawer opening clears this
-     * drawer's reader, as any opening of it does.
-     * <p>
-     * Not when the collapse comes from the drawer closing: exo-drawer also resets its
-     * expand flag when it closes, and the drawer is closed by then. A collapse exo-drawer
-     * makes on its own while the drawer stays open (the window narrowed below its mobile
-     * breakpoint) hands the mail over like the user's own. Nothing is handed over with no mail on
-     * screen -- the placeholder, a multi-selection -- nor when the drawer was expanded
-     * again meanwhile. Nor while the mail the reader opened on its own is still waiting
-     * for its dwell (AUTO_OPEN_MARK_READ_DELAY_MS): the mail drawer reads what it opens
-     * at once, so handing it over would read a mail the user never stayed on. Called
-     * before the expanded watcher ends that wait, so the flag still says so. Nor while
-     * another mail is still being fetched for the reader (emailRequestHoldsLoading):
-     * the reader still holds the previous one. A search hit still being looked up then
-     * opens in the mail drawer itself (openSearchResult); a mail whose fetch is already
-     * under way when the drawer collapses lands in the list.
-     * <p>
-     * A full copy, a draft's or a scheduled mail's row is shown as it is; a bare list row,
-     * or a copy that could not be read, is fetched again by its UID, quietly, as the
-     * expand direction does (EXO-90415): whatever left that mail in the reader already
-     * counted it as opened -- a click by its read, which the server counts even when the
-     * read then fails, an automatic opening at its dwell, a hand-over by the mail drawer's
-     * own read. The mail drawer gets the folder's list; the search's, detached, as the
-     * narrow search opening gives it; or the mail alone, detached, when neither holds it.
-     *
-     * @returns {void}
-     */
-    handOverEmailOnCollapse() {
-      const email = this.email;
-      if (!email || this.selectEmailPlaceHolder || this.selectMode || this.layoutExpanded
-          || this.autoOpenReadPending || this.emailRequestHoldsLoading || !this.emailBoxDrawer
-          || this.$root.isDetailDrawerActive) {
-        return;
-      }
-      const folder = email.folder || 'INBOX';
-      const sameEmail = e => e.mailRemoteId === email.mailRemoteId && (e.folder || 'INBOX') === folder
-        && (e.draftLocalId || null) === (email.draftLocalId || null);
-      let emails = [email];
-      let detachedFromList = true;
-      if (this.searchActive && this.mergedSearchResults.some(sameEmail)) {
-        emails = this.mergedSearchResults;
-      } else if (!this.searchActive && this.emails.some(sameEmail)) {
-        emails = this.emails;
-        detachedFromList = false;
-      }
-      if (email.mailRemoteId && (email.unavailable || this.$emailConnectorMailBoxService.isListingRow(email))) {
-        this.$root.$emit('open-email-detail-drawer', email.mailRemoteId, emails, this.syncInProgress, this.webmailUrl,
-          detachedFromList, false, folder, true);
-      } else {
-        this.$root.$emit('open-email-thread-drawer', email, emails, this.syncInProgress, this.webmailUrl, detachedFromList);
       }
     },
     /**
