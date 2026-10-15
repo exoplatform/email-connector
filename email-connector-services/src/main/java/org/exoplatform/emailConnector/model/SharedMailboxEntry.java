@@ -43,7 +43,7 @@ import java.util.Map;
  *          Sent, Archive, Trash, Spam and the rest the share covers (EXO-90548), roles
  *          first; empty for a share that covers INBOX only
  * @param inboxOnly whether eXo wrote the share before it shared the owner's other folders,
- *          so that only the INBOX is shared and the owner can extend it (EXO-90548 review):
+ *          so that only the INBOX is shared and the owner can extend it:
  *          what the band tells the delegate, rather than what the last discovery happened
  *          to find. False for a share made in the mail server's own interface
  */
