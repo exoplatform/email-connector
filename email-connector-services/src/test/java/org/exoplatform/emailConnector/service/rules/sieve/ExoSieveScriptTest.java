@@ -27,7 +27,7 @@ import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
 
-import org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript.Vacation;
+import org.exoplatform.emailConnector.model.SieveVacation;
 
 /**
  * eXo's self-describing script: the exact layout, the {@code require} union, the header
@@ -208,12 +208,12 @@ class ExoSieveScriptTest {
     assertCode("emailConnector.absence.window.invalid",
                () -> vacation(true, LocalDate.of(2026, 10, 2), LocalDate.of(2026, 10, 1), "Away", "t"));
     assertCode("emailConnector.absence.handle.invalid",
-               () -> new Vacation(true, null, null, null, "Away", "t", "exo\" :from \"x", 7));
-    assertCode("emailConnector.absence.days.invalid", () -> new Vacation(true, null, null, null, "Away", "t", HANDLE, 0));
+               () -> new SieveVacation(true, null, null, null, "Away", "t", "exo\" :from \"x", 7));
+    assertCode("emailConnector.absence.days.invalid", () -> new SieveVacation(true, null, null, null, "Away", "t", HANDLE, 0));
     assertCode("emailConnector.absence.timeZone.invalid",
-               () -> new Vacation(true, LocalDate.of(2026, 10, 1), null, "Mars/Olympus", "Away", "t", HANDLE, 7));
+               () -> new SieveVacation(true, LocalDate.of(2026, 10, 1), null, "Mars/Olympus", "Away", "t", HANDLE, 7));
     assertCode("emailConnector.absence.timeZone.invalid",
-               () -> new Vacation(true, LocalDate.of(2026, 10, 1), null, null, "Away", "t", HANDLE, 7));
+               () -> new SieveVacation(true, LocalDate.of(2026, 10, 1), null, null, "Away", "t", HANDLE, 7));
   }
 
   /**
@@ -323,7 +323,7 @@ class ExoSieveScriptTest {
    * @return the script text
    */
   private static String window(String zone, LocalDate start, LocalDate end) {
-    return ExoSieveScript.empty().withVacation(new Vacation(true, start, end, zone, "Away", "Away", HANDLE, 7)).toScript();
+    return ExoSieveScript.empty().withVacation(new SieveVacation(true, start, end, zone, "Away", "Away", HANDLE, 7)).toScript();
   }
 
   /**
@@ -336,8 +336,8 @@ class ExoSieveScriptTest {
    * @param text the text
    * @return the reply
    */
-  private static Vacation vacation(boolean enabled, LocalDate start, LocalDate end, String subject, String text) {
-    return new Vacation(enabled, start, end, "Europe/Paris", subject, text, HANDLE, 7);
+  private static SieveVacation vacation(boolean enabled, LocalDate start, LocalDate end, String subject, String text) {
+    return new SieveVacation(enabled, start, end, "Europe/Paris", subject, text, HANDLE, 7);
   }
 
   /**

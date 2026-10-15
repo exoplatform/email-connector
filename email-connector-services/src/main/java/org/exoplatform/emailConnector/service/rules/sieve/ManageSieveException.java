@@ -16,6 +16,8 @@
  */
 package org.exoplatform.emailConnector.service.rules.sieve;
 
+import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
+
 /**
  * A ManageSieve conversation that did not end the way the caller asked, classified so
  * that the caller can answer the user without reading the server's text: the kind says
@@ -32,31 +34,10 @@ public class ManageSieveException extends Exception {
   private static final long serialVersionUID = 4035518375420212764L;
 
   /** Why the conversation failed. */
-  public enum Kind {
-    /** The server could not be reached, timed out, or closed the connection. */
-    UNAVAILABLE,
-    /** The server does not offer {@code STARTTLS}; the client never talks in clear. */
-    TLS_REQUIRED,
-    /** The server does not offer the SASL mechanism the client needs after TLS. */
-    UNSUPPORTED_MECHANISM,
-    /** The server refused the credentials. */
-    AUTHENTICATION,
-    /**
-     * There was no login or password to send; the server was not asked, so nothing it
-     * could have refused.
-     */
-    NO_CREDENTIALS,
-    /** The server answered {@code NO} to a command. */
-    REFUSED,
-    /** The server's answer does not follow RFC 5804, or it said {@code BYE}. */
-    PROTOCOL
-  }
-
-  /** Why the conversation failed. */
-  private final Kind   kind;
+  private final ManageSieveErrorKind kind;
 
   /** The server's response code, such as {@code NONEXISTENT} or {@code QUOTA/MAXSIZE}; null when none. */
-  private final String responseCode;
+  private final String               responseCode;
 
   /**
    * A failure without a server response code.
@@ -64,7 +45,7 @@ public class ManageSieveException extends Exception {
    * @param kind why the conversation failed
    * @param message what failed, without any credential
    */
-  public ManageSieveException(Kind kind, String message) {
+  public ManageSieveException(ManageSieveErrorKind kind, String message) {
     this(kind, null, message, null);
   }
 
@@ -75,7 +56,7 @@ public class ManageSieveException extends Exception {
    * @param message what failed, without any credential
    * @param cause the underlying error
    */
-  public ManageSieveException(Kind kind, String message, Throwable cause) {
+  public ManageSieveException(ManageSieveErrorKind kind, String message, Throwable cause) {
     this(kind, null, message, cause);
   }
 
@@ -87,7 +68,7 @@ public class ManageSieveException extends Exception {
    * @param message what failed, without any credential
    * @param cause the underlying error, possibly null
    */
-  public ManageSieveException(Kind kind, String responseCode, String message, Throwable cause) {
+  public ManageSieveException(ManageSieveErrorKind kind, String responseCode, String message, Throwable cause) {
     super(message, cause);
     this.kind = kind;
     this.responseCode = responseCode;
@@ -98,7 +79,7 @@ public class ManageSieveException extends Exception {
    *
    * @return the kind, never null
    */
-  public Kind getKind() {
+  public ManageSieveErrorKind getKind() {
     return kind;
   }
 

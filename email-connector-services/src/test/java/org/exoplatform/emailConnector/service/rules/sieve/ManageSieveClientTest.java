@@ -34,7 +34,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.Timeout.ThreadMode;
 
-import org.exoplatform.emailConnector.service.rules.sieve.ManageSieveException.Kind;
+import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
 
 /**
  * The ManageSieve client against a real socket: the TLS sequence, SASL PLAIN, every
@@ -91,7 +91,7 @@ class ManageSieveClientTest {
   void testRefusesAServerWithoutStarttls() throws Exception {
     server.offerStarttls(false);
     ManageSieveException e = assertThrows(ManageSieveException.class, this::connect);
-    assertEquals(Kind.TLS_REQUIRED, e.getKind());
+    assertEquals(ManageSieveErrorKind.TLS_REQUIRED, e.getKind());
     assertEquals(List.of(), server.getCommands());
   }
 
@@ -105,7 +105,7 @@ class ManageSieveClientTest {
   void testRefusesDataInjectedAheadOfTheTlsHandshake() throws Exception {
     server.injectAfterStarttls();
     ManageSieveException e = assertThrows(ManageSieveException.class, this::connect);
-    assertEquals(Kind.PROTOCOL, e.getKind());
+    assertEquals(ManageSieveErrorKind.PROTOCOL, e.getKind());
   }
 
   /**
@@ -121,7 +121,7 @@ class ManageSieveClientTest {
                                                                           SSLContext.getDefault().getSocketFactory(),
                                                                           5000,
                                                                           5000));
-    assertEquals(Kind.UNAVAILABLE, e.getKind());
+    assertEquals(ManageSieveErrorKind.UNAVAILABLE, e.getKind());
   }
 
   /**
@@ -140,7 +140,7 @@ class ManageSieveClientTest {
                                                                           FakeManageSieveServer.clientTlsFactory(FakeManageSieveServer.OTHER_HOST_KEYSTORE),
                                                                           5000,
                                                                           5000));
-      assertEquals(Kind.UNAVAILABLE, e.getKind());
+      assertEquals(ManageSieveErrorKind.UNAVAILABLE, e.getKind());
     }
   }
 
@@ -156,7 +156,7 @@ class ManageSieveClientTest {
       ManageSieveException e = assertThrows(ManageSieveException.class,
                                             () -> client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN,
                                                                                                       FakeManageSieveServer.PASSWORD)));
-      assertEquals(Kind.UNSUPPORTED_MECHANISM, e.getKind());
+      assertEquals(ManageSieveErrorKind.UNSUPPORTED_MECHANISM, e.getKind());
     }
     assertEquals(0, server.getAuthentications());
   }
@@ -172,7 +172,7 @@ class ManageSieveClientTest {
       ManageSieveException e = assertThrows(ManageSieveException.class,
                                             () -> client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN,
                                                                                                       "wrong-password")));
-      assertEquals(Kind.AUTHENTICATION, e.getKind());
+      assertEquals(ManageSieveErrorKind.AUTHENTICATION, e.getKind());
       assertFalse(e.getMessage().contains("wrong-password"));
     }
   }
@@ -185,7 +185,7 @@ class ManageSieveClientTest {
   @Test
   void testNoCredentialsSendNothing() throws Exception {
     try (ManageSieveClient client = connect()) {
-      assertEquals(Kind.NO_CREDENTIALS,
+      assertEquals(ManageSieveErrorKind.NO_CREDENTIALS,
                    assertThrows(ManageSieveException.class, () -> client.authenticatePlain(null)).getKind());
     }
     assertEquals(0, server.getAuthentications());
@@ -239,7 +239,7 @@ class ManageSieveClientTest {
   void testNoAnswerCarriesTheResponseCode() throws Exception {
     try (ManageSieveClient client = server.authenticatedClient()) {
       ManageSieveException e = assertThrows(ManageSieveException.class, () -> client.getScript("missing"));
-      assertEquals(Kind.REFUSED, e.getKind());
+      assertEquals(ManageSieveErrorKind.REFUSED, e.getKind());
       assertEquals("NONEXISTENT", e.getResponseCode());
     }
   }
@@ -255,7 +255,7 @@ class ManageSieveClientTest {
       assertTrue(client.checkScript("keep;"));
       server.refuse("CHECKSCRIPT", "NO \"line 1: unknown command\"");
       ManageSieveException e = assertThrows(ManageSieveException.class, () -> client.checkScript("kep;"));
-      assertEquals(Kind.REFUSED, e.getKind());
+      assertEquals(ManageSieveErrorKind.REFUSED, e.getKind());
     }
     assertEquals(2, server.getCommands("CHECKSCRIPT").size());
   }
@@ -289,7 +289,7 @@ class ManageSieveClientTest {
                                                                           FakeManageSieveServer.clientTlsFactory(),
                                                                           2000,
                                                                           300));
-    assertEquals(Kind.UNAVAILABLE, e.getKind());
+    assertEquals(ManageSieveErrorKind.UNAVAILABLE, e.getKind());
     assertTrue((System.nanoTime() - start) / 1_000_000 < 5000);
   }
 
@@ -303,7 +303,7 @@ class ManageSieveClientTest {
     server.rawGetScriptAnswer("{" + (ManageSieveClient.MAX_LITERAL_OCTETS + 1) + "}\r\n");
     try (ManageSieveClient client = server.authenticatedClient()) {
       ManageSieveException e = assertThrows(ManageSieveException.class, () -> client.getScript("exo-rules"));
-      assertEquals(Kind.PROTOCOL, e.getKind());
+      assertEquals(ManageSieveErrorKind.PROTOCOL, e.getKind());
     }
   }
 
@@ -326,7 +326,7 @@ class ManageSieveClientTest {
     client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN, FakeManageSieveServer.PASSWORD));
     long start = System.nanoTime();
     ManageSieveException e = assertThrows(ManageSieveException.class, () -> client.getScript("exo-rules"));
-    assertEquals(Kind.UNAVAILABLE, e.getKind());
+    assertEquals(ManageSieveErrorKind.UNAVAILABLE, e.getKind());
     assertTrue((System.nanoTime() - start) / 1_000_000 < 4000);
   }
 
@@ -349,7 +349,7 @@ class ManageSieveClientTest {
                                                                           5000,
                                                                           1000,
                                                                           1500));
-    assertEquals(Kind.UNAVAILABLE, e.getKind());
+    assertEquals(ManageSieveErrorKind.UNAVAILABLE, e.getKind());
     assertTrue(e.getMessage().contains("timed out"), e.getMessage());
     assertTrue((System.nanoTime() - start) / 1_000_000 < 4000);
   }
@@ -402,7 +402,7 @@ class ManageSieveClientTest {
       try {
         client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN, FakeManageSieveServer.PASSWORD));
         ManageSieveException e = assertThrows(ManageSieveException.class, () -> client.getScript("exo-rules"));
-        assertEquals(Kind.PROTOCOL, e.getKind(), answer.getValue());
+        assertEquals(ManageSieveErrorKind.PROTOCOL, e.getKind(), answer.getValue());
         assertTrue(e.getMessage().contains(answer.getValue()), e.getMessage());
       } finally {
         client.close();
