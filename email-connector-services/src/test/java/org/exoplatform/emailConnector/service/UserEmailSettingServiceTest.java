@@ -34,6 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -2337,5 +2338,238 @@ public class UserEmailSettingServiceTest {
                                eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY),
                                written.capture());
     return JsonUtils.fromJsonString(written.getValue().getValue().toString(), UserEmailSettingEntity.class);
+  }
+
+  /**
+   * EXO-90824. A user's own disconnection sets aside the account and its preferences,
+   * with no credential, for the next connection to keep.
+   */
+  @Test
+  @SneakyThrows
+  void aUserDisconnectionSetsAsideThePreferences() {
+    storedDocument(TEST_USER, String.format(STORED_WITH_PREFERENCES, "eric@bm.example.org"));
+
+    userEmailSettingService.disconnectUserEmailSetting(TEST_USER);
+
+    UserEmailSettingEntity setAside = setAsidePreferences();
+    assertEquals("1", setAside.getEmailConnectorId());
+    assertEquals("eric@bm.example.org", setAside.getEmailAddress());
+    assertNull(setAside.getEmailPassword());
+    assertEquals(Boolean.FALSE, setAside.getNotifyAllCategories());
+    assertEquals(List.of(3L, 4L), setAside.getNotifyCategories());
+    assertEquals(5L, setAside.getDefaultCategoryView());
+    assertEquals(Boolean.TRUE, setAside.getCarddavEnabled());
+    assertEquals(Boolean.TRUE, setAside.getCarddavAutoPublish());
+    verify(settingService).remove(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY));
+  }
+
+  /** EXO-90824. A user with no mailbox who disconnects sets nothing aside. */
+  @Test
+  @SneakyThrows
+  void aDisconnectionWithNoSettingSetsNothingAside() {
+    userEmailSettingService.disconnectUserEmailSetting(TEST_USER);
+
+    verify(settingService, never()).set(any(Context.class),
+                                        any(Scope.class),
+                                        eq(UserEmailSettingService.DISCONNECTED_PREFERENCES_KEY),
+                                        any(SettingValue.class));
+    verify(settingService, never()).remove(any(Context.class),
+                                           any(Scope.class),
+                                           eq(UserEmailSettingService.DISCONNECTED_PREFERENCES_KEY));
+  }
+
+  /**
+   * EXO-90824. A user's disconnection whose stored document cannot be parsed still
+   * removes it, and sets nothing aside.
+   */
+  @Test
+  @SneakyThrows
+  void aDisconnectionOfAnUnreadableSettingRemovesItAndSetsNothingAside() {
+    storedDocument(TEST_USER, "{not json");
+
+    userEmailSettingService.disconnectUserEmailSetting(TEST_USER);
+
+    verify(settingService).remove(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY));
+    verify(settingService, never()).set(any(Context.class),
+                                        any(Scope.class),
+                                        eq(UserEmailSettingService.DISCONNECTED_PREFERENCES_KEY),
+                                        any(SettingValue.class));
+  }
+
+  /**
+   * EXO-90824. The PO's scenario: on a one-click connector the user reconnects by
+   * disconnecting and connecting again, and keeps every preference of that account. The
+   * preferences set aside are then forgotten.
+   */
+  @Test
+  @SneakyThrows
+  void aOneClickConnectionAfterTheUsersDisconnectionKeepsThePreferences() {
+    preferencesSetAside(String.format(STORED_WITH_PREFERENCES, "Eric@BM.example.org"));
+
+    connectThroughTheProvider(() -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    UserEmailSettingEntity written = writtenSetting();
+    assertEquals(Boolean.FALSE, written.getNotifyAllCategories());
+    assertEquals(List.of(3L, 4L), written.getNotifyCategories());
+    assertEquals(5L, written.getDefaultCategoryView());
+    assertEquals(Boolean.TRUE, written.getCarddavEnabled());
+    assertEquals(Boolean.TRUE, written.getCarddavAutoPublish());
+    verify(settingService).remove(Context.USER.id(TEST_USER),
+                                  UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                  UserEmailSettingService.DISCONNECTED_PREFERENCES_KEY);
+  }
+
+  /**
+   * EXO-90824. A typed connection of another account after the user's disconnection keeps
+   * the category preferences and leaves the address-book options unset.
+   */
+  @Test
+  @SneakyThrows
+  void aTypedConnectionOfAnotherAccountAfterTheUsersDisconnectionKeepsTheCategoryPreferencesOnly() {
+    preferencesSetAside(String.format(STORED_WITH_PREFERENCES, "previous@example.org"));
+
+    connectWithTypedCredentials(userEmailSetting());
+
+    UserEmailSettingEntity written = writtenSetting();
+    assertEquals(Boolean.FALSE, written.getNotifyAllCategories());
+    assertEquals(List.of(3L, 4L), written.getNotifyCategories());
+    assertEquals(5L, written.getDefaultCategoryView());
+    assertNull(written.getCarddavEnabled());
+    assertNull(written.getCarddavAutoPublish());
+    verify(settingService).remove(Context.USER.id(TEST_USER),
+                                  UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                  UserEmailSettingService.DISCONNECTED_PREFERENCES_KEY);
+  }
+
+  /**
+   * EXO-90824. A connected user's stored setting wins over preferences an earlier
+   * disconnection set aside.
+   */
+  @Test
+  @SneakyThrows
+  void theStoredSettingWinsOverPreferencesSetAside() {
+    storedDocument(TEST_USER, String.format(STORED_WITH_PREFERENCES, "testEmail"));
+    // Lenient: a connected user's connection never reads what a disconnection set aside.
+    SettingValue setAside = mock(SettingValue.class);
+    lenient().when(setAside.getValue())
+             .thenReturn(String.format(STORED_WITH_PREFERENCES, "testEmail").replace("\"defaultCategoryView\":5",
+                                                                                     "\"defaultCategoryView\":7"));
+    lenient().when(settingService.get(Context.USER.id(TEST_USER),
+                                      UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                      UserEmailSettingService.DISCONNECTED_PREFERENCES_KEY))
+             .thenReturn(setAside);
+
+    connectWithTypedCredentials(userEmailSetting());
+
+    assertEquals(5L, writtenSetting().getDefaultCategoryView());
+  }
+
+  /**
+   * EXO-90824. A disconnection by the platform forgets the preferences set aside and sets
+   * none aside itself.
+   */
+  @Test
+  void aDisconnectionByThePlatformSetsNothingAside() {
+    ReflectionTestUtils.setField(userEmailSettingService, "eventPublisher", eventPublisher);
+
+    userEmailSettingService.deleteUserEmailSetting(TEST_USER);
+
+    verify(settingService).remove(Context.USER.id(TEST_USER),
+                                  UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                                  UserEmailSettingService.DISCONNECTED_PREFERENCES_KEY);
+    verify(settingService, never()).set(any(Context.class),
+                                        any(Scope.class),
+                                        eq(UserEmailSettingService.DISCONNECTED_PREFERENCES_KEY),
+                                        any(SettingValue.class));
+  }
+
+  /**
+   * EXO-90824. The PO's scenario end to end, over a setting store that keeps what is
+   * written: the user disconnects, then connects again in one click, and gets every
+   * preference of that account back, with nothing left set aside.
+   */
+  @Test
+  @SneakyThrows
+  void aDisconnectionThenAOneClickConnectionKeepsThePreferences() {
+    Map<String, String> settings = settingStore();
+
+    userEmailSettingService.disconnectUserEmailSetting(TEST_USER);
+    assertNull(settings.get(UserEmailSettingService.USER_EMAIL_SETTING_KEY));
+    connectThroughTheProvider(() -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    assertThePreferencesAreKept(settings);
+  }
+
+  /**
+   * EXO-90824. A second disconnection - a double click on Disconnect, a client retry -
+   * finds nothing connected and leaves what the first one set aside, so the connection
+   * that follows still gets every preference back.
+   */
+  @Test
+  @SneakyThrows
+  void aSecondDisconnectionKeepsWhatTheFirstSetAside() {
+    Map<String, String> settings = settingStore();
+
+    userEmailSettingService.disconnectUserEmailSetting(TEST_USER);
+    userEmailSettingService.disconnectUserEmailSetting(TEST_USER);
+    connectThroughTheProvider(() -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    assertThePreferencesAreKept(settings);
+  }
+
+  /**
+   * A setting store that keeps what is written, holding a connected user's setting.
+   *
+   * @return the store, by setting key
+   */
+  @SuppressWarnings({ "rawtypes", "unchecked" })
+  private Map<String, String> settingStore() {
+    Map<String, String> settings = new java.util.HashMap<>();
+    settings.put(UserEmailSettingService.USER_EMAIL_SETTING_KEY,
+                 String.format(STORED_WITH_PREFERENCES, "eric@bm.example.org"));
+    doAnswer(invocation -> settings.put(invocation.getArgument(2),
+                                        String.valueOf(((SettingValue) invocation.getArgument(3)).getValue())))
+        .when(settingService)
+        .set(eq(Context.USER.id(TEST_USER)), eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE), anyString(), any(SettingValue.class));
+    doAnswer(invocation -> settings.remove(invocation.getArgument(2)))
+        .when(settingService)
+        .remove(eq(Context.USER.id(TEST_USER)), eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE), anyString());
+    when(settingService.get(eq(Context.USER.id(TEST_USER)), eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE), anyString()))
+        .thenAnswer(invocation -> {
+          String value = settings.get(invocation.getArgument(2));
+          return value == null ? null : SettingValue.create(value);
+        });
+
+    return settings;
+  }
+
+  private void assertThePreferencesAreKept(Map<String, String> settings) {
+    UserEmailSettingEntity written = JsonUtils.fromJsonString(settings.get(UserEmailSettingService.USER_EMAIL_SETTING_KEY),
+                                                              UserEmailSettingEntity.class);
+    assertEquals("eric@bm.example.org", written.getEmailAddress());
+    assertEquals(Boolean.FALSE, written.getNotifyAllCategories());
+    assertEquals(List.of(3L, 4L), written.getNotifyCategories());
+    assertEquals(5L, written.getDefaultCategoryView());
+    assertEquals(Boolean.TRUE, written.getCarddavEnabled());
+    assertEquals(Boolean.TRUE, written.getCarddavAutoPublish());
+    assertNull(settings.get(UserEmailSettingService.DISCONNECTED_PREFERENCES_KEY));
+  }
+
+  private void preferencesSetAside(String json) {
+    SettingValue value = mock(SettingValue.class);
+    when(value.getValue()).thenReturn(json);
+    when(settingService.get(Context.USER.id(TEST_USER),
+                            UserEmailSettingService.EMAIL_CONNECTOR_SCOPE,
+                            UserEmailSettingService.DISCONNECTED_PREFERENCES_KEY)).thenReturn(value);
+  }
+
+  @SuppressWarnings("rawtypes")
+  private UserEmailSettingEntity setAsidePreferences() {
+    ArgumentCaptor<SettingValue> setAside = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(eq(Context.USER.id(TEST_USER)),
+                               eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE),
+                               eq(UserEmailSettingService.DISCONNECTED_PREFERENCES_KEY),
+                               setAside.capture());
+    return JsonUtils.fromJsonString(setAside.getValue().getValue().toString(), UserEmailSettingEntity.class);
   }
 }
