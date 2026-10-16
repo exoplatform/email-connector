@@ -111,6 +111,18 @@ public class UserEmailSettingService {
   public static final String        MANAGED_REFUSED_KEY                                = "managedRefused";
 
   /**
+   * The preferences a user's own disconnection set aside (EXO-90824): the account they
+   * were about, then the notification choice, the default view and the address-book
+   * options, with no credential. A connector whose provider asks for nothing has no
+   * other way to reconnect than a disconnection and a connection, so the next
+   * connection completes itself from this setting and removes it. A disconnection by the
+   * platform ({@link #deleteUserEmailSetting(String)}) removes it as well; it reaches only
+   * the users still connected, so what a user's own disconnection set aside stays until
+   * their next connection, whatever happens to the connector meanwhile.
+   */
+  public static final String        DISCONNECTED_PREFERENCES_KEY                       = "disconnectedEmailPreferences";
+
+  /**
    * The address-book sync's own key, deliberately NOT a field of
    * {@link #USER_EMAIL_SETTING_KEY}: the mailbox sync rewrites that whole document
    * on every status update, so sharing it would let the two syncs overwrite each
@@ -199,12 +211,13 @@ public class UserEmailSettingService {
     try {
       store = connectWithTypedCredentials(userEmailSetting,
                                           emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId())));
-      keepPreferences(userEmailSetting, getStoredUserEmailSetting(username));
+      keepPreferences(userEmailSetting, preferencesToKeep(getStoredUserEmailSetting(username), username));
       setUserEmailSetting(userEmailSetting, username, broadcast);
       // A connection the user makes is their own choice, even on the connector managed
       // mode had attached them to.
       markConnectedByManagedMode(username, false);
       clearManagedRefusal(username);
+      forgetDisconnectedPreferences(username);
       eventPublisher.publishEvent(new EmailBoxSyncEvent(username));
     } catch (Exception e) {
       LOG.error("Error when connecting store for user {}", username, e);
@@ -363,10 +376,11 @@ public class UserEmailSettingService {
       UserEmailSetting connected = new UserEmailSetting();
       connected.setEmailConnectorId(String.valueOf(emailConnectorId));
       connected.setEmailAddress(address);
-      keepPreferences(connected, stored);
+      keepPreferences(connected, preferencesToKeep(stored, username));
       setUserEmailSetting(connected, username, accountChanged);
       markConnectedByManagedMode(username, byManagedMode);
       clearManagedRefusal(username);
+      forgetDisconnectedPreferences(username);
       eventPublisher.publishEvent(new EmailBoxSyncEvent(username));
       return true;
     } catch (ConnectorCredentialsException | MessagingException e) {
@@ -398,6 +412,67 @@ public class UserEmailSettingService {
   }
 
   /**
+   * The preferences a connection keeps: the stored setting's when the user is connected,
+   * otherwise the ones their own disconnection set aside, otherwise none. A disconnection
+   * by the platform ({@link #deleteUserEmailSetting(String)}: a connector's deletion, a
+   * provider change, a managed-mode change, a user managed mode no longer governs) of a
+   * connected user sets nothing aside, so the connection that follows starts with every
+   * preference unset. What a user's own disconnection set aside is still kept by the
+   * rules of {@code keepPreferences}: the address-book options only for the same connector
+   * and address.
+   *
+   * @param stored the user's stored setting, an empty one when there is none
+   * @param username the eXo login connecting
+   * @return the setting to complete the connection from, never null
+   */
+  private UserEmailSetting preferencesToKeep(UserEmailSetting stored, String username) {
+    if (stored.getEmailConnectorId() != null) {
+      return stored;
+    }
+    SettingValue<?> value = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, DISCONNECTED_PREFERENCES_KEY);
+    if (value == null || value.getValue() == null) {
+      return new UserEmailSetting();
+    }
+    return JsonUtils.fromJsonString(value.getValue().toString(), UserEmailSetting.class);
+  }
+
+  /**
+   * Sets aside the preferences of the setting a user's own disconnection is about to
+   * remove, with the account they are about and no credential, for the next connection to
+   * complete itself from. Nothing is set aside for a user who has no setting.
+   *
+   * @param stored the user's stored setting, read before its removal
+   * @param username the eXo login disconnecting
+   */
+  private void setAsideDisconnectedPreferences(UserEmailSettingEntity stored, String username) {
+    if (stored == null || stored.getEmailConnectorId() == null) {
+      return;
+    }
+    UserEmailSettingEntity preferences = new UserEmailSettingEntity();
+    preferences.setEmailConnectorId(stored.getEmailConnectorId());
+    preferences.setEmailAddress(stored.getEmailAddress());
+    preferences.setNotifyAllCategories(stored.getNotifyAllCategories());
+    preferences.setNotifyCategories(stored.getNotifyCategories());
+    preferences.setDefaultCategoryView(stored.getDefaultCategoryView());
+    preferences.setCarddavEnabled(stored.getCarddavEnabled());
+    preferences.setCarddavAutoPublish(stored.getCarddavAutoPublish());
+    settingService.set(Context.USER.id(username),
+                       EMAIL_CONNECTOR_SCOPE,
+                       DISCONNECTED_PREFERENCES_KEY,
+                       SettingValue.create(JsonUtils.toJsonString(preferences)));
+  }
+
+  /**
+   * Forgets the preferences a disconnection set aside: a connection that succeeded holds
+   * them now, or a disconnection by the platform drops them.
+   *
+   * @param username the eXo login
+   */
+  private void forgetDisconnectedPreferences(String username) {
+    settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, DISCONNECTED_PREFERENCES_KEY);
+  }
+
+  /**
    * Completes a connection about to be written with the preferences the stored setting
    * holds, since {@link #setUserEmailSetting} rewrites the whole document from the model
    * it is handed and a connection carries only the account. The new-mail notification
@@ -410,14 +485,13 @@ public class UserEmailSettingService {
    * address book is opted into anew. A value the connection does state is never
    * overwritten.
    * <p>
-   * Only a stored setting is completed from: a disconnection, the user's own or the
-   * platform's ({@link #deleteUserEmailSetting(String)}: a connector's deletion, a provider
-   * change, a managed-mode change, a user managed mode no longer governs), removes the
-   * whole document, so the connection that follows starts with every preference unset.
+   * The preferences come from the stored setting, or, for a user who is not connected,
+   * from the ones their own disconnection set aside ({@code preferencesToKeep}).
    *
    * @param connecting the setting about to be written, completed in place
-   * @param stored the user's stored setting, an empty one when there is none: its
-   *          preferences are all unset and it names no connector, so nothing is kept
+   * @param stored the preferences to keep and the account they are about, an empty
+   *          setting when there are none: its preferences are all unset and it names no
+   *          connector, so nothing is kept
    */
   private void keepPreferences(UserEmailSetting connecting, UserEmailSetting stored) {
     if (connecting.getNotifyAllCategories() == null) {
@@ -785,8 +859,15 @@ public class UserEmailSettingService {
    * Disconnects the user's mailbox at their own request.
    * <p>
    * A user managed mode governs cannot: the instance keeps them on the designated
-   * connector. The platform's own disconnections - a managed-mode change, a user's
+   * connector. The platform's own disconnections - a managed-mode change, a connector's
    * deletion - call {@link #deleteUserEmailSetting(String)} instead.
+   * <p>
+   * The user's notification choice, default view and address-book options are set aside
+   * under {@link #DISCONNECTED_PREFERENCES_KEY}, for their next connection to keep: on a
+   * connector whose provider asks for nothing, disconnecting and connecting again is the
+   * only way to reconnect. A disconnection with no setting to read - nothing connected,
+   * or a stored document that cannot be parsed - removes what is stored and leaves what an
+   * earlier disconnection set aside in place.
    *
    * <p>
    * Runs in its own transaction, as {@link #deleteUserEmailSetting(String)} does: the
@@ -798,7 +879,31 @@ public class UserEmailSettingService {
   @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
   public void disconnectUserEmailSetting(String username) throws ManagedConnectionLockedException {
     emailManagedModeService.checkUserMayChangeConnection(username, null);
+    UserEmailSettingEntity stored = settingToSetAside(username);
     removeUserEmailSetting(username);
+    setAsideDisconnectedPreferences(stored, username);
+  }
+
+  /**
+   * The stored setting as written, with no password decode: setting aside carries no
+   * credential.
+   *
+   * @param username the eXo login disconnecting
+   * @return the stored document, an empty one when there is none or it cannot be parsed
+   */
+  private UserEmailSettingEntity settingToSetAside(String username) {
+    SettingValue<?> value = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
+    if (value == null || value.getValue() == null) {
+      return new UserEmailSettingEntity();
+    }
+    try {
+      return JsonUtils.fromJsonString(value.getValue().toString(), UserEmailSettingEntity.class);
+    } catch (Exception e) {
+      // Exception, not RuntimeException: a malformed document surfaces as Jackson's
+      // checked exception, thrown sneakily. The disconnection still removes it.
+      LOG.warn("Cannot read the mail setting of user {}; disconnected with no preferences set aside", username, e);
+      return new UserEmailSettingEntity();
+    }
   }
 
   /**
@@ -809,6 +914,7 @@ public class UserEmailSettingService {
   @Transactional(propagation = Propagation.REQUIRES_NEW)
   public void deleteUserEmailSetting(String username) {
     removeUserEmailSetting(username);
+    forgetDisconnectedPreferences(username);
   }
 
   private void removeUserEmailSetting(String username) {
