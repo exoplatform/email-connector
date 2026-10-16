@@ -76,6 +76,18 @@ class SieveTokenScanTest {
   }
 
   /**
+   * A string, a bracket comment or a {@code text:} block that never ends runs to the end
+   * of the script: the string and the block are kept, the comment is not.
+   */
+  @Test
+  void testWhatNeverEndsRunsToTheEndOfTheScript() {
+    assertTrue(SieveTokenScan.containsWord("fileinto \"vacation", "vacation"));
+    assertTrue(SieveTokenScan.containsWord("keep text:\r\nvacation", "vacation"));
+    assertTrue(SieveTokenScan.containsWord("vacation \"x\"; /* open", "vacation"));
+    assertFalse(SieveTokenScan.containsWord("keep; /* vacation", "vacation"));
+  }
+
+  /**
    * Includes eXo cannot follow: global ones, non-literal names; a require list naming
    * the extension is not an include.
    */
@@ -103,6 +115,71 @@ class SieveTokenScanTest {
     assertTrue(SieveTokenScan.hasUnnamedPersonalInclude("require [\"include\"];\r\ninclude :personal \"${hex:65}xo-main\";"));
     assertTrue(SieveTokenScan.hasUnnamedPersonalInclude("require [\"include\", \"variables\"];\r\ninclude \"${name}\";"));
     assertTrue(SieveTokenScan.hasUnnamedPersonalInclude("include :global \"g\";\r\ninclude text:\r\nname\r\n.\r\n;"));
+    assertTrue(SieveTokenScan.hasUnnamedPersonalInclude("include :personal \"a\" \"b\";"));
+    assertTrue(SieveTokenScan.hasUnnamedPersonalInclude("include :personal \"a\""));
+    assertTrue(SieveTokenScan.hasUnnamedPersonalInclude("include : \"a\";"));
+  }
+
+  /**
+   * The word {@code include} inside a {@code text:} block is text, never a command: a
+   * reply asking for a ticket number holds no include, and neither does one quoting an
+   * include line after a dot-stuffed line, which does not end the block (RFC 5228
+   * §2.4.2).
+   */
+  @Test
+  void testATextBlockHoldsNoInclude() {
+    String ticket = "require [\"reject\"];\r\nreject text:\r\nPlease include the ticket number.\r\n.\r\n;\r\n";
+    assertFalse(SieveTokenScan.hasUnnamedPersonalInclude(ticket));
+    assertFalse(SieveTokenScan.hasUnreadableInclude(ticket));
+    assertFalse(SieveTokenScan.includesAnything(ticket));
+    assertFalse(SieveTokenScan.hasUnnamedPersonalInclude(ticket.replace("\r\n", "\n")));
+    String quoted = "reject text:\r\n..\r\ninclude :personal \"exo-rules\";\r\n.\r\n;\r\n";
+    assertEquals(List.of(), SieveTokenScan.includedPersonalScripts(quoted));
+    assertFalse(SieveTokenScan.includesAnything(quoted));
+  }
+
+  /**
+   * An include is read where the engine reads one. Its name is the quoted string right
+   * after its tags, blanks and comments allowed between them and none required:
+   * Pigeonhole 2.3.21 compiles {@code include :personal"exo-rules";} and
+   * {@code include:personal "exo-rules";}. A quote or a {@code :include} line inside a
+   * {@code text:} block before it hides nothing. A word after a colon is a tag, so
+   * {@code :text:} opens no block: Pigeonhole compiles {@code body :text:contains} as two
+   * tags.
+   */
+  @Test
+  void testAnIncludeIsReadWhereTheEngineReadsOne() {
+    assertEquals(List.of("exo-main"), SieveTokenScan.includedPersonalScripts("include :personal\"exo-main\";"));
+    assertEquals(List.of("a"), SieveTokenScan.includedPersonalScripts("include:personal \"a\";"));
+    assertEquals(List.of("a"), SieveTokenScan.includedPersonalScripts("include :personal # c\r\n /* d */ \"a\";"));
+    for (String text : List.of("Our limit is 5\" wide.", ":include \"zzz\"")) {
+      String script = "reject text:\r\n" + text + "\r\n.\r\n;\r\ninclude :personal\"exo-main\";\r\n";
+      assertEquals(List.of("exo-main"), SieveTokenScan.includedPersonalScripts(script), script);
+      assertFalse(SieveTokenScan.hasUnnamedPersonalInclude(script), script);
+    }
+    String tags = "if body :text:contains \"x\" { keep; }\r\ninclude :personal \"exo-main\";\r\nreject text:\r\nNo.\r\n.\r\n;\r\n";
+    assertEquals(List.of("exo-main"), SieveTokenScan.includedPersonalScripts(tags));
+    assertFalse(SieveTokenScan.hasUnnamedPersonalInclude(tags));
+  }
+
+  /**
+   * What the scan cannot delimit counts as an include eXo cannot name: a string, a
+   * bracket comment or a {@code text:} block that never ends, which swallows the rest of
+   * the script, and a {@code text:} block whose first line holds more than blanks and a
+   * hash comment, which Pigeonhole refuses. A hash comment may end the script.
+   */
+  @Test
+  void testWhatTheScanCannotDelimitIsAnIncludeEXoCannotName() {
+    for (String script : List.of("keep;\r\nreject text:\r\nNo.\r\n",
+                                 "fileinto \"Archive;\r\n",
+                                 "keep; /* include :personal \"exo-main\";\r\n",
+                                 "include :personal \"exo-main;\r\n",
+                                 "reject text: /* c */\r\nNo.\r\n.\r\n;\r\n")) {
+      assertTrue(SieveTokenScan.hasUnnamedPersonalInclude(script), script);
+      assertTrue(SieveTokenScan.hasUnreadableInclude(script), script);
+      assertTrue(SieveTokenScan.includesAnything(script), script);
+    }
+    assertFalse(SieveTokenScan.hasUnnamedPersonalInclude("reject text: # c\r\nNo.\r\n.\r\n;\r\nkeep; # the end"));
   }
 
   /**
