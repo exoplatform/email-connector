@@ -164,8 +164,7 @@ do not, because turning one off only stops a READ (see their subtitles).
           </v-list-item-content>
           <v-list-item-action class="my-0">
             <v-switch
-              :key="sharedMailboxSentCopyRender"
-              :input-value="sharedMailboxSentCopyEnabled"
+              :input-value="sharedMailboxSentCopyShown"
               @change="onSharedMailboxSentCopyChange" />
           </v-list-item-action>
         </v-list-item>
@@ -215,9 +214,9 @@ export default {
       customFoldersEnabled: true,
       savingCustomFolders: false,
       sharedMailboxSentCopyEnabled: true,
+      sharedMailboxSentCopyShown: true,
       savingSharedMailboxSentCopy: false,
       queuedSharedMailboxSentCopy: null,
-      sharedMailboxSentCopyRender: 0,
     };
   },
   created() {
@@ -276,7 +275,10 @@ export default {
       this.$emailConnectorAdministrationService.getCustomFoldersEnabled()
         .then(enabled => this.customFoldersEnabled = enabled);
       this.$emailConnectorAdministrationService.getSharedMailboxSentCopyEnabled()
-        .then(enabled => this.sharedMailboxSentCopyEnabled = enabled);
+        .then(enabled => {
+          this.sharedMailboxSentCopyEnabled = enabled;
+          this.sharedMailboxSentCopyShown = enabled;
+        });
     },
     /**
      * Opens the confirmation before applying a cache size change — every
@@ -394,16 +396,18 @@ export default {
     /**
      * Saves the switch of the copy into a shared mailbox owner's Sent folder on change
      * (EXO-90551). Nothing already filed is touched either way, so it saves on change,
-     * like the custom-folders switch. The switch shows its new value at once, with no
-     * pending state: a change made while a save runs is kept and saved after it, so the
-     * last value chosen is the one stored. A refused save re-creates the switch, which
-     * shows the stored value again: the switch keeps the value it was flipped to, and
-     * its input-value prop, unchanged by a refusal, would not reset it.
+     * like the custom-folders switch. The switch shows the value chosen last, at once and
+     * with no pending state, while the stored value is kept apart: a change made while a
+     * save runs is kept and saved after it, so the last value chosen is the one stored.
+     * A refused save with no later change shows the stored value again, through the
+     * input-value prop: the switch keeps the value it was flipped to until that prop
+     * changes.
      *
      * @param {Boolean} enabled the new switch value
      * @returns {void}
      */
     onSharedMailboxSentCopyChange(enabled) {
+      this.sharedMailboxSentCopyShown = enabled;
       if (this.savingSharedMailboxSentCopy) {
         this.queuedSharedMailboxSentCopy = enabled;
         return;
@@ -412,7 +416,9 @@ export default {
       this.$emailConnectorAdministrationService.updateSharedMailboxSentCopyEnabled(enabled)
         .then(() => this.sharedMailboxSentCopyEnabled = enabled)
         .catch(() => {
-          this.sharedMailboxSentCopyRender++;
+          if (this.queuedSharedMailboxSentCopy === null) {
+            this.sharedMailboxSentCopyShown = this.sharedMailboxSentCopyEnabled;
+          }
           this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error');
         })
         .finally(() => {
