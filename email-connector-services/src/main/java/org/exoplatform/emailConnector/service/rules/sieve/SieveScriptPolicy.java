@@ -120,7 +120,10 @@ public class SieveScriptPolicy {
       + "include :personal \"((?:[^\"\\\\]|\\\\.)*)\";\n");
 
   /**
-   * Publishes eXo's script according to the policy.
+   * Publishes eXo's script according to the policy. Every command runs within the
+   * client's conversation deadline, {@value ManageSieveClient#DEFAULT_CONVERSATION_TIMEOUT_MILLIS}
+   * ms after its connect began: however many scripts the publish reads, it holds the
+   * caller's thread that long at most.
    *
    * @param client an authenticated client
    * @param script the script to publish
