@@ -111,9 +111,9 @@ class ExoSieveScriptTest {
 
   /**
    * Where the clocks change at midnight, a boundary's offset is the one in force just
-   * before the change, so the date turns at the zone's own midnight instead of an hour
-   * early: a start on the change day, an end the day before a fall-back midnight, and an
-   * end the day before a spring-forward midnight, where the offset at the next day's
+   * before the zone's day starts, so the date turns at the zone's own midnight instead of
+   * an hour early: a start on the change day, an end the day before a fall-back midnight,
+   * and an end the day before a spring-forward midnight, where the offset at the next day's
    * first instant would be the wrong one. Exact as far as the engine computes the date
    * part of {@code currentdate} at the given {@code :zone} (RFC 5260 §4.1), which no test
    * here runs.

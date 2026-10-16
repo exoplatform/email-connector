@@ -399,12 +399,13 @@ public final class ExoSieveScript {
 
   /**
    * The fixed offset whose date turns to {@code day} at the very instant the zone starts
-   * that day: {@code day}'s midnight minus that instant. On an ordinary day it is the
-   * zone's offset. Where the clocks change at midnight it is the offset in force just
-   * before the change, since the zone's day starts at its old midnight: on 2026-03-29 in
-   * Asia/Beirut, +02:00, where the offset of the day's first hour, +03:00, would start
-   * the date an hour early. A window's start uses its first day, its end the day after
-   * its last one.
+   * that day: {@code day}'s midnight minus that instant, which is the offset in force just
+   * before the zone's day starts. On an ordinary day it is the zone's offset. Where the
+   * clocks go forward at midnight it is the offset before the change: on 2026-03-29 in
+   * Asia/Beirut, +02:00, where the offset of the day's first hour, +03:00, would start the
+   * date an hour early. Where they go back at midnight the day starts at the second
+   * midnight, so it is the offset after the change: on 2026-10-25 there, +02:00. A
+   * window's start uses its first day, its end the day after its last one.
    *
    * @param day the day whose start the date must follow
    * @param zone the zone the day is in
