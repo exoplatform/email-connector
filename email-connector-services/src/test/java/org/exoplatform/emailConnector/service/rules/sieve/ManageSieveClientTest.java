@@ -437,6 +437,47 @@ class ManageSieveClientTest {
   }
 
   /**
+   * {@code LOGOUT} is an operation like any command: once the conversation's deadline has
+   * passed it is not sent, and the connection is closed all the same, so a command run
+   * after it fails even with time to spare.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testALogoutAfterTheConversationDeadlineSendsNothing() throws Exception {
+    try (ManageSieveClient client = connect(new DrivenWatchdog())) {
+      client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN, FakeManageSieveServer.PASSWORD));
+      client.endConversationWithin(0);
+      client.logout();
+      assertEquals(List.of("STARTTLS", "AUTHENTICATE PLAIN <redacted>"), server.getCommands());
+      client.endConversationWithin(ManageSieveClient.DEFAULT_CONVERSATION_TIMEOUT_MILLIS);
+      ManageSieveException e = assertThrows(ManageSieveException.class, client::listScripts);
+      assertEquals(ManageSieveErrorKind.UNAVAILABLE, e.getKind());
+    }
+  }
+
+  /**
+   * A {@code LOGOUT} the server never answers ends by the conversation's deadline: the
+   * watchdog armed for it closes the socket, where the read would otherwise wait for the
+   * whole read timeout.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  @Timeout(value = 20, threadMode = ThreadMode.SEPARATE_THREAD)
+  void testALogoutTheServerNeverAnswersEndsByTheConversationDeadline() throws Exception {
+    server.stopReadingAfterAuthentication();
+    try (ManageSieveClient client = connect()) {
+      client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN, FakeManageSieveServer.PASSWORD));
+      client.endConversationWithin(1000);
+      long start = System.nanoTime();
+      client.logout();
+      long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+      assertTrue(elapsedMillis < 3000, elapsedMillis + " ms");
+    }
+  }
+
+  /**
    * Each operation disarms its watchdog as it ends, so the watchdog's queue holds only
    * the operations in flight, however long the conversation.
    *
