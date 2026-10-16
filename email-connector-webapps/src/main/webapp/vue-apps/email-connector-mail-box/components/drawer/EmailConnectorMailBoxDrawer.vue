@@ -22,6 +22,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     v-model="emailBoxDrawer"
     right
     allow-expand
+    full-app-left-class="grey-lighten1-background-opacity-5"
     :drawer-width="drawerWidth"
     @expand-updated="updateExpand"
     :loading="loading || syncInProgress || (searchActive && (searchServerRunning || searchLocalRunning)) || readerLoading || scheduledLoading || suggestionsLoading || (loadingEmail && readerPartial)"
@@ -131,8 +132,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <!-- The left pane in full screen: the folder column, then the list, each scrolling
          on its own so the folders stay put while the list moves (EXO-90415). Always on
          screen once expanded, an empty folder included: the column is how the user
-         leaves it. The list -- folder or search results -- is on the pane's platform
-         grey, like exo-drawer's header strip above it; the column is a shade darker
+         leaves it. The list -- folder or search results -- is on the pane's shade over
+         the drawer background, like exo-drawer's header strip above it (full-app-left-class),
+         so on a white drawer it is a light grey (#f1f1f1); the column is a shade darker
          (NAVIGATION_BACKGROUND), a divider between them, open and as a rail; the reader
          beside the pane stays white. An empty list says so in the
          list, under its chips, not in the reader. The chips row and the column's first
