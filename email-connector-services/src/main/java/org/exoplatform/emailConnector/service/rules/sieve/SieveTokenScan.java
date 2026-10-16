@@ -29,7 +29,10 @@ import java.util.Objects;
  * just enough lexing to know where a comment, a quoted string and a {@code text:} block
  * (RFC 5228 §2.4.2) start and end. A {@code #} or a {@code /*} inside a string or a block
  * is text, not a comment: treating it as one would hide a real command further on. A
- * quote inside a block opens no string.
+ * quote inside a block opens no string. The script is read one token at a time, and a
+ * word or a number ends where Pigeonhole's lexer ends it: a number is its digits and at
+ * most one {@code K}, {@code M} or {@code G}, so {@code :days 7text:} is a number followed
+ * by a block.
  * <ul>
  * <li><b>A word</b> is looked for with strings and blocks kept: {@code require
  * ["vacation"]} names the extension inside a string, and a word that only occurs in a
@@ -51,6 +54,9 @@ public final class SieveTokenScan {
 
   /** The token that opens a multi-line string. */
   private static final String TEXT    = "text:";
+
+  /** The quantifiers that may end a number, in either case (RFC 5228 §2.4.1). */
+  private static final String QUANTIFIERS = "kKmMgG";
 
   /**
    * Utility class.
@@ -147,20 +153,14 @@ public final class SieveTokenScan {
   static String withoutComments(String script) {
     StringBuilder out = new StringBuilder(script.length());
     int i = 0;
-    int length = script.length();
-    while (i < length) {
-      char c = script.charAt(i);
-      if (c == '#' || startsBracketComment(script, i)) {
-        i = endOrLength(script, endOfToken(script, i));
+    while (i < script.length()) {
+      int end = endOrLength(script, endOfToken(script, i));
+      if (script.charAt(i) == '#' || startsBracketComment(script, i)) {
         out.append(' ');
-      } else if (c == '"' || startsMultiLine(script, i)) {
-        int end = endOrLength(script, endOfToken(script, i));
-        out.append(script, i, end);
-        i = end;
       } else {
-        out.append(c);
-        i++;
+        out.append(script, i, end);
       }
+      i = end;
     }
     return out.toString();
   }
@@ -278,8 +278,9 @@ public final class SieveTokenScan {
 
   /**
    * Where the token that starts at an index ends: a quoted string past its closing quote,
-   * a comment past its end, a {@code text:} block past its closing line, a word past its
-   * last character, any other character past itself.
+   * a comment past its end, a {@code text:} block past its closing line, a number past its
+   * digits and its quantifier, a word past its last character, any other character past
+   * itself.
    *
    * @param script the script
    * @param index where the token starts
@@ -300,6 +301,9 @@ public final class SieveTokenScan {
     }
     if (startsMultiLine(script, index)) {
       return endOfMultiLine(script, index);
+    }
+    if (isDigit(c)) {
+      return endOfNumber(script, index);
     }
     return isWordChar(c) ? endOfWord(script, index) : index + 1;
   }
@@ -350,17 +354,17 @@ public final class SieveTokenScan {
   }
 
   /**
-   * Whether a {@code text:} multi-line string opens at this index (RFC 5228 §2.4.2): the
-   * word {@code text}, not part of a longer word nor a tag, followed by a colon.
-   * Pigeonhole reads {@code :text:contains} as two tags.
+   * Whether a {@code text:} multi-line string opens at this token start (RFC 5228
+   * §2.4.2): the word {@code text}, not a tag, followed by a colon. Pigeonhole reads
+   * {@code :text:contains} as two tags. A longer word holding {@code text} is one token
+   * and never starts here, while a number ends before it: {@code 7text:} opens a block.
    *
    * @param script the script
-   * @param index the index
+   * @param index where a token starts
    * @return true when {@code text:} starts here as a word
    */
   private static boolean startsMultiLine(String script, int index) {
-    return script.regionMatches(true, index, TEXT, 0, TEXT.length())
-        && (index == 0 || (!isWordChar(script.charAt(index - 1)) && !isTag(script, index)));
+    return script.regionMatches(true, index, TEXT, 0, TEXT.length()) && !isTag(script, index);
   }
 
   /**
@@ -425,6 +429,22 @@ public final class SieveTokenScan {
       i++;
     }
     return i;
+  }
+
+  /**
+   * Where the number that starts at an index ends, as Pigeonhole's lexer ends it: past
+   * its digits and at most one quantifier. What follows starts a token of its own.
+   *
+   * @param script the script
+   * @param index the index of its first digit
+   * @return the index after its last digit, or after its quantifier
+   */
+  private static int endOfNumber(String script, int index) {
+    int i = index;
+    while (i < script.length() && isDigit(script.charAt(i))) {
+      i++;
+    }
+    return i < script.length() && QUANTIFIERS.indexOf(script.charAt(i)) >= 0 ? i + 1 : i;
   }
 
   /**
@@ -493,5 +513,15 @@ public final class SieveTokenScan {
    */
   private static boolean isWordChar(char c) {
     return Character.isLetterOrDigit(c) || c == '_';
+  }
+
+  /**
+   * Whether a character is a digit a number starts with: ASCII only, as in Pigeonhole.
+   *
+   * @param c the character
+   * @return true for {@code 0} to {@code 9}
+   */
+  private static boolean isDigit(char c) {
+    return c >= '0' && c <= '9';
   }
 }
