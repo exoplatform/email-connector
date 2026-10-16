@@ -685,7 +685,7 @@ class ManageSieveClientTest {
 
       @Override
       public boolean isDone() {
-        return cancelled;
+        return isCancelled();
       }
 
       @Override
