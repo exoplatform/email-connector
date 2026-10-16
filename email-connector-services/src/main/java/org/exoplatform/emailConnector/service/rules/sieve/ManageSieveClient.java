@@ -405,11 +405,13 @@ public final class ManageSieveClient implements AutoCloseable {
 
   /**
    * Ends the conversation politely, then closes the connection whatever the server
-   * answered.
+   * answered. {@code LOGOUT} is an operation like any command: its deadline falls within
+   * the conversation's, and once that has passed nothing is sent.
    */
   public void logout() {
     try {
       if (socket != null && !socket.isClosed()) {
+        startOperation();
         write("LOGOUT");
         readResponse();
       }
