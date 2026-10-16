@@ -522,8 +522,8 @@ class SieveScriptPolicyTest {
    * text, or a {@code :include} line in it, next to an include written with no blank
    * before its name, and a block opened right after a number ({@code :days 7text:})
    * holding a bracket-comment opener that a later comment closes, all of which
-   * Pigeonhole 2.3.21 compiles. Wrapping that script would make {@code exo-main} include
-   * itself. The refusal is the one for reaching {@code exo-main}, not the one for an
+   * Pigeonhole 0.5.21 (Dovecot 2.3.21) compiles. Wrapping that script would make
+   * {@code exo-main} include itself. The refusal is the one for reaching {@code exo-main}, not the one for an
    * include eXo cannot name: the walk reads {@code part}, which the foreign script also
    * includes, and it reads an included script only once every include of the script
    * naming it has a name.
