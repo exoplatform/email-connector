@@ -394,6 +394,78 @@ class SieveScriptPolicyTest {
   }
 
   /**
+   * The include walk reads at most {@value SieveScriptPolicy#MAX_INCLUDED_SCRIPTS}
+   * scripts: a foreign script including that many is followed to the end and wrapped;
+   * one including one more is refused once the cap is reached, nothing written and no
+   * script read past it.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testTheIncludeWalkReadsAtMostItsCap() throws Exception {
+    includingScripts(SieveScriptPolicy.MAX_INCLUDED_SCRIPTS);
+    assertEquals(SievePolicyCase.WRAPPED, publish(replyOff()).policyCase());
+    assertEquals(1 + SieveScriptPolicy.MAX_INCLUDED_SCRIPTS, server.getCommands("GETSCRIPT").size());
+
+    server.close();
+    server = new FakeManageSieveServer();
+    includingScripts(SieveScriptPolicy.MAX_INCLUDED_SCRIPTS + 1);
+    ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class, () -> publish(replyOff()));
+    assertEquals(ServerRuleConflictException.SERVER_CONFLICT, e.getMessage());
+    assertEquals(FOREIGN, e.getScriptName());
+    assertNoWrite();
+    assertEquals(1 + SieveScriptPolicy.MAX_INCLUDED_SCRIPTS, server.getCommands("GETSCRIPT").size());
+  }
+
+  /**
+   * A script the foreign one names many times is read once by the include walk and once
+   * by the vacation rule, however many times it is named.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testAScriptIncludedManyTimesIsReadOncePerCheck() throws Exception {
+    server.script("part", "keep;\r\n", false)
+          .script(FOREIGN, "require [\"include\"];\r\n" + "include :personal \"part\";\r\n".repeat(50), true);
+    assertEquals(SievePolicyCase.WRAPPED, publish(replyOn()).policyCase());
+    assertEquals(List.of("GETSCRIPT " + FOREIGN, "GETSCRIPT part", "GETSCRIPT part"), server.getCommands("GETSCRIPT"));
+  }
+
+  /**
+   * A personal include whose target eXo cannot name is refused, with or without a reply,
+   * in the foreign script or in a script it includes: an encoded character the engine
+   * decodes, here into {@code exo-main}, which wrapping would make include itself, or a
+   * name that is not a plain string. A {@code :global} include cannot be one of eXo's
+   * scripts and is not refused.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testAPersonalIncludeEXoCannotNameIsRefused() throws Exception {
+    String encoded = "require [\"include\", \"encoded-character\"];\r\ninclude :personal \"${hex:65}xo-main\";\r\n";
+    for (Map<String, String> account : List.of(Map.of(FOREIGN, encoded),
+                                               Map.of(FOREIGN, "require [\"include\"];\r\ninclude :personal text:\r\nexo-main\r\n.\r\n;\r\n"),
+                                               Map.of(FOREIGN,
+                                                      "require [\"include\"];\r\ninclude :personal \"mine\";\r\n",
+                                                      "mine",
+                                                      encoded))) {
+      for (ExoSieveScript script : List.of(replyOn(), replyOff())) {
+        server.close();
+        server = new FakeManageSieveServer();
+        account.forEach((name, text) -> server.script(name, text, FOREIGN.equals(name)));
+        ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class, () -> publish(script));
+        assertEquals(ServerRuleConflictException.SERVER_CONFLICT, e.getMessage());
+        assertEquals(FOREIGN, e.getScriptName());
+        assertNoWrite();
+      }
+    }
+    server.close();
+    server = new FakeManageSieveServer();
+    server.script(FOREIGN, "require [\"include\", \"encoded-character\"];\r\ninclude :global \"${hex:65}xo-main\";\r\n", true);
+    assertEquals(SievePolicyCase.WRAPPED, publish(replyOff()).policyCase());
+  }
+
+  /**
    * Case 4: another script is active and include is not advertised — refused, nothing
    * written, not even checked.
    *
@@ -615,6 +687,21 @@ class SieveScriptPolicyTest {
                  .map(command -> command.startsWith("PUTSCRIPT") || command.startsWith("CHECKSCRIPT") ? command.split(" ")[0]
                                                                                                       : command)
                  .toList();
+  }
+
+  /**
+   * Makes the active foreign script include that many scripts of the account, each
+   * including nothing.
+   *
+   * @param count the number of included scripts
+   */
+  private void includingScripts(int count) {
+    StringBuilder foreign = new StringBuilder("require [\"include\"];\r\n");
+    for (int i = 0; i < count; i++) {
+      server.script("part" + i, "keep;\r\n", false);
+      foreign.append("include :personal \"part").append(i).append("\";\r\n");
+    }
+    server.script(FOREIGN, foreign.toString(), true);
   }
 
   /**

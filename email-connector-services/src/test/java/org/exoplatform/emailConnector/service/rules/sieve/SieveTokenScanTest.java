@@ -91,6 +91,21 @@ class SieveTokenScanTest {
   }
 
   /**
+   * Personal includes eXo cannot name: a name holding an encoded character or a
+   * variable, or one that is not a plain string. Global includes do not count, whatever
+   * their name, and neither does a commented one.
+   */
+  @Test
+  void testPersonalIncludesEXoCannotName() {
+    assertFalse(SieveTokenScan.hasUnnamedPersonalInclude("require [\"include\"];\r\ninclude :personal \"a\";"));
+    assertFalse(SieveTokenScan.hasUnnamedPersonalInclude("require [\"include\"];\r\ninclude :once :global \"${hex:65}\";"));
+    assertFalse(SieveTokenScan.hasUnnamedPersonalInclude("# include text:\r\nkeep;"));
+    assertTrue(SieveTokenScan.hasUnnamedPersonalInclude("require [\"include\"];\r\ninclude :personal \"${hex:65}xo-main\";"));
+    assertTrue(SieveTokenScan.hasUnnamedPersonalInclude("require [\"include\", \"variables\"];\r\ninclude \"${name}\";"));
+    assertTrue(SieveTokenScan.hasUnnamedPersonalInclude("include :global \"g\";\r\ninclude text:\r\nname\r\n.\r\n;"));
+  }
+
+  /**
    * Personal includes are listed, unescaped; global ones and commented ones are not.
    */
   @Test

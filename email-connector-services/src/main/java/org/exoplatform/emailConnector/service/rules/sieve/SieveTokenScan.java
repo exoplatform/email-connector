@@ -39,6 +39,9 @@ public final class SieveTokenScan {
   /** {@code include}, its tagged arguments, and the quoted name of the included script. */
   private static final Pattern INCLUDE = Pattern.compile("(?i)(?<!\\w)include((?:\\s++:[a-z]++)*+)\\s+\"((?:[^\"\\\\]|\\\\.)*+)\"");
 
+  /** An {@code include} command outside comments and strings, and its tagged arguments. */
+  private static final Pattern INCLUDE_COMMAND = Pattern.compile("(?i)(?<![\\w:])include(?!\\w)((?:\\s++:[a-z]++)*+)");
+
   /**
    * Utility class.
    */
@@ -105,9 +108,27 @@ public final class SieveTokenScan {
     if (script == null) {
       return false;
     }
-    int commands = includeCommands(script);
+    int commands = includeCommands(script, true);
     List<String> personal = includedPersonalScripts(script);
     return commands > personal.size() || personal.stream().anyMatch(name -> name.contains("${"));
+  }
+
+  /**
+   * Whether a script has a personal {@code include} whose target eXo cannot name: one
+   * whose name is not a plain quoted string (a variable, a {@code text:} block), or holds
+   * <code>${</code>, which the engine may decode into another name ({@code ${hex:65}} is
+   * an {@code e} under RFC 5228 §2.4.2.4). {@code :global} includes are not counted,
+   * since none can be one of eXo's personal scripts.
+   *
+   * @param script the script text
+   * @return true when at least one personal include cannot be named
+   */
+  public static boolean hasUnnamedPersonalInclude(String script) {
+    if (script == null) {
+      return false;
+    }
+    List<String> personal = includedPersonalScripts(script);
+    return includeCommands(script, false) > personal.size() || personal.stream().anyMatch(name -> name.contains("${"));
   }
 
   /**
@@ -117,21 +138,24 @@ public final class SieveTokenScan {
    * @return true when it includes another script
    */
   public static boolean includesAnything(String script) {
-    return script != null && includeCommands(script) > 0;
+    return script != null && includeCommands(script, true) > 0;
   }
 
   /**
    * The number of {@code include} commands outside comments and strings.
    *
    * @param script the script text
+   * @param global whether {@code :global} ones count
    * @return the count
    */
-  private static int includeCommands(String script) {
+  private static int includeCommands(String script, boolean global) {
     String code = withoutComments(script).replaceAll("\"(?:[^\"\\\\]|\\\\.)*+\"", "\"\"");
-    Matcher matcher = Pattern.compile("(?i)(?<![\\w:])include(?!\\w)").matcher(code);
+    Matcher matcher = INCLUDE_COMMAND.matcher(code);
     int count = 0;
     while (matcher.find()) {
-      count++;
+      if (global || !matcher.group(1).toLowerCase(Locale.ROOT).contains(":global")) {
+        count++;
+      }
     }
     return count;
   }
