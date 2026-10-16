@@ -424,6 +424,26 @@ class ManageSieveClientTest {
   }
 
   /**
+   * A watchdog that fires late, once the next operation is in flight, closes nothing: a
+   * watchdog closes the socket only for the operation it was armed for, so the next
+   * command runs to its answer. Each operation's watchdog fires as the next one is armed,
+   * the next operation's number already current.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testAWatchdogFiringUnderTheNextOperationClosesNothing() throws Exception {
+    DrivenWatchdog watchdog = new DrivenWatchdog();
+    try (ManageSieveClient client = connect(watchdog)) {
+      watchdog.firePreviousAsNextIsArmed = true;
+      client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN, FakeManageSieveServer.PASSWORD));
+      assertEquals(List.of(), client.listScripts());
+      assertEquals(2, watchdog.fired);
+      assertEquals(List.of("STARTTLS", "AUTHENTICATE PLAIN <redacted>", "LISTSCRIPTS"), server.getCommands());
+    }
+  }
+
+  /**
    * A watchdog that fires just as its operation ends, the answer already read, fails
    * that operation as timed out rather than letting it succeed on a connection the next
    * command would find closed.
@@ -585,8 +605,9 @@ class ManageSieveClientTest {
 
   /**
    * A watchdog the test drives: it keeps each task it is given instead of running it
-   * after its delay, and runs the tasks when the test fires them, or each one as its
-   * operation disarms it while {@link #fireAsOperationsEnd} is set.
+   * after its delay, and runs the tasks when the test fires them, each one as its
+   * operation disarms it while {@link #fireAsOperationsEnd} is set, or each one as the
+   * next is armed while {@link #firePreviousAsNextIsArmed} is set.
    */
   private static final class DrivenWatchdog extends ScheduledThreadPoolExecutor {
 
@@ -595,6 +616,12 @@ class ManageSieveClientTest {
 
     /** Whether a task runs as its operation disarms it, the watchdog firing at that instant. */
     private boolean                fireAsOperationsEnd;
+
+    /** Whether arming a task first runs the one armed before it, a watchdog firing late. */
+    private boolean                firePreviousAsNextIsArmed;
+
+    /** How many tasks ran as the next one was armed. */
+    private int                    fired;
 
     /**
      * A watchdog with no task.
@@ -605,6 +632,10 @@ class ManageSieveClientTest {
 
     @Override
     public ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
+      if (firePreviousAsNextIsArmed && !tasks.isEmpty()) {
+        tasks.get(tasks.size() - 1).command.run();
+        fired++;
+      }
       DrivenTask task = new DrivenTask(command);
       tasks.add(task);
       return task;
