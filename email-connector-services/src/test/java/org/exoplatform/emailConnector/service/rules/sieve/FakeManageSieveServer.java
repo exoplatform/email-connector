@@ -90,6 +90,9 @@ public final class FakeManageSieveServer implements AutoCloseable {
       + "include index mailbox mailboxid mboxmetadata mime reject regex relational replace servermetadata "
       + "spamtest spamtestplus special-use subaddress vacation vacation-seconds variables virustest";
 
+  /** The receive buffer of a server that stops reading, in octets. */
+  private static final int     STALLED_RECEIVE_BUFFER = 4096;
+
   private final ServerSocket   serverSocket;
 
   private final SSLContext     tls;
@@ -127,6 +130,8 @@ public final class FakeManageSieveServer implements AutoCloseable {
   private volatile long        trickleMillis;
 
   private volatile long        handshakeTrickleMillis;
+
+  private volatile boolean     stopReadingAfterAuthentication;
 
   /** Released when the server stops, ending every paced wait at once. */
   private final CountDownLatch stopped           = new CountDownLatch(1);
@@ -315,15 +320,28 @@ public final class FakeManageSieveServer implements AutoCloseable {
   }
 
   /**
-   * Makes the server answer {@code STARTTLS} with OK, then, instead of a TLS handshake,
-   * the header of a 16 KiB handshake record followed by its body one octet per interval,
-   * forever: each of the client's handshake reads succeeds, the record never completes.
+   * Makes the server answer {@code STARTTLS} with OK, wait for the first octet of the
+   * client's ClientHello, then, instead of a TLS handshake, send the header of a 16 KiB
+   * handshake record followed by its body one octet per interval, forever: each of the
+   * client's handshake reads succeeds, the record never completes.
    *
    * @param intervalMillis the pause between two octets
    * @return this server
    */
   public FakeManageSieveServer trickleHandshake(long intervalMillis) {
     this.handshakeTrickleMillis = intervalMillis;
+    return this;
+  }
+
+  /**
+   * Makes the server stop reading once it has accepted the credentials, its receive
+   * buffer cut to a few kilobytes: a large enough write from the client then blocks, as
+   * against a server that stalled.
+   *
+   * @return this server
+   */
+  public FakeManageSieveServer stopReadingAfterAuthentication() {
+    this.stopReadingAfterAuthentication = true;
     return this;
   }
 
@@ -431,6 +449,9 @@ public final class FakeManageSieveServer implements AutoCloseable {
     while (!serverSocket.isClosed()) {
       try {
         Socket socket = serverSocket.accept();
+        if (stopReadingAfterAuthentication) {
+          socket.setReceiveBufferSize(STALLED_RECEIVE_BUFFER);
+        }
         synchronized (connections) {
           connections.add(socket);
         }
@@ -505,6 +526,11 @@ public final class FakeManageSieveServer implements AutoCloseable {
         }
         send(out, "OK \"Begin TLS negotiation now\"\r\n" + (injectAfterStarttls ? "OK \"injected\"\r\n" : ""));
         if (handshakeTrickleMillis > 0) {
+          // The client sends its ClientHello only once it has checked that nothing came
+          // after the OK: a record header sent before it would meet that check instead.
+          if (in.read() < 0) {
+            return;
+          }
           out.write(new byte[] { 0x16, 0x03, 0x03, 0x40, 0x00 });
           while (true) {
             out.write(0);
@@ -532,6 +558,10 @@ public final class FakeManageSieveServer implements AutoCloseable {
       case "AUTHENTICATE" -> {
         authenticated = secure && authenticate(args);
         send(out, authenticated ? "OK \"Authenticated\"\r\n" : "NO \"Authentication failed\"\r\n");
+        if (authenticated && stopReadingAfterAuthentication) {
+          stopped.await();
+          return;
+        }
       }
       case "LOGOUT" -> {
         send(out, "OK \"Bye\"\r\n");
