@@ -21,9 +21,14 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Delayed;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import javax.mail.PasswordAuthentication;
 import javax.net.ssl.SSLContext;
@@ -355,6 +360,90 @@ class ManageSieveClientTest {
   }
 
   /**
+   * A server that stops reading what the client writes holds a write blocked inside the
+   * TLS layer, and the operation deadline still ends it: the watchdog closes the TCP
+   * socket under that layer, where closing the TLS socket would wait for the blocked
+   * write and hold the one watchdog thread every client shares. The script is larger
+   * than what the loopback buffers take in, the server's receive buffer being cut to a
+   * few kilobytes.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  @Timeout(value = 10, threadMode = ThreadMode.SEPARATE_THREAD)
+  void testAWriteTheServerStopsReadingHitsTheOperationDeadline() throws Exception {
+    server.stopReadingAfterAuthentication();
+    ManageSieveClient client = ManageSieveClient.connect("localhost",
+                                                         server.getPort(),
+                                                         FakeManageSieveServer.clientTlsFactory(),
+                                                         5000,
+                                                         1000,
+                                                         1500);
+    client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN, FakeManageSieveServer.PASSWORD));
+    String script = "#".repeat(16 * 1024 * 1024);
+    long start = System.nanoTime();
+    ManageSieveException e = assertThrows(ManageSieveException.class, () -> client.putScript("exo-rules", script));
+    assertEquals(ManageSieveErrorKind.UNAVAILABLE, e.getKind());
+    assertTrue(e.getMessage().contains("timed out"), e.getMessage());
+    assertTrue((System.nanoTime() - start) / 1_000_000 < 4000);
+  }
+
+  /**
+   * Each operation disarms its watchdog as it ends, so the watchdog's queue holds only
+   * the operations in flight, however long the conversation.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testAnOperationDisarmsItsWatchdogAsItEnds() throws Exception {
+    DrivenWatchdog watchdog = new DrivenWatchdog();
+    try (ManageSieveClient client = connect(watchdog)) {
+      client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN, FakeManageSieveServer.PASSWORD));
+      client.listScripts();
+      assertEquals(3, watchdog.tasks.size());
+      assertTrue(watchdog.tasks.stream().allMatch(ScheduledFuture::isCancelled));
+    }
+  }
+
+  /**
+   * A watchdog that fires once its operation has ended — one already running when the
+   * operation disarmed it — closes nothing: the next command runs on the same
+   * connection.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testAWatchdogFiringAfterItsOperationEndedClosesNothing() throws Exception {
+    DrivenWatchdog watchdog = new DrivenWatchdog();
+    try (ManageSieveClient client = connect(watchdog)) {
+      client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN, FakeManageSieveServer.PASSWORD));
+      client.listScripts();
+      watchdog.fireAll();
+      assertEquals(List.of(), client.listScripts());
+    }
+  }
+
+  /**
+   * A watchdog that fires just as its operation ends, the answer already read, fails
+   * that operation as timed out rather than letting it succeed on a connection the next
+   * command would find closed.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testAWatchdogFiringAsItsOperationEndsFailsIt() throws Exception {
+    DrivenWatchdog watchdog = new DrivenWatchdog();
+    try (ManageSieveClient client = connect(watchdog)) {
+      client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN, FakeManageSieveServer.PASSWORD));
+      watchdog.fireAsOperationsEnd = true;
+      ManageSieveException e = assertThrows(ManageSieveException.class, client::listScripts);
+      assertEquals(ManageSieveErrorKind.UNAVAILABLE, e.getKind());
+      assertTrue(e.getMessage().contains("timed out"), e.getMessage());
+      assertEquals(List.of("STARTTLS", "AUTHENTICATE PLAIN <redacted>", "LISTSCRIPTS"), server.getCommands());
+    }
+  }
+
+  /**
    * The server's text reaches a message, and its response code an exception, without a
    * control, line separator, paragraph separator or format character: NEL (U+0085), a
    * line separator (U+2028) and a right-to-left override (U+202E) all become spaces.
@@ -474,5 +563,119 @@ class ManageSieveClientTest {
    */
   private ManageSieveClient connect() throws Exception {
     return ManageSieveClient.connect("localhost", server.getPort(), FakeManageSieveServer.clientTlsFactory(), 5000, 5000);
+  }
+
+  /**
+   * Connects to the fake server over trusted TLS, each operation's watchdog run by the
+   * test.
+   *
+   * @param watchdog the watchdog the test drives
+   * @return the client, not authenticated
+   * @throws Exception on failure
+   */
+  private ManageSieveClient connect(DrivenWatchdog watchdog) throws Exception {
+    return ManageSieveClient.connect("localhost",
+                                     server.getPort(),
+                                     FakeManageSieveServer.clientTlsFactory(),
+                                     5000,
+                                     5000,
+                                     ManageSieveClient.DEFAULT_OPERATION_TIMEOUT_MILLIS,
+                                     watchdog);
+  }
+
+  /**
+   * A watchdog the test drives: it keeps each task it is given instead of running it
+   * after its delay, and runs the tasks when the test fires them, or each one as its
+   * operation disarms it while {@link #fireAsOperationsEnd} is set.
+   */
+  private static final class DrivenWatchdog extends ScheduledThreadPoolExecutor {
+
+    /** Every task scheduled, in order. */
+    private final List<DrivenTask> tasks = new ArrayList<>();
+
+    /** Whether a task runs as its operation disarms it, the watchdog firing at that instant. */
+    private boolean                fireAsOperationsEnd;
+
+    /**
+     * A watchdog with no task.
+     */
+    private DrivenWatchdog() {
+      super(1);
+    }
+
+    @Override
+    public ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
+      DrivenTask task = new DrivenTask(command);
+      tasks.add(task);
+      return task;
+    }
+
+    /**
+     * Runs every task scheduled so far, cancelled or not, as a watchdog that was already
+     * running when its operation ended.
+     */
+    private void fireAll() {
+      tasks.forEach(task -> task.command.run());
+    }
+
+    /**
+     * One kept task.
+     */
+    private final class DrivenTask implements ScheduledFuture<Object> {
+
+      /** What the watchdog runs. */
+      private final Runnable command;
+
+      /** Whether the operation disarmed it. */
+      private boolean        cancelled;
+
+      /**
+       * A kept task.
+       *
+       * @param command what the watchdog runs
+       */
+      private DrivenTask(Runnable command) {
+        this.command = command;
+      }
+
+      @Override
+      public boolean cancel(boolean mayInterruptIfRunning) {
+        if (fireAsOperationsEnd) {
+          command.run();
+        }
+        cancelled = true;
+        return true;
+      }
+
+      @Override
+      public boolean isCancelled() {
+        return cancelled;
+      }
+
+      @Override
+      public boolean isDone() {
+        return cancelled;
+      }
+
+      @Override
+      public Object get() {
+        return null;
+      }
+
+      @Override
+      public Object get(long timeout, TimeUnit unit) {
+        return null;
+      }
+
+      @Override
+      public long getDelay(TimeUnit unit) {
+        return 0;
+      }
+
+      @Override
+      public int compareTo(Delayed other) {
+        return Long.compare(getDelay(TimeUnit.NANOSECONDS), other.getDelay(TimeUnit.NANOSECONDS));
+      }
+    }
   }
 }
