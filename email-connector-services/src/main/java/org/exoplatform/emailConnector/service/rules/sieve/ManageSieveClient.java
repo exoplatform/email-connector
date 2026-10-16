@@ -59,10 +59,13 @@ import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
  * command to its final line). At the deadline a watchdog closes the TCP socket under the
  * TLS layer, so a server trickling bytes cannot hold the caller's thread, not even inside
  * the handshake the JDK reads on its own, and neither can one that stops reading what the
- * client writes. A cap on each literal, quoted string and atom, on the tokens of a line,
- * the lines of a response and the octets of a whole response keeps it from exhausting
- * memory either. The server's own text reaches an exception message only on one line and
- * truncated.
+ * client writes. Each operation's deadline also falls within the conversation's,
+ * {@value #DEFAULT_CONVERSATION_TIMEOUT_MILLIS} ms after {@code connect} began, and no
+ * operation starts after it: however many commands a caller runs, each one ends by then,
+ * even against a server that answers each just before its own deadline. A cap on each
+ * literal, quoted string and atom, on the tokens of a line, the lines of a response and
+ * the octets of a whole response keeps it from exhausting memory either. The server's
+ * own text reaches an exception message only on one line and truncated.
  * <p>
  * Not thread-safe: one instance is one conversation, owned by one caller. The watchdog's
  * thread only closes the TCP socket, and only while the operation it was armed for is in
@@ -82,6 +85,12 @@ public final class ManageSieveClient implements AutoCloseable {
 
   /** How long one operation may take in all, however the server paces its bytes. */
   public static final int     DEFAULT_OPERATION_TIMEOUT_MILLIS = 60000;
+
+  /**
+   * How long one conversation may take in all, from the start of {@code connect} to its
+   * last command: the login and a whole publish run on the caller's thread within it.
+   */
+  public static final int     DEFAULT_CONVERSATION_TIMEOUT_MILLIS = 120000;
 
   /** The largest literal the client accepts from the server; Sieve scripts are kilobytes. */
   static final int            MAX_LITERAL_OCTETS             = 1024 * 1024;
@@ -165,6 +174,9 @@ public final class ManageSieveClient implements AutoCloseable {
   /** When the current operation must be over, from {@link System#nanoTime()}. */
   private long                deadlineNanos;
 
+  /** When the conversation must be over, from {@link System#nanoTime()}: no operation ends after it. */
+  private long                conversationDeadlineNanos;
+
   /** The octets read so far in the current response. */
   private long                responseOctets;
 
@@ -191,6 +203,7 @@ public final class ManageSieveClient implements AutoCloseable {
     this.host = host;
     this.port = port;
     this.watchdog = watchdog;
+    this.conversationDeadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(DEFAULT_CONVERSATION_TIMEOUT_MILLIS);
   }
 
   /**
@@ -456,6 +469,15 @@ public final class ManageSieveClient implements AutoCloseable {
   }
 
   /**
+   * Moves the conversation's deadline to a time from now; a test shortens it with this.
+   *
+   * @param millis the time left to the conversation, in milliseconds
+   */
+  void endConversationWithin(long millis) {
+    conversationDeadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
+  }
+
+  /**
    * Connects, reads the greeting, upgrades to TLS and reads the re-issued capabilities.
    *
    * @param tlsSocketFactory the TLS layer
@@ -467,8 +489,8 @@ public final class ManageSieveClient implements AutoCloseable {
                     int connectTimeoutMillis,
                     int readTimeoutMillis) throws ManageSieveException {
     socket = plain;
-    startOperation();
     try {
+      startOperation();
       plain.connect(new InetSocketAddress(host, port), connectTimeoutMillis);
       plain.setSoTimeout(readTimeoutMillis);
       bindStreams();
@@ -595,8 +617,8 @@ public final class ManageSieveClient implements AutoCloseable {
    *           or a timeout
    */
   private ManageSieveResponse command(String name, String line) throws ManageSieveException {
-    startOperation();
     try {
+      startOperation();
       write(line);
       ManageSieveResponse response = readResponse();
       endInTime();
@@ -635,17 +657,25 @@ public final class ManageSieveClient implements AutoCloseable {
   }
 
   /**
-   * Starts the clock of one operation and arms the watchdog that closes the socket when
-   * it runs out.
+   * Starts the clock of one operation, its budget capped by what is left of the
+   * conversation's, and arms the watchdog that closes the socket when it runs out.
+   *
+   * @throws SocketTimeoutException when the conversation's deadline has passed: the
+   *           operation sends nothing
    */
-  private void startOperation() {
+  private void startOperation() throws SocketTimeoutException {
     endOperation();
+    long now = System.nanoTime();
+    long budgetNanos = Math.min(TimeUnit.MILLISECONDS.toNanos(operationTimeoutMillis), conversationDeadlineNanos - now);
+    if (budgetNanos <= 0) {
+      throw new SocketTimeoutException("ManageSieve conversation deadline exceeded");
+    }
     long number = ++operations;
     synchronized (operationLock) {
       currentOperation = number;
     }
-    deadlineNanos = System.nanoTime() + operationTimeoutMillis * 1_000_000L;
-    deadlineWatch = watchdog.schedule(() -> expire(number), operationTimeoutMillis, TimeUnit.MILLISECONDS);
+    deadlineNanos = now + budgetNanos;
+    deadlineWatch = watchdog.schedule(() -> expire(number), budgetNanos, TimeUnit.NANOSECONDS);
   }
 
   /**

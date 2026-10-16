@@ -389,6 +389,54 @@ class ManageSieveClientTest {
   }
 
   /**
+   * Each operation's deadline falls within the conversation's. A server trickles an
+   * answer, each read within the read timeout and the operation far from its own
+   * {@value ManageSieveClient#DEFAULT_OPERATION_TIMEOUT_MILLIS} ms deadline: the operation
+   * still fails as timed out once the conversation's time is up, and its watchdog is armed
+   * for what was left of the conversation. The driven watchdog never fires, so the
+   * client's own read deadline is what ends the operation.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  @Timeout(value = 10, threadMode = ThreadMode.SEPARATE_THREAD)
+  void testTheConversationDeadlineCapsEachOperation() throws Exception {
+    DrivenWatchdog watchdog = new DrivenWatchdog();
+    try (ManageSieveClient client = connect(watchdog)) {
+      client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN, FakeManageSieveServer.PASSWORD));
+      server.trickleGetScript(50);
+      client.endConversationWithin(1500);
+      long start = System.nanoTime();
+      ManageSieveException e = assertThrows(ManageSieveException.class, () -> client.getScript("exo-rules"));
+      assertEquals(ManageSieveErrorKind.UNAVAILABLE, e.getKind());
+      assertTrue(e.getMessage().contains("timed out"), e.getMessage());
+      assertTrue((System.nanoTime() - start) / 1_000_000 < 4000);
+      assertEquals(3, watchdog.delaysMillis.size());
+      assertTrue(watchdog.delaysMillis.get(2) <= 1500, watchdog.delaysMillis.toString());
+    }
+  }
+
+  /**
+   * No operation starts once the conversation's deadline has passed: the command fails as
+   * timed out before anything is sent, and no watchdog is armed for it.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testNoOperationStartsAfterTheConversationDeadline() throws Exception {
+    DrivenWatchdog watchdog = new DrivenWatchdog();
+    try (ManageSieveClient client = connect(watchdog)) {
+      client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN, FakeManageSieveServer.PASSWORD));
+      client.endConversationWithin(0);
+      ManageSieveException e = assertThrows(ManageSieveException.class, client::listScripts);
+      assertEquals(ManageSieveErrorKind.UNAVAILABLE, e.getKind());
+      assertTrue(e.getMessage().contains("timed out"), e.getMessage());
+      assertEquals(2, watchdog.tasks.size());
+      assertEquals(List.of("STARTTLS", "AUTHENTICATE PLAIN <redacted>"), server.getCommands());
+    }
+  }
+
+  /**
    * Each operation disarms its watchdog as it ends, so the watchdog's queue holds only
    * the operations in flight, however long the conversation.
    *
@@ -604,8 +652,8 @@ class ManageSieveClientTest {
   }
 
   /**
-   * A watchdog the test drives: it keeps each task it is given instead of running it
-   * after its delay, and runs the tasks when the test fires them, each one as its
+   * A watchdog the test drives: it keeps each task it is given, and the delay it was armed
+   * with, instead of running it after that delay, and runs the tasks when the test fires them, each one as its
    * operation disarms it while {@link #fireAsOperationsEnd} is set, or each one as the
    * next is armed while {@link #firePreviousAsNextIsArmed} is set.
    */
@@ -613,6 +661,9 @@ class ManageSieveClientTest {
 
     /** Every task scheduled, in order. */
     private final List<DrivenTask> tasks = new ArrayList<>();
+
+    /** The delay each task was armed with, in milliseconds, in order. */
+    private final List<Long>       delaysMillis = new ArrayList<>();
 
     /** Whether a task runs as its operation disarms it, the watchdog firing at that instant. */
     private boolean                fireAsOperationsEnd;
@@ -638,6 +689,7 @@ class ManageSieveClientTest {
       }
       DrivenTask task = new DrivenTask(command);
       tasks.add(task);
+      delaysMillis.add(unit.toMillis(delay));
       return task;
     }
 
