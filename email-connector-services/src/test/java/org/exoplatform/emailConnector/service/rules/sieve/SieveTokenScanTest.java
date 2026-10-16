@@ -141,7 +141,7 @@ class SieveTokenScanTest {
   /**
    * An include is read where the engine reads one. Its name is the quoted string right
    * after its tags, blanks and comments allowed between them and none required:
-   * Pigeonhole 2.3.21 compiles {@code include :personal"exo-rules";} and
+   * Pigeonhole 0.5.21 (Dovecot 2.3.21) compiles {@code include :personal"exo-rules";} and
    * {@code include:personal "exo-rules";}. A quote or a {@code :include} line inside a
    * {@code text:} block before it hides nothing. A word after a colon is a tag, so
    * {@code :text:} opens no block: Pigeonhole compiles {@code body :text:contains} as two
@@ -165,22 +165,25 @@ class SieveTokenScanTest {
   /**
    * A number ends where Pigeonhole's lexer ends it, after its digits and at most one
    * {@code K}, {@code M} or {@code G}, so a {@code text:} written right after it opens a
-   * block: Pigeonhole 2.3.21 compiles {@code vacation :days 7text:} and
-   * {@code vacation :days 7Ktext:} with the include after the block as a command. A
-   * bracket-comment opener or a quote inside that block hides nothing, neither from the
-   * include scan nor from the comment stripping. A longer word ending in {@code text}
-   * stays one word and opens no block.
+   * block, the quantifier in either case: Pigeonhole 0.5.21 (Dovecot 2.3.21) compiles
+   * {@code vacation :days 7text:}, {@code 7Ktext:} and {@code 7ktext:} with the include
+   * after the block as a command. A bracket-comment opener or a quote inside that block
+   * hides nothing, neither from the include scan nor from the comment stripping. A longer
+   * word ending in {@code text} stays one word and opens no block.
    */
   @Test
   void testATextBlockRightAfterANumberIsText() {
     for (String script : List.of("vacation :days 7text:\r\nSee /* our notes.\r\n.\r\n;\r\ninclude :personal \"exo-main\";\r\n# */\r\n",
                                  "vacation :days 7Ktext:\r\nSee /* our notes.\r\n.\r\n;\r\ninclude :personal \"exo-main\";\r\n# */\r\n",
+                                 "vacation :days 7ktext:\r\nSee /* our notes.\r\n.\r\n;\r\ninclude :personal \"exo-main\";\r\n# */\r\n",
                                  "vacation :days 7text:\r\nOur limit is 5\" wide.\r\n.\r\n;\r\ninclude :personal \"exo-main\";\r\n# \"\r\n")) {
       assertEquals(List.of("exo-main"), SieveTokenScan.includedPersonalScripts(script), script);
       assertFalse(SieveTokenScan.hasUnnamedPersonalInclude(script), script);
       assertTrue(SieveTokenScan.includesAnything(script), script);
     }
-    for (String block : List.of("vacation :days 7text:\r\n# kept\r\n.\r\n;\r\n", "vacation :days 7Ktext:\r\n# kept\r\n.\r\n;\r\n")) {
+    for (String block : List.of("vacation :days 7text:\r\n# kept\r\n.\r\n;\r\n",
+                                "vacation :days 7Ktext:\r\n# kept\r\n.\r\n;\r\n",
+                                "vacation :days 7ktext:\r\n# kept\r\n.\r\n;\r\n")) {
       assertEquals(block, SieveTokenScan.withoutComments(block));
     }
     assertEquals("xtext:\r\n \n", SieveTokenScan.withoutComments("xtext:\r\n# c\r\n"));
