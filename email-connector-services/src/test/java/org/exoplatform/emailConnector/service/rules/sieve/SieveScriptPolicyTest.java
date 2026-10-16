@@ -477,10 +477,24 @@ class SieveScriptPolicyTest {
    */
   @Test
   void testAnIncludeInsideATextBlockIsText() throws Exception {
-    String ticket = "require [\"reject\"];\r\nif header :contains \"subject\" \"support\" {\r\nreject text:\r\n"
-        + "Please include the ticket number.\r\n.\r\n;\r\n}\r\n";
-    String quoted = "require [\"reject\"];\r\nif header :contains \"subject\" \"loop\" {\r\nreject text:\r\n"
-        + "include :personal \"exo-rules\";\r\n.\r\n;\r\n}\r\n";
+    String ticket = """
+        require ["reject"];\r
+        if header :contains "subject" "support" {\r
+        reject text:\r
+        Please include the ticket number.\r
+        .\r
+        ;\r
+        }\r
+        """;
+    String quoted = """
+        require ["reject"];\r
+        if header :contains "subject" "loop" {\r
+        reject text:\r
+        include :personal "exo-rules";\r
+        .\r
+        ;\r
+        }\r
+        """;
     String vacation = "require [\"vacation\"];\r\nvacation text:\r\nPlease include the ticket number.\r\n.\r\n;\r\n";
     Map<Map<String, String>, List<ExoSieveScript>> cases = new LinkedHashMap<>();
     cases.put(Map.of(FOREIGN, ticket), List.of(replyOn(), replyOff()));
@@ -506,23 +520,50 @@ class SieveScriptPolicyTest {
    * An include of {@code exo-main} after a {@code text:} block is still found, and the
    * publish refused with or without a reply, nothing written: a quote inside the reply
    * text, or a {@code :include} line in it, next to an include written with no blank
-   * before its name, which Pigeonhole 2.3.21 compiles. Wrapping that script would make
-   * {@code exo-main} include itself.
+   * before its name, and a block opened right after a number ({@code :days 7text:})
+   * holding a bracket-comment opener that a later comment closes, all of which
+   * Pigeonhole 2.3.21 compiles. Wrapping that script would make {@code exo-main} include
+   * itself. The refusal is the one for reaching {@code exo-main}, not the one for an
+   * include eXo cannot name: the walk reads {@code part}, which the foreign script also
+   * includes, and it reads an included script only once every include of the script
+   * naming it has a name.
    *
    * @throws Exception on failure
    */
   @Test
   void testAnIncludeAfterATextBlockIsStillFound() throws Exception {
-    for (String text : List.of("Our limit is 5\" wide.", ":include \"zzz\"")) {
-      String foreign = "require [\"include\", \"reject\"];\r\nif header :contains \"subject\" \"size\" {\r\nreject text:\r\n" + text
-          + "\r\n.\r\n;\r\n}\r\ninclude :personal\"exo-main\";\r\n";
+    String reject = """
+        require ["include", "reject"];\r
+        include :personal "part";\r
+        if header :contains "subject" "size" {\r
+        reject text:\r
+        %s\r
+        .\r
+        ;\r
+        }\r
+        include :personal"exo-main";\r
+        """;
+    String number = """
+        require ["include", "vacation"];\r
+        include :personal "part";\r
+        vacation :days 7text:\r
+        See /* our notes.\r
+        .\r
+        ;\r
+        include :personal "exo-main";\r
+        # */\r
+        """;
+    for (String foreign : List.of(reject.formatted("Our limit is 5\" wide."), reject.formatted(":include \"zzz\""), number)) {
       for (ExoSieveScript script : List.of(replyOn(), replyOff())) {
         server.close();
         server = new FakeManageSieveServer();
-        server.script(FOREIGN, foreign, true).script(WRAPPER_NAME, SieveScriptPolicy.wrapper(FOREIGN, true), false);
+        server.script(FOREIGN, foreign, true)
+              .script("part", "keep;\r\n", false)
+              .script(WRAPPER_NAME, SieveScriptPolicy.wrapper(FOREIGN, true), false);
         ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class, () -> publish(script), foreign);
         assertEquals(ServerRuleConflictException.SERVER_CONFLICT, e.getMessage(), foreign);
         assertEquals(FOREIGN, e.getScriptName());
+        assertEquals(List.of("GETSCRIPT " + FOREIGN, "GETSCRIPT part"), server.getCommands("GETSCRIPT"), foreign);
         assertNoWrite();
         assertEquals(FOREIGN, server.getActive());
       }
