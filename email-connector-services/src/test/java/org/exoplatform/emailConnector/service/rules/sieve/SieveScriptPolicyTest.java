@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -463,6 +464,69 @@ class SieveScriptPolicyTest {
     server = new FakeManageSieveServer();
     server.script(FOREIGN, "require [\"include\", \"encoded-character\"];\r\ninclude :global \"${hex:65}xo-main\";\r\n", true);
     assertEquals(SievePolicyCase.WRAPPED, publish(replyOff()).policyCase());
+  }
+
+  /**
+   * A reply text holding the word {@code include}, or quoting an include of eXo's
+   * script, is text: the foreign script is wrapped, with or without a reply, whether the
+   * text is its own or that of a script it includes, and the quoted include does not count
+   * as one of eXo's script. A foreign {@code vacation} text is checked with eXo's reply
+   * switched off, since with it on the token alone refuses.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testAnIncludeInsideATextBlockIsText() throws Exception {
+    String ticket = "require [\"reject\"];\r\nif header :contains \"subject\" \"support\" {\r\nreject text:\r\n"
+        + "Please include the ticket number.\r\n.\r\n;\r\n}\r\n";
+    String quoted = "require [\"reject\"];\r\nif header :contains \"subject\" \"loop\" {\r\nreject text:\r\n"
+        + "include :personal \"exo-rules\";\r\n.\r\n;\r\n}\r\n";
+    String vacation = "require [\"vacation\"];\r\nvacation text:\r\nPlease include the ticket number.\r\n.\r\n;\r\n";
+    Map<Map<String, String>, List<ExoSieveScript>> cases = new LinkedHashMap<>();
+    cases.put(Map.of(FOREIGN, ticket), List.of(replyOn(), replyOff()));
+    cases.put(Map.of(FOREIGN, quoted), List.of(replyOn(), replyOff()));
+    cases.put(Map.of(FOREIGN, "require [\"include\"];\r\ninclude :personal \"mine\";\r\n", "mine", ticket),
+              List.of(replyOn(), replyOff()));
+    cases.put(Map.of(FOREIGN, vacation), List.of(replyOff()));
+    for (Map.Entry<Map<String, String>, List<ExoSieveScript>> entry : cases.entrySet()) {
+      Map<String, String> account = entry.getKey();
+      for (ExoSieveScript script : entry.getValue()) {
+        server.close();
+        server = new FakeManageSieveServer();
+        account.forEach((name, text) -> server.script(name, text, FOREIGN.equals(name)));
+        SievePublishOutcome outcome = publish(script);
+        assertEquals(SievePolicyCase.WRAPPED, outcome.policyCase(), account.get(FOREIGN));
+        assertEquals(WRAPPER_NAME, server.getActive());
+        assertEquals(account.get(FOREIGN), server.getScripts().get(FOREIGN));
+      }
+    }
+  }
+
+  /**
+   * An include of {@code exo-main} after a {@code text:} block is still found, and the
+   * publish refused with or without a reply, nothing written: a quote inside the reply
+   * text, or a {@code :include} line in it, next to an include written with no blank
+   * before its name, which Pigeonhole 2.3.21 compiles. Wrapping that script would make
+   * {@code exo-main} include itself.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  void testAnIncludeAfterATextBlockIsStillFound() throws Exception {
+    for (String text : List.of("Our limit is 5\" wide.", ":include \"zzz\"")) {
+      String foreign = "require [\"include\", \"reject\"];\r\nif header :contains \"subject\" \"size\" {\r\nreject text:\r\n" + text
+          + "\r\n.\r\n;\r\n}\r\ninclude :personal\"exo-main\";\r\n";
+      for (ExoSieveScript script : List.of(replyOn(), replyOff())) {
+        server.close();
+        server = new FakeManageSieveServer();
+        server.script(FOREIGN, foreign, true).script(WRAPPER_NAME, SieveScriptPolicy.wrapper(FOREIGN, true), false);
+        ServerRuleConflictException e = assertThrows(ServerRuleConflictException.class, () -> publish(script), foreign);
+        assertEquals(ServerRuleConflictException.SERVER_CONFLICT, e.getMessage(), foreign);
+        assertEquals(FOREIGN, e.getScriptName());
+        assertNoWrite();
+        assertEquals(FOREIGN, server.getActive());
+      }
+    }
   }
 
   /**
