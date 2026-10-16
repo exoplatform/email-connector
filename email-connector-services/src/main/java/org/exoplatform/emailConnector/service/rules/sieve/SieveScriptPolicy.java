@@ -23,6 +23,7 @@ import static org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript.
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -65,7 +66,9 @@ import org.exoplatform.services.log.Log;
  * wrapper already runs once it reaches either of eXo's scripts: running it alone again
  * would mean activating a script eXo does not own. The foreign script is always read for
  * its includes, and one that cannot be read is refused, since neither can be ruled
- * out.
+ * out. So is one whose includes eXo cannot follow to the end: a personal include whose
+ * name is not a plain string, or may decode into another one, or more than
+ * {@value #MAX_INCLUDED_SCRIPTS} scripts to read, which bounds what one publish reads.
  * Two rules added for the automatic reply:
  * <ul>
  * <li><b>Vacation-token refusal.</b> RFC 5230 §4.6 lets {@code vacation} run once per
@@ -104,6 +107,9 @@ public class SieveScriptPolicy {
 
   /** The first line of the wrapper eXo generates. */
   static final String          WRAPPER_HEADER    = "# exo-managed-wrapper-v1";
+
+  /** The most scripts the foreign one includes, at any depth, that eXo reads to follow them. */
+  static final int             MAX_INCLUDED_SCRIPTS = 20;
 
   /**
    * Exactly the wrapper eXo generates, line endings normalised to LF, capturing the two
@@ -340,8 +346,9 @@ public class SieveScriptPolicy {
 
   /**
    * eXo's scripts the foreign script reaches through its personal includes, at any
-   * depth: each script the account holds is read once, and a missing or {@code :global}
-   * include is not followed, since neither can be one of eXo's.
+   * depth: each script the account holds is read once, when its turn comes, so one text
+   * is held at a time, and a missing or {@code :global} include is not followed, since
+   * neither can be one of eXo's.
    *
    * @param client the client
    * @param scripts the account's scripts
@@ -350,24 +357,39 @@ public class SieveScriptPolicy {
    * @return {@value ExoSieveScript#SCRIPT_NAME}, {@value ExoSieveScript#WRAPPER_NAME},
    *         both or neither
    * @throws ManageSieveException when an included script cannot be read
+   * @throws ServerRuleConflictException {@link ServerRuleConflictException#SERVER_CONFLICT}
+   *           when a personal include cannot be named, or more than
+   *           {@value #MAX_INCLUDED_SCRIPTS} scripts would have to be read
    */
   private static Set<String> ownScriptsReached(ManageSieveClient client,
                                                List<SieveScriptInfo> scripts,
                                                String foreign,
-                                               String foreignText) throws ManageSieveException {
+                                               String foreignText) throws ManageSieveException,
+                                                                   ServerRuleConflictException {
     Set<String> reached = new HashSet<>();
-    Set<String> visited = new HashSet<>(Set.of(foreign));
-    Deque<String> texts = new ArrayDeque<>(List.of(foreignText));
-    while (!texts.isEmpty()) {
-      for (String included : SieveTokenScan.includedPersonalScripts(texts.pop())) {
+    Set<String> queued = new HashSet<>(Set.of(foreign));
+    Deque<String> unread = new ArrayDeque<>();
+    String text = foreignText;
+    int reads = 0;
+    while (true) {
+      if (SieveTokenScan.hasUnnamedPersonalInclude(text)) {
+        throw conflict(ServerRuleConflictException.SERVER_CONFLICT, foreign);
+      }
+      for (String included : SieveTokenScan.includedPersonalScripts(text)) {
         if (isOwn(included)) {
           reached.add(included);
-        } else if (exists(scripts, included) && visited.add(included)) {
-          texts.push(client.getScript(included));
+        } else if (exists(scripts, included) && queued.add(included)) {
+          unread.push(included);
         }
       }
+      if (unread.isEmpty()) {
+        return reached;
+      }
+      if (++reads > MAX_INCLUDED_SCRIPTS) {
+        throw conflict(ServerRuleConflictException.SERVER_CONFLICT, foreign);
+      }
+      text = client.getScript(unread.pop());
     }
-    return reached;
   }
 
   /**
@@ -398,7 +420,7 @@ public class SieveScriptPolicy {
     if (SieveTokenScan.containsWord(text, VACATION_TOKEN) || SieveTokenScan.hasUnreadableInclude(text)) {
       throw conflict(ServerRuleConflictException.MANAGED_ELSEWHERE, foreign);
     }
-    for (String included : SieveTokenScan.includedPersonalScripts(text)) {
+    for (String included : new LinkedHashSet<>(SieveTokenScan.includedPersonalScripts(text))) {
       if (isOwn(included) || included.equals(foreign)) {
         continue;
       }
