@@ -48,6 +48,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.RETURNS_DEFAULTS;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -56,7 +57,9 @@ import static org.mockito.Mockito.withSettings;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -98,8 +101,10 @@ import javax.mail.MessageRemovedException;
 import javax.mail.MessagingException;
 import javax.mail.Multipart;
 import javax.mail.Part;
+import javax.mail.ReadOnlyFolderException;
 import javax.mail.Session;
 import javax.mail.Store;
+import javax.mail.StoreClosedException;
 import javax.mail.Transport;
 import javax.mail.UIDFolder;
 import javax.mail.internet.InternetAddress;
@@ -126,6 +131,7 @@ import javax.mail.SendFailedException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
 import org.exoplatform.emailConnector.model.EmailScheduledSend;
+import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.ScheduledSendError;
 import org.exoplatform.emailConnector.model.ScheduledSendStatus;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
@@ -147,10 +153,14 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import com.sun.mail.iap.Argument;
+import com.sun.mail.iap.Protocol;
+import com.sun.mail.iap.Response;
 import com.sun.mail.imap.AppendUID;
 import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.IMAPStore;
 import com.sun.mail.imap.ResyncData;
+import com.sun.mail.imap.protocol.IMAPProtocol;
 
 import org.exoplatform.commons.api.notification.NotificationContext;
 import org.exoplatform.commons.api.notification.command.NotificationCommand;
@@ -1771,20 +1781,330 @@ public class EmailBoxServiceTest {
     assertEquals("<a.1@host.example>", EmailBoxService.messageIdSearchKey("<a.1@host.example>"));
   }
 
+  // ---------------------------------------------------------------------------------
+  // Archive on a mailbox with no Archive folder (EXO-90574): created on first use, in
+  // the user's own mailbox, once -- and the old refusal kept when the server says no.
+  // Stalwart ships Inbox, Drafts, Sent Items, Deleted Items and Junk Mail only.
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * No Archive folder, and a server that answers NO to the CREATE: the old
+   * behaviour, which copied nowhere, flagged nothing and answered success, must not
+   * come back -- every row goes back and every id counts as failed.
+   */
   @Test
   @SneakyThrows
-  void anArchiveWithNowhereToFileItFailsEveryIdAndKeepsEveryRow() {
-    // A mailbox with no Archive folder. The old code copied nowhere, flagged nothing and
-    // answered success — the same silence as the missing message, from the other end.
+  void anArchiveWhoseFolderTheServerRefusesToCreateFailsEveryIdAndKeepsEveryRow() {
     IMAPFolder sent = givenASubscribedSentFolder();
     givenAMessageInFolderAt(sent, 1212L, "<sent@host>");
     givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
+    IMAPFolder archive = givenAnArchiveToCreate(false);
+    when(archive.create(Folder.HOLDS_MESSAGES)).thenReturn(false);
 
     int failed = emailBoxService.archiveEmail(List.of(1212L), TEST_USER, MailFolder.SENT);
 
     assertEquals(1, failed);
+    verify(archive).create(Folder.HOLDS_MESSAGES);
     verify(sent, never()).open(anyInt());
     verify(emailBoxStorage).createEmail(any(Email.class));
+    verify(archive, never()).setSubscribed(anyBoolean());
+    MailboxSyncState saved = savedSyncStateOrNull();
+    assertTrue(saved == null || StringUtils.isBlank(saved.getArchiveFolderName()),
+               "a folder the server refused must not be remembered as the Archive");
+    assertEquals("emailConnector.folder.createFailed", EmailBoxService.ARCHIVE_FOLDER_CREATE_FAILED_CODE);
+  }
+
+  /**
+   * No Archive folder anywhere: one plain CREATE, the folder subscribed and remembered, and the message filed into it.
+   */
+  @Test
+  @SneakyThrows
+  void anArchiveOnAMailboxWithNoArchiveFolderCreatesOneAndFilesTheMessageIntoIt() {
+    IMAPFolder sent = givenASubscribedSentFolder();
+    Message message = givenAMessageInFolderAt(sent, 1212L, "<sent@host>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
+    IMAPFolder archive = givenAnArchiveToCreate(false);
+    when(archive.create(Folder.HOLDS_MESSAGES)).thenReturn(true);
+
+    int failed = emailBoxService.archiveEmail(List.of(1212L), TEST_USER, MailFolder.SENT);
+
+    assertEquals(0, failed);
+    // Created once, with a plain CREATE: this server does not advertise CREATE-SPECIAL-USE.
+    verify(archive, times(1)).create(Folder.HOLDS_MESSAGES);
+    verify(archive, never()).doCommandIgnoreFailure(any());
+    // Subscribed, because the destination lookup reads the subscribed listing only.
+    verify(archive).setSubscribed(true);
+    verify(sent).copyMessages(new Message[] { message }, archive);
+    // Remembered, so the Archive sync and the folder column find exactly this folder.
+    assertEquals("Archive", savedSyncStateOrNull().getArchiveFolderName());
+  }
+
+  /**
+   * A server advertising CREATE-SPECIAL-USE gets the folder created with {@code USE (\Archive)}, in the wire form Stalwart accepted.
+   */
+  @Test
+  @SneakyThrows
+  void aServerAdvertisingCreateSpecialUseGetsTheArchiveCreatedWithTheArchiveUse() {
+    IMAPFolder sent = givenASubscribedSentFolder();
+    Message message = givenAMessageInFolderAt(sent, 1212L, "<sent@host>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
+    IMAPFolder archive = givenAnArchiveToCreate(true);
+    ArgumentCaptor<IMAPFolder.ProtocolCommand> command = ArgumentCaptor.forClass(IMAPFolder.ProtocolCommand.class);
+    when(archive.doCommandIgnoreFailure(command.capture())).thenReturn(Boolean.TRUE);
+
+    int failed = emailBoxService.archiveEmail(List.of(1212L), TEST_USER, MailFolder.SENT);
+
+    assertEquals(0, failed);
+    verify(archive, never()).create(anyInt());
+    verify(sent).copyMessages(new Message[] { message }, archive);
+    assertEquals("Archive", savedSyncStateOrNull().getArchiveFolderName());
+    // What actually goes on the wire -- the form Stalwart answered
+    // "OK [MAILBOXID (...)] Mailbox created." to.
+    assertEquals("CREATE Archive (USE (\\Archive))", wireFormOf(command.getValue()));
+  }
+
+  /**
+   * Two archives at once, or another client: the CREATE answers NO ("Mailbox
+   * 'Archive' already exists." on Stalwart, with no ALREADYEXISTS code) and the
+   * folder is there. That NO is the race lost, not a refusal.
+   */
+  @Test
+  @SneakyThrows
+  void anArchiveCreatedMeanwhileByAnotherArchiveIsUsedNotCreatedTwice() {
+    IMAPFolder sent = givenASubscribedSentFolder();
+    Message message = givenAMessageInFolderAt(sent, 1212L, "<sent@host>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
+    IMAPFolder archive = givenAnArchiveToCreate(false);
+    // Absent at the probe; there once the CREATE answered NO.
+    when(archive.exists()).thenReturn(false, true);
+    when(archive.create(Folder.HOLDS_MESSAGES)).thenReturn(false);
+
+    int failed = emailBoxService.archiveEmail(List.of(1212L), TEST_USER, MailFolder.SENT);
+
+    assertEquals(0, failed);
+    verify(archive, times(1)).create(Folder.HOLDS_MESSAGES);
+    verify(sent).copyMessages(new Message[] { message }, archive);
+    verify(archive).setSubscribed(true);
+    assertEquals("Archive", savedSyncStateOrNull().getArchiveFolderName());
+  }
+
+  /**
+   * A CREATE with USE answered NO over a folder that exists by then is the race lost: the folder is used, and no plain CREATE follows.
+   */
+  @Test
+  @SneakyThrows
+  void aSpecialUseCreateLosingTheRaceDoesNotFallBackToASecondCreate() {
+    IMAPFolder sent = givenASubscribedSentFolder();
+    Message message = givenAMessageInFolderAt(sent, 1212L, "<sent@host>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
+    IMAPFolder archive = givenAnArchiveToCreate(true);
+    when(archive.doCommandIgnoreFailure(any())).thenReturn(null);
+    // Absent at the probe; there once the CREATE with USE answered NO.
+    when(archive.exists()).thenReturn(false, true);
+
+    int failed = emailBoxService.archiveEmail(List.of(1212L), TEST_USER, MailFolder.SENT);
+
+    assertEquals(0, failed);
+    verify(archive).doCommandIgnoreFailure(any());
+    verify(archive, never()).create(anyInt());
+    verify(sent).copyMessages(new Message[] { message }, archive);
+  }
+
+  /**
+   * A server that advertises CREATE-SPECIAL-USE and still refuses the attribute (RFC
+   * 6154's NO [USEATTR]) gets a plain CREATE: the name alone is what the lookups read.
+   */
+  @Test
+  @SneakyThrows
+  void aSpecialUseCreateRefusedFallsBackToAPlainCreate() {
+    IMAPFolder sent = givenASubscribedSentFolder();
+    Message message = givenAMessageInFolderAt(sent, 1212L, "<sent@host>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
+    IMAPFolder archive = givenAnArchiveToCreate(true);
+    when(archive.doCommandIgnoreFailure(any())).thenReturn(null);
+    when(archive.create(Folder.HOLDS_MESSAGES)).thenReturn(true);
+
+    int failed = emailBoxService.archiveEmail(List.of(1212L), TEST_USER, MailFolder.SENT);
+
+    assertEquals(0, failed);
+    verify(archive).create(Folder.HOLDS_MESSAGES);
+    verify(sent).copyMessages(new Message[] { message }, archive);
+  }
+
+  /**
+   * An Archive folder the subscribed listing already shows is filed into, and nothing is created.
+   */
+  @Test
+  @SneakyThrows
+  void anExistingArchiveFolderIsFiledIntoWithoutAnyCreate() {
+    IMAPFolder sent = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(sent.exists()).thenReturn(true);
+    lenient().when(sent.getAttributes()).thenReturn(new String[] { "\\Sent" });
+    lenient().when(sent.getFullName()).thenReturn("Sent");
+    lenient().when(sent.isOpen()).thenReturn(true);
+    IMAPFolder archive = mock(IMAPFolder.class);
+    lenient().when(archive.exists()).thenReturn(true);
+    lenient().when(archive.getAttributes()).thenReturn(new String[] { "\\Archive" });
+    lenient().when(archive.getFullName()).thenReturn("Archive");
+    Folder root = givenAMailboxListing(sent, archive);
+    Message message = givenAMessageInFolderAt(sent, 1212L, "<sent@host>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
+
+    int failed = emailBoxService.archiveEmail(List.of(1212L), TEST_USER, MailFolder.SENT);
+
+    assertEquals(0, failed);
+    verify(sent).copyMessages(new Message[] { message }, archive);
+    verify(root, never()).getFolder("Archive");
+    verify(archive, never()).create(anyInt());
+    verify(archive, never()).doCommandIgnoreFailure(any());
+  }
+
+  /**
+   * Another client created an \Archive folder and never subscribed it: the loose,
+   * subscribed-only lookup misses it, the strict one reading the full listing does not.
+   */
+  @Test
+  @SneakyThrows
+  void anUnsubscribedArchiveFolderIsFoundRatherThanDuplicated() {
+    IMAPFolder sent = givenASubscribedSentFolder();
+    Message message = givenAMessageInFolderAt(sent, 1212L, "<sent@host>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
+    IMAPFolder unsubscribed = mock(IMAPFolder.class);
+    lenient().when(unsubscribed.getAttributes()).thenReturn(new String[] { "\\Archive" });
+    lenient().when(unsubscribed.getFullName()).thenReturn("Filed");
+    lenient().when(unsubscribed.getName()).thenReturn("Filed");
+    Folder root = trashStore().getDefaultFolder();
+    when(root.list("*")).thenReturn(new Folder[] { unsubscribed });
+
+    int failed = emailBoxService.archiveEmail(List.of(1212L), TEST_USER, MailFolder.SENT);
+
+    assertEquals(0, failed);
+    verify(sent).copyMessages(new Message[] { message }, unsubscribed);
+    verify(root, never()).getFolder("Archive");
+  }
+
+  /**
+   * A connection error is not "no Archive": nothing may be created on its strength.
+   */
+  @Test
+  @SneakyThrows
+  void aFolderListingThatDropsTheConnectionNeverLeadsToACreate() {
+    IMAPFolder sent = givenASubscribedSentFolder();
+    givenAMessageInFolderAt(sent, 1212L, "<sent@host>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
+    Folder root = trashStore().getDefaultFolder();
+    // The Sent resolution walks first (one subscribed listing) and succeeds; the
+    // Archive lookup's own listing, the next one, loses the connection -- which
+    // JavaMail reports as StoreClosedException.
+    when(root.listSubscribed("*")).thenReturn(new Folder[] { sent })
+                                  .thenThrow(new StoreClosedException(trashStore(), "connection reset"));
+    IMAPFolder archive = mock(IMAPFolder.class);
+    lenient().when(root.getFolder("Archive")).thenReturn(archive);
+
+    List<Long> ids = List.of(1212L);
+    assertThrows(IllegalStateException.class, () -> emailBoxService.archiveEmail(ids, TEST_USER, MailFolder.SENT));
+
+    verify(archive, never()).create(anyInt());
+    verify(archive, never()).doCommandIgnoreFailure(any());
+    verify(emailBoxStorage).createEmail(any(Email.class));
+  }
+
+  /**
+   * The lookups found nothing, and the probe of the handle itself then fails (a NO,
+   * which exists() raises through doCommand): the CREATE would be decided on no answer
+   * at all, so it must not go out -- on the CREATE-SPECIAL-USE path either.
+   */
+  @Test
+  @SneakyThrows
+  void aProbeThatFailsNeverLeadsToACreateEvenWithCreateSpecialUse() {
+    IMAPFolder sent = givenASubscribedSentFolder();
+    givenAMessageInFolderAt(sent, 1212L, "<sent@host>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
+    IMAPFolder archive = givenAnArchiveToCreate(true);
+    when(archive.exists()).thenThrow(new MessagingException("A5 NO LIST failed"));
+
+    List<Long> ids = List.of(1212L);
+    assertThrows(IllegalStateException.class, () -> emailBoxService.archiveEmail(ids, TEST_USER, MailFolder.SENT));
+
+    verify(archive, never()).doCommandIgnoreFailure(any());
+    verify(archive, never()).create(anyInt());
+    verify(sent, never()).copyMessages(any(Message[].class), any(Folder.class));
+    verify(emailBoxStorage).createEmail(any(Email.class));
+  }
+
+  /**
+   * Best-effort: the remembered name finds the folder even when it is not subscribed.
+   */
+  @Test
+  @SneakyThrows
+  void aSubscriptionTheServerRejectsStillFilesTheMessageAndRemembersTheFolder() {
+    IMAPFolder sent = givenASubscribedSentFolder();
+    Message message = givenAMessageInFolderAt(sent, 1212L, "<sent@host>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
+    IMAPFolder archive = givenAnArchiveToCreate(false);
+    when(archive.create(Folder.HOLDS_MESSAGES)).thenReturn(true);
+    doThrow(new MessagingException("BAD SUBSCRIBE")).when(archive).setSubscribed(true);
+
+    int failed = emailBoxService.archiveEmail(List.of(1212L), TEST_USER, MailFolder.SENT);
+
+    assertEquals(0, failed);
+    verify(sent).copyMessages(new Message[] { message }, archive);
+    assertEquals("Archive", savedSyncStateOrNull().getArchiveFolderName());
+  }
+
+  /**
+   * The {@code Archive} handle a creation would use, under the root of the mailbox set
+   * up by {@link #givenASubscribedSentFolder}, absent until created.
+   *
+   * @param createSpecialUse whether the store advertises {@code CREATE-SPECIAL-USE}
+   * @return the mocked, not-yet-existing Archive folder
+   */
+  @SneakyThrows
+  private IMAPFolder givenAnArchiveToCreate(boolean createSpecialUse) {
+    IMAPStore store = (IMAPStore) trashStore();
+    lenient().when(store.hasCapability("CREATE-SPECIAL-USE")).thenReturn(createSpecialUse);
+    IMAPFolder archive = mock(IMAPFolder.class);
+    lenient().when(archive.getFullName()).thenReturn("Archive");
+    lenient().when(archive.exists()).thenReturn(false);
+    when(store.getDefaultFolder().getFolder("Archive")).thenReturn(archive);
+    return archive;
+  }
+
+  /**
+   * The sync state the operation saved, or null when it saved none.
+   *
+   * @return the saved state, or null
+   */
+  private MailboxSyncState savedSyncStateOrNull() {
+    ArgumentCaptor<SettingValue> saved = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService, atLeast(0)).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), saved.capture());
+    if (saved.getAllValues().isEmpty()) {
+      return null;
+    }
+    return JsonUtils.fromJsonString(saved.getValue().getValue().toString(), MailboxSyncState.class);
+  }
+
+  /**
+   * Runs a captured IMAP protocol command against a mocked protocol and returns the
+   * command line it sent, serialized the way the real protocol writes it.
+   *
+   * @param command the captured command
+   * @return e.g. {@code CREATE Archive (USE (\Archive))}
+   */
+  @SneakyThrows
+  private String wireFormOf(IMAPFolder.ProtocolCommand command) {
+    IMAPProtocol protocol = mock(IMAPProtocol.class);
+    ArgumentCaptor<Argument> arguments = ArgumentCaptor.forClass(Argument.class);
+    ArgumentCaptor<String> verb = ArgumentCaptor.forClass(String.class);
+    when(protocol.command(verb.capture(), arguments.capture())).thenReturn(new Response[] { mock(Response.class) });
+    command.doCommand(protocol);
+    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+    DataOutputStream out = new DataOutputStream(bytes);
+    Protocol writer = mock(Protocol.class, invocation -> "getOutputStream".equals(invocation.getMethod().getName()) ? out
+                                                                                                                 : RETURNS_DEFAULTS.answer(invocation));
+    arguments.getValue().write(writer);
+    out.flush();
+    return verb.getValue() + " " + bytes.toString(StandardCharsets.US_ASCII);
   }
 
   @Test
@@ -2636,6 +2956,159 @@ public class EmailBoxServiceTest {
       verify(sentFolder).close(false);
       verify(store).close();
     }
+  }
+
+  /**
+   * EXO-90551 -- a mail sent from a shared mailbox goes out from the sender's account as
+   * ever, is filed in the sender's own Sent, and THEN a copy of the very same message,
+   * marked read, is filed in the owner's Sent -- the folder the registry names for that
+   * share, never the sender's -- and the answer says FILED.
+   */
+  @Test
+  @SneakyThrows
+  void aSendFromASharedMailboxFilesTheOwnersCopyAfterTheSendersOwn() {
+    SendRig rig = givenASendRig();
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    when(ownerSent.exists()).thenReturn(true);
+    // A share may grant i without r: the folder cannot then be opened read-write, and
+    // the APPEND, which needs i alone, must not depend on it.
+    lenient().doThrow(new ReadOnlyFolderException(ownerSent, "Cannot open in desired mode")).when(ownerSent).open(anyInt());
+    when(rig.store().getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(rig.session());
+
+      assertEquals(OwnerCopy.FILED, emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 100L));
+
+      ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sent.capture()));
+      InOrder order = inOrder(rig.ownSent(), ownerSent);
+      order.verify(rig.ownSent()).appendMessages(any(Message[].class));
+      ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
+      order.verify(ownerSent).appendMessages(filed.capture());
+      assertSame(sent.getValue(), filed.getValue()[0], "the very message that went out");
+      assertTrue(filed.getValue()[0].isSet(Flags.Flag.SEEN), "filed as read: it is sent mail, not new mail");
+      verify(ownerSent, never()).open(anyInt());
+    }
+  }
+
+  /**
+   * EXO-90551 -- a share that is not the sender's (or no share at all under that id), or
+   * one no longer accepted, is refused before anything is sent: nothing goes out,
+   * nothing is filed anywhere.
+   */
+  @Test
+  @SneakyThrows
+  void aSendFromAShareThatIsNotTheSendersSendsNothing() {
+    SendRig rig = givenASendRig();
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 7L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 8L)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(rig.session());
+
+      assertThrows(ObjectNotFoundException.class, () -> emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 7L));
+      assertThrows(DelegationRevokedException.class, () -> emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 8L));
+
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+      verify(rig.ownSent(), never()).appendMessages(any(Message[].class));
+    }
+  }
+
+  /**
+   * EXO-90551 -- no copy by design: a share with no Sent the sender may file into, or the
+   * copy switched off by an administrator. The mail goes out and is filed in the sender's
+   * own Sent, and the answer says SKIPPED.
+   */
+  @Test
+  @SneakyThrows
+  void aSendWithNoOwnersSentToFileIntoIsSkipped() {
+    SendRig rig = givenASendRig();
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn(null);
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 101L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(false);
+
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(rig.session());
+
+      assertEquals(OwnerCopy.SKIPPED, emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 100L), "no Sent to file into");
+      assertEquals(OwnerCopy.SKIPPED, emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 101L), "switched off");
+
+      transportMock.verify(() -> Transport.send(any(Message.class)), times(2));
+      verify(rig.ownSent(), times(2)).appendMessages(any(Message[].class));
+      verify(emailFolderStorage, never()).getFolder(TEST_USER, 10L);
+    }
+  }
+
+  /**
+   * EXO-90551 -- the owner's copy fails (the server refuses the APPEND): the mail is out
+   * and in the sender's own Sent all the same, and the answer says FAILED -- never "not
+   * sent".
+   */
+  @Test
+  @SneakyThrows
+  void aFailedOwnersCopyLeavesTheSendSuccessful() {
+    SendRig rig = givenASendRig();
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    when(ownerSent.exists()).thenReturn(true);
+    when(rig.store().getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+    doThrow(new MessagingException("NO [NOPERM]")).when(ownerSent).appendMessages(any(Message[].class));
+
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(rig.session());
+
+      assertEquals(OwnerCopy.FAILED, emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 100L));
+
+      transportMock.verify(() -> Transport.send(any(Message.class)));
+      verify(rig.ownSent()).appendMessages(any(Message[].class));
+    }
+  }
+
+  /**
+   * A mailbox that can send, with its own Sent folder, for the EXO-90551 send tests.
+   *
+   * @param session the SMTP session the send is built on
+   * @param store the sender's IMAP store
+   * @param ownSent the sender's own Sent folder
+   */
+  private record SendRig(Session session, IMAPStore store, IMAPFolder ownSent) {
+  }
+
+  /**
+   * The sender's connected mailbox, its SMTP session and its own Sent folder.
+   *
+   * @return the rig
+   */
+  @SneakyThrows
+  private SendRig givenASendRig() {
+    // Lenient: a send refused before anything is touched uses none of it.
+    lenient().when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    lenient().when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    lenient().when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Session session = mock(Session.class);
+    lenient().when(session.getProperties()).thenReturn(new Properties());
+    IMAPStore store = mock(IMAPStore.class);
+    lenient().when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    Folder root = mock(Folder.class);
+    lenient().when(store.getDefaultFolder()).thenReturn(root);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder sentFolder = mock(IMAPFolder.class);
+    lenient().when(sentFolder.getFullName()).thenReturn("sent");
+    lenient().when(root.listSubscribed("*")).thenReturn(new Folder[] { sentFolder });
+    lenient().when(sentFolder.exists()).thenReturn(true);
+    lenient().when(sentFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
+    lenient().when(sentFolder.isOpen()).thenReturn(true);
+    return new SendRig(session, store, sentFolder);
   }
 
   @Test
@@ -5022,6 +5495,23 @@ public class EmailBoxServiceTest {
     emailBoxService.refreshFolder(TEST_USER, MailFolder.TRASH, EmailBoxService.FolderRefreshCause.DELETE);
 
     verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * EXO-90551 -- the re-read of the owner's Sent after its copy is filed rides the
+   * sender's own Sent re-read switch, not the move's: turning moves' re-reads off must
+   * not silence it, turning Sent re-reads off must.
+   */
+  @Test
+  void theOwnersCopyRefreshRidesTheSentSwitch() {
+    System.setProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY, "false");
+    System.setProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY, "true");
+    try {
+      assertFalse(EmailBoxService.FolderRefreshCause.SENT_COPY.isEnabled());
+    } finally {
+      System.clearProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY);
+      System.clearProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY);
+    }
   }
 
   /**
@@ -7806,6 +8296,51 @@ public class EmailBoxServiceTest {
     givenAUsableMailbox();
     Email draft = draft(null);
     assertThrows(IllegalArgumentException.class, () -> emailBoxService.sendDraft(draft, TEST_USER));
+  }
+
+  /**
+   * EXO-90551 -- the composer's own draft of a mail written in a shared mailbox (the
+   * common send path: any composer that paused holds one) is sent as any draft, and a
+   * copy of the very message is filed in the owner's Sent; the answer says FILED.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftSentFromASharedMailboxFilesTheOwnersCopy() {
+    mockDraftSendFixture();
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 100L)).thenReturn("CUSTOM:10");
+    when(emailConnectorService.isSharedMailboxSentCopyEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 10L)).thenReturn(registeredFolder(10L, "shared/alice/Sent Items", true));
+    IMAPStore store = (IMAPStore) userEmailSettingService.connect("1", TEST_USER);
+    IMAPFolder ownerSent = mock(IMAPFolder.class);
+    when(ownerSent.exists()).thenReturn(true);
+    when(store.getFolder("shared/alice/Sent Items")).thenReturn(ownerSent);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertEquals(OwnerCopy.FILED, emailBoxService.sendDraft(draft("draft-1"), TEST_USER, 100L));
+
+      ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sent.capture()));
+      ArgumentCaptor<Message[]> filed = ArgumentCaptor.forClass(Message[].class);
+      verify(ownerSent).appendMessages(filed.capture());
+      assertSame(sent.getValue(), filed.getValue()[0], "the very message that went out");
+    }
+  }
+
+  /**
+   * EXO-90551 -- a draft sent from a share that is not the sender's is refused before
+   * the draft is claimed: nothing goes out, and the draft is left exactly where it was.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftSentFromAShareThatIsNotTheSendersIsNotClaimed() {
+    lenient().when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(emailDelegationService.ownerSentFolderKey(TEST_USER, 7L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertThrows(ObjectNotFoundException.class, () -> emailBoxService.sendDraft(draft("draft-1"), TEST_USER, 7L));
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+    }
+    verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
   }
 
   @Test

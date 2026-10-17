@@ -82,6 +82,7 @@ import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.exception.ReadReceiptConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
+import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.ReadReceiptAction;
 import org.exoplatform.emailConnector.model.ReadReceiptPrompt;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
@@ -373,6 +374,53 @@ public class EmailBoxRestTest {
                                                                                     .content(asJsonString(emailIds))
                                                                                     .contentType(MediaType.APPLICATION_JSON)
                                                                                     .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isGone());
+  }
+
+  /**
+   * EXO-90551 -- a send from a shared mailbox names its share and answers what became of
+   * the owner's copy; a share that is not the caller's is a 404 and one gone a 410,
+   * nothing sent; a send from the caller's own mailbox answers no ownerCopy at all.
+   */
+  @Test
+  void aSendFromASharedMailboxAnswersTheOwnersCopy() throws Exception {
+    Email email = new Email();
+    email.setTo(List.of(new EmailRecipient()));
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(5L))).thenReturn(OwnerCopy.FILED);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=5").with(testSimpleUser())
+                                                                 .content(asJsonString(email))
+                                                                 .contentType(MediaType.APPLICATION_JSON)
+                                                                 .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.ownerCopy").value("FILED"));
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(6L))).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=6").with(testSimpleUser())
+                                                                 .content(asJsonString(email))
+                                                                 .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isNotFound());
+    when(emailBoxService.sendEmail(any(Email.class), eq(SIMPLE_USER), eq(7L))).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/send?delegationId=7").with(testSimpleUser())
+                                                                 .content(asJsonString(email))
+                                                                 .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isGone());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/send").with(testSimpleUser())
+                                                  .content(asJsonString(email))
+                                                  .contentType(MediaType.APPLICATION_JSON)
+                                                  .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.ownerCopy").doesNotExist());
+    // The composer's draft path answers the same (EXO-90551).
+    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), eq(5L))).thenReturn(OwnerCopy.SKIPPED);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/d1/send?delegationId=5").with(testSimpleUser())
+                                                                           .content(asJsonString(email))
+                                                                           .contentType(MediaType.APPLICATION_JSON)
+                                                                           .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.ownerCopy").value("SKIPPED"));
+    when(emailBoxService.sendDraft(any(Email.class), eq(SIMPLE_USER), eq(7L))).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/d1/send?delegationId=7").with(testSimpleUser())
+                                                                           .content(asJsonString(email))
+                                                                           .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isGone());
   }
 
@@ -741,7 +789,7 @@ public class EmailBoxRestTest {
     response.andExpect(status().isOk());
     // The path names the draft, whatever the body claims.
     ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
-    verify(emailBoxService).sendDraft(sent.capture(), anyString());
+    verify(emailBoxService).sendDraft(sent.capture(), anyString(), isNull());
     org.junit.jupiter.api.Assertions.assertEquals("draft-1", sent.getValue().getDraftLocalId());
   }
 
@@ -750,7 +798,7 @@ public class EmailBoxRestTest {
     Email draft = new Email();
     draft.setTo(List.of(mock(EmailRecipient.class)));
     doThrow(new ObjectNotFoundException("emailConnector.drafts.send.gone")).when(emailBoxService)
-                                                                          .sendDraft(any(Email.class), anyString());
+                                                                          .sendDraft(any(Email.class), anyString(), isNull());
     ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/gone/send").with(testSimpleUser())
                                                                                       .content(asJsonString(draft))
                                                                                       .contentType(MediaType.APPLICATION_JSON)
@@ -1460,7 +1508,7 @@ public class EmailBoxRestTest {
                                                   .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isOk());
     ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
-    verify(emailBoxService).sendEmail(sent.capture(), eq(SIMPLE_USER));
+    verify(emailBoxService).sendEmail(sent.capture(), eq(SIMPLE_USER), isNull());
     org.junit.jupiter.api.Assertions.assertTrue(sent.getValue().isReadReceiptRequested());
     org.junit.jupiter.api.Assertions.assertNull(sent.getValue().getReadReceiptTo(), "read-only: never from a payload");
     org.junit.jupiter.api.Assertions.assertNull(sent.getValue().getReadReceiptPrompt());

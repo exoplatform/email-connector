@@ -73,6 +73,7 @@ import javax.mail.BodyPart;
 import javax.mail.FetchProfile;
 import javax.mail.Flags;
 import javax.mail.Folder;
+import javax.mail.FolderClosedException;
 import javax.mail.Message;
 import javax.mail.MessageRemovedException;
 import javax.mail.MessagingException;
@@ -81,6 +82,7 @@ import javax.mail.Part;
 import javax.mail.SendFailedException;
 import javax.mail.Session;
 import javax.mail.Store;
+import javax.mail.StoreClosedException;
 import javax.mail.Transport;
 import javax.mail.UIDFolder;
 import javax.mail.internet.AddressException;
@@ -118,10 +120,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.sun.mail.iap.Argument;
+import com.sun.mail.iap.Response;
 import com.sun.mail.imap.AppendUID;
 import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.IMAPStore;
 import com.sun.mail.imap.ResyncData;
+import com.sun.mail.imap.protocol.BASE64MailboxEncoder;
 
 import org.exoplatform.commons.ObjectAlreadyExistsException;
 import org.exoplatform.commons.api.notification.NotificationContext;
@@ -153,6 +158,7 @@ import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.OwnerCopy;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
@@ -540,6 +546,31 @@ public class EmailBoxService {
   // two places on purpose: the folder OPEN asks for mod-sequences explicitly, and the
   // skip check refuses to skip without them.
   private static final String     CONDSTORE_CAPABILITY                                        = "CONDSTORE";
+
+  /**
+   * RFC 6154 section 3: a server advertising this accepts {@code CREATE <name> (USE
+   * (<attr>))}, so a folder the add-on creates can carry its role on the server and not
+   * only in its name. Stalwart advertises it after authentication only (not in its
+   * greeting); Dovecot 2.3.21 does not advertise it at all.
+   */
+  private static final String     CREATE_SPECIAL_USE_CAPABILITY                               = "CREATE-SPECIAL-USE";
+
+  /**
+   * The folder an Archive creates on first use when the user's own mailbox has none
+   * (EXO-90574). The name is load-bearing, not cosmetic: Stalwart reports the
+   * {@code \Archive} attribute only to a LIST that asks for SPECIAL-USE, and JavaMail's
+   * LIST/LSUB never do, so it is the name -- "archive" for the destination lookup's
+   * contains rule, and {@link EmailFolderService#classify}'s exact-name rule for the
+   * Archive sync -- that lets every later lookup find the folder again.
+   */
+  private static final String     ARCHIVE_FOLDER_CREATED_NAME                                 = "Archive";
+
+  /**
+   * The code the log line of a refused Archive creation carries: the same message code
+   * a refused custom-folder CREATE answers, since it is the same refusal from the server.
+   */
+  static final String             ARCHIVE_FOLDER_CREATE_FAILED_CODE                           =
+                                                                    EmailFolderService.FOLDER_CREATE_FAILED_MESSAGE;
 
   // Where each user's MailboxSyncState lives (SettingService, user context, the
   // add-on's scope). Its OWN key, not a field of userEmailSetting: the setting
@@ -4529,7 +4560,12 @@ public class EmailBoxService {
      * A restore, or "Not spam", put messages back into the folder -- the inbox, or
      * Sent for the user's own messages ({@link EmailBoxService#restore}).
      */
-    RESTORE(TRASH_REFRESH_ENABLED_PROPERTY, "restoring message(s) into it");
+    RESTORE(TRASH_REFRESH_ENABLED_PROPERTY, "restoring message(s) into it"),
+    /**
+     * A mail sent from a shared mailbox was filed in its owner's Sent (EXO-90551) -- on
+     * the switch of the sender's own Sent re-read, which it is the counterpart of.
+     */
+    SENT_COPY(SENT_REFRESH_ENABLED_PROPERTY, "filing the copy of a mail sent from a shared mailbox into it");
 
     private final String property;
 
@@ -4832,7 +4868,9 @@ public class EmailBoxService {
   /**
    * Creates one of the user's own folders on the mail server -- the explicit act
    * {@code +} in the folders drawer stands for, and the one this add-on never takes on
-   * its own behalf (contrast {@link #resolveDraftsFolder}'s refusal to create a Drafts
+   * its own behalf, the single exception being the Archive folder an archive creates on
+   * first use when the user's own mailbox has none (see {@link #createArchiveFolder})
+   * (contrast {@link #resolveDraftsFolder}'s refusal to create a Drafts
    * folder as a SIDE EFFECT of a compose window: what makes a write to a store the
    * user shares with every other client of theirs acceptable here is that the user
    * asked for exactly this, by name, on this screen).
@@ -7131,9 +7169,12 @@ public class EmailBoxService {
       // every screen, in a folder the sync never opens. A MOVE's destination is the
       // caller's own folder, resolved through the registry exactly as its rows are read
       // back, so the folder the message lands in is the folder its mirror will list.
+      // Archive is also the one destination this path may CREATE, and only when the
+      // user's own mailbox has none at all (see findOrCreateArchiveFolder) -- never in
+      // a shared mailbox, whose destinations are the owner's folders as registered.
       Folder destination = delegatedSource ? resolveCachedImapFolder(store, destinationKey, username, syncState) : switch (action) {
         case DELETE -> findTrashFolder(store);
-        case ARCHIVE -> findArchiveFolder(store);
+        case ARCHIVE -> findOrCreateArchiveFolder(store, username, syncState);
         case JUNK -> resolveJunkFolder(store, syncState);
         case MOVE -> resolveCachedImapFolder(store, targetFolder, username, syncState);
       };
@@ -8113,6 +8154,37 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not send from their mailbox
    */
   public void sendEmail(Email email, String username) throws IllegalAccessException {
+    try {
+      sendEmail(email, username, null);
+    } catch (ObjectNotFoundException e) {
+      // No share was named, so none can be missing.
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /**
+   * {@link #sendEmail(Email, String)}, from a mailbox shared with the sender when a share
+   * is named (EXO-90551): the mail goes out from the sender's own account as before, and
+   * once the mail server has accepted it, a copy is also filed in the owner's Sent folder
+   * -- the same message, same Message-ID and references, marked read -- on the sender's
+   * own session, after their own Sent copy. The share is resolved with the sender as
+   * grantee before anything is sent, so a share of somebody else is "not found" and one
+   * no longer accepted is a revocation: the client-supplied id never selects another
+   * user's folder. A copy that cannot be filed never makes the send fail.
+   *
+   * @param email the composed email
+   * @param username the sender
+   * @param delegationId the share the mail is sent from, null for the sender's own mailbox
+   * @return what became of the owner's copy: FILED, FAILED or SKIPPED (no Sent shared, no
+   *         i there, or switched off by an administrator); null when no share is named
+   * @throws IllegalAccessException if the user may not send from their mailbox
+   * @throws ObjectNotFoundException when the named share is not the sender's
+   * @throws DelegationRevokedException when the named share is no longer accepted
+   */
+  public OwnerCopy sendEmail(Email email, String username, Long delegationId) throws IllegalAccessException,
+                                                                                  ObjectNotFoundException {
+    // Before anything is sent: a refusal must never follow a delivered mail.
+    String ownerSentKey = ownerSentKeyFor(username, delegationId);
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -8125,6 +8197,10 @@ public class EmailBoxService {
       MimeMessage message = buildOutgoingMessage(email, userEmailSetting, emailConnector, null, uploadIds, username);
       applyThreadingHeaders(message, email, username);
       deliver(message, email, StringUtils.isNotEmpty(email.getMailHeaderId()), username, userEmailSetting);
+      if (delegationId == null) {
+        return null;
+      }
+      return ownerSentKey == null ? OwnerCopy.SKIPPED : copyToOwnerSent(message, username, userEmailSetting, ownerSentKey);
     } catch (MessagingException | UnsupportedEncodingException | ConnectorCredentialsException e) {
       logSendFailure(username, emailConnector, e);
       throw new IllegalStateException(String.format("Error when sending email for user %s", username));
@@ -9138,6 +9214,30 @@ public class EmailBoxService {
    * @throws IllegalStateException if the send was refused
    */
   public void sendDraft(Email draft, String username) throws IllegalAccessException, ObjectNotFoundException {
+    sendDraft(draft, username, null);
+  }
+
+  /**
+   * {@link #sendDraft(Email, String)}, from a mailbox shared with the sender when a share
+   * is named (EXO-90551): the composer's own draft of a mail written there is sent as
+   * any draft is, and a copy is filed in the owner's Sent folder, as
+   * {@link #sendEmail(Email, String, Long)} files it. The share is resolved before the
+   * draft is claimed, so a refusal leaves the draft exactly where it was.
+   *
+   * @param draft the composed draft as the composer is showing it, carrying the local id
+   *          of the row it is editing
+   * @param username the sender
+   * @param delegationId the share the mail is sent from, null for the sender's own mailbox
+   * @return what became of the owner's copy, null when no share is named
+   * @throws IllegalAccessException if the user may not send from their mailbox
+   * @throws ObjectNotFoundException if the user has no draft under that local id, or the
+   *           named share is not theirs
+   * @throws DelegationRevokedException when the named share is no longer accepted
+   */
+  public OwnerCopy sendDraft(Email draft, String username, Long delegationId) throws IllegalAccessException,
+                                                                                  ObjectNotFoundException {
+    String ownerSentKey = ownerSentKeyFor(username, delegationId);
+    OwnerCopy ownerCopy = null;
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -9179,7 +9279,7 @@ public class EmailBoxService {
       DraftState stateBeforeSend = saveDraftBeforeSend(draft, stored);
       emailBoxStorage.updateDraftState(username, draftLocalId, DraftState.SENDING);
       try {
-        transmitDraft(draft, stored, storedAttachments, username, userEmailSetting);
+        ownerCopy = transmitDraft(draft, stored, storedAttachments, username, userEmailSetting, ownerSentKey);
       } catch (RuntimeException e) {
         // Nothing has been removed, here or on the server. Put the claim back down at
         // exactly the state the row was in and let the composer report the refusal.
@@ -9197,6 +9297,7 @@ public class EmailBoxService {
         draftLocks.remove(lockKey);
       }
     }
+    return delegationId == null ? null : ownerCopy;
   }
 
   /**
@@ -9307,12 +9408,15 @@ public class EmailBoxService {
    *          {@link #sendDraft} before anything was claimed
    * @param username the mailbox owner
    * @param userEmailSetting the user's connector binding
+   * @param ownerSentKey the shared mailbox owner's Sent to file a copy into, or null
+   * @return what became of the owner's copy: SKIPPED when there is none to file
    */
-  private void transmitDraft(Email draft,
-                             Email stored,
-                             List<EmailAttachment> storedAttachments,
-                             String username,
-                             UserEmailSetting userEmailSetting) {
+  private OwnerCopy transmitDraft(Email draft,
+                                  Email stored,
+                                  List<EmailAttachment> storedAttachments,
+                                  String username,
+                                  UserEmailSetting userEmailSetting,
+                                  String ownerSentKey) {
     EmailConnector emailConnector =
                                   emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
     List<String> uploadIds = new ArrayList<>();
@@ -9326,6 +9430,9 @@ public class EmailBoxService {
                                                       uploadIds,
                                                       false);
       deliver(message, draft, StringUtils.isNotBlank(stored.getInReplyTo()), username, userEmailSetting);
+      // The owner's copy of a mail sent from a shared mailbox (EXO-90551), here and not
+      // after: its parts stream from the uploads freed below, as the sender's own copy's.
+      return ownerSentKey == null ? OwnerCopy.SKIPPED : copyToOwnerSent(message, username, userEmailSetting, ownerSentKey);
     } catch (MessagingException | UnsupportedEncodingException | ConnectorCredentialsException e) {
       logSendFailure(username, emailConnector, e);
       throw new IllegalStateException(String.format("Error when sending email for user %s", username));
@@ -15181,6 +15288,270 @@ public class EmailBoxService {
       }
     }
     return null;
+  }
+
+  /**
+   * The folder an Archive files into, created on first use when the user's own mailbox
+   * has none (EXO-90574).
+   * <p>
+   * Three steps, and the order is the point:
+   * <ol>
+   * <li>{@link #findArchiveFolder} -- the loose, subscribed-only destination lookup,
+   * unchanged: on Gmail it answers "All Mail", on Dovecot the shipped {@code Archive}.
+   * The listing runs on the store's root, a JavaMail 1.6.2 {@code DefaultFolder},
+   * whose {@code list}/{@code listSubscribed} go through {@code doCommand}: a LIST or
+   * LSUB answered NO, like a dropped connection, THROWS, and so never reaches a
+   * creation (a failed lookup is not "no Archive"). Only {@code list()} on a named
+   * sub-folder goes through {@code doCommandIgnoreFailure} and reads a NO as empty.</li>
+   * <li>{@link #resolveArchiveFolder} -- the strict lookup the Archive sync uses, which
+   * also reads the remembered name and the UNsubscribed folders: an {@code \Archive}
+   * folder another client created but never subscribed is found here rather than
+   * duplicated.</li>
+   * <li>{@link #createArchiveFolder} -- only when both came back empty.</li>
+   * </ol>
+   * <p>
+   * <b>Own mailbox only.</b> This is called on the connection to the user's OWN mailbox
+   * ({@code userEmailSettingService.connect}), the only kind of mailbox this path
+   * reaches today. A mailbox shared with the user (the delegation of EXO-90548) must
+   * never get a folder created in it as a side effect of an Archive: that is a change to
+   * someone else's store. Any delegated archive path must keep today's refusal instead
+   * of calling this.
+   *
+   * @param store the connected store of the user's own mailbox
+   * @param username the mailbox owner, for the log
+   * @param syncState the mailbox's sync memory, updated in place with the created name
+   * @return the folder to file into, or null when there is none and the server refused
+   *         to create one
+   * @throws MessagingException if the mailbox cannot be read or the connection drops
+   */
+  private IMAPFolder findOrCreateArchiveFolder(Store store,
+                                               String username,
+                                               MailboxSyncState syncState) throws MessagingException {
+    IMAPFolder archive = findArchiveFolder(store);
+    if (archive != null) {
+      return archive;
+    }
+    archive = resolveArchiveFolder(store, syncState);
+    if (archive != null) {
+      return archive;
+    }
+    return createArchiveFolder(store, username, syncState);
+  }
+
+  /**
+   * Creates the {@link #ARCHIVE_FOLDER_CREATED_NAME} folder at the root of the user's
+   * own mailbox, subscribes it and remembers its name in the sync state, so that later
+   * archives ({@link #findArchiveFolder}, subscribed-only), the Archive sync
+   * ({@link #resolveArchiveFolder}, remembered name) and the folder column (which shows
+   * Archive once a name is remembered) all find exactly this folder.
+   * <p>
+   * <b>The probe first.</b> Before any CREATE, {@code exists()} is asked of the handle
+   * itself. The lookups before it already throw on a failed listing (see
+   * {@link #findOrCreateArchiveFolder}); this is a second safeguard, against a CREATE
+   * decided on a stale or partial answer: it goes through {@code doCommand} too, so a
+   * NO or a dropped connection throws, and a folder it finds is used as it is (the
+   * listings missed it, it is still the user's Archive).
+   * <p>
+   * With {@link #CREATE_SPECIAL_USE_CAPABILITY} the folder is created with
+   * {@code USE (\Archive)} (RFC 6154), so other clients see its role too; without it,
+   * or when the server answers NO to the attribute, it is a plain {@code CREATE}.
+   * Observed on the local rig (2026-09-23):
+   * <ul>
+   * <li>Stalwart: {@code CREATE-SPECIAL-USE} in the post-authentication CAPABILITY only;
+   * {@code CREATE Archive-probe-EXO90574 (USE (\Archive))} answered
+   * {@code OK [MAILBOXID (kmaaaacx)] Mailbox created.}; the folder then shows
+   * {@code (\Archive)} to {@code LIST "" * RETURN (SPECIAL-USE)} but {@code ()} to
+   * JavaMail's plain {@code LIST} and only {@code (\Subscribed)} to {@code LSUB} -- hence
+   * the name matters; it is NOT subscribed by the creation; a second CREATE answers
+   * {@code NO Mailbox 'Archive-probe-EXO90574' already exists.}, with no
+   * {@code [ALREADYEXISTS]} code.</li>
+   * <li>Dovecot 2.3.21: no {@code CREATE-SPECIAL-USE} advertised (so plain CREATE here);
+   * a second CREATE answers {@code NO [ALREADYEXISTS] Mailbox already exists}.</li>
+   * </ul>
+   * <p>
+   * Idempotent under concurrency: two archives at once, or another client creating the
+   * folder meanwhile, make the second CREATE answer NO; since the refusal text differs
+   * per server, the folder is re-probed with {@code exists()} and a NO over an existing
+   * folder is simply the race lost -- the folder is used, not created twice. Only a NO
+   * over a folder that still does not exist is a refusal: logged with
+   * {@link #ARCHIVE_FOLDER_CREATE_FAILED_CODE} and answered null, so the caller keeps its
+   * "no Archive folder" behaviour (rows restored, every message counted as failed).
+   * <p>
+   * Created under {@code store.getDefaultFolder()}, as {@link #createCustomFolder} does
+   * for the user's own folders.
+   *
+   * @param store the connected store of the user's own mailbox
+   * @param username the mailbox owner, for the log
+   * @param syncState the mailbox's sync memory, updated in place with the created name
+   * @return the created (or concurrently created) folder, or null when the server
+   *         refused the creation
+   * @throws MessagingException if the connection drops or the server cannot be asked
+   */
+  private IMAPFolder createArchiveFolder(Store store, String username, MailboxSyncState syncState) throws MessagingException {
+    Folder candidate = store.getDefaultFolder().getFolder(ARCHIVE_FOLDER_CREATED_NAME);
+    if (!(candidate instanceof IMAPFolder archive)) {
+      return null;
+    }
+    boolean created = false;
+    if (!archive.exists()) {
+      boolean triedSpecialUse = store instanceof IMAPStore imapStore && imapStore.hasCapability(CREATE_SPECIAL_USE_CAPABILITY);
+      created = triedSpecialUse && createWithArchiveUse(archive, username);
+      // Re-probed only after a USE attempt that did not create: its NO may be the race lost.
+      if (!created && (!triedSpecialUse || !archive.exists())) {
+        created = archive.create(Folder.HOLDS_MESSAGES);
+      }
+      if (!created && !archive.exists()) {
+        LOG.warn("[{}] No Archive folder for user {} and the mail server refused to create '{}'",
+                 ARCHIVE_FOLDER_CREATE_FAILED_CODE,
+                 username,
+                 ARCHIVE_FOLDER_CREATED_NAME);
+        return null;
+      }
+    }
+    if (created) {
+      LOG.info("Created the Archive folder '{}' in the mailbox of user {} on first archive", archive.getFullName(), username);
+    } else {
+      LOG.debug("The Archive folder '{}' of user {} already exists (created meanwhile, or missed by the listings)",
+                archive.getFullName(),
+                username);
+    }
+    try {
+      archive.setSubscribed(true);
+    } catch (StoreClosedException | FolderClosedException e) {
+      throw e;
+    } catch (MessagingException e) {
+      // Best-effort: the remembered name below still finds the folder; only the
+      // subscribed-only lookup, and clients that list subscriptions, would miss it.
+      LOG.warn("Could not subscribe the Archive folder '{}' of user {}", archive.getFullName(), username, e);
+    }
+    syncState.setArchiveFolderName(archive.getFullName());
+    // A walk this connection already made predates the folder, and would keep answering
+    // "no Archive" to every later resolution on the same connection.
+    rediscoveries.remove(store);
+    return archive;
+  }
+
+  /**
+   * Sends {@code CREATE <name> (USE (\Archive))} (RFC 6154 section 5.3) -- JavaMail
+   * 1.6 has no API for the {@code USE} parameter, so the command is written out here.
+   * The wire form was checked against Stalwart:
+   * {@code A3 CREATE Archive-probe-EXO90574 (USE (\Archive))}.
+   *
+   * @param archive the folder handle to create
+   * @param username the mailbox owner, for the log
+   * @return true when the server created it; false on NO (the name exists, or the
+   *         server refused the attribute) or BAD, for the caller to re-probe and fall
+   *         back to a plain CREATE
+   * @throws MessagingException if the connection drops
+   */
+  private boolean createWithArchiveUse(IMAPFolder archive, String username) throws MessagingException {
+    try {
+      return archive.doCommandIgnoreFailure(protocol -> {
+        Argument arguments = new Argument();
+        arguments.writeString(BASE64MailboxEncoder.encode(archive.getFullName()));
+        arguments.writeArgument(archiveUseParameter());
+        Response[] responses = protocol.command("CREATE", arguments);
+        protocol.notifyResponseHandlers(responses);
+        protocol.handleResult(responses[responses.length - 1]);
+        return Boolean.TRUE;
+      }) != null;
+    } catch (StoreClosedException | FolderClosedException e) {
+      throw e;
+    } catch (MessagingException e) {
+      LOG.debug("CREATE with USE (\\Archive) refused for user {}; trying a plain CREATE", username, e);
+      return false;
+    }
+  }
+
+  /**
+   * The {@code USE (\Archive)} parameter list of a CREATE-SPECIAL-USE command.
+   *
+   * @return the parameter, written as {@code (USE (\Archive))}
+   */
+  private static Argument archiveUseParameter() {
+    Argument attributes = new Argument();
+    attributes.writeAtom("\\Archive");
+    Argument use = new Argument();
+    use.writeAtom("USE");
+    use.writeArgument(attributes);
+    return use;
+  }
+
+  /**
+   * The owner's Sent folder a send from a shared mailbox files its copy into
+   * (EXO-90551), resolved before anything is sent: null when no share is named, when the
+   * share has no Sent the sender may file into, or when an administrator switched the
+   * copy off.
+   *
+   * @param username the sender
+   * @param delegationId the share the mail is sent from, or null
+   * @return the folder key, or null
+   * @throws ObjectNotFoundException when the named share is not the sender's
+   * @throws DelegationRevokedException when the named share is no longer accepted
+   */
+  private String ownerSentKeyFor(String username, Long delegationId) throws ObjectNotFoundException {
+    if (delegationId == null) {
+      return null;
+    }
+    String key = emailDelegationService.ownerSentFolderKey(username, delegationId);
+    return key != null && emailConnectorService.isSharedMailboxSentCopyEnabled() ? key : null;
+  }
+
+  /**
+   * Files the copy of a mail just sent from a shared mailbox in its owner's Sent folder
+   * (EXO-90551): an APPEND of the very message that went out, marked read, on the
+   * sender's own session, into the folder the registry names for that share's Sent --
+   * never a name the client sent. Fenced like the sender's own copy: the mail is out by
+   * then, and a copy that cannot be filed is said, never turned into "not sent". No
+   * retry: a duplicate on retry is worse than a missing copy.
+   *
+   * @param message the message that went out
+   * @param username the sender
+   * @param userEmailSetting the sender's connector binding
+   * @param ownerSentKey the owner's Sent folder key, as {@link EmailDelegationService#ownerSentFolderKey} resolved it
+   * @return FILED, or FAILED
+   */
+  private OwnerCopy copyToOwnerSent(MimeMessage message, String username, UserEmailSetting userEmailSetting, String ownerSentKey) {
+    Store store = null;
+    IMAPFolder ownerSent = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      ownerSent = resolveCachedImapFolder(store, ownerSentKey, username);
+      if (ownerSent == null) {
+        LOG.warn("The Sent folder {} of a mailbox shared with user {} is no longer there; the owner's copy was not filed", ownerSentKey, username);
+        return OwnerCopy.FAILED;
+      }
+      // Appended to the folder CLOSED: an APPEND needs i alone, which is the right the
+      // share was checked for, while opening it READ_WRITE would also need what a SELECT
+      // answered read-write needs -- a share granting i without r would fail here.
+      // The owner's copy of mail that was sent, not new mail to them: the flag travels
+      // with the APPEND.
+      message.setFlag(Flags.Flag.SEEN, true);
+      ownerSent.appendMessages(new Message[] { message });
+      scheduleFolderRefresh(username, ownerSentKey, FolderRefreshCause.SENT_COPY);
+      return OwnerCopy.FILED;
+    } catch (Exception e) {
+      LOG.warn("A mail of user {} was sent from a shared mailbox, and its copy in the owner's Sent {} could not be filed",
+               username,
+               ownerSentKey,
+               e);
+      return OwnerCopy.FAILED;
+    } finally {
+      try {
+        if (ownerSent != null && ownerSent.isOpen()) {
+          ownerSent.close(false);
+        }
+      } catch (MessagingException e) {
+        LOG.debug("Error when closing the owner's Sent folder", e);
+      }
+      try {
+        if (store != null && store.isConnected()) {
+          store.close();
+        }
+      } catch (MessagingException e) {
+        LOG.debug(STORE_CLOSE_ERROR_MESSAGE, e);
+      }
+    }
   }
 
   /**
