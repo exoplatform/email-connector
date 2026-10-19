@@ -1567,7 +1567,7 @@ class EmailDelegationServiceTest {
    * administrator switched it off, nor without i.
    */
   @Test
-  void theSwitcherSaysWhetherTheOwnersSentCopyWillBeFiled() throws Exception {
+  void theSwitcherSaysWhetherTheOwnersSentCopyWillBeFiled() {
     EmailDelegation share = aDovecotShare();
     EmailFolder inbox = sharedInbox(share);
     EmailFolder sent = delegated(22L, ROOT + "/Sent", true);

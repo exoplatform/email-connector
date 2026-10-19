@@ -1292,6 +1292,19 @@ export function synchronize() {
 }
 
 /**
+ * Reads the JSON body of an answer the server accepted. An empty body, or one that is
+ * not JSON, reads as {}: the answer was accepted all the same. The catch covers this
+ * parse only -- a refused answer is rejected by refusal() before it gets here, and
+ * stays rejected.
+ *
+ * @param {Response} resp the accepted response
+ * @returns {Promise<Object>} the parsed body, or {} when there is none to read
+ */
+function jsonOrEmpty(resp) {
+  return resp.json().catch(() => ({}));
+}
+
+/**
  * Sends (or replies/forwards) an email. The whole email object is serialized, so
  * it also carries email.attachments = [{ uploadId, name, mimeType, size }], the
  * commons upload ids the backend resolves to bytes and attaches to the message.
@@ -1317,7 +1330,7 @@ export function sendEmail(email, delegationId) {
     if (!resp?.ok) {
       return refusal(resp, 'Error when sending email');
     }
-    return resp.json().catch(() => ({}));
+    return jsonOrEmpty(resp);
   });
 }
 
@@ -1388,7 +1401,7 @@ export function sendDraft(draftLocalId, draft, delegationId) {
     if (!resp?.ok) {
       return refusal(resp, 'Error when sending draft');
     }
-    return resp.json().catch(() => ({}));
+    return jsonOrEmpty(resp);
   });
 }
 
