@@ -3007,13 +3007,14 @@ public class EmailBoxServiceTest {
     SendRig rig = givenASendRig();
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 7L)).thenThrow(new ObjectNotFoundException("emailConnector.delegation.notFound"));
     when(emailDelegationService.ownerSentFolderKey(TEST_USER, 8L)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    Email email = email(TEST_USER);
 
     try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
         MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
       sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(rig.session());
 
-      assertThrows(ObjectNotFoundException.class, () -> emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 7L));
-      assertThrows(DelegationRevokedException.class, () -> emailBoxService.sendEmail(email(TEST_USER), TEST_USER, 8L));
+      assertThrows(ObjectNotFoundException.class, () -> emailBoxService.sendEmail(email, TEST_USER, 7L));
+      assertThrows(DelegationRevokedException.class, () -> emailBoxService.sendEmail(email, TEST_USER, 8L));
 
       transportMock.verify(() -> Transport.send(any(Message.class)), never());
       verify(rig.ownSent(), never()).appendMessages(any(Message[].class));
