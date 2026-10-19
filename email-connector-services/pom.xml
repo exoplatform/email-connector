@@ -33,6 +33,12 @@
       <artifactId>app-center-services</artifactId>
       <scope>provided</scope>
     </dependency>
+    <!-- Type of a field of ApplicationCenterService, which the tests mock: app-center declares it provided, which is not transitive -->
+    <dependency>
+      <groupId>io.meeds.layout</groupId>
+      <artifactId>layout-service</artifactId>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>io.meeds.analytics</groupId>
       <artifactId>analytics-api</artifactId>
