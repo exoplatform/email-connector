@@ -70,6 +70,7 @@ import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngine;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngineRegistry;
 import org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript;
+import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
 
 import io.meeds.social.util.JsonUtils;
 
@@ -300,7 +301,7 @@ public class EmailServerRuleServiceTest {
    */
   @Test
   public void testAnEngineWithoutRulesAnswersAnEmptyGroup() throws Exception {
-    when(engine.probe(session)).thenReturn(ServerRuleCapabilities.unsupported("x", ServerRuleCapabilities.VocabularySource.NONE));
+    when(engine.probe(session)).thenReturn(ServerRuleCapabilities.unsupported("x", ServerRuleVocabularySource.NONE));
     ServerRulesSettings group = service.getServerRules(USERNAME, null);
     assertEquals(List.of(), group.getRules());
     assertEquals(ServerRulesState.NONE, group.getState());

@@ -20,10 +20,10 @@ import org.springframework.stereotype.Service;
 
 import org.exoplatform.emailConnector.exception.ServerRuleUnsupportedException;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
-import org.exoplatform.emailConnector.model.ServerRuleCapabilities.VocabularySource;
 import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.VacationSetting;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
+import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
 
 /**
  * The engine of a preset with no server-rule engine configured, or whose server offers
@@ -59,7 +59,7 @@ public class NoopRuleEngine implements ServerRuleEngine {
    */
   @Override
   public ServerRuleCapabilities probe(MailboxAclSession session) {
-    return ServerRuleCapabilities.unsupported(REASON, VocabularySource.NONE);
+    return ServerRuleCapabilities.unsupported(REASON, ServerRuleVocabularySource.NONE);
   }
 
   /**
