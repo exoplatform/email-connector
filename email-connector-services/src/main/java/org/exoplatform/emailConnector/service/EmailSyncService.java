@@ -253,10 +253,10 @@ public class EmailSyncService {
   }
 
   /**
-   * Hands a mailbox whose claim has committed to the executor, once
-   * {@link #dispatchNow} has returned. Never throws: the caller's transaction is
-   * already over, and a refusal leaves the claim to the stale timeout, as a refusal
-   * in the tick does.
+   * Hands a mailbox whose claim has committed to the executor: after the claim's
+   * commit, or at once when no transaction is active. Never throws: the claim is
+   * already committed, and a refusal leaves it to the stale timeout, as a refusal in
+   * the tick does.
    *
    * @param userId the mailbox owner
    * @param startedAt the claim's stamp

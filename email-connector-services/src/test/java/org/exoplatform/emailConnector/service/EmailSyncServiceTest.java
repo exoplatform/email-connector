@@ -482,9 +482,10 @@ public class EmailSyncServiceTest {
   /**
    * The hand-over to the executor never throws back into {@code dispatchNow}: a
    * claim that committed but could not reach the executor still counts as claimed,
-   * only warned about, never surfaced as a failure of the immediate dispatch.
-   * Mutation-verified: with the catch in {@code handOverClaimed} removed, this
-   * fails.
+   * only warned about, never surfaced as a failure of the immediate dispatch. This
+   * covers the path without the proxy, where the hand-over runs inside
+   * {@code dispatchNow}; the proxied path, where it runs after the commit, is
+   * pinned by {@code EmailSyncServiceDispatchNowTransactionTest}.
    */
   @Test
   void dispatchNowStillSucceedsWhenTheHandOverFails() throws Exception {

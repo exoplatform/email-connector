@@ -32,6 +32,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -204,6 +205,23 @@ class EmailSyncServiceDispatchNowTransactionTest {
   }
 
   /**
+   * An executor that refuses the hand-over after the claim's commit does not fail the
+   * immediate dispatch through the proxy: the claim stays committed, left to the stale
+   * timeout, and nothing escapes {@code dispatchNow}.
+   */
+  @Test
+  void aHandOverTheExecutorRefusesAfterTheCommitDoesNotFailTheDispatch() {
+    executor.refuse = true;
+
+    assertTrue(emailSyncService.dispatchNow(USER));
+
+    assertEquals(1, executor.claimSeenAtHandOver.size(), "the mailbox must be offered to the executor once");
+    assertEquals(EmailConnectorUtils.getSyncNodeName(),
+                 emailSyncStateDAO.findById(USER).orElseThrow().getClaimedBy(),
+                 "the committed claim must stay in place");
+  }
+
+  /**
    * An executor that runs nothing: each {@code execute} records the claimant another
    * connection sees on the row at that instant, or null when the read is blocked by an
    * uncommitted write.
@@ -215,6 +233,9 @@ class EmailSyncServiceDispatchNowTransactionTest {
     private final ExecutorService reader;
 
     final List<String>         claimSeenAtHandOver = Collections.synchronizedList(new ArrayList<>());
+
+    /** Whether {@code execute} refuses the run once it has recorded the claimant. */
+    volatile boolean           refuse;
 
     /**
      * Four idle threads' worth of free slots, never started.
@@ -229,7 +250,8 @@ class EmailSyncServiceDispatchNowTransactionTest {
     }
 
     /**
-     * Records the claimant visible from another connection, without running the task.
+     * Records the claimant visible from another connection, without running the task,
+   * then refuses it when {@link #refuse} is set.
      *
      * @param command the dispatched run, dropped
      */
@@ -249,6 +271,9 @@ class EmailSyncServiceDispatchNowTransactionTest {
         throw new IllegalStateException(e);
       }
       claimSeenAtHandOver.add(claimant);
+      if (refuse) {
+        throw new RejectedExecutionException("the pool is full");
+      }
     }
   }
 }
