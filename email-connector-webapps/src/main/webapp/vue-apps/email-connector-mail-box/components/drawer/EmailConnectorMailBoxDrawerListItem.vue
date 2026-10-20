@@ -168,8 +168,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               <!-- Quiet favorite, next to the date (the unread dot keeps the left edge):
                    always there when set, offered on hover to set it.
                    It keeps its box at all times and only fades, exactly like the row
-                   actions below. Anything that takes the icon out of the layout -- v-if,
-                   or v-show, which sets display:none -- resizes the row as the pointer
+                   actions beside it. Anything that takes the icon out of the layout --
+                   v-if, or v-show, which sets display:none -- resizes the row as the pointer
                    arrives: the date shifts, the pointer ends up over different content,
                    the hover drops, and the row flickers as long as the cursor rests. -->
               <email-connector-mail-box-drawer-favorite-toggle
@@ -181,10 +181,42 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 :favorite="threadFavorite"
                 :can-toggle="canToggleFavorite && !selectMode"
                 :shared-owner="starSharedOwner"
-                class="me-1"
-                :size="18"
+                :size="16"
                 @toggle="toggleThreadFavorite" />
-              <v-list-item-subtitle v-text="receivedDate" />
+              <!-- The row's actions stand in the date's place while the pointer or the
+                   keyboard rests on the row, or its menu is open (EXO-91677): Archive and
+                   Delete, then the menu. Archive and Delete are what the swipe does on
+                   mobile, so not on a draft or a row the swipe offers nothing on
+                   (readOnly); none of them on mobile, which has the swipe and the long
+                   press, nor in select mode, where the selection bar acts. Laid over the
+                   date, which only fades; the slot keeps the buttons' width on every row,
+                   so nothing moves on hover. -->
+              <div
+                :style="rowActions && { minWidth: rowActionsWidth }"
+                class="position-relative d-flex justify-end">
+                <v-list-item-subtitle
+                  :style="rowActionsShown && { opacity: 0 }"
+                  v-text="receivedDate" />
+                <div
+                  v-if="rowActions"
+                  :style="{
+                    opacity: rowActionsShown ? 1 : 0,
+                    pointerEvents: rowActionsShown ? 'auto' : 'none'
+                  }"
+                  class="position-absolute t-0 b-0 r-0 d-flex align-center">
+                  <email-connector-mail-box-drawer-list-item-quick-actions
+                    v-if="showQuickActions"
+                    :can-archive="$emailConnectorMailBoxService.canArchive(email.folder)"
+                    :can-delete="$emailConnectorMailBoxService.canDelete(email.folder)"
+                    @archive="emitForRow('archive-email')"
+                    @delete="emitForRow('delete-email')" />
+                  <email-connector-mail-box-drawer-list-item-action-menu
+                    :email="email"
+                    :thread="thread"
+                    @open="menuOpen = true"
+                    @close="menuOpen = false" />
+                </div>
+              </div>
             </v-list-item-action>
           </v-list-item>
           <v-list-item
@@ -238,17 +270,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 fa-cloud-download-alt
               </v-icon>
             </v-list-item-action>
-            <email-connector-mail-box-drawer-list-item-action-menu
-              v-if="!selectMode && !isMobile"
-              :style="{
-                opacity: isHover || menuOpen ? 1 : 0,
-                pointerEvents: isHover || menuOpen ? 'auto' : 'none'
-              }"
-              ref="menu"
-              :email="email"
-              :thread="thread"
-              @open="menuOpen = true"
-              @close="menuOpen = false" />
           </v-list-item>
         </div>
         <email-connector-mail-box-drawer-list-item-attachments
@@ -674,6 +695,45 @@ export default {
     readOnly() {
       return !this.$emailConnectorMailBoxService.canDelete(this.email.folder)
         && !this.$emailConnectorMailBoxService.canArchive(this.email.folder);
+    },
+    /**
+     * Whether the row offers Archive and Delete as buttons on hover (EXO-91677): on the
+     * rows the swipe would act on (neither a draft nor readOnly), off mobile, which has
+     * the swipe, and out of select mode.
+     *
+     * @returns {Boolean} true when the buttons belong on the row
+     */
+    showQuickActions() {
+      return !this.isMobile && !this.selectMode && !this.isDraft && !this.readOnly;
+    },
+    /**
+     * Whether the row has actions to show in the date's place (EXO-91677): at least its
+     * menu, everywhere but on mobile and in select mode.
+     *
+     * @returns {Boolean} true when the row has actions
+     */
+    rowActions() {
+      return !this.isMobile && !this.selectMode;
+    },
+    /**
+     * The width the date's slot keeps so the actions laid over it fit: 26px per button,
+     * the star's box at its 16px (the favorite toggle's icon size + 10), the menu's and,
+     * where offered, Archive's and Delete's.
+     *
+     * @returns {String} the CSS width
+     */
+    rowActionsWidth() {
+      return this.showQuickActions ? '78px' : '26px';
+    },
+    /**
+     * Whether the actions stand in the date's place right now: while the row is hovered,
+     * or holds the keyboard's focus -- which the pointer leaving does not take away
+     * (isFocused) --, or its menu is open.
+     *
+     * @returns {Boolean} true when the actions show instead of the date
+     */
+    rowActionsShown() {
+      return this.rowActions && (this.isHover || this.isFocused || this.menuOpen);
     },
     /**
      * The row's inline style: faded while its message is on its way into the mirror or
