@@ -951,11 +951,13 @@ public class EmailMcpTool implements McpToolPlugin {
    * {@link #sendEmailDraft} send it. It runs without approval because nothing leaves the
    * mailbox: not the mail, and not a request from the user's browser either -- the body
    * carries text, formatting and links, is refused when it shows an image, and is cleaned
-   * as a received mail is, so it fetches nothing (a draft is shown to its owner uncleaned,
-   * as their own text). The same rule holds when update_email_draft changes it, the
-   * signature this tool added kept as it is, so a draft written here can be changed here
-   * -- unless the user has since saved it in the Email app with a signature showing an
-   * image other than its logo, a body that is then the user's to change.
+   * as a received mail is, so it fetches nothing -- but what the user's own signature
+   * shows, which is added as it is, as the composer adds it (a draft is shown to its owner
+   * uncleaned, as their own text). The same rule holds when update_email_draft changes it,
+   * the user's current signature kept as it is, so a draft written here can be changed
+   * here -- unless the user has since changed their signature, or saved the draft in the
+   * Email app, and the signature in it shows an image other than its logo: that body is
+   * then the user's to change.
    * <p>
    * With {@code email_id}, the draft is a reply to that mail: it is filed in the mail's
    * conversation and, once sent, carries the In-Reply-To and References headers that
