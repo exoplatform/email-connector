@@ -367,9 +367,7 @@ class EmailMcpToolDraftsTest {
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p>Hi</p>", "bob@acme.com"));
 
     emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, "<p>New words</p><br><br>" + SIGNATURE_BLOCK, null, null, 1L);
-    assertEquals("<p>New words</p><br><br><div class=\"ec-signature\"><p>Jane Doe, eXo</p>"
-        + "<img src=\"/email-connector/rest/user-email-setting/signature/image?v=1\" alt=\"\" style=\"max-height:48px;\"></div>",
-                 savedDraft().getContent().getBody());
+    assertEquals("<p>New words</p><br><br>" + SIGNATURE_BLOCK, savedDraft().getContent().getBody(), "the current block, kept as it is");
 
     Mockito.clearInvocations(emailBoxService);
     String formatted = "<p><b>Bold</b> <i>words</i> and <a href=\"https://www.exoplatform.com\">a link</a></p>";
@@ -452,6 +450,25 @@ class EmailMcpToolDraftsTest {
                    other);
     }
     verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
+  }
+
+  /**
+   * A draft written here with a signature that shows a banner can be changed here: the
+   * signature block, as create_email_draft wrote it, is kept as it is.
+   */
+  @Test
+  void updateEmailDraftKeepsASignatureShowingOtherImagesAsCreateWroteIt() throws Exception {
+    String banner = "<p>Jane</p><img src=\"https://cdn.acme.com/banner.png\" alt=\"b\">";
+    when(emailSignatureService.getEmailSignature(USERNAME)).thenReturn(new EmailSignature(null, banner, null, false, null));
+    saveDraftEchoes();
+    emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, null);
+    String created = savedDraft().getContent().getBody();
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", created, "bob@acme.com"));
+
+    Mockito.clearInvocations(emailBoxService);
+    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, created.replace("Hi", "Hello again"), null, null, 1L);
+
+    assertEquals("<p>Hello again</p><br><br><div class=\"ec-signature\">" + banner + "</div>", savedDraft().getContent().getBody());
   }
 
   /** A change without the revision it was read at changes nothing. */
