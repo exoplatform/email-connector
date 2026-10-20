@@ -9591,6 +9591,26 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-91674 -- a discard whose check refuses the row, here because the draft has been
+   * scheduled, removes nothing: not the schedule, not the copy, not the row.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftDiscardIsLeftAloneWhenTheCheckRefusesTheRow() {
+    givenAUsableMailbox();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(storedDraft());
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.deleteDraft("draft-1", TEST_USER, row -> {
+      if (row.isScheduled()) {
+        throw new IllegalArgumentException("scheduled");
+      }
+    }));
+    verify(emailScheduledSendStorage, never()).cancel(anyString(), anyString());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
    * EXO-91674 -- reading one draft is the owner's: a user who may not use their mailbox
    * reads none, and a scheduled draft says it is.
    */

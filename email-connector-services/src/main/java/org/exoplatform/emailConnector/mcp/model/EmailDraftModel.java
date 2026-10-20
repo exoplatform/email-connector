@@ -53,6 +53,13 @@ public class EmailDraftModel {
   private String       body;
 
   /**
+   * The whole body as stored, HTML and signature included: what update_email_draft
+   * starts from to change part of it. Given for one draft, and in a listing on request.
+   */
+  @JsonProperty("body_html")
+  private String       bodyHtml;
+
+  /**
    * The Message-ID the mail will carry once sent, whoever sends it: the handle to
    * recognise it in the Sent folder.
    */

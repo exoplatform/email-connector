@@ -985,7 +985,7 @@ public class EmailMcpTool implements McpToolPlugin {
     if (saved == null) {
       throw new IllegalStateException("The draft could not be saved: nothing was created.");
     }
-    return toDraftModel(saved);
+    return toDraftModel(saved, true);
   }
 
   /**
@@ -1026,6 +1026,10 @@ public class EmailMcpTool implements McpToolPlugin {
     draft.setCc(cc == null ? stored.getCc() : toRecipients(cc));
     draft.setBcc(bcc == null ? stored.getBcc() : toRecipients(bcc));
     draft.setReadReceiptRequested(stored.isReadReceiptRequested());
+    // The revision after the one read: if the Email app saves the draft meanwhile, the
+    // row has reached it and this write is dropped rather than putting back the fields
+    // read before the user's edit.
+    draft.setDraftRevision((stored.getDraftRevision() == null ? 0L : stored.getDraftRevision()) + 1);
     Email saved;
     try {
       saved = emailBoxService.saveDraft(draft, username, true);
@@ -1035,7 +1039,11 @@ public class EmailMcpTool implements McpToolPlugin {
     if (saved == null) {
       throw new ObjectNotFoundException(draftNotFound(draftId));
     }
-    return toDraftModel(saved);
+    if (!holds(saved, draft)) {
+      throw new IllegalArgumentException(String.format("Draft %s was changed in the Email app while you were changing it: nothing "
+          + "of your change was saved. Read it again with list_email_drafts and start from what it says now.", draftId));
+    }
+    return toDraftModel(saved, true);
   }
 
   /**
@@ -1047,13 +1055,16 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param recipient keeps the drafts with an address containing it in to, cc or bcc
    * @param sinceDays keeps the drafts changed in the last N days
    * @param limit how many to return (default 20, at most 100)
+   * @param withHtml whether each draft carries its whole HTML body, to change it with
+   *          update_email_draft; null means no
    * @return the drafts
    * @throws IllegalAccessException if the user has no usable mailbox
    */
   public List<EmailDraftModel> listEmailDrafts(String subject,
                                                String recipient,
                                                Integer sinceDays,
-                                               Integer limit) throws IllegalAccessException {
+                                               Integer limit,
+                                               Boolean withHtml) throws IllegalAccessException {
     if (sinceDays != null && sinceDays < 1) {
       throw new IllegalArgumentException("sinceDays must be 1 or more.");
     }
@@ -1070,7 +1081,7 @@ public class EmailMcpTool implements McpToolPlugin {
                  .filter(draft -> since == 0L || lastModified(draft) != null && lastModified(draft).getTime() >= since)
                  .sorted(Comparator.comparing(EmailMcpTool::lastModified, Comparator.nullsLast(Comparator.reverseOrder())))
                  .limit(max)
-                 .map(this::toDraftModel)
+                 .map(draft -> toDraftModel(draft, Boolean.TRUE.equals(withHtml)))
                  .toList();
   }
 
@@ -1110,7 +1121,10 @@ public class EmailMcpTool implements McpToolPlugin {
       // edit it in the Email app between the check above and the send.
       sent = emailBoxService.sendDraftAsStored(stored.getDraftLocalId(),
                                                username,
-                                               row -> requireDraftSays(row, to, cc, bcc, subject, "sent"));
+                                               row -> {
+                                                 requireActionable(row, draftId, "sent");
+                                                 requireDraftSays(row, to, cc, bcc, subject, "sent");
+                                               });
     } catch (ScheduledSendConflictException e) {
       throw scheduledDraftRefusal(draftId, "sent");
     } catch (ObjectNotFoundException e) {
@@ -1144,13 +1158,16 @@ public class EmailMcpTool implements McpToolPlugin {
   public String deleteEmailDraft(String draftId, String subject) throws ObjectNotFoundException, IllegalAccessException {
     String username = getCurrentUserName();
     Email stored = ownDraft(draftId, username, "deleted");
-    if (!StringUtils.equals(StringUtils.trimToEmpty(subject), StringUtils.trimToEmpty(stored.getSubject()))) {
-      throw new IllegalArgumentException(String.format("Nothing was deleted: subject must be the draft's own, \"%s\". "
-          + "Read it with list_email_drafts and ask the user to approve again.", StringUtils.defaultString(stored.getSubject())));
-    }
+    requireSameSubject(stored, subject);
     boolean deleted;
     try {
-      deleted = emailBoxService.deleteDraft(stored.getDraftLocalId(), username);
+      // Checked again under the draft's lock on the row about to go: the user may edit
+      // or schedule it in the Email app in between, and deleting a scheduled draft would
+      // cancel their schedule.
+      deleted = emailBoxService.deleteDraft(stored.getDraftLocalId(), username, row -> {
+        requireActionable(row, draftId, "deleted");
+        requireSameSubject(row, subject);
+      });
     } catch (ScheduledSendConflictException e) {
       throw scheduledDraftRefusal(draftId, "deleted");
     }
@@ -1738,14 +1755,42 @@ public class EmailMcpTool implements McpToolPlugin {
     if (stored == null) {
       throw new ObjectNotFoundException(draftNotFound(draftId));
     }
-    if (stored.getSendDelegationId() != null) {
-      throw new IllegalArgumentException(String.format("Draft %s was written in a mailbox shared with you: open it in the Email app. "
-          + "Nothing was done.", draftId));
+    requireActionable(stored, draftId, what);
+    return stored;
+  }
+
+  /**
+   * Refuse a draft the draft tools do not act on: one scheduled to be sent, or one
+   * written in a mailbox shared with the user. Applied on the read, and again on the row
+   * under the draft's lock by the writes that cannot be undone.
+   *
+   * @param draft the stored draft, marked scheduled when it is
+   * @param draftId the draft's id, for the message
+   * @param what what the caller is about to do with it: changed, sent or deleted
+   * @throws IllegalArgumentException when the draft is one of those; nothing was done
+   */
+  private static void requireActionable(Email draft, String draftId, String what) {
+    if (draft.getSendDelegationId() != null) {
+      throw new IllegalArgumentException(String.format("Draft %s was written in a mailbox shared with you, so it cannot be %s here: "
+          + "the user opens it in the Email app. Nothing was done.", draftId, what));
     }
-    if (stored.isScheduled()) {
+    if (draft.isScheduled()) {
       throw scheduledDraftRefusal(draftId, what);
     }
-    return stored;
+  }
+
+  /**
+   * Refuse to delete a draft whose subject is not the one the user approved.
+   *
+   * @param draft the stored draft
+   * @param subject the subject the user approved
+   * @throws IllegalArgumentException when they differ; nothing was deleted
+   */
+  private static void requireSameSubject(Email draft, String subject) {
+    if (!StringUtils.equals(StringUtils.trimToEmpty(subject), StringUtils.trimToEmpty(draft.getSubject()))) {
+      throw new IllegalArgumentException(String.format("Nothing was deleted: subject must be the draft's own, \"%s\". "
+          + "Read it with list_email_drafts and ask the user to approve again.", StringUtils.defaultString(draft.getSubject())));
+    }
   }
 
   /**
@@ -1906,18 +1951,46 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
+   * Whether a saved draft holds what was written: the storage drops a save whose
+   * revision the row has already reached, and answers the row as it stands.
+   *
+   * @param saved the row the save answered
+   * @param written the draft written
+   * @return true when the row says what was written
+   */
+  private static boolean holds(Email saved, Email written) {
+    return StringUtils.equals(saved.getSubject(), written.getSubject())
+        && StringUtils.equals(bodyOf(saved), bodyOf(written))
+        && addressesOf(saved.getTo()).equals(addressesOf(written.getTo()))
+        && addressesOf(saved.getCc()).equals(addressesOf(written.getCc()))
+        && addressesOf(saved.getBcc()).equals(addressesOf(written.getBcc()));
+  }
+
+  /**
+   * A mail's HTML body, null when it has none.
+   *
+   * @param email the mail
+   * @return its body
+   */
+  private static String bodyOf(Email email) {
+    return email.getContent() == null ? null : email.getContent().getBody();
+  }
+
+  /**
    * A draft as the draft tools return it.
    *
    * @param draft the stored draft
+   * @param withHtml whether to give its whole HTML body too
    * @return the model
    */
-  private EmailDraftModel toDraftModel(Email draft) {
+  private EmailDraftModel toDraftModel(Email draft, boolean withHtml) {
     return new EmailDraftModel(draft.getDraftLocalId(),
                                addressesOf(draft.getTo()),
                                addressesOf(draft.getCc()),
                                addressesOf(draft.getBcc()),
                                draft.getSubject(),
                                plainTextBody(draft),
+                               withHtml ? bodyOf(draft) : null,
                                draft.getMailHeaderId(),
                                draft.getThreadId(),
                                StringUtils.isNotBlank(draft.getInReplyTo()),
