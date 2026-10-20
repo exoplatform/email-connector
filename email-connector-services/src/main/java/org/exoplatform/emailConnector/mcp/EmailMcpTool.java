@@ -2102,7 +2102,8 @@ public class EmailMcpTool implements McpToolPlugin {
    */
   private static String cleanUpdatedHtml(String html) {
     if (showsImages(html)) {
-      throw new IllegalArgumentException("body_html shows images (pasted images, a logo, a quoted mail's pictures), which "
+      throw new IllegalArgumentException("body_html shows images (pasted images, a quoted mail's pictures, a signature's "
+          + "pictures once the signature changed or the Email app saved the draft), which "
           + "changing it here could drop. Change the subject or the recipients only, and ask the user to change the body in "
           + "the Email app. Nothing was saved.");
     }
