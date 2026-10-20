@@ -293,18 +293,25 @@ export function canDelete(folder) {
   return canMoveOutOf(folder) && sharedMailboxCanFileInto(folder, 'TRASH');
 }
 
+// The folders the server never archives out of (EmailBoxService#canMoveOutOf).
+const NOT_ARCHIVABLE_FOLDERS = ['ARCHIVE', 'ALL_MAIL'];
+
 /**
  * Whether a row may be archived: where mail may be taken out of its folder, and in a
  * shared mailbox only where its owner shares an Archive the user may file into -- and
- * never out of that Archive itself, a copy into the folder the message is in
- * (EXO-90548). A server with no Archive (Stalwart has none by default) offers none,
- * even after the owner extends the share.
+ * never out of an Archive itself, the user's own (EXO-91677) or a shared mailbox's
+ * (EXO-90548), nor out of All Mail: a copy into the folder the message is in, which
+ * the server refuses (EmailBoxService#canMoveOutOf). A server with no Archive
+ * (Stalwart has none by default) offers none, even after the owner extends the share.
  *
  * @param {String} folder the folder a row carries; blank means INBOX
  * @returns {Boolean} true when Archive may be offered on those messages
  */
 export function canArchive(folder) {
-  return canMoveOutOf(folder) && sharedFolderRole(folder) !== 'ARCHIVE' && sharedMailboxCanFileInto(folder, 'ARCHIVE');
+  return canMoveOutOf(folder)
+    && !NOT_ARCHIVABLE_FOLDERS.includes(folder || 'INBOX')
+    && sharedFolderRole(folder) !== 'ARCHIVE'
+    && sharedMailboxCanFileInto(folder, 'ARCHIVE');
 }
 
 /**
