@@ -83,6 +83,7 @@ import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailFilterProposalService;
 import org.exoplatform.emailConnector.service.EmailFilterService;
 import org.exoplatform.emailConnector.service.EmailServerRuleService;
+import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
 import io.meeds.spring.web.security.WebSecurityConfiguration;
@@ -596,7 +597,7 @@ public class EmailFilterRestTest {
    * @return the capabilities
    */
   private ServerRuleCapabilities capabilities() {
-    return new ServerRuleCapabilities(true, null, false, false, ServerRuleCapabilities.VocabularySource.FIXED, Map.of());
+    return new ServerRuleCapabilities(true, null, false, false, ServerRuleVocabularySource.FIXED, Map.of());
   }
 
   /**

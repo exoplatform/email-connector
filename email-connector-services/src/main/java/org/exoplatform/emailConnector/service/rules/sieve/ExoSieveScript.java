@@ -19,9 +19,7 @@ package org.exoplatform.emailConnector.service.rules.sieve;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.DateTimeException;
 import java.time.LocalDate;
-import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -32,11 +30,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.regex.Pattern;
 
 import org.exoplatform.emailConnector.exception.ForwardingRefusedException;
 import org.exoplatform.emailConnector.model.ForwardingDestination;
 import org.exoplatform.emailConnector.model.ServerRule;
+import org.exoplatform.emailConnector.model.SieveVacation;
 
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -120,8 +118,8 @@ public final class ExoSieveScript {
   public static final String        RULES_MARKER      = "# exo-rules";
 
   /**
-   * The user {@code SettingService} key under which the caller keeps {@link #sha256(String)}
-   * of the text it last wrote: one neutral entry, checked by the automatic reply and the
+   * The user {@code SettingService} key under which the caller keeps {@link #hash()} of
+   * the text it last wrote: one neutral entry, checked by the automatic reply and the
    * server rules alike, since both write this one script.
    */
   public static final String        HASH_SETTING_KEY  = "emailSieveScript";
@@ -132,7 +130,7 @@ public final class ExoSieveScript {
   private static final JsonMapper   JSON              = JsonMapper.builder().build();
 
   /** The automatic reply, or null when the script has none. */
-  private final Vacation            vacation;
+  private final SieveVacation       vacation;
 
   /** The rules, validated, in the order the server applies them. */
   private final List<ServerRule>    rules;
@@ -158,7 +156,7 @@ public final class ExoSieveScript {
    * @param forward the forward's address, possibly null
    * @param authorizedRedirects the destinations this write may forward to, possibly null
    */
-  private ExoSieveScript(Vacation vacation,
+  private ExoSieveScript(SieveVacation vacation,
                          List<ServerRule> rules,
                          Map<String, JsonNode> otherKeys,
                          String forward,
@@ -185,7 +183,7 @@ public final class ExoSieveScript {
    * @param newVacation the automatic reply, null to remove it from the model
    * @return the new script
    */
-  public ExoSieveScript withVacation(Vacation newVacation) {
+  public ExoSieveScript withVacation(SieveVacation newVacation) {
     return new ExoSieveScript(newVacation, rules, otherKeys, forward, authorizedRedirects);
   }
 
@@ -289,7 +287,7 @@ public final class ExoSieveScript {
    *
    * @return the reply, or empty
    */
-  public Optional<Vacation> getVacation() {
+  public Optional<SieveVacation> getVacation() {
     return Optional.ofNullable(vacation);
   }
 
@@ -356,7 +354,7 @@ public final class ExoSieveScript {
           || header.path(KEY_VERSION).intValue() != HEADER_VERSION) {
         return Optional.empty();
       }
-      Vacation vacation = null;
+      SieveVacation vacation = null;
       List<ServerRule> rules = null;
       String forward = null;
       Map<String, JsonNode> other = new LinkedHashMap<>();
@@ -365,7 +363,7 @@ public final class ExoSieveScript {
         case KEY_VERSION -> {
           // Already checked.
         }
-        case KEY_VACATION -> vacation = entry.getValue().isNull() ? null : Vacation.fromJson(entry.getValue());
+        case KEY_VACATION -> vacation = entry.getValue().isNull() ? null : SieveVacation.fromJson(entry.getValue());
         case KEY_RULES -> {
           if (!(entry.getValue() instanceof ArrayNode array)) {
             return Optional.empty();
@@ -508,6 +506,26 @@ public final class ExoSieveScript {
   }
 
   /**
+   * The SHA-256 of the generated text, the value eXo stores to notice an edit made
+   * outside eXo.
+   *
+   * @return the lower-case hex digest
+   */
+  public String hash() {
+    return sha256(toScript());
+  }
+
+  /**
+   * The SHA-256 of the text generated for a server's encoding.
+   *
+   * @param encoding the server's string encoding
+   * @return the lower-case hex digest
+   */
+  public String hash(SieveStringEncoding encoding) {
+    return sha256(toScript(encoding));
+  }
+
+  /**
    * The SHA-256 of a script text, as UTF-8.
    *
    * @param text the text
@@ -567,12 +585,12 @@ public final class ExoSieveScript {
     List<String> tests = new ArrayList<>();
     ZoneId zone = vacation.zoneId();
     if (vacation.start() != null) {
-      ZoneOffset offset = vacation.start().atStartOfDay(zone).getOffset();
+      ZoneOffset offset = midnightOffset(vacation.start(), zone);
       tests.add("currentdate :zone " + quote(offset(offset)) + " :value \"ge\" \"date\" "
           + quote(vacation.start().toString()));
     }
     if (vacation.end() != null) {
-      ZoneOffset offset = vacation.end().atTime(LocalTime.MAX).atZone(zone).getOffset();
+      ZoneOffset offset = midnightOffset(vacation.end().plusDays(1), zone);
       tests.add("currentdate :zone " + quote(offset(offset)) + " :value \"le\" \"date\" "
           + quote(vacation.end().toString()));
     }
@@ -590,6 +608,26 @@ public final class ExoSieveScript {
       script.append("         ").append(tests.get(1)).append(") {").append(EOL);
     }
     script.append("  ").append(action).append(EOL).append('}').append(EOL);
+  }
+
+  /**
+   * The fixed offset whose date turns to {@code day} at the very instant the zone starts
+   * that day: {@code day}'s midnight minus that instant, which is the offset in force just
+   * before the zone's day starts. On an ordinary day it is the zone's offset. Where the
+   * clocks go forward at midnight it is the offset before the change: on 2026-03-29 in
+   * Asia/Beirut, +02:00, where the offset of the day's first hour, +03:00, would start the
+   * date an hour early. Where they go back at midnight the day starts at the second
+   * midnight, so it is the offset after the change: on 2026-10-25 there, +02:00. A
+   * window's start uses its first day, its end the day after its last one.
+   *
+   * @param day the day whose start the date must follow
+   * @param zone the zone the day is in
+   * @return the offset
+   */
+  static ZoneOffset midnightOffset(LocalDate day, ZoneId zone) {
+    long zoneStart = day.atStartOfDay(zone).toEpochSecond();
+    long midnight = day.atStartOfDay().toEpochSecond(ZoneOffset.UTC);
+    return ZoneOffset.ofTotalSeconds(Math.toIntExact(midnight - zoneStart));
   }
 
   /**
@@ -624,212 +662,5 @@ public final class ExoSieveScript {
   @Override
   public int hashCode() {
     return headerJson().hashCode();
-  }
-
-  /**
-   * The automatic reply eXo writes, validated so that nothing the user typed can escape
-   * its quoted string or add a header to the reply.
-   * <p>
-   * Bounds: the subject is one line of at most {@value #MAX_SUBJECT_LENGTH} characters,
-   * the text at most {@value #MAX_TEXT_LENGTH}, no NUL anywhere; the handle is a token
-   * of letters, digits, dots, underscores and dashes; the window's days are the user's
-   * own calendar days in {@code zone}, one UTC offset computed per boundary so a window
-   * across a DST change stays exact.
-   *
-   * @param enabled whether the reply is on; a disabled reply keeps its text in the header
-   *          and emits no Sieve
-   * @param start the first day, or null for "from now"
-   * @param end the last day, inclusive, or null for "until switched off"
-   * @param zone the IANA zone the days are in, required with a window
-   * @param subject the reply's subject, required: the server's default adds a prefix
-   * @param text the reply's text, plain
-   * @param handle the RFC 5230 {@code :handle}, stable across text edits, new per
-   *          activation
-   * @param days the minimum days between two replies to one sender
-   */
-  public record Vacation(boolean enabled,
-                         LocalDate start,
-                         LocalDate end,
-                         String zone,
-                         String subject,
-                         String text,
-                         String handle,
-                         int days) {
-
-    /** The longest subject accepted. */
-    public static final int      MAX_SUBJECT_LENGTH = 200;
-
-    /** The longest text accepted. */
-    public static final int      MAX_TEXT_LENGTH    = 4000;
-
-    /** The largest {@code :days} accepted. */
-    public static final int      MAX_DAYS           = 365;
-
-    /** The characters and length a reply handle may carry. */
-    private static final Pattern HANDLE_PATTERN     = Pattern.compile("[A-Za-z0-9._-]{1,64}");
-
-    /** The header JSON field of the on/off switch. */
-    private static final String  FIELD_ENABLED      = "enabled";
-
-    /**
-     * Validates the reply and normalises the text's line breaks to CRLF.
-     *
-     * @param enabled whether the reply is on
-     * @param start the first day
-     * @param end the last day
-     * @param zone the zone
-     * @param subject the subject
-     * @param text the text
-     * @param handle the handle
-     * @param days the interval
-     * @throws IllegalArgumentException with a message code when a value is invalid
-     */
-    public Vacation {
-      if (text == null || text.isBlank() || text.indexOf('\0') >= 0) {
-        throw new IllegalArgumentException("emailConnector.absence.text.invalid");
-      }
-      text = storedText(text);
-      if (text.length() > MAX_TEXT_LENGTH) {
-        throw new IllegalArgumentException("emailConnector.absence.text.invalid");
-      }
-      validateSubject(subject);
-      if (handle == null || !HANDLE_PATTERN.matcher(handle).matches()) {
-        throw new IllegalArgumentException("emailConnector.absence.handle.invalid");
-      }
-      if (days < 1 || days > MAX_DAYS) {
-        throw new IllegalArgumentException("emailConnector.absence.days.invalid");
-      }
-      if (start != null && end != null && start.isAfter(end)) {
-        throw new IllegalArgumentException("emailConnector.absence.window.invalid");
-      }
-      validateZone(zone, start, end);
-    }
-
-    /**
-     * Checks the subject: present, bounded, on one line, without a NUL.
-     *
-     * @param subject the subject
-     * @throws IllegalArgumentException with a message code when it is invalid
-     */
-    private static void validateSubject(String subject) {
-      if (subject == null || subject.isBlank() || subject.length() > MAX_SUBJECT_LENGTH || subject.indexOf('\r') >= 0
-          || subject.indexOf('\n') >= 0 || subject.indexOf('\0') >= 0) {
-        throw new IllegalArgumentException("emailConnector.absence.subject.invalid");
-      }
-    }
-
-    /**
-     * Checks the zone whenever the reply has one or a date window needs one.
-     *
-     * @param zone the zone, may be null
-     * @param start the first day, may be null
-     * @param end the last day, may be null
-     * @throws IllegalArgumentException with a message code when the zone is required and
-     *           unknown
-     */
-    private static void validateZone(String zone, LocalDate start, LocalDate end) {
-      if (zone != null || start != null || end != null) {
-        try {
-          ZoneId.of(zone == null ? "" : zone);
-        } catch (DateTimeException e) {
-          throw new IllegalArgumentException("emailConnector.absence.timeZone.invalid", e);
-        }
-      }
-    }
-
-    /**
-     * A text as the header stores it: every line break CRLF. The length bound applies to
-     * this form, so what is accepted on the way in is also read back from the header.
-     *
-     * @param text the text, any line breaks
-     * @return the text with CRLF line breaks
-     */
-    public static String storedText(String text) {
-      return text.replace("\r\n", "\n").replace('\r', '\n').replace("\n", EOL);
-    }
-
-    /**
-     * The zone the window's days are in.
-     *
-     * @return the zone, UTC when the reply has none
-     */
-    public ZoneId zoneId() {
-      return zone == null ? ZoneOffset.UTC : ZoneId.of(zone);
-    }
-
-    /**
-     * The reply as header JSON, nulls omitted.
-     *
-     * @return the JSON object
-     */
-    ObjectNode toJson() {
-      ObjectNode node = JsonNodeFactory.instance.objectNode();
-      node.put(FIELD_ENABLED, enabled);
-      if (start != null) {
-        node.put("start", start.toString());
-      }
-      if (end != null) {
-        node.put("end", end.toString());
-      }
-      if (zone != null) {
-        node.put("zone", zone);
-      }
-      if (subject != null) {
-        node.put("subject", subject);
-      }
-      node.put("text", text);
-      node.put("handle", handle);
-      node.put("days", days);
-      return node;
-    }
-
-    /**
-     * Reads a reply from header JSON, validating it like any other.
-     *
-     * @param node the JSON object
-     * @return the reply
-     * @throws IllegalArgumentException when a field is missing or invalid
-     */
-    static Vacation fromJson(JsonNode node) {
-      if (!node.isObject() || !node.path(FIELD_ENABLED).isBoolean() || !node.path("days").isInt()) {
-        throw new IllegalArgumentException("emailConnector.absence.header.invalid");
-      }
-      try {
-        return new Vacation(node.path(FIELD_ENABLED).booleanValue(),
-                            date(node, "start"),
-                            date(node, "end"),
-                            string(node, "zone"),
-                            string(node, "subject"),
-                            string(node, "text"),
-                            string(node, "handle"),
-                            node.path("days").intValue());
-      } catch (DateTimeException e) {
-        throw new IllegalArgumentException("emailConnector.absence.header.invalid", e);
-      }
-    }
-
-    /**
-     * A string field, null when absent.
-     *
-     * @param node the object
-     * @param field the field
-     * @return the value or null
-     */
-    private static String string(JsonNode node, String field) {
-      JsonNode value = node.get(field);
-      return value == null || value.isNull() ? null : value.asString();
-    }
-
-    /**
-     * A date field, null when absent.
-     *
-     * @param node the object
-     * @param field the field
-     * @return the value or null
-     */
-    private static LocalDate date(JsonNode node, String field) {
-      String value = string(node, field);
-      return value == null ? null : LocalDate.parse(value);
-    }
   }
 }

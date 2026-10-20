@@ -56,7 +56,6 @@ import org.exoplatform.emailConnector.model.ForwardingStatus;
 import org.exoplatform.emailConnector.model.ServerForwarding;
 import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
-import org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.notification.plugin.EmailForwardingNotificationPlugin;
 import org.exoplatform.emailConnector.notification.plugin.EmailForwardingNotificationPlugin.Change;
@@ -66,6 +65,7 @@ import org.exoplatform.emailConnector.service.rules.ServerRuleEngine;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngineRegistry;
 import org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
+import org.exoplatform.emailConnector.model.ServerRuleElementSupport;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.services.mail.MailService;
@@ -276,7 +276,7 @@ public class EmailForwardingService {
     if (!forwardingGuard.authoringEnabled(connector)) {
       reason = ForwardingGuard.DISABLED;
     } else if (capabilities != null && !capabilities.isSupported(ServerRuleCapabilities.FORWARDING_WRITE)) {
-      ElementSupport support = capabilities.elements().get(ServerRuleCapabilities.FORWARDING_WRITE);
+      ServerRuleElementSupport support = capabilities.elements().get(ServerRuleCapabilities.FORWARDING_WRITE);
       reason = support == null || support.reasonKey() == null ? ServerRuleUnsupportedException.FORWARDING_UNSUPPORTED
                                                               : support.reasonKey();
     }
@@ -309,8 +309,8 @@ public class EmailForwardingService {
     if (capabilities == null || forwardingGuard.authoringEnabled(connector)) {
       return capabilities;
     }
-    return capabilities.withElement(ServerRuleCapabilities.FORWARDING_WRITE, ElementSupport.unsupported(ForwardingGuard.DISABLED))
-                       .withElement(ServerRuleCapabilities.FORWARD, ElementSupport.unsupported(ForwardingGuard.DISABLED));
+    return capabilities.withElement(ServerRuleCapabilities.FORWARDING_WRITE, ServerRuleElementSupport.unsupported(ForwardingGuard.DISABLED))
+                       .withElement(ServerRuleCapabilities.FORWARD, ServerRuleElementSupport.unsupported(ForwardingGuard.DISABLED));
   }
 
   /**

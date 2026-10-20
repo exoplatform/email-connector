@@ -38,11 +38,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
-import org.exoplatform.emailConnector.service.rules.sieve.ManageSieveException.Kind;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 
 /**
@@ -124,7 +124,7 @@ class ManageSieveConnectorTest {
                                                                                                     .thenReturn(authenticator("stale"));
     when(resolver.retriesAfterRefusal(PROVIDER)).thenReturn(false);
     ManageSieveException e = assertThrows(ManageSieveException.class, () -> connector.open(preset, USERNAME));
-    assertEquals(Kind.AUTHENTICATION, e.getKind());
+    assertEquals(ManageSieveErrorKind.AUTHENTICATION, e.getKind());
     assertEquals(1, server.getAuthentications());
     verify(resolver).invalidate(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP);
   }
@@ -187,7 +187,7 @@ class ManageSieveConnectorTest {
     MailboxAclSession noResolver = new MailboxAclSession(preset, USERNAME, FakeManageSieveServer.LOGIN, null, null);
     assertThrows(MailboxAclException.class, () -> connector.open(noResolver));
     MailboxAclSession nothing = new MailboxAclSession(preset, USERNAME, FakeManageSieveServer.LOGIN, null, null, () -> null);
-    assertEquals(Kind.NO_CREDENTIALS, assertThrows(ManageSieveException.class, () -> connector.open(nothing)).getKind());
+    assertEquals(ManageSieveErrorKind.NO_CREDENTIALS, assertThrows(ManageSieveException.class, () -> connector.open(nothing)).getKind());
     assertEquals(0, server.getAuthentications());
     verify(resolver, never()).invalidate(anyLong(), anyString(), anyString(), any());
   }
@@ -202,7 +202,7 @@ class ManageSieveConnectorTest {
   void testNoMaterialOpensNoConnectionAndInvalidatesNothing() throws Exception {
     when(resolver.authenticator(CONNECTOR_ID, PROVIDER, USERNAME, ConnectorCredentialsChannel.IMAP)).thenReturn(null);
     ManageSieveException e = assertThrows(ManageSieveException.class, () -> connector.open(preset, USERNAME));
-    assertEquals(Kind.NO_CREDENTIALS, e.getKind());
+    assertEquals(ManageSieveErrorKind.NO_CREDENTIALS, e.getKind());
     assertEquals(List.of(), server.getCommands());
     verify(resolver, never()).invalidate(anyLong(), anyString(), anyString(), any());
   }
@@ -219,7 +219,7 @@ class ManageSieveConnectorTest {
                                                                                                     .thenReturn(authenticator(FakeManageSieveServer.PASSWORD));
     server.refuse("AUTHENTICATE", "NO (TRYLATER) \"Backend busy\"");
     ManageSieveException e = assertThrows(ManageSieveException.class, () -> connector.open(preset, USERNAME));
-    assertEquals(Kind.UNAVAILABLE, e.getKind());
+    assertEquals(ManageSieveErrorKind.UNAVAILABLE, e.getKind());
     assertEquals("TRYLATER", e.getResponseCode());
     verify(resolver, never()).invalidate(anyLong(), anyString(), anyString(), any());
     assertEquals(1, server.getCommands("AUTHENTICATE").size());

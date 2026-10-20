@@ -31,7 +31,7 @@ import org.junit.jupiter.api.Test;
 import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRule.Action;
 import org.exoplatform.emailConnector.model.ServerRule.Condition;
-import org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript.Vacation;
+import org.exoplatform.emailConnector.model.SieveVacation;
 
 /**
  * eXo's self-describing script: the exact layout, the {@code require} union, the header
@@ -111,6 +111,24 @@ class ExoSieveScriptTest {
     assertTrue(text.contains("currentdate :zone \"+0200\" :value \"ge\" \"date\" \"2026-10-20\""));
     assertTrue(text.contains("currentdate :zone \"+0100\" :value \"le\" \"date\" \"2026-11-10\""));
     assertEquals("-0330", ExoSieveScript.offset(java.time.ZoneOffset.ofHoursMinutes(-3, -30)));
+  }
+
+  /**
+   * Where the clocks change at midnight, a boundary's offset is the one in force just
+   * before the zone's day starts, so the date turns at the zone's own midnight instead of
+   * an hour early: a start on the change day, an end the day before a fall-back midnight,
+   * and an end the day before a spring-forward midnight, where the offset at the next day's
+   * first instant would be the wrong one. Exact as far as the engine computes the date
+   * part of {@code currentdate} at the given {@code :zone} (RFC 5260 §4.1), which no test
+   * here runs.
+   */
+  @Test
+  void testABoundaryOnAMidnightClockChangeFollowsTheZonesDay() {
+    assertTrue(window("Asia/Beirut", LocalDate.of(2026, 3, 29), null).contains("currentdate :zone \"+0200\" :value \"ge\" \"date\" \"2026-03-29\""));
+    assertTrue(window("Asia/Beirut", null, LocalDate.of(2026, 10, 24)).contains("currentdate :zone \"+0200\" :value \"le\" \"date\" \"2026-10-24\""));
+    assertTrue(window("Asia/Beirut", null, LocalDate.of(2026, 3, 28)).contains("currentdate :zone \"+0200\" :value \"le\" \"date\" \"2026-03-28\""));
+    assertTrue(window("America/Santiago", LocalDate.of(2026, 9, 6), null).contains("currentdate :zone \"-0400\" :value \"ge\" \"date\" \"2026-09-06\""));
+    assertTrue(window("America/Havana", LocalDate.of(2026, 3, 8), null).contains("currentdate :zone \"-0500\" :value \"ge\" \"date\" \"2026-03-08\""));
   }
 
   /**
@@ -194,12 +212,29 @@ class ExoSieveScriptTest {
     assertCode("emailConnector.absence.window.invalid",
                () -> vacation(true, LocalDate.of(2026, 10, 2), LocalDate.of(2026, 10, 1), "Away", "t"));
     assertCode("emailConnector.absence.handle.invalid",
-               () -> new Vacation(true, null, null, null, "Away", "t", "exo\" :from \"x", 7));
-    assertCode("emailConnector.absence.days.invalid", () -> new Vacation(true, null, null, null, "Away", "t", HANDLE, 0));
+               () -> new SieveVacation(true, null, null, null, "Away", "t", "exo\" :from \"x", 7));
+    assertCode("emailConnector.absence.days.invalid", () -> new SieveVacation(true, null, null, null, "Away", "t", HANDLE, 0));
     assertCode("emailConnector.absence.timeZone.invalid",
-               () -> new Vacation(true, LocalDate.of(2026, 10, 1), null, "Mars/Olympus", "Away", "t", HANDLE, 7));
+               () -> new SieveVacation(true, LocalDate.of(2026, 10, 1), null, "Mars/Olympus", "Away", "t", HANDLE, 7));
     assertCode("emailConnector.absence.timeZone.invalid",
-               () -> new Vacation(true, LocalDate.of(2026, 10, 1), null, null, "Away", "t", HANDLE, 7));
+               () -> new SieveVacation(true, LocalDate.of(2026, 10, 1), null, null, "Away", "t", HANDLE, 7));
+  }
+
+  /**
+   * A window day has a four-digit year: a later year is written with a sign, which sorts
+   * before the digits in the script's date comparison, so the reply would start at once
+   * or never fire. The bound holds for a header read back from the server too, which is
+   * then not eXo's to interpret.
+   */
+  @Test
+  void testAWindowDayHasAFourDigitYear() {
+    assertCode("emailConnector.absence.window.invalid", () -> vacation(true, LocalDate.of(20261, 10, 15), null, "Away", "t"));
+    assertCode("emailConnector.absence.window.invalid", () -> vacation(true, null, LocalDate.of(10000, 1, 1), "Away", "t"));
+    assertCode("emailConnector.absence.window.invalid", () -> vacation(true, LocalDate.of(-1, 1, 1), null, "Away", "t"));
+    assertEquals(LocalDate.of(9999, 12, 31), vacation(true, null, LocalDate.of(9999, 12, 31), "Away", "t").end());
+    String text = window("Europe/Paris", LocalDate.of(2026, 10, 15), null);
+    assertTrue(ExoSieveScript.parse(text).isPresent());
+    assertEquals(Optional.empty(), ExoSieveScript.parse(text.replace("\"start\":\"2026-10-15\"", "\"start\":\"+20261-10-15\"")));
   }
 
   /**
@@ -436,7 +471,20 @@ class ExoSieveScriptTest {
     assertEquals("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ExoSieveScript.sha256(""));
     ExoSieveScript one = ExoSieveScript.empty().withVacation(vacation(true, null, null, "Away", "one"));
     ExoSieveScript two = ExoSieveScript.empty().withVacation(vacation(true, null, null, "Away", "two"));
-    assertNotEquals(ExoSieveScript.sha256(one.toScript()), ExoSieveScript.sha256(two.toScript()));
+    assertEquals(ExoSieveScript.sha256(one.toScript()), one.hash());
+    assertNotEquals(one.hash(), two.hash());
+  }
+
+  /**
+   * The script of an enabled reply with a window in a zone.
+   *
+   * @param zone the zone
+   * @param start the first day, or null
+   * @param end the last day, or null
+   * @return the script text
+   */
+  private static String window(String zone, LocalDate start, LocalDate end) {
+    return ExoSieveScript.empty().withVacation(new SieveVacation(true, start, end, zone, "Away", "Away", HANDLE, 7)).toScript();
   }
 
   /**
@@ -449,8 +497,8 @@ class ExoSieveScriptTest {
    * @param text the text
    * @return the reply
    */
-  private static Vacation vacation(boolean enabled, LocalDate start, LocalDate end, String subject, String text) {
-    return new Vacation(enabled, start, end, "Europe/Paris", subject, text, HANDLE, 7);
+  private static SieveVacation vacation(boolean enabled, LocalDate start, LocalDate end, String subject, String text) {
+    return new SieveVacation(enabled, start, end, "Europe/Paris", subject, text, HANDLE, 7);
   }
 
   /**

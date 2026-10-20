@@ -28,10 +28,10 @@ import javax.net.ssl.SSLSocketFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
-import org.exoplatform.emailConnector.service.rules.sieve.ManageSieveException.Kind;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 
@@ -62,7 +62,7 @@ public class ManageSieveConnector {
      * Produces the material of one attempt.
      *
      * @return the login and password, never null
-     * @throws ManageSieveException {@link Kind#NO_CREDENTIALS} when there is none
+     * @throws ManageSieveException {@link ManageSieveErrorKind#NO_CREDENTIALS} when there is none
      * @throws ConnectorCredentialsException when the provider cannot produce any
      */
     PasswordAuthentication get() throws ManageSieveException, ConnectorCredentialsException;
@@ -114,7 +114,10 @@ public class ManageSieveConnector {
    * over TLS, authenticated. The caller closes it, ideally with
    * {@link ManageSieveClient#logout()}.
    *
-   * @param connector the user's connector preset
+   * @param connector the user's connector preset: the one the user's email setting is
+   *          bound to, which the caller checks with
+   *          {@code UserEmailSettingService#canConnect(connectorId, username)} before
+   *          calling, since the credentials resolver trusts the pair it is given
    * @param username the eXo user the conversation acts as, resolved by the caller from
    *          the session and never from a request parameter
    * @return the authenticated client
@@ -139,7 +142,7 @@ public class ManageSieveConnector {
    * @param session the caller's own session
    * @return the authenticated client
    * @throws ManageSieveException when the server is unreachable, refuses TLS, or refuses
-   *           the credentials; {@link Kind#NO_CREDENTIALS} when the session resolves none
+   *           the credentials; {@link ManageSieveErrorKind#NO_CREDENTIALS} when the session resolves none
    * @throws ConnectorCredentialsException never on this path: the session reports a
    *           provider failure as a {@code MailboxAclException}
    */
@@ -149,7 +152,7 @@ public class ManageSieveConnector {
     return open(endpoint, connector, session.username(), () -> {
       PasswordAuthentication credentials = session.mailCredentials();
       if (credentials == null || credentials.getUserName() == null || credentials.getPassword() == null) {
-        throw new ManageSieveException(Kind.NO_CREDENTIALS, "The credentials provider produced no login and password");
+        throw new ManageSieveException(ManageSieveErrorKind.NO_CREDENTIALS, "The credentials provider produced no login and password");
       }
       return credentials;
     });
@@ -175,7 +178,7 @@ public class ManageSieveConnector {
     try {
       return authenticated(endpoint, source);
     } catch (ManageSieveException e) {
-      if (e.getKind() != Kind.AUTHENTICATION) {
+      if (e.getKind() != ManageSieveErrorKind.AUTHENTICATION) {
         throw e;
       }
       emailCredentialsResolver.invalidate(connector.getId(),
@@ -225,7 +228,8 @@ public class ManageSieveConnector {
    * @param endpoint the server the material is for, passed to the authenticator
    * @return the login and password
    * @throws ConnectorCredentialsException when the provider cannot produce material
-   * @throws ManageSieveException {@link Kind#NO_CREDENTIALS} when the material is empty
+   * @throws ManageSieveException {@link ManageSieveErrorKind#NO_CREDENTIALS} when the
+   *           material is empty
    */
   private PasswordAuthentication credentials(EmailConnector connector,
                                              String username,
@@ -243,7 +247,8 @@ public class ManageSieveConnector {
                                                                                                        null,
                                                                                                        null);
     if (credentials == null || credentials.getUserName() == null || credentials.getPassword() == null) {
-      throw new ManageSieveException(Kind.NO_CREDENTIALS, "The credentials provider produced no login and password");
+      throw new ManageSieveException(ManageSieveErrorKind.NO_CREDENTIALS,
+                                     "The credentials provider produced no login and password");
     }
     return credentials;
   }
@@ -261,7 +266,7 @@ public class ManageSieveConnector {
     try {
       return SSLContext.getDefault().getSocketFactory();
     } catch (NoSuchAlgorithmException e) {
-      throw new ManageSieveException(Kind.UNAVAILABLE, "No default TLS context", e);
+      throw new ManageSieveException(ManageSieveErrorKind.UNAVAILABLE, "No default TLS context", e);
     }
   }
 }

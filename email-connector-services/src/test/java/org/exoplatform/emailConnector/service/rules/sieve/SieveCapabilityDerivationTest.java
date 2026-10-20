@@ -25,8 +25,9 @@ import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
+import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
-import org.exoplatform.emailConnector.model.ServerRuleCapabilities.VocabularySource;
+import org.exoplatform.emailConnector.model.ServerRuleElementSupport;
 
 /**
  * Capabilities derived from the lines a server re-issues after STARTTLS.
@@ -42,7 +43,7 @@ class SieveCapabilityDerivationTest {
     ServerRuleCapabilities capabilities = SieveCapabilityDerivation.derive(caps("PLAIN OAUTHBEARER",
                                                                                 FakeManageSieveServer.STALWART_SIEVE));
     assertTrue(capabilities.supported());
-    assertEquals(VocabularySource.DYNAMIC, capabilities.vocabularySource());
+    assertEquals(ServerRuleVocabularySource.DYNAMIC, capabilities.vocabularySource());
     assertFalse(capabilities.readsForeignRules());
     for (String element : List.of(ServerRuleCapabilities.VACATION,
                                   ServerRuleCapabilities.VACATION_DATE_WINDOW,
@@ -116,14 +117,14 @@ class SieveCapabilityDerivationTest {
   @Test
   void testSharedRecordHelpers() {
     ServerRuleCapabilities none = ServerRuleCapabilities.unsupported("emailConnector.rules.unsupported.noEngine",
-                                                                     VocabularySource.NONE);
+                                                                     ServerRuleVocabularySource.NONE);
     assertEquals(ServerRuleCapabilities.ALL_ELEMENTS, List.copyOf(none.elements().keySet()));
-    assertTrue(none.elements().values().stream().noneMatch(ServerRuleCapabilities.ElementSupport::supported));
+    assertTrue(none.elements().values().stream().noneMatch(ServerRuleElementSupport::supported));
     ServerRuleCapabilities stalwart = SieveCapabilityDerivation.derive(caps("PLAIN", FakeManageSieveServer.STALWART_SIEVE));
     ServerRuleCapabilities conflicting = stalwart.withPublishConflict(true);
     assertTrue(conflicting.publishConflict());
     assertEquals(stalwart.elements(), conflicting.elements());
-    assertFalse(new ServerRuleCapabilities(false, "x", false, false, VocabularySource.DYNAMIC, stalwart.elements())
+    assertFalse(new ServerRuleCapabilities(false, "x", false, false, ServerRuleVocabularySource.DYNAMIC, stalwart.elements())
                                                                                                                   .isSupported(ServerRuleCapabilities.VACATION));
     assertFalse(stalwart.isSupported("unknownElement"));
   }
