@@ -443,6 +443,14 @@ class EmailMcpToolDraftsTest {
                    () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, "<p>Hi</p>" + other, null, null, 1L),
                    other);
     }
+    // The logo set aside, what is left is still read whole: a body tag's own background
+    // makes the body refused, as it does without a logo.
+    for (String other : List.of("<body style=\"background:url(data:image/png;base64,AAAA)\"><p>Hi</p>"
+        + "<img src=\"/email-connector/rest/user-email-setting/signature/image?v=1\"></body>")) {
+      assertThrows(IllegalArgumentException.class,
+                   () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, other, null, null, 1L),
+                   other);
+    }
     verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
   }
 
