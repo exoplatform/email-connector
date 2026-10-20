@@ -1117,7 +1117,7 @@ public class EmailMcpTool implements McpToolPlugin {
                                                Integer limit,
                                                Boolean withHtml) throws IllegalAccessException {
     if (sinceDays != null && sinceDays < 1) {
-      throw new IllegalArgumentException("sinceDays must be 1 or more.");
+      throw new IllegalArgumentException("since_days must be 1 or more.");
     }
     String username = getCurrentUserName();
     EmailBox box = emailBoxService.getEmailBox(username, MailFolder.DRAFTS);
@@ -1183,6 +1183,10 @@ public class EmailMcpTool implements McpToolPlugin {
     } catch (IllegalArgumentException e) {
       if ("emailConnector.drafts.send.alreadyInFlight".equals(e.getMessage())) {
         throw new IllegalArgumentException(String.format("Draft %s is already being sent: nothing more was sent.", draftId));
+      }
+      if ("emailConnector.drafts.send.recipientMandatory".equals(e.getMessage())) {
+        throw new IllegalArgumentException(String.format("Draft %s has no recipient: add one with update_email_draft, then send it. "
+            + "Nothing was sent.", draftId));
       }
       throw e;
     }
@@ -2043,12 +2047,42 @@ public class EmailMcpTool implements McpToolPlugin {
    */
   private String cleanDraftBody(String html, String username) {
     String block = signatureBlock(username);
-    int at = block == null ? -1 : html.lastIndexOf(block);
-    if (at >= 0) {
-      String marker = "ecsignatureblock" + UUID.randomUUID().toString().replace("-", "");
-      return cleanDraftBody(html.substring(0, at) + marker + html.substring(at + block.length())).replace(marker, block);
+    if (block == null) {
+      return cleanDraftBody(html);
     }
-    return cleanDraftBody(html);
+    // Found in the parsed document, never in the raw text: a copy of the block inside an
+    // attribute value is text of that attribute, not an element, and is cleaned with it.
+    // The block is replaced by a text node, which the cleaning keeps as text, so it is put
+    // back where an element can stand and nowhere else.
+    Document document = Jsoup.parse(html);
+    document.outputSettings().prettyPrint(false);
+    String expected = signatureElementHtml(block);
+    Element found = null;
+    for (Element candidate : document.select("div.ec-signature")) {
+      if (expected.equals(candidate.outerHtml())) {
+        found = candidate;
+      }
+    }
+    if (found == null) {
+      return cleanDraftBody(html);
+    }
+    String marker = "ecsignatureblock" + UUID.randomUUID().toString().replace("-", "");
+    found.replaceWith(new TextNode(marker));
+    return cleanDraftBody(document.outerHtml()).replace(marker, block);
+  }
+
+  /**
+   * The signature block as an element of a parsed body serialises, to recognise it in a
+   * body given back whatever the quoting of its attributes.
+   *
+   * @param block the block's markup
+   * @return the block's element, serialised
+   */
+  private static String signatureElementHtml(String block) {
+    Document parsed = Jsoup.parseBodyFragment(block);
+    parsed.outputSettings().prettyPrint(false);
+    Element element = parsed.body().children().first();
+    return element == null ? block : element.outerHtml();
   }
 
   /**
@@ -2149,12 +2183,17 @@ public class EmailMcpTool implements McpToolPlugin {
    * Drafts folder, without that cleaning, so whatever it would fetch -- an image or a
    * stylesheet address carrying mailbox content -- would leave the user's browser when
    * they open it to review it.
+   * <p>
+   * The refusal of remote content is a backstop: every caller refuses a body that shows
+   * an image first ({@link #showsImages}), which covers each case the cleaning reports as
+   * remote today. It stays so that a body reaching the cleaning by another path, or a
+   * cleaning that reports more, still saves nothing that would fetch.
    *
    * @param html the HTML, possibly null
    * @return the cleaned HTML, empty for a blank one
    * @throws IllegalArgumentException when the HTML loads remote content; nothing is saved
    */
-  private static String cleanDraftHtml(String html) {
+  static String cleanDraftHtml(String html) {
     SanitizedEmailBody clean = EmailHtmlSanitizer.sanitize(html, false);
     if (clean.remoteContentBlocked()) {
       throw new IllegalArgumentException("body_html loads images or styles from the internet, which a draft written here cannot "
