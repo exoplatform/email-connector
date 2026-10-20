@@ -2057,7 +2057,9 @@ public class EmailMcpTool implements McpToolPlugin {
     if (StringUtils.isBlank(html)) {
       return false;
     }
-    Document document = Jsoup.parseBodyFragment(html);
+    // A whole document, as the cleaning parses it: a body tag's own style and background
+    // are read too, which a fragment parse drops.
+    Document document = Jsoup.parse(html);
     if (!document.select("img, [background]").isEmpty()) {
       return true;
     }
