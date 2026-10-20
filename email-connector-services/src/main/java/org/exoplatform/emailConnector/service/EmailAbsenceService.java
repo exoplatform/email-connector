@@ -54,6 +54,7 @@ import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngine;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngineRegistry;
 import org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript;
+import org.exoplatform.emailConnector.model.SieveVacation;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -849,7 +850,7 @@ public class EmailAbsenceService {
    */
   static VacationSetting validate(VacationSetting vacation) {
     if (vacation == null || StringUtils.isBlank(vacation.getText())
-        || ExoSieveScript.Vacation.storedText(vacation.getText()).length() > MAX_TEXT_LENGTH
+        || SieveVacation.storedText(vacation.getText()).length() > MAX_TEXT_LENGTH
         || vacation.getText().indexOf('\0') >= 0) {
       throw new IllegalArgumentException(INVALID_TEXT);
     }

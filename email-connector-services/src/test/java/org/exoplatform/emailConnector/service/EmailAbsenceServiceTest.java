@@ -75,6 +75,8 @@ import org.exoplatform.emailConnector.model.VacationState;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngine;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngineRegistry;
+import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
+import org.exoplatform.emailConnector.model.ServerRuleElementSupport;
 
 import io.meeds.social.util.JsonUtils;
 
@@ -198,7 +200,7 @@ public class EmailAbsenceServiceTest {
    */
   @Test
   public void testTheOwnMailboxIsServed() throws Exception {
-    when(engine.probe(session)).thenReturn(ServerRuleCapabilities.unsupported("x", ServerRuleCapabilities.VocabularySource.NONE));
+    when(engine.probe(session)).thenReturn(ServerRuleCapabilities.unsupported("x", ServerRuleVocabularySource.NONE));
     AbsenceSettings absence = service.getAbsence(USERNAME, null);
     assertEquals("sieve", absence.getEngine());
     assertEquals(VacationState.NONE, absence.getVacationState());
@@ -555,8 +557,8 @@ public class EmailAbsenceServiceTest {
                                       null,
                                       false,
                                       false,
-                                      ServerRuleCapabilities.VocabularySource.DYNAMIC,
-                                      Map.of(ServerRuleCapabilities.VACATION, ServerRuleCapabilities.ElementSupport.SUPPORTED_ELEMENT));
+                                      ServerRuleVocabularySource.DYNAMIC,
+                                      Map.of(ServerRuleCapabilities.VACATION, ServerRuleElementSupport.SUPPORTED_ELEMENT));
   }
 
   /**
@@ -569,11 +571,11 @@ public class EmailAbsenceServiceTest {
                                       null,
                                       false,
                                       false,
-                                      ServerRuleCapabilities.VocabularySource.DYNAMIC,
+                                      ServerRuleVocabularySource.DYNAMIC,
                                       Map.of(ServerRuleCapabilities.VACATION,
-                                             ServerRuleCapabilities.ElementSupport.SUPPORTED_ELEMENT,
+                                             ServerRuleElementSupport.SUPPORTED_ELEMENT,
                                              ServerRuleCapabilities.FORWARDING_READ,
-                                             ServerRuleCapabilities.ElementSupport.SUPPORTED_ELEMENT));
+                                             ServerRuleElementSupport.SUPPORTED_ELEMENT));
   }
 
   /**

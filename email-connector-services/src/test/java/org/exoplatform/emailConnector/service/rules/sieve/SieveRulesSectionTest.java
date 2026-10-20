@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Test;
 import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRule.Action;
 import org.exoplatform.emailConnector.model.ServerRule.Condition;
+import org.exoplatform.emailConnector.model.SieveVacation;
 
 /**
  * The rules generator: one test per condition and action of the vocabulary, the
@@ -190,7 +191,7 @@ public class SieveRulesSectionTest {
                      true));
     }
     ExoSieveScript script = ExoSieveScript.empty()
-                                          .withVacation(new ExoSieveScript.Vacation(true, null, null, null, "${s}", "${t}", "exo-vacation-1", 7))
+                                          .withVacation(new SieveVacation(true, null, null, null, "${s}", "${t}", "exo-vacation-1", 7))
                                           .withRules(every);
     for (SieveStringEncoding encoding : SieveStringEncoding.values()) {
       for (boolean guard : new boolean[] { true, false }) {
