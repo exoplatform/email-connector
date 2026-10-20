@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-list-item-action class="my-0">
+  <div>
     <v-menu
       ref="menu"
       v-model="menu"
@@ -30,9 +30,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-btn
           v-bind="attrs"
           class="pa-0"
-          width="28"
-          min-width="28"
-          height="28"
+          width="26"
+          min-width="26"
+          height="26"
           :title="$t('emailConnector.mailBox.list.drawer.options.tooltip')"
           icon
           v-on="on"
@@ -40,8 +40,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           @keydown.enter.stop
           @keydown.space.stop>
           <v-icon
-            size="20"
-            class="icon-default-color">
+            size="16"
+            class="text-light-color">
             fa-ellipsis-v
           </v-icon>
         </v-btn>
@@ -51,7 +51,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :email="email"
         :thread="thread" />
     </v-menu>
-  </v-list-item-action>
+  </div>
 </template>
 
 <script>
