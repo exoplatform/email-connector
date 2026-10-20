@@ -360,6 +360,23 @@ class EmailMcpToolDraftsTest {
     verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
   }
 
+  /**
+   * A body the user wrote in the Email app is never stored poorer than they left it: an
+   * image they pasted, a quoted mail's remote image, make it refused, nothing saved.
+   */
+  @Test
+  void updateEmailDraftRefusesABodyItWouldStripOfTheUsersContent() throws Exception {
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p>Hi</p>", "bob@acme.com"));
+    for (String body : List.of("<p>See below</p><img src=\"/email-connector/rest/email-box/drafts/draft-1/attachments/3\">",
+                               "<p>Thanks</p><blockquote><img src=\"https://news.acme.com/banner.png\"></blockquote>")) {
+      IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                      () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, body, null, null, 1L),
+                                                      body);
+      assertTrue(refusal.getMessage().contains("Email app"), refusal.getMessage());
+    }
+    verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
+  }
+
   /** A change without the revision it was read at changes nothing. */
   @Test
   void updateEmailDraftRequiresTheRevisionItWasReadAt() throws Exception {
