@@ -40,20 +40,22 @@ import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.Rights;
 
 import org.exoplatform.emailConnector.model.DelegationPreset;
+import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.model.MailboxAce;
 import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
 import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.SharedMailbox;
 
 /**
- * {@link ImapAclEngine} against a <b>real Dovecot</b> -- the slice 2.4 certification
- * (EXO-90552), not part of the unit suite. It runs only with {@code -Ddovecot.it=true},
- * against the rig documented in {@code ~/eXo/phase2-dovecot/README.md} (Dovecot 2.3.21,
- * ACL plugin, {@code shared/%%u/} namespace, users {@code alice@dovecot.local} /
- * {@code bob@dovecot.local}):
+ * {@link ImapAclEngine} against a <b>real Dovecot</b> -- the certification of mailbox
+ * sharing on Dovecot (EXO-90552), not part of the unit suite. It runs only with
+ * {@code -Ddovecot.it=true}, against the rig in {@code src/test/resources/dovecot-rig/}
+ * (Dovecot 2.3.21, ACL plugin, {@code shared/%%u/} namespace, logins equal to the
+ * addresses {@code alice@dovecot.local} and {@code bob@dovecot.local}, alice's INBOX
+ * holding one message), started as its {@code README.md} says:
  *
  * <pre>
- * set -a; . &lt;passwords file&gt;; set +a   # ALICE_PASSWORD, BOB_PASSWORD
+ * export ALICE_PASSWORD=pass BOB_PASSWORD=pass
  * mvn -o test -pl email-connector-services -Ddovecot.it=true -Dtest=ImapAclEngineDovecotLiveTest
  * </pre>
  *
@@ -107,9 +109,10 @@ class ImapAclEngineDovecotLiveTest {
 
   /**
    * The Reader and the Editor, granted from eXo, read back on both sides as what was
-   * granted -- in particular an Editor is {@code lrswit} and holds no {@code e}, although
-   * Dovecot answers {@code ilrwtsd} (GETACL) and {@code lrwstid} (MYRIGHTS): its
-   * {@code d} is RFC 4314's virtual right, present because {@code t} is.
+   * granted. On INBOX an Editor is {@code lrswite}. On Trash, where eXo grants no
+   * {@code e}, an Editor is {@code lrswit} and holds no {@code e}, although Dovecot
+   * answers {@code ilrwtsd} (GETACL) and {@code lrwstid} (MYRIGHTS): its {@code d} is
+   * RFC 4314's virtual right, present because {@code t} is.
    */
   @Test
   void readerThenEditorGrantedFromExoReadBackAsGranted() throws MessagingException {
@@ -140,24 +143,31 @@ class ImapAclEngineDovecotLiveTest {
     }
     try (MailboxAclSession alice = session(ALICE, "ALICE_PASSWORD")) {
       engine.grant(alice, "INBOX", BOB, DelegationPreset.EDITOR, ownerRights);
-      MailboxAce read = entryOf(engine.listAcl(alice, "INBOX"), BOB);
-      assertEquals("lrswit", read.rights().letters(), "GETACL ilrwtsd is lrswit, not lrswite");
-      assertFalse(read.rights().canExpunge());
-      assertEquals(DelegationPreset.EDITOR, read.preset());
+      MailboxAce inbox = entryOf(engine.listAcl(alice, "INBOX"), BOB);
+      assertEquals("lrswite", inbox.rights().letters(), "an Editor holds e on INBOX");
+      assertTrue(inbox.rights().canExpunge());
+      assertEquals(DelegationPreset.EDITOR, inbox.preset());
+      engine.grant(alice, "Trash", BOB, DelegationPreset.EDITOR, engine.myRights(alice, "Trash"), FolderRole.TRASH);
+      MailboxAce trash = entryOf(engine.listAcl(alice, "Trash"), BOB);
+      assertEquals("lrswit", trash.rights().letters(), "GETACL ilrwtsd is lrswit, not lrswite");
+      assertFalse(trash.rights().canExpunge());
+      assertEquals(DelegationPreset.EDITOR, trash.preset());
     }
     try (MailboxAclSession bob = session(BOB, "BOB_PASSWORD")) {
-      MailboxRights mine = engine.myRights(bob, SHARED);
-      assertEquals("lrswit", mine.letters(), "MYRIGHTS lrwstid is lrswit, not lrswite");
-      assertFalse(mine.canExpunge(), "an Editor without e cannot finish a move on Dovecot");
-      assertEquals(DelegationPreset.EDITOR, engine.presetOf(mine));
+      MailboxRights inbox = engine.myRights(bob, SHARED);
+      assertEquals("lrswite", inbox.letters());
+      assertTrue(inbox.canExpunge());
+      MailboxRights trash = engine.myRights(bob, SHARED + "/Trash");
+      assertEquals("lrswit", trash.letters(), "MYRIGHTS lrwstid is lrswit, not lrswite");
+      assertFalse(trash.canExpunge(), "an Editor without e cannot finish a move on Dovecot");
+      assertEquals(DelegationPreset.EDITOR, engine.presetOf(trash));
     }
   }
 
   /**
-   * Phase 2's per-folder letters (Q-1): the owner's session writes {@code lrswite} on
-   * INBOX and {@code lrswit} on Trash; both read back as an Editor, with {@code e}
-   * exactly where it was written. Written through the library, since
-   * {@link MailboxRights#GRANTABLE} does not hold {@code e} in phase 1.
+   * Per-folder letters written by another client: the owner's session writes
+   * {@code lrswite} on INBOX and {@code lrswit} on Trash; both read back as an Editor,
+   * with {@code e} exactly where it was written.
    */
   @Test
   void perFolderEditorLettersWithAndWithoutExpunge() throws MessagingException {

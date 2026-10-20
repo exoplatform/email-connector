@@ -113,6 +113,7 @@ class MailboxRightsTest {
     assertEquals("lrs", MailboxRights.of("lrs").letters(), "a Reader carries no virtual letter");
     assertEquals("lrsx", MailboxRights.of("lrsxd").letters(), "x is a member of d (RFC 4314's t+e+x grouping)");
     assertEquals("lrsx", MailboxRights.of("lrsxc").letters(), "x is a member of c");
+    assertEquals("lre", MailboxRights.of("lred").letters(), "e is a member of d");
   }
 
   /**
