@@ -1028,8 +1028,14 @@ public final class ManageSieveClient implements AutoCloseable {
       pushedBack = -1;
     }
     while (offset < count) {
-      checkDeadline();
-      int read = in.read(octets, offset, (int) count - offset);
+      int read;
+      try {
+        checkDeadline();
+        read = in.read(octets, offset, (int) count - offset);
+      } catch (SocketTimeoutException e) {
+        readTimedOut = true;
+        throw e;
+      }
       if (read < 0) {
         throw new EOFException("ManageSieve connection closed inside a literal");
       }

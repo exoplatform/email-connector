@@ -512,6 +512,32 @@ class ManageSieveClientTest {
   }
 
   /**
+   * A read that times out inside a literal leaves the TLS socket open as any other read
+   * does: the failed {@code GETSCRIPT}, and the {@code close} after it, end within the one
+   * read timeout. The server sends the literal's count and one octet, then nothing.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  @Timeout(value = 20, threadMode = ThreadMode.SEPARATE_THREAD)
+  void testALiteralWhoseReadTimedOutClosesWithoutWaitingForTheServer() throws Exception {
+    server.trickleGetScript(10_000);
+    ManageSieveClient client = ManageSieveClient.connect("localhost",
+                                                         server.getPort(),
+                                                         FakeManageSieveServer.clientTlsFactory(),
+                                                         5000,
+                                                         READ_TIMEOUT_MILLIS);
+    client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN, FakeManageSieveServer.PASSWORD));
+    long start = System.nanoTime();
+    ManageSieveException e = assertThrows(ManageSieveException.class, () -> client.getScript("exo-rules"));
+    client.close();
+    long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+    assertEquals(ManageSieveErrorKind.UNAVAILABLE, e.getKind());
+    assertTrue(e.getMessage().contains("timed out"), e.getMessage());
+    assertTrue(elapsedMillis < READ_TIMEOUT_MILLIS + CLOSE_MARGIN_MILLIS, elapsedMillis + " ms");
+  }
+
+  /**
    * A {@code LOGOUT} past the conversation's deadline sends nothing and closes the
    * connection through its TCP socket: the TLS socket would wait up to one read timeout for
    * the {@code close_notify} of a server that stopped reading, after the deadline.
