@@ -66,6 +66,12 @@ public class EmailDraftModel {
   @JsonProperty("message_id")
   private String       messageId;
 
+  /**
+   * The draft's revision, stepped by every save, the Email app's included: what
+   * update_email_draft is given back so that it refuses a draft changed since it was read.
+   */
+  private Long         revision;
+
   /** The conversation the draft belongs to. */
   @JsonProperty("thread_id")
   private String       threadId;
