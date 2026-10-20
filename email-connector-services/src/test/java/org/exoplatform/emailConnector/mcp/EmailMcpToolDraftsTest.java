@@ -487,8 +487,13 @@ class EmailMcpToolDraftsTest {
     emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, attack, null, null, 1L);
 
     org.jsoup.nodes.Document stored = org.jsoup.Jsoup.parse(savedDraft().getContent().getBody());
-    assertTrue(stored.select("iframe, form, input, svg, [onload]").isEmpty(), stored.body().html());
-    assertTrue(stored.select("img").stream().noneMatch(image -> image.attr("src").contains("attacker")), stored.body().html());
+    String html = stored.body().html();
+    assertTrue(stored.select("iframe, form, input, svg, [onload]").isEmpty(), html);
+    assertTrue(stored.select("img").stream().noneMatch(image -> image.attr("src").contains("attacker")), html);
+    // The attribute keeps all it carried, as text: nothing broke out of it.
+    assertEquals(1, stored.select("div.ec-signature").size(), html);
+    assertEquals(1, stored.select("img").size(), html);
+    assertTrue(stored.select("span[title]").attr("title").contains("attacker.example"), html);
   }
 
   /**
