@@ -367,7 +367,9 @@ class EmailMcpToolDraftsTest {
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p>Hi</p>", "bob@acme.com"));
 
     emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, "<p>New words</p><br><br>" + SIGNATURE_BLOCK, null, null, 1L);
-    assertEquals("<p>New words</p><br><br>" + SIGNATURE_BLOCK, savedDraft().getContent().getBody());
+    assertEquals("<p>New words</p><br><br><div class=\"ec-signature\"><p>Jane Doe, eXo</p>"
+        + "<img src=\"/email-connector/rest/user-email-setting/signature/image?v=1\" alt=\"\" style=\"max-height:48px;\"></div>",
+                 savedDraft().getContent().getBody());
 
     Mockito.clearInvocations(emailBoxService);
     String formatted = "<p><b>Bold</b> <i>words</i> and <a href=\"https://www.exoplatform.com\">a link</a></p>";
@@ -408,6 +410,38 @@ class EmailMcpToolDraftsTest {
                                                       () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, body, null, null, 1L),
                                                       body);
       assertTrue(refusal.getMessage().contains("Email app"), refusal.getMessage());
+    }
+    verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
+  }
+
+  /**
+   * The signature logo is recognised by its address, as the composer saved it -- sorted
+   * attributes, self-closed tags, an older logo version -- and put back as a minimal image
+   * of that address, nothing else of the markup kept; an image of any other address is not
+   * taken for it.
+   */
+  @Test
+  void updateEmailDraftKeepsTheSignatureLogoHoweverTheComposerSavedIt() throws Exception {
+    saveDraftEchoes();
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p>Hi</p>", "bob@acme.com"));
+    String composerSaved = "<p>New words</p>\n<br />\n<div class=\"ec-signature\"><p>Jane Doe, eXo</p>\n"
+        + "<img alt=\"eXo\" height=\"48\" onerror=\"alert(1)\" src=\"/email-connector/rest/user-email-setting/signature/image?v=1700000000\" "
+        + "style=\"background:url(https://evil.example/t.gif)\" /></div>";
+
+    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, composerSaved, null, null, 1L);
+
+    String body = savedDraft().getContent().getBody();
+    assertTrue(body.contains("<img src=\"/email-connector/rest/user-email-setting/signature/image?v=1700000000\" alt=\"eXo\" height=\"48\" "
+        + "style=\"max-height:48px;\">"), body);
+    assertFalse(body.contains("onerror") || body.contains("evil.example") || body.contains("ecsignaturelogo"), body);
+    assertTrue(body.contains("New words") && body.contains("Jane Doe, eXo"), body);
+
+    Mockito.clearInvocations(emailBoxService);
+    for (String other : List.of("<img src=\"/email-connector/rest/user-email-setting/signature/image/../../email-box/attachments/1\">",
+                                "<img src=\"/email-connector/rest/user-email-setting/signature/image?v=1&amp;x=2\">")) {
+      assertThrows(IllegalArgumentException.class,
+                   () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, "<p>Hi</p>" + other, null, null, 1L),
+                   other);
     }
     verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
   }
@@ -578,6 +612,9 @@ class EmailMcpToolDraftsTest {
     deleteDraftChecks(stored);
 
     assertThrows(IllegalArgumentException.class, () -> emailMcpTool.deleteEmailDraft(DRAFT_ID, "Another", List.of("bob@acme.com")));
+    IllegalArgumentException named = assertThrows(IllegalArgumentException.class,
+                                                  () -> emailMcpTool.deleteEmailDraft(DRAFT_ID, "Hello", List.of("Bob <bob@acme.com>")));
+    assertTrue(named.getMessage().startsWith("Nothing was deleted"), named.getMessage());
     verify(emailBoxService, never()).deleteDraft(anyString(), anyString(), any());
 
     assertTrue(emailMcpTool.deleteEmailDraft(DRAFT_ID, " Hello ", List.of("bob@acme.com")).contains("deleted"));
