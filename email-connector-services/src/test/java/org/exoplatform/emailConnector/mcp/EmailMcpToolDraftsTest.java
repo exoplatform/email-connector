@@ -355,9 +355,11 @@ class EmailMcpToolDraftsTest {
     assertEquals("<p>New words</p><br><br>" + SIGNATURE_BLOCK, savedDraft().getContent().getBody());
 
     Mockito.clearInvocations(emailBoxService);
-    String embedded = "<p>Logo</p><img src=\"data:image/png;base64,AAAA\">";
-    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, embedded, null, null, 1L);
-    assertEquals(embedded, savedDraft().getContent().getBody(), "an image the cleaning keeps is kept");
+    String formatted = "<p><b>Bold</b> <i>words</i> and <a href=\"https://www.exoplatform.com\">a link</a></p>";
+    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, formatted, null, null, 1L);
+    String kept = savedDraft().getContent().getBody();
+    assertTrue(kept.startsWith("<p><b>Bold</b> <i>words</i> and <a href=\"https://www.exoplatform.com\"") && kept.endsWith(">a link</a></p>"),
+               "text, formatting and links lose nothing: " + kept);
 
     Mockito.clearInvocations(emailBoxService);
     assertThrows(IllegalArgumentException.class,
@@ -379,6 +381,8 @@ class EmailMcpToolDraftsTest {
                                "<p>Hi</p><img src=\" cid:logo@acme.com\">",
                                "<p style=\"background-image:u\\72l('/portal/rest/banner.png')\">Hi</p>",
                                "<p style=\"background:image-set('/portal/rest/banner.png' 1x)\">Hi</p>",
+                               "<p style=\"background:src(data:image/png;base64,AAAA), url('/portal/rest/banner.png')\">Hi</p>",
+                               "<p>Logo</p><img src=\"data:image/png;base64,AAAA\">",
                                "<p style=\"background-image:url('/portal/rest/banner.png')\">Hi</p>",
                                "<style>p { background: url(/portal/rest/banner.png) }</style><p>Hi</p>",
                                "<p>Thanks</p><blockquote><img src=\"https://news.acme.com/banner.png\"></blockquote>")) {
