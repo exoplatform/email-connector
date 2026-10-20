@@ -380,6 +380,10 @@ class EmailMcpToolDraftsTest {
     assertEquals(1, emailMcpTool.listEmailDrafts(null, null, null, 1, null).size());
     assertEquals(null, emailMcpTool.listEmailDrafts(null, null, null, 1, null).get(0).getBodyHtml());
     assertEquals("<p>b</p>", emailMcpTool.listEmailDrafts(null, null, null, 1, true).get(0).getBodyHtml());
+    newer.setDraftRevision(3L);
+    EmailDraftModel listed = emailMcpTool.listEmailDrafts(null, null, null, 1, null).get(0);
+    assertEquals(3L, listed.getRevision(), "the revision update_email_draft is given back");
+    assertTrue(new ObjectMapper().writeValueAsString(listed).contains("\"revision\":3"));
   }
 
   // --- send_email_draft ------------------------------------------------------
