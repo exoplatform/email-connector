@@ -32,7 +32,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -127,8 +126,9 @@ public class EmailMcpTool implements McpToolPlugin {
   /** The most drafts one call returns. */
   private static final int              MAX_DRAFTS_LIMIT     = 100;
 
-  /** A CSS {@code url()} call. */
-  private static final Pattern          CSS_URL              = Pattern.compile("url\\s*\\(", Pattern.CASE_INSENSITIVE);
+  /** A CSS call of any function that takes an image or an address. */
+  private static final Pattern          CSS_IMAGE_CALL       = Pattern.compile("(?:url|src|image|image-set|cross-fade|element)\\s*\\(",
+                                                                              Pattern.CASE_INSENSITIVE);
 
   /** What a cut body ends with, so nobody mistakes half a message for all of it. */
   private static final String           TRUNCATION_MARKER    = "… [truncated]";
@@ -2020,75 +2020,46 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
-   * Part of a body given back to update_email_draft, cleaned, refused when the cleaning
-   * took an image of the user's away: the images of the cleaned HTML are counted against
-   * the given one's, so the rule is the cleaning's own. CSS the count cannot read as the
-   * cleaning reads it -- escapes or comments, which the cleaning decodes first, and the
-   * image functions it renames -- is refused rather than guessed at: the user changes
-   * such a body in the Email app.
+   * Part of a body given back to update_email_draft, cleaned, refused when it shows an
+   * image: the cleaning could take one of the user's away -- a pasted image, an older
+   * signature's logo, a quoted mail's picture -- and telling which it keeps means reading
+   * CSS as it does. A body with images is the user's to change, in the Email app; a body
+   * of text, formatting and links loses nothing to the cleaning.
    *
    * @param html the HTML
    * @return the cleaned HTML
-   * @throws IllegalArgumentException when the cleaning drops an image, or the HTML loads
-   *           remote content; nothing is saved
+   * @throws IllegalArgumentException when the HTML shows an image, or loads remote
+   *           content; nothing is saved
    */
   private static String cleanUpdatedHtml(String html) {
-    String cleaned = cleanDraftHtml(html);
-    if (imageCount(cleaned) < imageCount(html) || StringUtils.containsIgnoreCase(cleaned, "x-blocked(") || hasOpaqueStyle(html)) {
-      throw new IllegalArgumentException("body_html carries images of the user's (pasted images, a logo): changing it here would "
-          + "drop them. Change the subject or the recipients only, and ask the user to change the body in the Email app. "
-          + "Nothing was saved.");
+    if (showsImages(html)) {
+      throw new IllegalArgumentException("body_html shows images (pasted images, a logo, a quoted mail's pictures), which "
+          + "changing it here could drop. Change the subject or the recipients only, and ask the user to change the body in "
+          + "the Email app. Nothing was saved.");
     }
-    return cleaned;
+    return cleanDraftHtml(html);
   }
 
   /**
-   * Whether a style of the HTML holds an escape or a comment, which the cleaning decodes
-   * or removes before it reads the CSS, so that counting its images on the text as given
-   * could miss one.
+   * Whether HTML shows an image, or may: an image element, a {@code background}
+   * attribute, or CSS -- a style attribute or a style sheet -- calling any function that
+   * takes an image, or holding an escape or a comment that could hide one.
    *
    * @param html the HTML, possibly blank
-   * @return true when one does
+   * @return true when it does or may
    */
-  private static boolean hasOpaqueStyle(String html) {
-    return StringUtils.isNotBlank(html) && stylesOf(Jsoup.parseBodyFragment(html)).stream().anyMatch(style -> style.contains("\\")
-        || style.contains("/*"));
-  }
-
-  /**
-   * The CSS of a document: its style attributes and its style sheets.
-   *
-   * @param document the document
-   * @return the CSS texts
-   */
-  private static List<String> stylesOf(Document document) {
+  private static boolean showsImages(String html) {
+    if (StringUtils.isBlank(html)) {
+      return false;
+    }
+    Document document = Jsoup.parseBodyFragment(html);
+    if (!document.select("img, [background]").isEmpty()) {
+      return true;
+    }
     List<String> styles = new ArrayList<>();
     document.select("[style]").forEach(element -> styles.add(element.attr("style")));
     document.select("style").forEach(element -> styles.add(element.data()));
-    return styles;
-  }
-
-  /**
-   * How many images HTML shows: images with a source, {@code background} attributes, and
-   * CSS {@code url()} calls of style attributes and style sheets.
-   *
-   * @param html the HTML, possibly blank
-   * @return the count
-   */
-  private static int imageCount(String html) {
-    if (StringUtils.isBlank(html)) {
-      return 0;
-    }
-    Document document = Jsoup.parseBodyFragment(html);
-    int count = (int) document.select("img[src]").stream().filter(image -> StringUtils.isNotBlank(image.attr("src"))).count();
-    count += (int) document.select("[background]").stream().filter(element -> StringUtils.isNotBlank(element.attr("background"))).count();
-    for (String style : stylesOf(document)) {
-      Matcher url = CSS_URL.matcher(style);
-      while (url.find()) {
-        count++;
-      }
-    }
-    return count;
+    return styles.stream().anyMatch(style -> CSS_IMAGE_CALL.matcher(style).find() || style.contains("\\") || style.contains("/*"));
   }
 
   /**
