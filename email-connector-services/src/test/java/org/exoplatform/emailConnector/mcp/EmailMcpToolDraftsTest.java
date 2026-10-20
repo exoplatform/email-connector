@@ -259,7 +259,7 @@ class EmailMcpToolDraftsTest {
     stored.setCc(recipients("carol@acme.com"));
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(stored);
 
-    emailMcpTool.updateEmailDraft(DRAFT_ID, null, "New subject", null, null, null);
+    emailMcpTool.updateEmailDraft(DRAFT_ID, null, "New subject", null, null, null, null);
 
     Email saved = savedDraft();
     assertEquals(DRAFT_ID, saved.getDraftLocalId());
@@ -282,9 +282,25 @@ class EmailMcpToolDraftsTest {
     when(emailBoxService.saveDraft(any(Email.class), eq(USERNAME), eq(true))).thenReturn(editedInTheApp);
 
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                                                    () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "New subject", null, null, null));
+                                                    () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "New subject", null, null, null, null));
     assertTrue(refusal.getMessage().contains("nothing of your change was saved"), refusal.getMessage());
     assertEquals(5L, savedDraft().getDraftRevision());
+  }
+
+  /** A draft saved since the revision the agent read is refused, and nothing is saved. */
+  @Test
+  void updateEmailDraftRefusesADraftSavedSinceItWasRead() throws Exception {
+    Email stored = storedDraft("Hello", "<p>The user's newer words</p>", "bob@acme.com");
+    stored.setDraftRevision(7L);
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(stored);
+
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, "<p>Built from an older read</p>", null, null, 6L));
+    verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
+
+    saveDraftEchoes();
+    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, "<p>Built from this read</p>", null, null, 7L);
+    assertEquals("<p>Built from this read</p>", savedDraft().getContent().getBody());
   }
 
   /** One draft is answered with its whole HTML body, the base of the next change. */
@@ -293,7 +309,7 @@ class EmailMcpToolDraftsTest {
     saveDraftEchoes();
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p><b>Bold</b> words</p>", "bob@acme.com"));
 
-    EmailDraftModel model = emailMcpTool.updateEmailDraft(DRAFT_ID, null, "New subject", null, null, null);
+    EmailDraftModel model = emailMcpTool.updateEmailDraft(DRAFT_ID, null, "New subject", null, null, null, null);
 
     assertEquals("<p><b>Bold</b> words</p>", model.getBodyHtml());
   }
@@ -304,20 +320,20 @@ class EmailMcpToolDraftsTest {
    */
   @Test
   void updateEmailDraftActsOnlyOnTheUsersOwnUnscheduledDrafts() throws Exception {
-    assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.updateEmailDraft("other", null, "x", null, null, null));
+    assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.updateEmailDraft("other", null, "x", null, null, null, null));
     verify(emailBoxService).getDraft("other", USERNAME);
 
     Email scheduled = storedDraft("Hello", "<p>Hi</p>", "bob@acme.com");
     scheduled.setScheduled(true);
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(scheduled);
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                                                    () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "x", null, null, null));
+                                                    () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "x", null, null, null, null));
     assertTrue(refusal.getMessage().contains("scheduled"), refusal.getMessage());
 
     Email shared = storedDraft("Hello", "<p>Hi</p>", "bob@acme.com");
     shared.setSendDelegationId(5L);
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(shared);
-    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "x", null, null, null));
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "x", null, null, null, null));
 
     verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
   }
@@ -329,7 +345,7 @@ class EmailMcpToolDraftsTest {
     when(emailBoxService.saveDraft(any(), eq(USERNAME), eq(true))).thenThrow(new ScheduledSendConflictException(ScheduledSendConflictException.LOCKED));
 
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                                                    () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "x", null, null, null));
+                                                    () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "x", null, null, null, null));
     assertTrue(refusal.getMessage().contains("scheduled"), refusal.getMessage());
   }
 
