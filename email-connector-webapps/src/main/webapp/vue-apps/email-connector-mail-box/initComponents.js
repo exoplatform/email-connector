@@ -32,6 +32,7 @@ import EmailConnectorMailBoxDrawerListItemActionMenu from './components/drawer/E
 import EmailConnectorMailBoxDrawerListItemActionMenuDrawer from './components/drawer/EmailConnectorMailBoxDrawerListItemActionMenuDrawer.vue';
 import EmailConnectorMailBoxDrawerListItemActionMenuItems from './components/drawer/EmailConnectorMailBoxDrawerListItemActionMenuItems.vue';
 import EmailConnectorMailBoxDrawerListItemAttachments from './components/drawer/EmailConnectorMailBoxDrawerListItemAttachments.vue';
+import EmailConnectorMailBoxDrawerListItemQuickActions from './components/drawer/EmailConnectorMailBoxDrawerListItemQuickActions.vue';
 import EmailConnectorMailBoxDrawerListItemAttachmentsListItem from './components/drawer/EmailConnectorMailBoxDrawerListItemAttachmentsListItem.vue';
 import EmailConnectorMailBoxDrawerListItemDetail from './components/drawer/EmailConnectorMailBoxDrawerListItemDetail.vue';
 import EmailConnectorMailBoxDrawerListItemDetailActionMenu from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailActionMenu.vue';
@@ -104,6 +105,7 @@ const components = {
   'email-connector-mail-box-drawer-list-item-action-menu-drawer': EmailConnectorMailBoxDrawerListItemActionMenuDrawer,
   'email-connector-mail-box-drawer-list-item-action-menu-items': EmailConnectorMailBoxDrawerListItemActionMenuItems,
   'email-connector-mail-box-drawer-list-item-attachments': EmailConnectorMailBoxDrawerListItemAttachments,
+  'email-connector-mail-box-drawer-list-item-quick-actions': EmailConnectorMailBoxDrawerListItemQuickActions,
   'email-connector-mail-box-drawer-list-item-attachments-list-item': EmailConnectorMailBoxDrawerListItemAttachmentsListItem,
   'email-connector-mail-box-drawer-list-item-detail': EmailConnectorMailBoxDrawerListItemDetail,
   'email-connector-mail-box-drawer-list-item-detail-action-menu': EmailConnectorMailBoxDrawerListItemDetailActionMenu,
