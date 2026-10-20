@@ -377,6 +377,8 @@ class EmailMcpToolDraftsTest {
                                "<table><tr><td background=\"cid:logo@acme.com\">Hi</td></tr></table>",
                                "<p>Hi</p><img src=\"data:application/octet-stream;base64,AAAA\">",
                                "<p>Hi</p><img src=\" cid:logo@acme.com\">",
+                               "<p style=\"background-image:u\\72l('/portal/rest/banner.png')\">Hi</p>",
+                               "<p style=\"background:image-set('/portal/rest/banner.png' 1x)\">Hi</p>",
                                "<p style=\"background-image:url('/portal/rest/banner.png')\">Hi</p>",
                                "<style>p { background: url(/portal/rest/banner.png) }</style><p>Hi</p>",
                                "<p>Thanks</p><blockquote><img src=\"https://news.acme.com/banner.png\"></blockquote>")) {
