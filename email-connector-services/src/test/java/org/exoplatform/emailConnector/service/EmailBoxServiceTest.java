@@ -9545,6 +9545,69 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-91674 -- a draft sent with no composer goes out as the row says it now: the
+   * subject and body the user last saved in the Email app, checked by the caller on
+   * that very row.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftSentAsStoredGoesOutAsTheRowSaysItNow() {
+    Email stored = mockDraftSendFixture();
+    stored.setSubject("Edited in the app");
+    stored.setContent(new EmailContent("<p>The user's own words</p>"));
+    stored.setTo(List.of(new EmailRecipient(null, "bob@acme.com", null, false)));
+    List<Email> checked = new ArrayList<>();
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      Email sent = emailBoxService.sendDraftAsStored("draft-1", TEST_USER, checked::add);
+
+      ArgumentCaptor<Message> message = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(message.capture()));
+      assertEquals("Edited in the app", message.getValue().getSubject());
+      assertSame(stored, sent);
+      assertEquals(List.of(stored), checked);
+    }
+  }
+
+  /**
+   * EXO-91674 -- a row the caller's check refuses is not sent and not claimed: the user
+   * approved something else than what the draft says now.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftSentAsStoredIsLeftAloneWhenTheCheckRefusesTheRow() {
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    stored.setTo(List.of(new EmailRecipient(null, "bob@acme.com", null, false)));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertThrows(IllegalArgumentException.class, () -> emailBoxService.sendDraftAsStored("draft-1", TEST_USER, row -> {
+        throw new IllegalArgumentException("not what was approved");
+      }));
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+    }
+    verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+  }
+
+  /**
+   * EXO-91674 -- reading one draft is the owner's: a user who may not use their mailbox
+   * reads none, and a scheduled draft says it is.
+   */
+  @Test
+  @SneakyThrows
+  void getDraftIsTheOwnersAndMarksAScheduledDraft() {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+    assertTrue(emailBoxService.getDraft("draft-1", TEST_USER).isScheduled());
+
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.getDraft("draft-1", TEST_USER));
+  }
+
+  /**
    * EXO-90551 -- the composer's own draft of a mail written in a shared mailbox (the
    * common send path: any composer that paused holds one) is sent as any draft, and a
    * copy of the very message is filed in the owner's Sent; the answer says FILED.

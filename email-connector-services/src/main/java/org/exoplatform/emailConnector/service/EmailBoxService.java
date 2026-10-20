@@ -12252,6 +12252,79 @@ public class EmailBoxService {
   }
 
   /**
+   * One of the user's drafts as it is stored now, with its body, recipients and
+   * attachments: what the composer would open, the user's own edits included. A
+   * scheduled draft is returned too, marked {@code scheduled}; the writes refuse it.
+   *
+   * @param draftLocalId the draft's local id
+   * @param username the mailbox owner
+   * @return the draft, or null when the user has no draft under that id
+   * @throws IllegalAccessException if the user may not use their mailbox
+   */
+  public Email getDraft(String draftLocalId, String username) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SAVE_DRAFT_MESSAGE, username));
+    }
+    Email draft = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+    if (draft != null) {
+      draft.setScheduled(emailScheduledSendStorage.isScheduled(username, draftLocalId));
+    }
+    return draft;
+  }
+
+  /**
+   * Sends a draft exactly as it is stored, for a caller that holds no composer: the
+   * subject, body and recipients the row carries at the moment of sending, so the
+   * user's last edits in the Email app are what goes out, never an older copy the
+   * caller read earlier.
+   * <p>
+   * The row is read under the draft's lock and handed to {@link #sendDraft} as the
+   * composer's text, still under that lock (it is reentrant), so no save can land
+   * between the read and the send. The draft's own mailbox and send mode are the
+   * stored ones.
+   * <p>
+   * {@code check} runs on that row, under the lock, before anything is claimed: a caller
+   * that had the user approve what the draft said refuses there a row that says
+   * something else by now, and nothing is sent.
+   *
+   * @param draftLocalId the draft's local id
+   * @param username the mailbox owner
+   * @param check throws to refuse the stored row; nothing is sent then
+   * @return the draft as it was sent
+   * @throws IllegalAccessException if the user may not send from their mailbox
+   * @throws ObjectNotFoundException when the user has no draft under that id
+   * @throws IllegalArgumentException when the draft has no recipient, or is being sent
+   * @throws ScheduledSendConflictException when the draft is scheduled
+   */
+  public Email sendDraftAsStored(String draftLocalId,
+                                 String username,
+                                 Consumer<Email> check) throws IllegalAccessException, ObjectNotFoundException {
+    if (StringUtils.isBlank(draftLocalId)) {
+      throw new IllegalArgumentException("emailConnector.drafts.send.localIdMandatory");
+    }
+    ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
+    lock.lock();
+    try {
+      Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+      if (stored == null) {
+        throw new ObjectNotFoundException("emailConnector.drafts.send.gone");
+      }
+      if (CollectionUtils.isEmpty(stored.getTo())) {
+        throw new IllegalArgumentException("emailConnector.drafts.send.recipientMandatory");
+      }
+      if (check != null) {
+        check.accept(stored);
+      }
+      sendDraft(stored, username, stored.getSendDelegationId(), null);
+      return stored;
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
    * Discards a draft: the copy on the mail server first, then the local row.
    * <p>
    * That order is the opposite of the upload's, and for the same underlying reason.

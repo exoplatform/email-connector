@@ -312,6 +312,116 @@
       }
     },
     {
+      "name": "create_email_draft",
+      "title": "Prepare an email as a draft",
+      "description": "Prepare an email as a draft in the current user's own mailbox, WITHOUT sending it: it appears in the Drafts folder of the Email app like any other draft, where the user reviews it, edits it by hand and sends it, or asks you to send it with send_email_draft. Use it whenever the user wants to check an email before it leaves. The body is HTML; the user's signature is added under it, as the Email app adds it, unless add_signature is false. With email_id (the email_id of a mail you read), the draft is a reply to that mail: it is filed in the mail's conversation and stays in it once sent; subject then defaults to 'Re: ' and the mail's subject, and to to the mail's sender. Never invent or add recipients the user did not name. Returns the draft with its draft_id (to pass to the other draft tools), its message_id (the Message-ID the mail will carry once sent, by whoever sends it: keep it to find the mail in the Sent folder later), its thread_id, and a link to the user's drafts in the Email app. Attachments are not supported yet.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "to": { "type": "array", "items": { "type": "string" }, "description": "Bare addresses, such as alice@acme.com. Required unless email_id is given." },
+          "subject": { "type": "string" },
+          "body_html": { "type": "string" },
+          "cc": { "type": "array", "items": { "type": "string" } },
+          "bcc": { "type": "array", "items": { "type": "string" } },
+          "email_id": { "type": "integer", "description": "The email_id of the mail the draft replies to, as a reading tool or a search hit returned it. Leave empty for a new email." },
+          "add_signature": { "type": "boolean", "description": "Whether to add the user's signature under the body. Default true." }
+        },
+        "required": ["body_html"]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "update_email_draft",
+      "title": "Change an email draft",
+      "description": "Change a draft of the current user's own mailbox, without sending it. The draft is read as it is stored now, the user's own edits in the Email app included: only the fields you give replace what it says, the others are kept. body_html replaces the whole body (the signature in it included), so to change one sentence, start from the body the user has. A list given empty clears it; to cannot be emptied. A draft that is scheduled to be sent, or that was written in a mailbox shared with the user, is refused. Returns the draft as it now stands.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "draft_id": { "type": "string", "description": "The draft_id create_email_draft or list_email_drafts gave." },
+          "to": { "type": "array", "items": { "type": "string" } },
+          "subject": { "type": "string" },
+          "body_html": { "type": "string" },
+          "cc": { "type": "array", "items": { "type": "string" } },
+          "bcc": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["draft_id"]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_email_drafts",
+      "title": "List email drafts",
+      "description": "List the drafts of the current user's own mailbox, most recently changed first, as the Drafts folder of the Email app shows them: recipients, subject, the body as plain text (cut when long), last_modified, whether it is a reply, its draft_id, message_id and thread_id. Scheduled drafts and drafts written in a mailbox shared with the user are not listed. 'subject' keeps the drafts whose subject contains it, 'recipient' those with an address containing it, 'since_days' those changed in the last N days; 'limit' caps the list (default 20, max 100). A draft that is no longer listed was sent or deleted: look for its message_id in the Sent folder.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "subject": { "type": "string" },
+          "recipient": { "type": "string" },
+          "since_days": { "type": "integer", "minimum": 1 },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "send_email_draft",
+      "title": "Send an email draft",
+      "description": "Send a draft of the current user's own mailbox over real SMTP, as it is stored at this moment: the user's own edits in the Email app are what goes out, never an earlier version. A reply draft stays in its conversation. IMPORTANT: this action is outward-facing and irreversible. Read the draft with list_email_drafts first and pass its to, cc, bcc and subject exactly as it says them now: they are what the user approves, and the draft is sent only if it still says exactly that; otherwise nothing is sent and you read it again. Always show the user those recipients and the subject, and never send without their explicit confirmation. A draft that is scheduled, or written in a mailbox shared with the user, is refused: the user sends it from the Email app. Returns the sent mail's message_id and thread_id.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "draft_id": { "type": "string" },
+          "to": { "type": "array", "items": { "type": "string" }, "description": "The draft's recipients as list_email_drafts reads them now, bare addresses." },
+          "subject": { "type": "string", "description": "The draft's subject as list_email_drafts reads it now." },
+          "cc": { "type": "array", "items": { "type": "string" }, "description": "The draft's copied recipients as read now; empty when it has none." },
+          "bcc": { "type": "array", "items": { "type": "string" }, "description": "The draft's blind-copied recipients as read now; empty when it has none." }
+        },
+        "required": ["draft_id", "to", "subject"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "delete_email_draft",
+      "title": "Delete an email draft",
+      "description": "Delete a draft of the current user's own mailbox, in the Email app and in the mail server's Drafts folder. Irreversible: always name the draft (its subject and recipients) to the user and get their confirmation first. Pass the draft's subject as list_email_drafts reads it now; a draft that says another subject is not deleted. A draft that is scheduled, or written in a mailbox shared with the user, is refused.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "draft_id": { "type": "string" },
+          "subject": { "type": "string", "description": "The draft's subject as list_email_drafts reads it now." }
+        },
+        "required": ["draft_id", "subject"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "archive_email",
       "title": "Archive emails",
       "description": "Move one or more emails from the inbox to the Archive folder. Name the emails by their email_ids; mail_remote_ids alone name mails of the user's own INBOX. A mail that is not in the inbox (in Sent or Archive, for instance) is refused and nothing is done. Confirm the affected emails with the user before archiving. With mailbox, acts on that shared mailbox's inbox and files into its own Archive, where the user's access allows it. Always tell the user whose mailbox is changed before they approve.",
