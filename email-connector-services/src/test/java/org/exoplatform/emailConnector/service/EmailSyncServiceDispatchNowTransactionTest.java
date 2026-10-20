@@ -251,7 +251,7 @@ class EmailSyncServiceDispatchNowTransactionTest {
 
     /**
      * Records the claimant visible from another connection, without running the task,
-   * then refuses it when {@link #refuse} is set.
+     * then refuses it when {@link #refuse} is set.
      *
      * @param command the dispatched run, dropped
      */
