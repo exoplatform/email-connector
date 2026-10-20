@@ -2027,7 +2027,9 @@ public class EmailMcpTool implements McpToolPlugin {
    *           content; nothing is saved
    */
   private static String cleanDraftBody(String html) {
-    Document document = Jsoup.parseBodyFragment(html);
+    // The whole document, as showsImages and the cleaning parse it, so that what they
+    // read once the logos are set aside still holds a body tag's style and background.
+    Document document = Jsoup.parse(html);
     document.outputSettings().prettyPrint(false);
     String marker = "ecsignaturelogo" + UUID.randomUUID().toString().replace("-", "");
     List<String> logos = new ArrayList<>();
@@ -2037,7 +2039,7 @@ public class EmailMcpTool implements McpToolPlugin {
         logos.add(signatureLogo(image));
       }
     }
-    String cleaned = cleanUpdatedHtml(logos.isEmpty() ? html : document.body().html());
+    String cleaned = cleanUpdatedHtml(logos.isEmpty() ? html : document.outerHtml());
     for (int i = 0; i < logos.size(); i++) {
       cleaned = cleaned.replace(marker + i + marker, logos.get(i));
     }
