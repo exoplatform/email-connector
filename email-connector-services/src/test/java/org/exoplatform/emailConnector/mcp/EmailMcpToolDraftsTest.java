@@ -370,6 +370,7 @@ class EmailMcpToolDraftsTest {
     for (String body : List.of("<p>See below</p><img src=\"/email-connector/rest/email-box/drafts/draft-1/attachments/3\">",
                                "<table><tr><td background=\"/portal/rest/banner.png\">Hi</td></tr></table>",
                                "<table><tr><td background=\"cid:logo@acme.com\">Hi</td></tr></table>",
+                               "<p>Hi</p><img src=\"data:application/octet-stream;base64,AAAA\">",
                                "<p style=\"background-image:url('/portal/rest/banner.png')\">Hi</p>",
                                "<style>p { background: url(/portal/rest/banner.png) }</style><p>Hi</p>",
                                "<p>Thanks</p><blockquote><img src=\"https://news.acme.com/banner.png\"></blockquote>")) {
