@@ -51,14 +51,15 @@ import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerRuleSet;
 import org.exoplatform.emailConnector.model.ServerRulesState;
-import org.exoplatform.emailConnector.model.ServerRuleCapabilities.VocabularySource;
 import org.exoplatform.emailConnector.model.ServerVacation;
 import org.exoplatform.emailConnector.model.VacationSetting;
 import org.exoplatform.emailConnector.model.VacationState;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
 import org.exoplatform.emailConnector.service.rules.ForwardingGuard;
 import org.exoplatform.emailConnector.service.rules.ServerRuleEngine;
-import org.exoplatform.emailConnector.service.rules.sieve.ExoSieveScript.Vacation;
+import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
+import org.exoplatform.emailConnector.model.SieveVacation;
+import org.exoplatform.emailConnector.model.ServerRuleElementSupport;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -175,7 +176,7 @@ public class SieveRuleEngine implements ServerRuleEngine {
       client = open(session);
     } catch (ServerRuleUnavailableException e) {
       if (ServerRuleUnavailableException.SERVER_UNSUPPORTED.equals(e.getMessage())) {
-        return ServerRuleCapabilities.unsupported(ServerRuleUnavailableException.SERVER_UNSUPPORTED, VocabularySource.DYNAMIC);
+        return ServerRuleCapabilities.unsupported(ServerRuleUnavailableException.SERVER_UNSUPPORTED, ServerRuleVocabularySource.DYNAMIC);
       }
       throw e;
     }
@@ -763,7 +764,7 @@ public class SieveRuleEngine implements ServerRuleEngine {
     rule.actions().forEach(action -> elements.add(action.type()));
     for (String element : elements) {
       if (!capabilities.isSupported(element)) {
-        ServerRuleCapabilities.ElementSupport support = capabilities.elements().get(element);
+        ServerRuleElementSupport support = capabilities.elements().get(element);
         String reason = support == null || support.reasonKey() == null ? capabilities.reasonCode() : support.reasonKey();
         throw new ServerRuleUnsupportedException(reason == null ? ServerRuleUnsupportedException.RULES_UNSUPPORTED : reason);
       }
@@ -1090,14 +1091,14 @@ public class SieveRuleEngine implements ServerRuleEngine {
    * @return the model
    * @throws IllegalArgumentException with a message code when a value is invalid
    */
-  Vacation toVacation(VacationSetting vacation, int days, Vacation previous) {
+  SieveVacation toVacation(VacationSetting vacation, int days, SieveVacation previous) {
     String handle;
     if (previous != null && (previous.enabled() || !vacation.isEnabled())) {
       handle = previous.handle();
     } else {
       handle = HANDLE_PREFIX + clock.millis();
     }
-    return new Vacation(vacation.isEnabled(),
+    return new SieveVacation(vacation.isEnabled(),
                         date(vacation.getStart()),
                         date(vacation.getEnd()),
                         StringUtils.trimToNull(vacation.getTimeZone()),
@@ -1113,7 +1114,7 @@ public class SieveRuleEngine implements ServerRuleEngine {
    * @param vacation the model
    * @return the value, with LF line breaks
    */
-  static VacationSetting toSetting(Vacation vacation) {
+  static VacationSetting toSetting(SieveVacation vacation) {
     return new VacationSetting(vacation.enabled(),
                                vacation.start() == null ? null : vacation.start().toString(),
                                vacation.end() == null ? null : vacation.end().toString(),

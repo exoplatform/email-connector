@@ -53,6 +53,7 @@ import org.exoplatform.emailConnector.model.VacationSetting;
 import org.exoplatform.emailConnector.model.VacationState;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.service.acl.MailboxAclSession;
+import org.exoplatform.emailConnector.model.SieveVacation;
 
 /**
  * The Sieve engine against a ManageSieve server over a real socket and TLS: the reply's
@@ -232,7 +233,7 @@ public class SieveRuleEngineTest {
   @Test
   public void testSwitchingOffWhileAnotherScriptRunsNeverWraps() throws Exception {
     String exoScript = ExoSieveScript.empty()
-                                     .withVacation(new ExoSieveScript.Vacation(true, null, null, null, "Out", "Away", "exo-vacation-1", 7))
+                                     .withVacation(new SieveVacation(true, null, null, null, "Out", "Away", "exo-vacation-1", 7))
                                      .toScript();
     server.script("exo-rules", exoScript, false);
     server.script(FOREIGN, "require [\"fileinto\"];\r\nfileinto \"Lists\";\r\n", true);
@@ -575,7 +576,7 @@ public class SieveRuleEngineTest {
   @Test
   public void testTheGeneratorEmitsNoRedirect() {
     ExoSieveScript script = ExoSieveScript.empty()
-                                          .withVacation(new ExoSieveScript.Vacation(true,
+                                          .withVacation(new SieveVacation(true,
                                                                                     java.time.LocalDate.of(2026, 10, 1),
                                                                                     java.time.LocalDate.of(2026, 10, 15),
                                                                                     "Europe/Paris",
