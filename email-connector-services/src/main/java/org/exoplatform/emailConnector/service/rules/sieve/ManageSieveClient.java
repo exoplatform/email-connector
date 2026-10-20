@@ -67,6 +67,12 @@ import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
  * the octets of a whole response keeps it from exhausting memory either. The server's
  * own text reaches an exception message only on one line and truncated.
  * <p>
+ * A connection that has timed out, or outlived the conversation's deadline, is closed
+ * through its TCP socket as well: closing the TLS layer would send a {@code close_notify}
+ * and, on TLS 1.3, wait up to one more read timeout for the server's answer, past the
+ * deadline. A connection in good standing is closed through the TLS layer, so the server
+ * gets its {@code close_notify}.
+ * <p>
  * Not thread-safe: one instance is one conversation, owned by one caller. The watchdog's
  * thread only closes the TCP socket, and only while the operation it was armed for is in
  * flight: an operation whose socket it closed fails as timed out, even when the answer had
@@ -191,6 +197,12 @@ public final class ManageSieveClient implements AutoCloseable {
 
   /** Whether the watchdog closed the socket because an operation outlived its deadline. */
   private volatile boolean    expired;
+
+  /**
+   * Whether a read has timed out: the JDK's TLS socket stays open after one, and closing
+   * it would wait for the server's {@code close_notify}.
+   */
+  private volatile boolean    readTimedOut;
 
   /**
    * A client bound to an endpoint, not connected yet.
@@ -423,7 +435,11 @@ public final class ManageSieveClient implements AutoCloseable {
   }
 
   /**
-   * Closes the connection without a {@code LOGOUT}.
+   * Closes the connection without a {@code LOGOUT}. A connection whose read has timed out,
+   * or whose conversation's deadline has passed, is closed through its TCP socket: the TLS
+   * socket would wait up to one more read timeout for the server's {@code close_notify},
+   * and the end of the conversation stays within its deadline. Any other connection is
+   * closed through the TLS socket, which sends the {@code close_notify}.
    */
   @Override
   public void close() {
@@ -732,12 +748,15 @@ public final class ManageSieveClient implements AutoCloseable {
   }
 
   /**
-   * Closes the current socket, from the caller's thread.
+   * Closes the current socket, from the caller's thread: the TCP socket under the TLS
+   * layer when the connection has timed out or the conversation's deadline has passed,
+   * the TLS socket otherwise.
    */
   private void closeSocket() {
     if (socket != null) {
+      boolean late = expired || readTimedOut || System.nanoTime() - conversationDeadlineNanos > 0;
       try {
-        socket.close();
+        (late ? plain : socket).close();
       } catch (IOException e) {
         // Nothing left to release.
       }
@@ -1057,8 +1076,14 @@ public final class ManageSieveClient implements AutoCloseable {
       pushedBack = -1;
       return c;
     }
-    checkDeadline();
-    int c = in.read();
+    int c;
+    try {
+      checkDeadline();
+      c = in.read();
+    } catch (SocketTimeoutException e) {
+      readTimedOut = true;
+      throw e;
+    }
     if (c < 0) {
       throw new EOFException("ManageSieve connection closed by the server");
     }

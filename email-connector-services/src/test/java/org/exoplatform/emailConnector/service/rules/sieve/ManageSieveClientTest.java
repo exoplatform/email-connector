@@ -48,6 +48,12 @@ import org.exoplatform.emailConnector.constant.ManageSieveErrorKind;
  */
 class ManageSieveClientTest {
 
+  /** The read timeout of the tests that watch how long a close takes. */
+  private static final int READ_TIMEOUT_MILLIS = 2000;
+
+  /** What a close may take beyond the read timeout it follows, far under a second read timeout. */
+  private static final int CLOSE_MARGIN_MILLIS = 1000;
+
   private FakeManageSieveServer server;
 
   /**
@@ -475,6 +481,59 @@ class ManageSieveClientTest {
       long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
       assertTrue(elapsedMillis < 3000, elapsedMillis + " ms");
     }
+  }
+
+  /**
+   * A command whose read times out leaves the JDK's TLS socket open, and closing that
+   * socket would wait up to one more read timeout for the server's {@code close_notify}
+   * ({@code TLSv1.3}): the failed command, and the {@code close} after it, end within the
+   * one read timeout, because the TCP socket under the TLS layer is the one closed. The
+   * server stops reading after the login, so it never answers.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  @Timeout(value = 20, threadMode = ThreadMode.SEPARATE_THREAD)
+  void testACommandThatTimedOutClosesWithoutWaitingForTheServer() throws Exception {
+    server.stopReadingAfterAuthentication();
+    ManageSieveClient client = ManageSieveClient.connect("localhost",
+                                                         server.getPort(),
+                                                         FakeManageSieveServer.clientTlsFactory(),
+                                                         5000,
+                                                         READ_TIMEOUT_MILLIS);
+    client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN, FakeManageSieveServer.PASSWORD));
+    long start = System.nanoTime();
+    ManageSieveException e = assertThrows(ManageSieveException.class, client::listScripts);
+    client.close();
+    long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+    assertEquals(ManageSieveErrorKind.UNAVAILABLE, e.getKind());
+    assertTrue(e.getMessage().contains("timed out"), e.getMessage());
+    assertTrue(elapsedMillis < READ_TIMEOUT_MILLIS + CLOSE_MARGIN_MILLIS, elapsedMillis + " ms");
+  }
+
+  /**
+   * A {@code LOGOUT} past the conversation's deadline sends nothing and closes the
+   * connection through its TCP socket: the TLS socket would wait up to one read timeout for
+   * the {@code close_notify} of a server that stopped reading, after the deadline.
+   *
+   * @throws Exception on failure
+   */
+  @Test
+  @Timeout(value = 20, threadMode = ThreadMode.SEPARATE_THREAD)
+  void testALogoutPastTheConversationDeadlineClosesWithoutWaitingForTheServer() throws Exception {
+    server.stopReadingAfterAuthentication();
+    ManageSieveClient client = ManageSieveClient.connect("localhost",
+                                                         server.getPort(),
+                                                         FakeManageSieveServer.clientTlsFactory(),
+                                                         5000,
+                                                         READ_TIMEOUT_MILLIS);
+    client.authenticatePlain(new PasswordAuthentication(FakeManageSieveServer.LOGIN, FakeManageSieveServer.PASSWORD));
+    client.endConversationWithin(0);
+    long start = System.nanoTime();
+    client.logout();
+    long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+    assertEquals(List.of("STARTTLS", "AUTHENTICATE PLAIN <redacted>"), server.getCommands());
+    assertTrue(elapsedMillis < CLOSE_MARGIN_MILLIS, elapsedMillis + " ms");
   }
 
   /**
