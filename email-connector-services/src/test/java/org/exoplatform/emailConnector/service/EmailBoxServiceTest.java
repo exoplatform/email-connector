@@ -101,6 +101,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
@@ -9608,6 +9609,12 @@ public class EmailBoxServiceTest {
     }));
     verify(emailScheduledSendStorage, never()).cancel(anyString(), anyString());
     verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+    // The draft is still there, and so is its lock: a writer waiting on it and the next
+    // caller must share one lock, never hold two.
+    @SuppressWarnings("unchecked")
+    Map<String, ReentrantLock> draftLocks = (Map<String, ReentrantLock>) org.springframework.test.util.ReflectionTestUtils.getField(emailBoxService,
+                                                                                                                                    "draftLocks");
+    assertTrue(draftLocks.containsKey(TEST_USER + "/draft-1"));
   }
 
   /**
