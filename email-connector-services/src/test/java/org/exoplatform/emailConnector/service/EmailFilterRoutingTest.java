@@ -70,12 +70,12 @@ import org.exoplatform.emailConnector.model.ReconcileReport;
 import org.exoplatform.emailConnector.model.ServerRule;
 import org.exoplatform.emailConnector.model.ServerRule.Condition;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
-import org.exoplatform.emailConnector.model.ServerRuleCapabilities.ElementSupport;
-import org.exoplatform.emailConnector.model.ServerRuleCapabilities.VocabularySource;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.plugin.EmailFilterProposalProvider;
 import org.exoplatform.emailConnector.service.rules.sieve.SieveRuleEngine;
 import org.exoplatform.emailConnector.storage.EmailFilterStorage;
+import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
+import org.exoplatform.emailConnector.model.ServerRuleElementSupport;
 import org.exoplatform.services.listener.ListenerService;
 
 /**
@@ -191,7 +191,7 @@ public class EmailFilterRoutingTest {
     assertEquals(EmailFilter.KIND_EXO, EmailFilterService.route(filter(List.of(FROM_ACME), action(FilterAction.STAR)), null));
     assertEquals(EmailFilter.KIND_EXO,
                  EmailFilterService.route(filter(List.of(FROM_ACME), action(FilterAction.STAR)),
-                                          ServerRuleCapabilities.unsupported("emailConnector.rules.unsupported", VocabularySource.FIXED)),
+                                          ServerRuleCapabilities.unsupported("emailConnector.rules.unsupported", ServerRuleVocabularySource.FIXED)),
                  "the none engine");
   }
 
@@ -205,10 +205,10 @@ public class EmailFilterRoutingTest {
   @Test
   void aCategoryFilterAlwaysRunsInExo() throws Exception {
     Condition important = new Condition("CATEGORY", "EQUALS", null, "emailImportantCategory");
-    Map<String, ElementSupport> elements = new HashMap<>();
-    ServerRuleCapabilities.ALL_ELEMENTS.forEach(element -> elements.put(element, new ElementSupport(true, null)));
-    elements.put("CATEGORY", new ElementSupport(true, null));
-    ServerRuleCapabilities claimsAll = new ServerRuleCapabilities(true, null, true, false, VocabularySource.FIXED, elements);
+    Map<String, ServerRuleElementSupport> elements = new HashMap<>();
+    ServerRuleCapabilities.ALL_ELEMENTS.forEach(element -> elements.put(element, new ServerRuleElementSupport(true, null)));
+    elements.put("CATEGORY", new ServerRuleElementSupport(true, null));
+    ServerRuleCapabilities claimsAll = new ServerRuleCapabilities(true, null, true, false, ServerRuleVocabularySource.FIXED, elements);
 
     assertEquals(EmailFilter.KIND_EXO, EmailFilterService.route(filter(List.of(important), action(FilterAction.STAR)), claimsAll));
     assertEquals(EmailFilter.KIND_EXO,
@@ -669,9 +669,9 @@ public class EmailFilterRoutingTest {
    * @return the capabilities
    */
   private static ServerRuleCapabilities capabilities(Set<String> unsupported) {
-    Map<String, ElementSupport> elements = new HashMap<>();
-    ServerRuleCapabilities.ALL_ELEMENTS.forEach(element -> elements.put(element, new ElementSupport(!unsupported.contains(element), null)));
-    return new ServerRuleCapabilities(true, null, true, false, VocabularySource.FIXED, elements);
+    Map<String, ServerRuleElementSupport> elements = new HashMap<>();
+    ServerRuleCapabilities.ALL_ELEMENTS.forEach(element -> elements.put(element, new ServerRuleElementSupport(!unsupported.contains(element), null)));
+    return new ServerRuleCapabilities(true, null, true, false, ServerRuleVocabularySource.FIXED, elements);
   }
 
   /**
