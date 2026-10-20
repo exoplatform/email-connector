@@ -338,18 +338,19 @@
     {
       "name": "update_email_draft",
       "title": "Change an email draft",
-      "description": "Change a draft of the current user's own mailbox, without sending it. The draft is read as it is stored now, the user's own edits in the Email app included: only the fields you give replace what it says, the others are kept. body_html replaces the whole body (the signature in it included): to change one sentence, read the draft's body_html first (list_email_drafts with with_html true, or the answer of create_email_draft), change that sentence in it and pass the whole of it back. A list given empty clears it; to cannot be emptied. If the user saved the draft in the Email app since you read it, nothing of your change is saved and you are told so: read it again. If the user has the draft open in the Email app, ask them to close it first: the app saves what it shows when it closes, over your change. A draft that is scheduled to be sent, or that was written in a mailbox shared with the user, is refused. Returns the draft as it now stands, with its body_html.",
+      "description": "Change a draft of the current user's own mailbox, without sending it. The draft is read as it is stored now, the user's own edits in the Email app included: only the fields you give replace what it says, the others are kept. body_html replaces the whole body (the signature in it included): to change one sentence, read the draft's body_html first (list_email_drafts with with_html true, or the answer of create_email_draft), change that sentence in it and pass the whole of it back. A list given empty clears it; to cannot be emptied. Pass the revision the draft had when you read it: if the draft was saved since, in the Email app or elsewhere, nothing of your change is saved and you are told so, and you read it again. If the user has the draft open in the Email app, ask them to close it first: the app may save what it shows over your change. A draft that is scheduled to be sent, or that was written in a mailbox shared with the user, is refused. Returns the draft as it now stands, with its body_html.",
       "input_schema": {
         "type": "object",
         "properties": {
           "draft_id": { "type": "string", "description": "The draft_id create_email_draft or list_email_drafts gave." },
+          "revision": { "type": "integer", "description": "The draft's revision as create_email_draft or list_email_drafts gave it when you read the draft." },
           "to": { "type": "array", "items": { "type": "string" } },
           "subject": { "type": "string" },
           "body_html": { "type": "string" },
           "cc": { "type": "array", "items": { "type": "string" } },
           "bcc": { "type": "array", "items": { "type": "string" } }
         },
-        "required": ["draft_id"]
+        "required": ["draft_id", "revision"]
       },
       "annotations": {
         "readOnlyHint": false,
@@ -361,7 +362,7 @@
     {
       "name": "list_email_drafts",
       "title": "List email drafts",
-      "description": "List the drafts of the current user's own mailbox, most recently changed first, as the Drafts folder of the Email app shows them: recipients, subject, the body as plain text (cut when long), last_modified, whether it is a reply, its draft_id, message_id and thread_id. Scheduled drafts and drafts written in a mailbox shared with the user are not listed. 'subject' keeps the drafts whose subject contains it, 'recipient' those with an address containing it, 'since_days' those changed in the last N days; 'limit' caps the list (default 20, max 100); 'with_html' adds each draft's whole HTML body as body_html, which update_email_draft needs to change part of a body. A draft that is no longer listed was sent, deleted or scheduled by the user: look for its message_id in the Sent folder.",
+      "description": "List the drafts of the current user's own mailbox, most recently changed first, as the Drafts folder of the Email app shows them: recipients, subject, the body as plain text (cut when long), last_modified, whether it is a reply, its draft_id, revision, message_id and thread_id. Scheduled drafts and drafts written in a mailbox shared with the user are not listed. 'subject' keeps the drafts whose subject contains it, 'recipient' those with an address containing it, 'since_days' those changed in the last N days; 'limit' caps the list (default 20, max 100); 'with_html' adds each draft's whole HTML body as body_html, which update_email_draft needs to change part of a body. A draft that is no longer listed was sent, deleted or scheduled by the user: look for its message_id in the Sent folder.",
       "input_schema": {
         "type": "object",
         "properties": {
