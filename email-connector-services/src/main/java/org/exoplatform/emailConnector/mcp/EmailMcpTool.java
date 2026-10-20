@@ -127,9 +127,8 @@ public class EmailMcpTool implements McpToolPlugin {
   /** The most drafts one call returns. */
   private static final int              MAX_DRAFTS_LIMIT     = 100;
 
-  /** A CSS {@code url()} and its address, quoted or not. */
-  private static final Pattern          CSS_URL              = Pattern.compile("url\\(\\s*['\"]?([^'\")\\s]+)",
-                                                                              Pattern.CASE_INSENSITIVE);
+  /** A CSS {@code url()} call. */
+  private static final Pattern          CSS_URL              = Pattern.compile("url\\s*\\(", Pattern.CASE_INSENSITIVE);
 
   /** What a cut body ends with, so nobody mistakes half a message for all of it. */
   private static final String           TRUNCATION_MARKER    = "… [truncated]";
@@ -2022,89 +2021,48 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /**
    * Part of a body given back to update_email_draft, cleaned, refused when the cleaning
-   * would lose an image of the user's.
+   * took an image of the user's away: the cleaned HTML is compared with the given one,
+   * so the rule is the cleaning's own, whatever the address looks like.
    *
    * @param html the HTML
    * @return the cleaned HTML
-   * @throws IllegalArgumentException when it carries an image the cleaning would drop, or
-   *           loads remote content; nothing is saved
+   * @throws IllegalArgumentException when the cleaning drops an image, or the HTML loads
+   *           remote content; nothing is saved
    */
   private static String cleanUpdatedHtml(String html) {
-    if (carriesPortalImage(html)) {
+    String cleaned = cleanDraftHtml(html);
+    if (imageCount(cleaned) < imageCount(html)) {
       throw new IllegalArgumentException("body_html carries images of the user's (pasted images, a logo): changing it here would "
           + "drop them. Change the subject or the recipients only, and ask the user to change the body in the Email app. "
           + "Nothing was saved.");
     }
-    return cleanDraftHtml(html);
+    return cleaned;
   }
 
   /**
-   * Whether HTML shows an image the cleaning drops, each place by the rule the cleaning
-   * applies there: an image whose source is neither a web address, an attachment nor an
-   * embedded image; a {@code background} attribute that is not a web address; a CSS
-   * {@code url()} -- of a style attribute or a style sheet -- that is a portal address.
+   * How many images HTML shows: images with a source, {@code background} attributes, and
+   * CSS {@code url()} calls of style attributes and style sheets.
    *
    * @param html the HTML, possibly blank
-   * @return true when it shows one
+   * @return the count
    */
-  private static boolean carriesPortalImage(String html) {
+  private static int imageCount(String html) {
     if (StringUtils.isBlank(html)) {
-      return false;
+      return 0;
     }
     Document document = Jsoup.parseBodyFragment(html);
-    if (document.select("img[src]").stream().anyMatch(image -> isDroppedImageSource(image.attr("src")))
-        || document.select("[background]").stream().anyMatch(element -> !isWebAddress(element.attr("background")))) {
-      return true;
-    }
+    int count = (int) document.select("img[src]").stream().filter(image -> StringUtils.isNotBlank(image.attr("src"))).count();
+    count += (int) document.select("[background]").stream().filter(element -> StringUtils.isNotBlank(element.attr("background"))).count();
     List<String> styles = new ArrayList<>();
     document.select("[style]").forEach(element -> styles.add(element.attr("style")));
     document.select("style").forEach(element -> styles.add(element.data()));
-    return styles.stream().anyMatch(style -> {
+    for (String style : styles) {
       Matcher url = CSS_URL.matcher(style);
       while (url.find()) {
-        if (isPortalAddress(url.group(1))) {
-          return true;
-        }
+        count++;
       }
-      return false;
-    });
-  }
-
-  /**
-   * Whether an address is a web address, the only kind the cleaning keeps in a
-   * {@code background} attribute.
-   *
-   * @param address the address
-   * @return true for an http(s) address, protocol-relative included
-   */
-  private static boolean isWebAddress(String address) {
-    String value = StringUtils.trimToEmpty(address).toLowerCase(Locale.ROOT);
-    return value.startsWith("http:") || value.startsWith("https:") || value.startsWith("//");
-  }
-
-  /**
-   * Whether the cleaning drops an image's source: anything but a web address, an
-   * attachment ({@code cid:}) or an embedded image ({@code data:image/}).
-   *
-   * @param source the source
-   * @return true when it is dropped
-   */
-  private static boolean isDroppedImageSource(String source) {
-    String address = StringUtils.trimToEmpty(source).toLowerCase(Locale.ROOT);
-    return !address.isEmpty() && !isWebAddress(address) && !address.startsWith("cid:") && !address.startsWith("data:image/");
-  }
-
-  /**
-   * Whether a CSS address points into the portal, which the cleaning replaces by
-   * {@code none}: anything but a web address, an attachment, embedded data or a fragment.
-   *
-   * @param source the address
-   * @return true for a portal address
-   */
-  private static boolean isPortalAddress(String source) {
-    String address = StringUtils.trimToEmpty(source).toLowerCase(Locale.ROOT);
-    return !address.isEmpty() && !isWebAddress(address) && !address.startsWith("data:") && !address.startsWith("cid:")
-        && !address.startsWith("#");
+    }
+    return count;
   }
 
   /**
