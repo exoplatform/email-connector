@@ -939,9 +939,10 @@ public class EmailMcpTool implements McpToolPlugin {
    * like any other draft: the user reviews it, edits it by hand and sends it, or lets
    * {@link #sendEmailDraft} send it. It runs without approval because nothing leaves the
    * mailbox: not the mail, and not a request from the user's browser either -- the body
-   * is cleaned as a received mail is, so it fetches nothing, and refused when it would
-   * load an image or a style from the internet (a draft is shown to its owner uncleaned,
-   * as their own text).
+   * carries text, formatting and links, is refused when it shows an image, and is cleaned
+   * as a received mail is, so it fetches nothing (a draft is shown to its owner uncleaned,
+   * as their own text). The same rule holds when update_email_draft changes it, so a draft
+   * written here can always be changed here.
    * <p>
    * With {@code email_id}, the draft is a reply to that mail: it is filed in the mail's
    * conversation and, once sent, carries the In-Reply-To and References headers that
@@ -963,7 +964,7 @@ public class EmailMcpTool implements McpToolPlugin {
    * @throws ObjectNotFoundException when {@code email_id} names no mail of the mailbox
    * @throws IllegalAccessException if the user has no usable mailbox
    * @throws IllegalArgumentException when the draft would have no recipient, an entry is
-   *           not a bare address, or the body loads remote content
+   *           not a bare address, or the body shows an image or loads remote content
    */
   public EmailDraftModel createEmailDraft(List<String> to,
                                           String subject,
@@ -990,6 +991,10 @@ public class EmailMcpTool implements McpToolPlugin {
     }
     draft.setCc(toRecipients(cc));
     draft.setBcc(toRecipients(bcc));
+    if (showsImages(bodyHtml)) {
+      throw new IllegalArgumentException("body_html shows images: a draft written here carries text, formatting and links, "
+          + "and the user adds pictures in the Email app. Nothing was saved.");
+    }
     String body = cleanDraftHtml(bodyHtml);
     draft.setContent(buildHtmlContent(Boolean.FALSE.equals(addSignature) ? body : withSignature(body, username)));
     Email saved = emailBoxService.saveDraft(draft, username, true);
