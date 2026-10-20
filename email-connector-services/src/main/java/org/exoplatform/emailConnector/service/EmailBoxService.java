@@ -12285,7 +12285,8 @@ public class EmailBoxService {
    * between the read and the send. The draft's own mailbox and send mode are the
    * stored ones.
    * <p>
-   * {@code check} runs on that row, under the lock, before anything is claimed: a caller
+   * {@code check} runs on that row, under the lock and marked {@code scheduled} when it
+   * is, before anything is claimed: a caller
    * that had the user approve what the draft said refuses there a row that says
    * something else by now, and nothing is sent.
    *
@@ -12315,6 +12316,7 @@ public class EmailBoxService {
         throw new IllegalArgumentException("emailConnector.drafts.send.recipientMandatory");
       }
       if (check != null) {
+        stored.setScheduled(emailScheduledSendStorage.isScheduled(username, draftLocalId));
         check.accept(stored);
       }
       sendDraft(stored, username, stored.getSendDelegationId(), null);
@@ -12341,6 +12343,23 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not use their mailbox
    */
   public boolean deleteDraft(String draftLocalId, String username) throws IllegalAccessException {
+    return deleteDraft(draftLocalId, username, null);
+  }
+
+  /**
+   * Discards a draft as {@link #deleteDraft(String, String)} does, once {@code check}
+   * accepts the row: it runs under the draft's lock on the row as it is stored, marked
+   * {@code scheduled} when it is, before anything is removed. A caller that had the user
+   * approve what the draft said refuses there a draft that says something else by now,
+   * or that has been scheduled meanwhile, and nothing is removed.
+   *
+   * @param draftLocalId the composer's handle on the draft
+   * @param username the mailbox owner
+   * @param check throws to refuse the stored row, or null to accept any
+   * @return true when a draft was found and removed
+   * @throws IllegalAccessException if the user may not use their mailbox
+   */
+  public boolean deleteDraft(String draftLocalId, String username, Consumer<Email> check) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -12353,6 +12372,10 @@ public class EmailBoxService {
       Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
       if (stored == null) {
         return false;
+      }
+      if (check != null) {
+        stored.setScheduled(emailScheduledSendStorage.isScheduled(username, draftLocalId));
+        check.accept(stored);
       }
       // A scheduled draft may be discarded -- but not while it is on its way, or already
       // gone out. Decided by the schedule's own conditional DELETE, never by a read: a

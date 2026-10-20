@@ -270,6 +270,35 @@ class EmailMcpToolDraftsTest {
   }
 
   /**
+   * The save carries the revision after the one read, and a save the storage dropped --
+   * the app saved the draft meanwhile -- is reported, never answered as done.
+   */
+  @Test
+  void updateEmailDraftNeverPutsBackWhatTheUserChangedMeanwhile() throws Exception {
+    Email stored = storedDraft("Hello", "<p>Hi</p>", "bob@acme.com");
+    stored.setDraftRevision(4L);
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(stored);
+    Email editedInTheApp = storedDraft("Hello", "<p>The user's newer words</p>", "bob@acme.com");
+    when(emailBoxService.saveDraft(any(Email.class), eq(USERNAME), eq(true))).thenReturn(editedInTheApp);
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, "New subject", null, null, null));
+    assertTrue(refusal.getMessage().contains("nothing of your change was saved"), refusal.getMessage());
+    assertEquals(5L, savedDraft().getDraftRevision());
+  }
+
+  /** One draft is answered with its whole HTML body, the base of the next change. */
+  @Test
+  void updateEmailDraftAnswersTheWholeHtmlBody() throws Exception {
+    saveDraftEchoes();
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p><b>Bold</b> words</p>", "bob@acme.com"));
+
+    EmailDraftModel model = emailMcpTool.updateEmailDraft(DRAFT_ID, null, "New subject", null, null, null);
+
+    assertEquals("<p><b>Bold</b> words</p>", model.getBodyHtml());
+  }
+
+  /**
    * A draft of somebody else is not found: the lookup is the caller's own; a scheduled
    * draft and a draft of a shared mailbox are refused; nothing is saved.
    */
@@ -325,14 +354,16 @@ class EmailMcpToolDraftsTest {
     when(emailBoxService.getEmailBox(USERNAME, MailFolder.DRAFTS)).thenReturn(box);
 
     assertEquals(List.of("newer", "older"),
-                 emailMcpTool.listEmailDrafts(null, null, null, null).stream().map(EmailDraftModel::getDraftId).toList());
+                 emailMcpTool.listEmailDrafts(null, null, null, null, null).stream().map(EmailDraftModel::getDraftId).toList());
     assertEquals(List.of("older"),
-                 emailMcpTool.listEmailDrafts("acme", null, null, null).stream().map(EmailDraftModel::getDraftId).toList());
+                 emailMcpTool.listEmailDrafts("acme", null, null, null, null).stream().map(EmailDraftModel::getDraftId).toList());
     assertEquals(List.of("newer"),
-                 emailMcpTool.listEmailDrafts(null, "GLOBEX", null, null).stream().map(EmailDraftModel::getDraftId).toList());
+                 emailMcpTool.listEmailDrafts(null, "GLOBEX", null, null, null).stream().map(EmailDraftModel::getDraftId).toList());
     assertEquals(List.of("newer"),
-                 emailMcpTool.listEmailDrafts(null, null, 1, null).stream().map(EmailDraftModel::getDraftId).toList());
-    assertEquals(1, emailMcpTool.listEmailDrafts(null, null, null, 1).size());
+                 emailMcpTool.listEmailDrafts(null, null, 1, null, null).stream().map(EmailDraftModel::getDraftId).toList());
+    assertEquals(1, emailMcpTool.listEmailDrafts(null, null, null, 1, null).size());
+    assertEquals(null, emailMcpTool.listEmailDrafts(null, null, null, 1, null).get(0).getBodyHtml());
+    assertEquals("<p>b</p>", emailMcpTool.listEmailDrafts(null, null, null, 1, true).get(0).getBodyHtml());
   }
 
   // --- send_email_draft ------------------------------------------------------
@@ -388,6 +419,16 @@ class EmailMcpToolDraftsTest {
                                      assertThrows(IllegalArgumentException.class,
                                                   () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Hello", null, null));
     assertTrue(refusal.getMessage().contains("new@acme.com"), refusal.getMessage());
+
+    Email scheduledMeanwhile = storedDraft("Hello", "<p>Hi</p>", "bob@acme.com");
+    scheduledMeanwhile.setScheduled(true);
+    when(emailBoxService.sendDraftAsStored(eq(DRAFT_ID), eq(USERNAME), any())).thenAnswer(invocation -> {
+      Consumer<Email> check = invocation.getArgument(2);
+      check.accept(scheduledMeanwhile);
+      return scheduledMeanwhile;
+    });
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Hello", null, null));
   }
 
   // --- delete_email_draft ----------------------------------------------------
@@ -395,14 +436,47 @@ class EmailMcpToolDraftsTest {
   /** The draft is deleted when the subject named is its own, and not otherwise. */
   @Test
   void deleteEmailDraftDeletesOnlyTheDraftItNames() throws Exception {
-    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p>Hi</p>", "bob@acme.com"));
-    when(emailBoxService.deleteDraft(DRAFT_ID, USERNAME)).thenReturn(true);
+    Email stored = storedDraft("Hello", "<p>Hi</p>", "bob@acme.com");
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(stored);
+    deleteDraftChecks(stored);
 
     assertThrows(IllegalArgumentException.class, () -> emailMcpTool.deleteEmailDraft(DRAFT_ID, "Another"));
-    verify(emailBoxService, never()).deleteDraft(anyString(), anyString());
+    verify(emailBoxService, never()).deleteDraft(anyString(), anyString(), any());
 
     assertTrue(emailMcpTool.deleteEmailDraft(DRAFT_ID, " Hello ").contains("deleted"));
-    verify(emailBoxService).deleteDraft(DRAFT_ID, USERNAME);
+    verify(emailBoxService).deleteDraft(eq(DRAFT_ID), eq(USERNAME), any());
+  }
+
+  /**
+   * A draft scheduled, or retitled, in the Email app between the read and the delete is
+   * refused on the row under the draft's lock: deleting it would cancel the user's
+   * schedule, or delete a draft the user did not approve.
+   */
+  @Test
+  void deleteEmailDraftChecksTheRowAgainUnderTheDraftsLock() throws Exception {
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p>Hi</p>", "bob@acme.com"));
+    Email scheduledMeanwhile = storedDraft("Hello", "<p>Hi</p>", "bob@acme.com");
+    scheduledMeanwhile.setScheduled(true);
+    deleteDraftChecks(scheduledMeanwhile);
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.deleteEmailDraft(DRAFT_ID, "Hello"));
+
+    deleteDraftChecks(storedDraft("Retitled", "<p>Hi</p>", "bob@acme.com"));
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.deleteEmailDraft(DRAFT_ID, "Hello"));
+  }
+
+  /**
+   * Makes deleteDraft run the caller's check on the given row, as the service does under
+   * the draft's lock, and delete when it passes.
+   *
+   * @param row the row as stored under the lock
+   * @throws Exception never, the service is mocked
+   */
+  private void deleteDraftChecks(Email row) throws Exception {
+    when(emailBoxService.deleteDraft(eq(DRAFT_ID), eq(USERNAME), any())).thenAnswer(invocation -> {
+      Consumer<Email> check = invocation.getArgument(2);
+      check.accept(row);
+      return true;
+    });
   }
 
   /** A scheduled draft is not deleted here, which would cancel the user's schedule. */
@@ -413,6 +487,6 @@ class EmailMcpToolDraftsTest {
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(scheduled);
 
     assertThrows(IllegalArgumentException.class, () -> emailMcpTool.deleteEmailDraft(DRAFT_ID, "Hello"));
-    verify(emailBoxService, never()).deleteDraft(anyString(), anyString());
+    verify(emailBoxService, never()).deleteDraft(anyString(), anyString(), any());
   }
 }
