@@ -275,14 +275,15 @@ class EmailMcpToolDraftsTest {
   /** A body showing an image is refused at creation as at update: what is written here can be changed here. */
   @Test
   void createEmailDraftRefusesABodyShowingAnImage() throws Exception {
-    assertThrows(IllegalArgumentException.class,
-                 () -> emailMcpTool.createEmailDraft(List.of("bob@acme.com"),
-                                                     "Hello",
-                                                     "<p>Logo</p><img src=\"data:image/png;base64,AAAA\">",
-                                                     null,
-                                                     null,
-                                                     null,
-                                                     null));
+    for (String body : List.of("<p>Logo</p><img src=\"data:image/png;base64,AAAA\">",
+                               "<body style=\"background:url(data:image/png;base64,AAAA)\"><p>Hi</p></body>",
+                               "<body background=\"data:image/png;base64,AAAA\"><p>Hi</p></body>",
+                               // kept by either parse: the head's style sheet
+                               "<html><head><style>p { background: url(data:image/png;base64,AAAA) }</style></head><body><p>Hi</p></body></html>")) {
+      assertThrows(IllegalArgumentException.class,
+                   () -> emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", body, null, null, null, null),
+                   body);
+    }
     verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
   }
 
