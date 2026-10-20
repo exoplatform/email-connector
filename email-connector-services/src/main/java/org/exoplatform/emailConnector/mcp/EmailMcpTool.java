@@ -2039,10 +2039,10 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
-   * Whether HTML shows an image the cleaning drops: a portal address in an image or a CSS
-   * {@code url()} of a style attribute or a style sheet, or any {@code background}
-   * attribute but a web address -- an embedded one included, which the cleaning keeps in
-   * an image only.
+   * Whether HTML shows an image the cleaning drops, each place by the rule the cleaning
+   * applies there: an image whose source is neither a web address, an attachment nor an
+   * embedded image; a {@code background} attribute that is not a web address; a CSS
+   * {@code url()} -- of a style attribute or a style sheet -- that is a portal address.
    *
    * @param html the HTML, possibly blank
    * @return true when it shows one
@@ -2052,7 +2052,7 @@ public class EmailMcpTool implements McpToolPlugin {
       return false;
     }
     Document document = Jsoup.parseBodyFragment(html);
-    if (document.select("img[src]").stream().anyMatch(image -> isPortalAddress(image.attr("src")))
+    if (document.select("img[src]").stream().anyMatch(image -> isDroppedImageSource(image.attr("src")))
         || document.select("[background]").stream().anyMatch(element -> !isWebAddress(element.attr("background")))) {
       return true;
     }
@@ -2062,7 +2062,7 @@ public class EmailMcpTool implements McpToolPlugin {
     return styles.stream().anyMatch(style -> {
       Matcher url = CSS_URL.matcher(style);
       while (url.find()) {
-        if (isPortalAddress(url.group(1)) && !url.group(1).startsWith("#")) {
+        if (isPortalAddress(url.group(1))) {
           return true;
         }
       }
@@ -2083,16 +2083,28 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
-   * Whether an image address points into the portal: neither a web address nor an
-   * embedded or attached image, so a relative one the cleaning drops.
+   * Whether the cleaning drops an image's source: anything but a web address, an
+   * attachment ({@code cid:}) or an embedded image ({@code data:image/}).
+   *
+   * @param source the source
+   * @return true when it is dropped
+   */
+  private static boolean isDroppedImageSource(String source) {
+    String address = StringUtils.trimToEmpty(source).toLowerCase(Locale.ROOT);
+    return !address.isEmpty() && !isWebAddress(address) && !address.startsWith("cid:") && !address.startsWith("data:image/");
+  }
+
+  /**
+   * Whether a CSS address points into the portal, which the cleaning replaces by
+   * {@code none}: anything but a web address, an attachment, embedded data or a fragment.
    *
    * @param source the address
    * @return true for a portal address
    */
   private static boolean isPortalAddress(String source) {
     String address = StringUtils.trimToEmpty(source).toLowerCase(Locale.ROOT);
-    return !address.isEmpty() && !address.startsWith("http:") && !address.startsWith("https:") && !address.startsWith("//")
-        && !address.startsWith("data:") && !address.startsWith("cid:");
+    return !address.isEmpty() && !isWebAddress(address) && !address.startsWith("data:") && !address.startsWith("cid:")
+        && !address.startsWith("#");
   }
 
   /**
