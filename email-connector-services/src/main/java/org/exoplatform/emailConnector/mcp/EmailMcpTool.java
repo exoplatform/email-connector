@@ -2039,9 +2039,10 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
-   * Whether HTML shows an image from a portal address, which the cleaning drops: in an
-   * image, a {@code background} attribute, or a CSS {@code url()} of a style attribute or
-   * a style sheet.
+   * Whether HTML shows an image the cleaning drops: a portal address in an image or a CSS
+   * {@code url()} of a style attribute or a style sheet, or any {@code background}
+   * attribute but a web address -- an embedded one included, which the cleaning keeps in
+   * an image only.
    *
    * @param html the HTML, possibly blank
    * @return true when it shows one
@@ -2052,7 +2053,7 @@ public class EmailMcpTool implements McpToolPlugin {
     }
     Document document = Jsoup.parseBodyFragment(html);
     if (document.select("img[src]").stream().anyMatch(image -> isPortalAddress(image.attr("src")))
-        || document.select("[background]").stream().anyMatch(element -> isPortalAddress(element.attr("background")))) {
+        || document.select("[background]").stream().anyMatch(element -> !isWebAddress(element.attr("background")))) {
       return true;
     }
     List<String> styles = new ArrayList<>();
@@ -2067,6 +2068,18 @@ public class EmailMcpTool implements McpToolPlugin {
       }
       return false;
     });
+  }
+
+  /**
+   * Whether an address is a web address, the only kind the cleaning keeps in a
+   * {@code background} attribute.
+   *
+   * @param address the address
+   * @return true for an http(s) address, protocol-relative included
+   */
+  private static boolean isWebAddress(String address) {
+    String value = StringUtils.trimToEmpty(address).toLowerCase(Locale.ROOT);
+    return value.startsWith("http:") || value.startsWith("https:") || value.startsWith("//");
   }
 
   /**
