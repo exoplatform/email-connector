@@ -12368,9 +12368,11 @@ public class EmailBoxService {
     String lockKey = draftLockKey(username, draftLocalId);
     ReentrantLock lock = draftLocks.computeIfAbsent(lockKey, key -> new ReentrantLock());
     lock.lock();
+    boolean gone = false;
     try {
       Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
       if (stored == null) {
+        gone = true;
         return false;
       }
       if (check != null) {
@@ -12400,13 +12402,18 @@ public class EmailBoxService {
         throw new IllegalStateException("emailConnector.drafts.discard.serverCopyRemains");
       }
       deleteEmails(List.of(stored));
+      gone = true;
       return true;
     } finally {
       lock.unlock();
-      // The draft is gone, so nobody can be about to take this lock for it. Removing
-      // it here is what keeps the map bounded by the drafts that actually exist
-      // rather than by every draft ever written in this JVM's lifetime.
-      draftLocks.remove(lockKey);
+      // Once the draft is gone nobody can be about to take this lock for it. Removing
+      // it then is what keeps the map bounded by the drafts that actually exist rather
+      // than by every draft ever written in this JVM's lifetime. A refused discard
+      // leaves the draft, and a writer may be waiting on this very lock: removing it
+      // would hand the next caller a second lock for the same draft.
+      if (gone) {
+        draftLocks.remove(lockKey);
+      }
     }
   }
 
