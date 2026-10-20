@@ -952,8 +952,10 @@ public class EmailMcpTool implements McpToolPlugin {
    * mailbox: not the mail, and not a request from the user's browser either -- the body
    * carries text, formatting and links, is refused when it shows an image, and is cleaned
    * as a received mail is, so it fetches nothing (a draft is shown to its owner uncleaned,
-   * as their own text). The same rule holds when update_email_draft changes it, so a draft
-   * written here can always be changed here.
+   * as their own text). The same rule holds when update_email_draft changes it, the
+   * signature this tool added kept as it is, so a draft written here can be changed here
+   * -- unless the user has since saved it in the Email app with a signature showing an
+   * image other than its logo, a body that is then the user's to change.
    * <p>
    * With {@code email_id}, the draft is a reply to that mail: it is filed in the mail's
    * conversation and, once sent, carries the In-Reply-To and References headers that
@@ -1049,7 +1051,7 @@ public class EmailMcpTool implements McpToolPlugin {
       throw new IllegalArgumentException("revision is required: read the draft with list_email_drafts and pass its revision. "
           + "Nothing was changed.");
     }
-    String body = bodyHtml == null ? null : cleanDraftBody(bodyHtml);
+    String body = bodyHtml == null ? null : cleanDraftBody(bodyHtml, username);
     Email stored = ownDraft(draftId, username, "changed");
     if (!revision.equals(stored.getDraftRevision())) {
       throw changedMeanwhile(draftId);
@@ -2013,13 +2015,34 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
-   * A whole draft body given back to update_email_draft, cleaned. The user's signature
-   * logo -- an image of the signature-image address, the one portal image the platform
-   * itself puts in a draft -- is recognised by that address, however the composer wrote
-   * the markup and whichever version of the logo it shows: it is set aside, the rest is
-   * cleaned like a new body, and the logo is put back as a minimal image of that address.
-   * Any other image makes the body refused rather than stored poorer than the user left
-   * it: the user changes it in the Email app.
+   * A whole draft body given back to update_email_draft, cleaned. What the platform itself
+   * put in the draft is set aside and kept: the user's current signature block, when the
+   * body holds it as create_email_draft wrote it -- whatever images the user's own
+   * signature shows -- and, anywhere else, the signature logo, recognised by its address
+   * however the composer wrote the markup and whichever version it shows, put back as a
+   * minimal image of that address. The rest is cleaned like a new body. Any other image
+   * makes the body refused rather than stored poorer than the user left it: the user
+   * changes it in the Email app.
+   *
+   * @param html the body given
+   * @param username the user, whose signature block is kept
+   * @return the body to store
+   * @throws IllegalArgumentException when the body shows another image, or loads remote
+   *           content; nothing is saved
+   */
+  private String cleanDraftBody(String html, String username) {
+    String block = signatureBlock(username);
+    int at = block == null ? -1 : html.lastIndexOf(block);
+    if (at >= 0) {
+      String marker = "ecsignatureblock" + UUID.randomUUID().toString().replace("-", "");
+      return cleanDraftBody(html.substring(0, at) + marker + html.substring(at + block.length())).replace(marker, block);
+    }
+    return cleanDraftBody(html);
+  }
+
+  /**
+   * A whole draft body given back to update_email_draft, cleaned, the signature logo set
+   * aside by its address as {@link #cleanDraftBody(String, String)} says.
    *
    * @param html the body given
    * @return the body to store
