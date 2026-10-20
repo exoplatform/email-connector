@@ -1000,21 +1000,27 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param bodyHtml the new HTML body, replacing the whole body, or null to keep it
    * @param cc the new copied recipients, or null to keep them
    * @param bcc the new blind-copied recipients, or null to keep them
+   * @param revision the draft's revision as it was read, or null; given, a draft saved
+   *          since -- in the Email app, say -- is refused rather than written over
    * @return the draft as stored after the change
    * @throws ObjectNotFoundException when the user has no such draft
    * @throws IllegalAccessException if the user has no usable mailbox
-   * @throws IllegalArgumentException when the draft is scheduled, was written in a shared
-   *           mailbox, or would have no recipient
+   * @throws IllegalArgumentException when the draft changed since {@code revision}, is
+   *           scheduled, was written in a shared mailbox, or would have no recipient
    */
   public EmailDraftModel updateEmailDraft(String draftId,
                                           List<String> to,
                                           String subject,
                                           String bodyHtml,
                                           List<String> cc,
-                                          List<String> bcc) throws ObjectNotFoundException, IllegalAccessException {
+                                          List<String> bcc,
+                                          Long revision) throws ObjectNotFoundException, IllegalAccessException {
     String username = getCurrentUserName();
     requireDraftAddresses(to, cc, bcc);
     Email stored = ownDraft(draftId, username, "changed");
+    if (revision != null && !revision.equals(stored.getDraftRevision())) {
+      throw changedMeanwhile(draftId);
+    }
     if (to != null && isEmpty(to)) {
       throw new IllegalArgumentException("'to' cannot be emptied: a draft keeps at least one recipient. Nothing was changed.");
     }
@@ -1040,8 +1046,7 @@ public class EmailMcpTool implements McpToolPlugin {
       throw new ObjectNotFoundException(draftNotFound(draftId));
     }
     if (!holds(saved, draft)) {
-      throw new IllegalArgumentException(String.format("Draft %s was changed in the Email app while you were changing it: nothing "
-          + "of your change was saved. Read it again with list_email_drafts and start from what it says now.", draftId));
+      throw changedMeanwhile(draftId);
     }
     return toDraftModel(saved, true);
   }
@@ -1951,6 +1956,17 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
+   * The refusal of a change to a draft saved since it was read.
+   *
+   * @param draftId the draft's id
+   * @return the exception to throw
+   */
+  private static IllegalArgumentException changedMeanwhile(String draftId) {
+    return new IllegalArgumentException(String.format("Draft %s was changed, in the Email app or elsewhere, since you read it: nothing "
+        + "of your change was saved. Read it again with list_email_drafts and start from what it says now.", draftId));
+  }
+
+  /**
    * Whether a saved draft holds what was written: the storage drops a save whose
    * revision the row has already reached, and answers the row as it stands.
    *
@@ -1992,6 +2008,7 @@ public class EmailMcpTool implements McpToolPlugin {
                                plainTextBody(draft),
                                withHtml ? bodyOf(draft) : null,
                                draft.getMailHeaderId(),
+                               draft.getDraftRevision(),
                                draft.getThreadId(),
                                StringUtils.isNotBlank(draft.getInReplyTo()),
                                lastModified(draft),
