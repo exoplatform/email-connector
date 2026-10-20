@@ -123,6 +123,15 @@ public class EmailMcpTool implements McpToolPlugin {
    */
   private static final int              THREAD_BODY_MAX_CHARS = 1500;
 
+  /** What a draft tool says it was about to do with a draft it refuses to delete. */
+  private static final String           DELETED              = "deleted";
+
+  /** The HTML attribute holding an image's height. */
+  private static final String           HEIGHT               = "height";
+
+  /** The HTML style attribute. */
+  private static final String           STYLE                = "style";
+
   /** Drafts returned when the caller names no limit. */
   private static final int              DEFAULT_DRAFTS_LIMIT = 20;
 
@@ -1207,7 +1216,7 @@ public class EmailMcpTool implements McpToolPlugin {
       throw new IllegalArgumentException("Nothing was deleted: to must list bare addresses, such as alice@acme.com, as "
           + "list_email_drafts reads them. Ask the user to approve again with those addresses shown.");
     }
-    Email stored = ownDraft(draftId, username, "deleted");
+    Email stored = ownDraft(draftId, username, DELETED);
     requireSameDraft(stored, subject, to);
     boolean deleted;
     try {
@@ -1215,11 +1224,11 @@ public class EmailMcpTool implements McpToolPlugin {
       // or schedule it in the Email app in between, and deleting a scheduled draft would
       // cancel their schedule.
       deleted = emailBoxService.deleteDraft(stored.getDraftLocalId(), username, row -> {
-        requireActionable(row, draftId, "deleted");
+        requireActionable(row, draftId, DELETED);
         requireSameDraft(row, subject, to);
       });
     } catch (ScheduledSendConflictException e) {
-      throw scheduledDraftRefusal(draftId, "deleted");
+      throw scheduledDraftRefusal(draftId, DELETED);
     }
     if (!deleted) {
       throw new ObjectNotFoundException(draftNotFound(draftId));
@@ -2081,10 +2090,10 @@ public class EmailMcpTool implements McpToolPlugin {
    */
   private static String signatureLogo(Element image) {
     Element logo = new Element("img").attr("src", image.attr("src")).attr("alt", image.attr("alt"));
-    if (image.attr("height").matches("\\d{1,4}")) {
-      logo.attr("height", image.attr("height"));
+    if (image.attr(HEIGHT).matches("\\d{1,4}")) {
+      logo.attr(HEIGHT, image.attr(HEIGHT));
     }
-    logo.attr("style", "max-height:48px;");
+    logo.attr(STYLE, "max-height:48px;");
     return logo.outerHtml();
   }
 
@@ -2129,8 +2138,8 @@ public class EmailMcpTool implements McpToolPlugin {
       return true;
     }
     List<String> styles = new ArrayList<>();
-    document.select("[style]").forEach(element -> styles.add(element.attr("style")));
-    document.select("style").forEach(element -> styles.add(element.data()));
+    document.select("[style]").forEach(element -> styles.add(element.attr(STYLE)));
+    document.select(STYLE).forEach(element -> styles.add(element.data()));
     return styles.stream().anyMatch(style -> CSS_IMAGE_CALL.matcher(style).find() || style.contains("\\") || style.contains("/*"));
   }
 
