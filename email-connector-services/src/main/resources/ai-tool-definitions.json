@@ -314,7 +314,7 @@
     {
       "name": "create_email_draft",
       "title": "Prepare an email as a draft",
-      "description": "Prepare an email as a draft in the current user's own mailbox, WITHOUT sending it: it appears in the Drafts folder of the Email app like any other draft, where the user reviews it, edits it by hand and sends it, or asks you to send it with send_email_draft. Use it whenever the user wants to check an email before it leaves. The body is HTML; the user's signature is added under it, as the Email app adds it, unless add_signature is false. With email_id (the email_id of a mail you read), the draft is a reply to that mail: it is filed in the mail's conversation and stays in it once sent; subject then defaults to 'Re: ' and the mail's subject, and to to the mail's sender. Never invent or add recipients the user did not name. Returns the draft with its draft_id (to pass to the other draft tools), its message_id (the Message-ID the mail will carry once sent, by whoever sends it: keep it to find the mail in the Sent folder later), its thread_id, and a link to the user's drafts in the Email app. Attachments are not supported yet.",
+      "description": "Prepare an email as a draft in the current user's own mailbox, WITHOUT sending it: it appears in the Drafts folder of the Email app like any other draft, where the user reviews it, edits it by hand and sends it, or asks you to send it with send_email_draft. Use it whenever the user wants to check an email before it leaves. The body is HTML; the user's signature is added under it, as the Email app adds it, unless add_signature is false. With email_id (the email_id of a mail you read), the draft is a reply to that mail: it is filed in the mail's conversation and stays in it once sent; subject then defaults to 'Re: ' and the mail's subject, and to to the mail's sender. Never invent or add recipients the user did not name. Returns the draft with its body_html, its draft_id (to pass to the other draft tools), its message_id (the Message-ID the mail will carry once sent, by whoever sends it: keep it to find the mail in the Sent folder later), its thread_id, and a link to the user's drafts in the Email app. Attachments are not supported yet.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -338,7 +338,7 @@
     {
       "name": "update_email_draft",
       "title": "Change an email draft",
-      "description": "Change a draft of the current user's own mailbox, without sending it. The draft is read as it is stored now, the user's own edits in the Email app included: only the fields you give replace what it says, the others are kept. body_html replaces the whole body (the signature in it included), so to change one sentence, start from the body the user has. A list given empty clears it; to cannot be emptied. A draft that is scheduled to be sent, or that was written in a mailbox shared with the user, is refused. Returns the draft as it now stands.",
+      "description": "Change a draft of the current user's own mailbox, without sending it. The draft is read as it is stored now, the user's own edits in the Email app included: only the fields you give replace what it says, the others are kept. body_html replaces the whole body (the signature in it included): to change one sentence, read the draft's body_html first (list_email_drafts with with_html true, or the answer of create_email_draft), change that sentence in it and pass the whole of it back. A list given empty clears it; to cannot be emptied. If the user changes the draft in the Email app at the same moment, nothing of your change is saved and you are told so: read it again. A draft that is scheduled to be sent, or that was written in a mailbox shared with the user, is refused. Returns the draft as it now stands, with its body_html.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -361,14 +361,15 @@
     {
       "name": "list_email_drafts",
       "title": "List email drafts",
-      "description": "List the drafts of the current user's own mailbox, most recently changed first, as the Drafts folder of the Email app shows them: recipients, subject, the body as plain text (cut when long), last_modified, whether it is a reply, its draft_id, message_id and thread_id. Scheduled drafts and drafts written in a mailbox shared with the user are not listed. 'subject' keeps the drafts whose subject contains it, 'recipient' those with an address containing it, 'since_days' those changed in the last N days; 'limit' caps the list (default 20, max 100). A draft that is no longer listed was sent or deleted: look for its message_id in the Sent folder.",
+      "description": "List the drafts of the current user's own mailbox, most recently changed first, as the Drafts folder of the Email app shows them: recipients, subject, the body as plain text (cut when long), last_modified, whether it is a reply, its draft_id, message_id and thread_id. Scheduled drafts and drafts written in a mailbox shared with the user are not listed. 'subject' keeps the drafts whose subject contains it, 'recipient' those with an address containing it, 'since_days' those changed in the last N days; 'limit' caps the list (default 20, max 100); 'with_html' adds each draft's whole HTML body as body_html, which update_email_draft needs to change part of a body. A draft that is no longer listed was sent, deleted or scheduled by the user: look for its message_id in the Sent folder.",
       "input_schema": {
         "type": "object",
         "properties": {
           "subject": { "type": "string" },
           "recipient": { "type": "string" },
           "since_days": { "type": "integer", "minimum": 1 },
-          "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "with_html": { "type": "boolean", "description": "Whether to give each draft's whole HTML body as body_html. Default false." }
         }
       },
       "annotations": {
