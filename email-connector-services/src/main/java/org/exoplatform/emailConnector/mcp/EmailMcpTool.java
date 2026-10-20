@@ -31,6 +31,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -38,6 +39,8 @@ import java.util.stream.Collectors;
 import org.apache.commons.lang3.StringUtils;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.nodes.TextNode;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
@@ -125,6 +128,14 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /** The most drafts one call returns. */
   private static final int              MAX_DRAFTS_LIMIT     = 100;
+
+  /**
+   * The address of the user's signature logo, as the signature service writes it, with
+   * any version: the one portal image a draft carries by the platform's own doing.
+   */
+  private static final Pattern          SIGNATURE_LOGO_SOURCE =
+                                                             Pattern.compile(Pattern.quote(EmailSignatureService.SIGNATURE_IMAGE_PATH)
+                                                                 + "(?:\\?v=[0-9A-Za-z_-]{1,64})?");
 
   /** A CSS call of any function that takes an image or an address. */
   private static final Pattern          CSS_IMAGE_CALL       = Pattern.compile("(?:url|src|image|image-set|cross-fade|element)\\s*\\(",
@@ -1038,7 +1049,7 @@ public class EmailMcpTool implements McpToolPlugin {
       throw new IllegalArgumentException("revision is required: read the draft with list_email_drafts and pass its revision. "
           + "Nothing was changed.");
     }
-    String body = bodyHtml == null ? null : cleanDraftBody(bodyHtml, username);
+    String body = bodyHtml == null ? null : cleanDraftBody(bodyHtml);
     Email stored = ownDraft(draftId, username, "changed");
     if (!revision.equals(stored.getDraftRevision())) {
       throw changedMeanwhile(draftId);
@@ -1188,7 +1199,10 @@ public class EmailMcpTool implements McpToolPlugin {
                                  String subject,
                                  List<String> to) throws ObjectNotFoundException, IllegalAccessException {
     String username = getCurrentUserName();
-    requireBareAddresses("to", to);
+    if (to != null && to.stream().anyMatch(entry -> !isBareAddress(entry))) {
+      throw new IllegalArgumentException("Nothing was deleted: to must list bare addresses, such as alice@acme.com, as "
+          + "list_email_drafts reads them. Ask the user to approve again with those addresses shown.");
+    }
     Email stored = ownDraft(draftId, username, "deleted");
     requireSameDraft(stored, subject, to);
     boolean deleted;
@@ -1999,29 +2013,52 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
-   * A whole draft body given back to update_email_draft, cleaned: the user's signature
-   * block, when the body carries it as it is, is kept as it is -- its logo is a portal
-   * address, which the cleaning would drop -- and the rest is cleaned like a new body.
-   * <p>
-   * The rest may hold what the user put there in the Email app, and the cleaning would
-   * take some of it away: a quoted mail's remote images make the body refused, and an
-   * image the user pasted, or an older signature's logo, is a portal address the cleaning
-   * drops. Such a body is refused rather than stored poorer than the user left it: the
-   * user changes it in the Email app.
+   * A whole draft body given back to update_email_draft, cleaned. The user's signature
+   * logo -- an image of the signature-image address, the one portal image the platform
+   * itself puts in a draft -- is recognised by that address, however the composer wrote
+   * the markup and whichever version of the logo it shows: it is set aside, the rest is
+   * cleaned like a new body, and the logo is put back as a minimal image of that address.
+   * Any other image makes the body refused rather than stored poorer than the user left
+   * it: the user changes it in the Email app.
    *
    * @param html the body given
-   * @param username the user
    * @return the body to store
-   * @throws IllegalArgumentException when the body loads remote content, or carries an
-   *           image the cleaning would drop; nothing is saved
+   * @throws IllegalArgumentException when the body shows another image, or loads remote
+   *           content; nothing is saved
    */
-  private String cleanDraftBody(String html, String username) {
-    String block = signatureBlock(username);
-    int at = block == null ? -1 : html.lastIndexOf(block);
-    if (at < 0) {
-      return cleanUpdatedHtml(html);
+  private static String cleanDraftBody(String html) {
+    Document document = Jsoup.parseBodyFragment(html);
+    document.outputSettings().prettyPrint(false);
+    String marker = "ecsignaturelogo" + UUID.randomUUID().toString().replace("-", "");
+    List<String> logos = new ArrayList<>();
+    for (Element image : document.select("img")) {
+      if (SIGNATURE_LOGO_SOURCE.matcher(StringUtils.defaultString(image.attr("src"))).matches()) {
+        image.replaceWith(new TextNode(marker + logos.size() + marker));
+        logos.add(signatureLogo(image));
+      }
     }
-    return cleanUpdatedHtml(html.substring(0, at)) + block + cleanUpdatedHtml(html.substring(at + block.length()));
+    String cleaned = cleanUpdatedHtml(logos.isEmpty() ? html : document.body().html());
+    for (int i = 0; i < logos.size(); i++) {
+      cleaned = cleaned.replace(marker + i + marker, logos.get(i));
+    }
+    return cleaned;
+  }
+
+  /**
+   * The user's signature logo rebuilt from the image found in a body: its address, which
+   * matched {@link #SIGNATURE_LOGO_SOURCE}, its alternative text, and the height the
+   * signature gives it -- nothing else of what the body carried.
+   *
+   * @param image the image found
+   * @return the markup to put back
+   */
+  private static String signatureLogo(Element image) {
+    Element logo = new Element("img").attr("src", image.attr("src")).attr("alt", image.attr("alt"));
+    if (image.attr("height").matches("\\d{1,4}")) {
+      logo.attr("height", image.attr("height"));
+    }
+    logo.attr("style", "max-height:48px;");
+    return logo.outerHtml();
   }
 
   /**
