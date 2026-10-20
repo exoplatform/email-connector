@@ -76,6 +76,7 @@ import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
+import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
 
@@ -104,7 +105,7 @@ class EmailMcpToolTest {
     emailDelegationService = Mockito.mock(EmailDelegationService.class);
     readReceiptService = Mockito.mock(ReadReceiptService.class);
     when(readReceiptService.getSettings(USERNAME)).thenReturn(new ReadReceiptSettings());
-    emailMcpTool = new EmailMcpTool(emailBoxService, userEmailSettingService, emailDelegationService, readReceiptService) {
+    emailMcpTool = new EmailMcpTool(emailBoxService, userEmailSettingService, emailDelegationService, readReceiptService, Mockito.mock(EmailSignatureService.class)) {
       @Override
       public String getCurrentUserName() {
         return USERNAME;
