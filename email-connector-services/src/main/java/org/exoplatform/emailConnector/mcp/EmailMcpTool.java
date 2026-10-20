@@ -933,8 +933,9 @@ public class EmailMcpTool implements McpToolPlugin {
    * like any other draft: the user reviews it, edits it by hand and sends it, or lets
    * {@link #sendEmailDraft} send it. It runs without approval because nothing leaves the
    * mailbox: not the mail, and not a request from the user's browser either -- the body
-   * is cleaned as a received mail is, and refused when it would load anything from the
-   * internet (a draft is shown to its owner uncleaned, as their own text).
+   * is cleaned as a received mail is, so it fetches nothing, and refused when it would
+   * load an image or a style from the internet (a draft is shown to its owner uncleaned,
+   * as their own text).
    * <p>
    * With {@code email_id}, the draft is a reply to that mail: it is filed in the mail's
    * conversation and, once sent, carries the In-Reply-To and References headers that
@@ -1989,20 +1990,58 @@ public class EmailMcpTool implements McpToolPlugin {
   /**
    * A whole draft body given back to update_email_draft, cleaned: the user's signature
    * block, when the body carries it as it is, is kept as it is -- its logo is a portal
-   * address, which the cleaning would drop -- and the text around it is cleaned.
+   * address, which the cleaning would drop -- and the rest is cleaned like a new body.
+   * <p>
+   * The rest may hold what the user put there in the Email app, and the cleaning would
+   * take some of it away: a quoted mail's remote images make the body refused, and an
+   * image the user pasted, or an older signature's logo, is a portal address the cleaning
+   * drops. Such a body is refused rather than stored poorer than the user left it: the
+   * user changes it in the Email app.
    *
    * @param html the body given
    * @param username the user
    * @return the body to store
-   * @throws IllegalArgumentException when the body loads remote content; nothing is saved
+   * @throws IllegalArgumentException when the body loads remote content, or carries an
+   *           image the cleaning would drop; nothing is saved
    */
   private String cleanDraftBody(String html, String username) {
     String block = signatureBlock(username);
     int at = block == null ? -1 : html.lastIndexOf(block);
     if (at < 0) {
-      return cleanDraftHtml(html);
+      return cleanUpdatedHtml(html);
     }
-    return cleanDraftHtml(html.substring(0, at)) + block + cleanDraftHtml(html.substring(at + block.length()));
+    return cleanUpdatedHtml(html.substring(0, at)) + block + cleanUpdatedHtml(html.substring(at + block.length()));
+  }
+
+  /**
+   * Part of a body given back to update_email_draft, cleaned, refused when the cleaning
+   * would lose an image of the user's.
+   *
+   * @param html the HTML
+   * @return the cleaned HTML
+   * @throws IllegalArgumentException when it carries an image the cleaning would drop, or
+   *           loads remote content; nothing is saved
+   */
+  private static String cleanUpdatedHtml(String html) {
+    if (StringUtils.isNotBlank(html) && Jsoup.parseBodyFragment(html).select("img[src]").stream().anyMatch(image -> isPortalAddress(image.attr("src")))) {
+      throw new IllegalArgumentException("body_html carries images of the user's (pasted images, a logo): changing it here would "
+          + "drop them. Change the subject or the recipients only, and ask the user to change the body in the Email app. "
+          + "Nothing was saved.");
+    }
+    return cleanDraftHtml(html);
+  }
+
+  /**
+   * Whether an image address points into the portal: neither a web address nor an
+   * embedded or attached image, so a relative one the cleaning drops.
+   *
+   * @param source the address
+   * @return true for a portal address
+   */
+  private static boolean isPortalAddress(String source) {
+    String address = StringUtils.trimToEmpty(source).toLowerCase(Locale.ROOT);
+    return !address.isEmpty() && !address.startsWith("http:") && !address.startsWith("https:") && !address.startsWith("//")
+        && !address.startsWith("data:") && !address.startsWith("cid:");
   }
 
   /**
@@ -2019,8 +2058,9 @@ public class EmailMcpTool implements McpToolPlugin {
   private static String cleanDraftHtml(String html) {
     SanitizedEmailBody clean = EmailHtmlSanitizer.sanitize(html, false);
     if (clean.remoteContentBlocked()) {
-      throw new IllegalArgumentException("body_html loads images or styles from the internet, which a draft cannot carry: write "
-          + "the body as text and links only. Nothing was saved.");
+      throw new IllegalArgumentException("body_html loads images or styles from the internet, which a draft written here cannot "
+          + "carry. Write text, formatting and links only; when they come from the user's own content, such as a quoted mail, "
+          + "leave the body to the user in the Email app. Nothing was saved.");
     }
     return clean.html();
   }
