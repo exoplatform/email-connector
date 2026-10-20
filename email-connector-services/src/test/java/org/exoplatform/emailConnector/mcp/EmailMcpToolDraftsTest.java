@@ -368,6 +368,8 @@ class EmailMcpToolDraftsTest {
   void updateEmailDraftRefusesABodyItWouldStripOfTheUsersContent() throws Exception {
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p>Hi</p>", "bob@acme.com"));
     for (String body : List.of("<p>See below</p><img src=\"/email-connector/rest/email-box/drafts/draft-1/attachments/3\">",
+                               "<table><tr><td background=\"/portal/rest/banner.png\">Hi</td></tr></table>",
+                               "<p style=\"background-image:url('/portal/rest/banner.png')\">Hi</p>",
                                "<p>Thanks</p><blockquote><img src=\"https://news.acme.com/banner.png\"></blockquote>")) {
       IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
                                                       () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, body, null, null, 1L),

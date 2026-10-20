@@ -32,10 +32,13 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
 import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
@@ -123,6 +126,10 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /** The most drafts one call returns. */
   private static final int              MAX_DRAFTS_LIMIT     = 100;
+
+  /** A CSS {@code url()} and its address, quoted or not. */
+  private static final Pattern          CSS_URL              = Pattern.compile("url\\(\\s*['\"]?([^'\")\\s]+)",
+                                                                              Pattern.CASE_INSENSITIVE);
 
   /** What a cut body ends with, so nobody mistakes half a message for all of it. */
   private static final String           TRUNCATION_MARKER    = "… [truncated]";
@@ -2023,12 +2030,43 @@ public class EmailMcpTool implements McpToolPlugin {
    *           loads remote content; nothing is saved
    */
   private static String cleanUpdatedHtml(String html) {
-    if (StringUtils.isNotBlank(html) && Jsoup.parseBodyFragment(html).select("img[src]").stream().anyMatch(image -> isPortalAddress(image.attr("src")))) {
+    if (carriesPortalImage(html)) {
       throw new IllegalArgumentException("body_html carries images of the user's (pasted images, a logo): changing it here would "
           + "drop them. Change the subject or the recipients only, and ask the user to change the body in the Email app. "
           + "Nothing was saved.");
     }
     return cleanDraftHtml(html);
+  }
+
+  /**
+   * Whether HTML shows an image from a portal address, which the cleaning drops: in an
+   * image, a {@code background} attribute, or a CSS {@code url()} of a style attribute or
+   * a style sheet.
+   *
+   * @param html the HTML, possibly blank
+   * @return true when it shows one
+   */
+  private static boolean carriesPortalImage(String html) {
+    if (StringUtils.isBlank(html)) {
+      return false;
+    }
+    Document document = Jsoup.parseBodyFragment(html);
+    if (document.select("img[src]").stream().anyMatch(image -> isPortalAddress(image.attr("src")))
+        || document.select("[background]").stream().anyMatch(element -> isPortalAddress(element.attr("background")))) {
+      return true;
+    }
+    List<String> styles = new ArrayList<>();
+    document.select("[style]").forEach(element -> styles.add(element.attr("style")));
+    document.select("style").forEach(element -> styles.add(element.data()));
+    return styles.stream().anyMatch(style -> {
+      Matcher url = CSS_URL.matcher(style);
+      while (url.find()) {
+        if (isPortalAddress(url.group(1)) && !url.group(1).startsWith("#")) {
+          return true;
+        }
+      }
+      return false;
+    });
   }
 
   /**
