@@ -2021,8 +2021,11 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /**
    * Part of a body given back to update_email_draft, cleaned, refused when the cleaning
-   * took an image of the user's away: the cleaned HTML is compared with the given one,
-   * so the rule is the cleaning's own, whatever the address looks like.
+   * took an image of the user's away: the images of the cleaned HTML are counted against
+   * the given one's, so the rule is the cleaning's own. CSS the count cannot read as the
+   * cleaning reads it -- escapes or comments, which the cleaning decodes first, and the
+   * image functions it renames -- is refused rather than guessed at: the user changes
+   * such a body in the Email app.
    *
    * @param html the HTML
    * @return the cleaned HTML
@@ -2031,12 +2034,38 @@ public class EmailMcpTool implements McpToolPlugin {
    */
   private static String cleanUpdatedHtml(String html) {
     String cleaned = cleanDraftHtml(html);
-    if (imageCount(cleaned) < imageCount(html)) {
+    if (imageCount(cleaned) < imageCount(html) || StringUtils.containsIgnoreCase(cleaned, "x-blocked(") || hasOpaqueStyle(html)) {
       throw new IllegalArgumentException("body_html carries images of the user's (pasted images, a logo): changing it here would "
           + "drop them. Change the subject or the recipients only, and ask the user to change the body in the Email app. "
           + "Nothing was saved.");
     }
     return cleaned;
+  }
+
+  /**
+   * Whether a style of the HTML holds an escape or a comment, which the cleaning decodes
+   * or removes before it reads the CSS, so that counting its images on the text as given
+   * could miss one.
+   *
+   * @param html the HTML, possibly blank
+   * @return true when one does
+   */
+  private static boolean hasOpaqueStyle(String html) {
+    return StringUtils.isNotBlank(html) && stylesOf(Jsoup.parseBodyFragment(html)).stream().anyMatch(style -> style.contains("\\")
+        || style.contains("/*"));
+  }
+
+  /**
+   * The CSS of a document: its style attributes and its style sheets.
+   *
+   * @param document the document
+   * @return the CSS texts
+   */
+  private static List<String> stylesOf(Document document) {
+    List<String> styles = new ArrayList<>();
+    document.select("[style]").forEach(element -> styles.add(element.attr("style")));
+    document.select("style").forEach(element -> styles.add(element.data()));
+    return styles;
   }
 
   /**
@@ -2053,10 +2082,7 @@ public class EmailMcpTool implements McpToolPlugin {
     Document document = Jsoup.parseBodyFragment(html);
     int count = (int) document.select("img[src]").stream().filter(image -> StringUtils.isNotBlank(image.attr("src"))).count();
     count += (int) document.select("[background]").stream().filter(element -> StringUtils.isNotBlank(element.attr("background"))).count();
-    List<String> styles = new ArrayList<>();
-    document.select("[style]").forEach(element -> styles.add(element.attr("style")));
-    document.select("style").forEach(element -> styles.add(element.data()));
-    for (String style : styles) {
+    for (String style : stylesOf(document)) {
       Matcher url = CSS_URL.matcher(style);
       while (url.find()) {
         count++;
