@@ -272,6 +272,20 @@ class EmailMcpToolDraftsTest {
     verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
   }
 
+  /** A body showing an image is refused at creation as at update: what is written here can be changed here. */
+  @Test
+  void createEmailDraftRefusesABodyShowingAnImage() throws Exception {
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailMcpTool.createEmailDraft(List.of("bob@acme.com"),
+                                                     "Hello",
+                                                     "<p>Logo</p><img src=\"data:image/png;base64,AAAA\">",
+                                                     null,
+                                                     null,
+                                                     null,
+                                                     null));
+    verify(emailBoxService, never()).saveDraft(any(), anyString(), anyBoolean());
+  }
+
   /** What the body may carry is kept; what would run is taken out. */
   @Test
   void createEmailDraftKeepsFormattingAndLinksAndDropsScripts() throws Exception {
@@ -381,7 +395,10 @@ class EmailMcpToolDraftsTest {
                                "<p>Hi</p><img src=\" cid:logo@acme.com\">",
                                "<p style=\"background-image:u\\72l('/portal/rest/banner.png')\">Hi</p>",
                                "<p style=\"background:image-set('/portal/rest/banner.png' 1x)\">Hi</p>",
-                               "<p style=\"background:src(data:image/png;base64,AAAA), url('/portal/rest/banner.png')\">Hi</p>",
+                               "<p style=\"background:src(data:image/png;base64,AAAA)\">Hi</p>",
+                               "<p style=\"background:image('/portal/rest/banner.png')\">Hi</p>",
+                               "<p style=\"background:cross-fade(none, none, 50%)\">Hi</p>",
+                               "<p style=\"background:element(#logo)\">Hi</p>",
                                "<p>Logo</p><img src=\"data:image/png;base64,AAAA\">",
                                "<p style=\"background-image:url('/portal/rest/banner.png')\">Hi</p>",
                                "<style>p { background: url(/portal/rest/banner.png) }</style><p>Hi</p>",
