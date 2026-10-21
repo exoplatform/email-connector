@@ -353,6 +353,22 @@ class EmailDelegationFolderAccessTest {
   }
 
   /**
+   * An entry for the delegate that carries no rights reads as no right at all: a folder
+   * no preset names, shown with empty letters, never a failure of the whole list.
+   */
+  @Test
+  void anEntryWithoutRightsReadsAsEmptyLetters() throws Exception {
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted());
+    when(engine.listAcl(any(), eq("Sent"))).thenReturn(List.of(new MailboxAce(GRANTEE_MAILBOX, null, null, null)));
+
+    DelegationFolder sent = byName(service.getFolderAccess(OWNER, 100L), "Sent");
+
+    assertTrue(sent.readable());
+    assertNull(sent.access(), "no preset names an empty set");
+    assertEquals("", sent.rights());
+  }
+
+  /**
    * At most the cap beside INBOX -- the delegate's discovery registers no more -- the
    * role folders first, and the list says when some are left out.
    */
