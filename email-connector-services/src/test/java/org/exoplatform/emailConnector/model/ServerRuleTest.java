@@ -16,12 +16,15 @@
  */
 package org.exoplatform.emailConnector.model;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.Test;
 
@@ -115,6 +118,62 @@ public class ServerRuleTest {
     assertFalse(rule(null, "n", List.of(FROM_A), List.of(STAR, new Action("TAG", null, null, "exo-filter-1"))).isHop());
     HopRef hop = new HopRef("hop-1", "Hop", true, List.of(FROM_A), "exo-filter-1", false);
     assertTrue(hop.toRule().validated().isHop());
+  }
+
+  /**
+   * A domain is accepted exactly as the same language written with a backtracking
+   * repetition accepts it: every string of up to six characters over letters, a digit,
+   * a hyphen and a dot, the label length bounds, and the forms validation meets.
+   */
+  @Test
+  void aDomainIsAcceptedAsItsBacktrackingForm() {
+    Pattern backtracking = Pattern.compile("[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?"
+        + "(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*");
+    List<String> inputs = new ArrayList<>(List.of("acme.com",
+                                                  "mail.acme-corp.co.uk",
+                                                  "@acme.com",
+                                                  "acme.com\"; stop",
+                                                  "-acme.com",
+                                                  "acme-.com",
+                                                  "acme..com",
+                                                  ".acme.com",
+                                                  "acme.com.",
+                                                  "ac_me.com",
+                                                  "exämple.com",
+                                                  "a".repeat(64) + ".com",
+                                                  "a".repeat(65) + ".com",
+                                                  "com." + "a".repeat(64),
+                                                  "com." + "a".repeat(65),
+                                                  "a" + "-".repeat(62) + "a",
+                                                  "a" + "-".repeat(63) + "a"));
+    char[] alphabet = { 'a', 'Z', '0', '-', '.' };
+    List<String> level = List.of("");
+    for (int length = 1; length <= 6; length++) {
+      List<String> next = new ArrayList<>();
+      for (String prefix : level) {
+        for (char letter : alphabet) {
+          next.add(prefix + letter);
+        }
+      }
+      inputs.addAll(next);
+      level = next;
+    }
+    for (String input : inputs) {
+      assertEquals(backtracking.matcher(input).matches(), ServerRule.DOMAIN.matcher(input).matches(), input);
+    }
+    assertTrue(ServerRule.DOMAIN.matcher("mail.acme-corp.co.uk").matches());
+    assertFalse(ServerRule.DOMAIN.matcher("acme-.com").matches());
+  }
+
+  /**
+   * A domain of a great many labels is matched, or refused, without overflowing the stack.
+   */
+  @Test
+  void aLongDomainIsMatchedWithoutAStackOverflow() {
+    String labels = "a" + ".a".repeat(200_000);
+
+    assertTrue(assertDoesNotThrow(() -> ServerRule.DOMAIN.matcher(labels).matches()));
+    assertFalse(assertDoesNotThrow(() -> ServerRule.DOMAIN.matcher(labels + "-").matches()));
   }
 
   /**
