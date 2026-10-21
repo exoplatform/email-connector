@@ -368,7 +368,7 @@ final class SieveRulesSection {
     return switch (operator) {
     case ServerRule.CONTAINS -> command + " :contains " + headers + " " + quoter.quote(value);
     case ServerRule.NOT_CONTAINS -> "not " + command + " :contains " + headers + " " + quoter.quote(value);
-    case ServerRule.EQUALS -> command + " :is " + headers + " " + quoter.quote(value);
+    case ServerRule.EQUALS_OPERATOR -> command + " :is " + headers + " " + quoter.quote(value);
     case ServerRule.STARTS_WITH -> command + " :matches " + headers + " " + quoter.quote(pattern(value) + "*");
     case ServerRule.ENDS_WITH -> command + " :matches " + headers + " " + quoter.quote("*" + pattern(value));
     default -> throw new IllegalStateException("No Sieve for the operator " + operator);
