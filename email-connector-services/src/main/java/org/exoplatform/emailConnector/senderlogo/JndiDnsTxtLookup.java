@@ -53,8 +53,12 @@ public class JndiDnsTxtLookup implements DnsTxtLookup {
   /** The first try's timeout, in ms; the retry waits twice as long. */
   private static final String  INITIAL_TIMEOUT = "1000";
 
-  /** How many times a query is retried. */
-  private static final String  RETRIES         = "1";
+  /**
+   * How many tries a query gets, the first included: the JDK's DNS client reads
+   * {@code com.sun.jndi.dns.timeout.retries} as the number of tries, so two is the
+   * first try and its one retry.
+   */
+  private static final String  RETRIES         = "2";
 
   /** The only names asked: letters, digits, hyphens, underscores and dots. */
   private static final Pattern DNS_NAME        = Pattern.compile("[a-z0-9_.-]{1,253}");
