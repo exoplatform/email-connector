@@ -33,6 +33,7 @@ const config = {
     emailConnectorChatActionExtension: './src/main/webapp/vue-apps/email-connector-chat-extension/main.js',
     emailConnectorFavoriteDrawerExtension: './src/main/webapp/vue-apps/email-connector-favorite-drawer-extension/main.js',
     emailConnectorAiToolGrantGroupExtension: './src/main/webapp/vue-apps/email-connector-ai-tool-grant-group-extension/main.js',
+    emailConnectorAiAgentChatExtension: './src/main/webapp/vue-apps/email-connector-ai-agent-chat-extension/main.js',
     emailSearch: './src/main/webapp/vue-apps/email-connector-search/main.js',
     emailContactsSearch: './src/main/webapp/vue-apps/email-connector-contacts-search/main.js',
     emailConnectorProfileExtension: './src/main/webapp/vue-apps/email-connector-profile-extension/main.js',
