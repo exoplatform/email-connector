@@ -446,22 +446,28 @@ class EmailMcpToolDraftsTest {
   }
 
   /**
-   * A draft created and then failing to take its documents is still answered as
-   * created, with its draft_id: an error would have the caller create it a second time.
+   * A draft created and then failing part way through its documents is still answered
+   * as created, with its draft_id -- an error would have the caller create it a second
+   * time -- and with the files it carries as read again after the failure, so a file
+   * that got there before it is not named again.
    *
    * @throws Exception never, the services are mocked
    */
   @Test
-  void createEmailDraftAnswersTheCreatedDraftWhenItsDocumentsCannotBeAttached() throws Exception {
+  void createEmailDraftAnswersTheCreatedDraftAsStoredWhenItsDocumentsFailPartWay() throws Exception {
     saveDraftEchoes();
     when(emailBoxService.addDocumentAttachments(DRAFT_ID, USERNAME, List.of("doc-1", "doc-1 ")))
                                                                                              .thenThrow(new IllegalStateException("store down"));
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(draftCarrying("brochure.pdf"));
 
     EmailDraftModel model = emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, false,
                                                           List.of("doc-1", "doc-1 "));
 
     assertEquals(DRAFT_ID, model.getDraftId());
-    assertEquals(List.of(new RefusedDocumentModel("doc-1", null, "The file could not be attached.")), model.getRefusedDocuments());
+    assertEquals(List.of("brochure.pdf"), model.getAttachments());
+    assertEquals(1, model.getRefusedDocuments().size());
+    assertEquals("doc-1", model.getRefusedDocuments().get(0).getDocumentId());
+    assertTrue(model.getRefusedDocuments().get(0).getReason().contains("attachments say which files it carries"));
   }
 
   // --- update_email_draft ----------------------------------------------------
