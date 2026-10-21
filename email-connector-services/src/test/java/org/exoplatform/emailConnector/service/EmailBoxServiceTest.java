@@ -9113,6 +9113,31 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * A file store that writes nothing stops the call as a write that throws does: that
+   * document and the ones after it are refused as failed.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void aFileStoreWritingNothingRefusesThatDocumentAndTheRestAsFailed() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    for (String id : List.of("doc-1", "doc-2")) {
+      when(emailDocumentReader.readDocument(eq(id), eq(TEST_USER), anyLong()))
+                                                                            .thenReturn(new EmailDocumentContent(id + ".pdf",
+                                                                                                                 "application/pdf",
+                                                                                                                 new byte[1]));
+    }
+    when(emailBoxStorage.copyDraftAttachment(eq(TEST_USER), eq("draft-1"), eq("doc-1.pdf"), any(), any())).thenReturn(null);
+
+    DocumentAttachments attached = emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1", "doc-2"));
+
+    assertEquals(List.of(new RefusedDocument("doc-1", null, DocumentRefusalReason.FAILED),
+                         new RefusedDocument("doc-2", null, DocumentRefusalReason.FAILED)),
+                 attached.getRefused());
+  }
+
+  /**
    * An id named twice is attached once, and a blank one is ignored.
    *
    * @throws Exception when the mocked plumbing misbehaves
