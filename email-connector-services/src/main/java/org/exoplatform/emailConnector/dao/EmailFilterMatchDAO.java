@@ -30,7 +30,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.exoplatform.emailConnector.entity.EmailFilterMatchEntity;
 
 /**
- * The matches of eXo rules (changeset 1.0.0-74). Inserted through {@code saveAndFlush},
+ * The matches of eXo rules (changeset 1.0.0-exo-90654-05). Inserted through {@code saveAndFlush},
  * whose refusal by the unique key (USER_ID, FILTER_ID, MAIL_HEADER_HASH) is the
  * at-most-once decision; every read is scoped to the owner.
  */

@@ -34,6 +34,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -677,7 +678,7 @@ public class MasterChangelogTest {
   @Test
   void theSharedInboxNotificationBoundaryOnMySqlAndPostgreSql() throws Exception {
     for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
-      // Bounded to its own changeset: 1.0.0-85 adds a NOT NULL column.
+      // Bounded to its own changeset: 1.0.0-exo-90554-01 adds a NOT NULL column.
       String update = offlineUpdateSql(vendor, "1.0.0-84", "1.0.0-84").toUpperCase(Locale.ROOT);
       assertTrue(update.contains("ALTER TABLE EMAIL_FOLDER ADD NOTIFIED_UID BIGINT"), vendor + ": " + update);
       assertFalse(update.contains("NOT NULL"), vendor + " the column is nullable: " + update);
@@ -688,7 +689,7 @@ public class MasterChangelogTest {
   }
 
   /**
-   * EXO-90554 -- 1.0.0-85 adds EMAIL_DELEGATION.SEARCH_INCLUDED, reading TRUE on a row
+   * EXO-90554 -- 1.0.0-exo-90554-01 adds EMAIL_DELEGATION.SEARCH_INCLUDED, reading TRUE on a row
    * that existed before it (searched by default, PO decision Q-6), rolls back to a tag
    * placed immediately before it and applies again.
    *
@@ -698,9 +699,9 @@ public class MasterChangelogTest {
   void theDelegationSearchToggleRollsBackAndReapplies() throws Exception {
     try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback85" + System.nanoTime(), "sa", "")) {
       Liquibase liquibase = newLiquibase(connection);
-      liquibase.update(applicableChangeSetsBefore("1.0.0-85"), new Contexts(), new LabelExpression());
+      liquibase.update(applicableChangeSetsBefore("1.0.0-exo-90554-01"), new Contexts(), new LabelExpression());
       liquibase.tag("before-delegation-search-toggle");
-      assertFalse(columnExists(connection, "EMAIL_DELEGATION", "SEARCH_INCLUDED"), "not before 1.0.0-85");
+      assertFalse(columnExists(connection, "EMAIL_DELEGATION", "SEARCH_INCLUDED"), "not before 1.0.0-exo-90554-01");
       try (Statement statement = connection.createStatement()) {
         statement.executeUpdate("INSERT INTO EMAIL_DELEGATION (ID, GRANTEE_ID, OWNER_ID, OWNER_MAILBOX, CONNECTOR_ID, PRESET, RIGHTS, STATUS,"
             + " ORIGIN, CREATED_DATE, UPDATED_DATE) VALUES (1, 'bob', 'alice', 'alice@acme.com', 7, 'READER', 'lrs', 'ACCEPTED', 'EXO',"
@@ -720,23 +721,23 @@ public class MasterChangelogTest {
   }
 
   /**
-   * EXO-90554 -- 1.0.0-85 as MySQL and PostgreSQL would run it, and its rollback.
+   * EXO-90554 -- 1.0.0-exo-90554-01 as MySQL and PostgreSQL would run it, and its rollback.
    *
    * @throws Exception when the SQL cannot be generated
    */
   @Test
   void theDelegationSearchToggleOnMySqlAndPostgreSql() throws Exception {
     for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
-      String update = offlineUpdateSql(vendor, "1.0.0-85").toUpperCase(Locale.ROOT);
+      String update = offlineUpdateSql(vendor, "1.0.0-exo-90554-01").toUpperCase(Locale.ROOT);
       assertTrue(update.contains("ALTER TABLE EMAIL_DELEGATION ADD SEARCH_INCLUDED") && update.contains("DEFAULT")
           && update.contains("NOT NULL"), vendor + ": " + update);
-      String rollback = offlineRollbackSql(vendor, "1.0.0-85").toUpperCase(Locale.ROOT);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-exo-90554-01").toUpperCase(Locale.ROOT);
       assertTrue(rollback.contains("DROP COLUMN SEARCH_INCLUDED"), vendor + " rollback: " + rollback);
     }
   }
 
   /**
-   * EXO-90595 -- 1.0.0-87 adds EMAIL_BOX.DRAFT_DELEGATION_ID, null on a row that existed
+   * EXO-90595 -- 1.0.0-exo-90595-01 adds EMAIL_BOX.DRAFT_DELEGATION_ID, null on a row that existed
    * before it (a draft of its writer's own mailbox), rolls back to a tag placed
    * immediately before it without touching the rows or the columns before it, and applies
    * again.
@@ -747,9 +748,9 @@ public class MasterChangelogTest {
   void theDraftsMailboxRollsBackAndReapplies() throws Exception {
     try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback87" + System.nanoTime(), "sa", "")) {
       Liquibase liquibase = newLiquibase(connection);
-      liquibase.update(applicableChangeSetsBefore("1.0.0-87"), new Contexts(), new LabelExpression());
+      liquibase.update(applicableChangeSetsBefore("1.0.0-exo-90595-01"), new Contexts(), new LabelExpression());
       liquibase.tag("before-draft-mailbox");
-      assertFalse(columnExists(connection, "EMAIL_BOX", "DRAFT_DELEGATION_ID"), "not before 1.0.0-87");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "DRAFT_DELEGATION_ID"), "not before 1.0.0-exo-90595-01");
       try (Statement statement = connection.createStatement()) {
         statement.executeUpdate("INSERT INTO EMAIL_BOX (ID, USER_ID, SUBJECT, SENDER, RECEIVED_DATE, FOLDER, DRAFT_LOCAL_ID)"
             + " VALUES (1, 'bob', 's', 'Bob,bob@example.org', CURRENT_TIMESTAMP, 'DRAFTS', 'draft-1')");
@@ -778,7 +779,7 @@ public class MasterChangelogTest {
   }
 
   /**
-   * EXO-90595 -- 1.0.0-87 as MySQL and PostgreSQL would run it, bounded to its own
+   * EXO-90595 -- 1.0.0-exo-90595-01 as MySQL and PostgreSQL would run it, bounded to its own
    * changeset: one nullable BIGINT, unquoted, no foreign key, and a rollback that drops
    * it.
    *
@@ -787,18 +788,18 @@ public class MasterChangelogTest {
   @Test
   void theDraftsMailboxOnMySqlAndPostgreSql() throws Exception {
     for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
-      String update = offlineUpdateSql(vendor, "1.0.0-87", "1.0.0-87").toUpperCase(Locale.ROOT);
+      String update = offlineUpdateSql(vendor, "1.0.0-exo-90595-01", "1.0.0-exo-90595-01").toUpperCase(Locale.ROOT);
       assertTrue(update.contains("ALTER TABLE EMAIL_BOX ADD DRAFT_DELEGATION_ID BIGINT"), vendor + ": " + update);
       assertFalse(update.contains("NOT NULL"), vendor + " the column is nullable: " + update);
       assertFalse(update.contains("FOREIGN KEY") || update.contains("REFERENCES"), vendor + " no foreign key: " + update);
       assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
-      String rollback = offlineRollbackSql(vendor, "1.0.0-87", "1.0.0-87").toUpperCase(Locale.ROOT).trim();
+      String rollback = offlineRollbackSql(vendor, "1.0.0-exo-90595-01", "1.0.0-exo-90595-01").toUpperCase(Locale.ROOT).trim();
       assertEquals("ALTER TABLE EMAIL_BOX DROP COLUMN DRAFT_DELEGATION_ID;", rollback, vendor + " rollback drops that column only");
     }
   }
 
   /**
-   * EXO-90556 -- 1.0.0-86 adds the nullable EMAIL_DELEGATION.FOLDER_ACCESS to a table
+   * EXO-90556 -- 1.0.0-exo-90556-01 adds the nullable EMAIL_DELEGATION.FOLDER_ACCESS to a table
    * that already holds a share, which reads null -- every role folder follows its
    * preset, as it did -- and keeps its grant record; the changeset rolls back to a tag
    * placed immediately before it, dropping the column and nothing else, and applies
@@ -810,16 +811,16 @@ public class MasterChangelogTest {
   void theDelegationFolderAccessRollsBackAndReapplies() throws Exception {
     try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback86" + System.nanoTime(), "sa", "")) {
       Liquibase liquibase = newLiquibase(connection);
-      liquibase.update(applicableChangeSetsBefore("1.0.0-86"), new Contexts(), new LabelExpression());
+      liquibase.update(applicableChangeSetsBefore("1.0.0-exo-90556-01"), new Contexts(), new LabelExpression());
       liquibase.tag("before-delegation-folder-access");
-      assertFalse(columnExists(connection, "EMAIL_DELEGATION", "FOLDER_ACCESS"), "not before 1.0.0-86");
+      assertFalse(columnExists(connection, "EMAIL_DELEGATION", "FOLDER_ACCESS"), "not before 1.0.0-exo-90556-01");
       try (Statement statement = connection.createStatement()) {
         statement.executeUpdate("INSERT INTO EMAIL_DELEGATION (ID, GRANTEE_ID, OWNER_ID, OWNER_MAILBOX, CONNECTOR_ID, PRESET, RIGHTS, STATUS,"
             + " ORIGIN, GRANTED_ROLES, CREATED_DATE, UPDATED_DATE) VALUES (1, 'bob', 'alice', 'alice@acme.com', 7, 'EDITOR', 'lrswite',"
             + " 'ACCEPTED', 'EXO', 'INBOX,SENT,TRASH', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
       }
       liquibase.update("");
-      assertEquals(100, columnSize(connection, "EMAIL_DELEGATION", "FOLDER_ACCESS"), "1.0.0-86 adds EMAIL_DELEGATION.FOLDER_ACCESS");
+      assertEquals(100, columnSize(connection, "EMAIL_DELEGATION", "FOLDER_ACCESS"), "1.0.0-exo-90556-01 adds EMAIL_DELEGATION.FOLDER_ACCESS");
       try (Statement statement = connection.createStatement()) {
         try (ResultSet row = statement.executeQuery("SELECT FOLDER_ACCESS, GRANTED_ROLES FROM EMAIL_DELEGATION WHERE ID = 1")) {
           assertTrue(row.next());
@@ -831,14 +832,14 @@ public class MasterChangelogTest {
       liquibase.rollback("before-delegation-folder-access", "");
       assertFalse(columnExists(connection, "EMAIL_DELEGATION", "FOLDER_ACCESS"), "the rollback drops it");
       assertTrue(columnExists(connection, "EMAIL_DELEGATION", "SEARCH_INCLUDED"), "and nothing before it");
-      assertTrue(columnExists(connection, "EMAIL_BOX", "DRAFT_DELEGATION_ID"), "not 1.0.0-87 either, which runs before it");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "DRAFT_DELEGATION_ID"), "not 1.0.0-exo-90595-01 either, which runs before it");
       liquibase.update("");
       assertTrue(columnExists(connection, "EMAIL_DELEGATION", "FOLDER_ACCESS"), "the changeset applies again after its rollback");
     }
   }
 
   /**
-   * EXO-90556 -- 1.0.0-86 as MySQL and PostgreSQL would run it, bounded to its own
+   * EXO-90556 -- 1.0.0-exo-90556-01 as MySQL and PostgreSQL would run it, bounded to its own
    * changeset: one nullable, unquoted VARCHAR(100), and a rollback that drops it.
    *
    * @throws Exception when the SQL cannot be generated
@@ -846,17 +847,17 @@ public class MasterChangelogTest {
   @Test
   void theDelegationFolderAccessOnMySqlAndPostgreSql() throws Exception {
     for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
-      String update = offlineUpdateSql(vendor, "1.0.0-86", "1.0.0-86").toUpperCase(Locale.ROOT);
+      String update = offlineUpdateSql(vendor, "1.0.0-exo-90556-01", "1.0.0-exo-90556-01").toUpperCase(Locale.ROOT);
       assertTrue(update.contains("ALTER TABLE EMAIL_DELEGATION ADD FOLDER_ACCESS VARCHAR(100)"), vendor + ": " + update);
       assertFalse(update.contains("NOT NULL"), vendor + " the column is nullable: " + update);
       assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
-      String rollback = offlineRollbackSql(vendor, "1.0.0-86", "1.0.0-86").toUpperCase(Locale.ROOT).trim();
+      String rollback = offlineRollbackSql(vendor, "1.0.0-exo-90556-01", "1.0.0-exo-90556-01").toUpperCase(Locale.ROOT).trim();
       assertEquals("ALTER TABLE EMAIL_DELEGATION DROP COLUMN FOLDER_ACCESS;", rollback, vendor + " rollback drops that column only");
     }
   }
 
   /**
-   * EXO-90582 -- 1.0.0-88 adds EMAIL_DELEGATION.SEND_MODE, SEND_MODE_DATE and
+   * EXO-90582 -- 1.0.0-exo-90582-01 adds EMAIL_DELEGATION.SEND_MODE, SEND_MODE_DATE and
    * SEND_REFUSED_DATE to a table that already holds a share, which reads no consent and
    * keeps what it held; the changeset rolls back to a tag placed immediately before it,
    * dropping those three columns and nothing else, and applies again.
@@ -867,17 +868,17 @@ public class MasterChangelogTest {
   void theDelegationSendModeRollsBackAndReapplies() throws Exception {
     try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback88" + System.nanoTime(), "sa", "")) {
       Liquibase liquibase = newLiquibase(connection);
-      liquibase.update(applicableChangeSetsBefore("1.0.0-88"), new Contexts(), new LabelExpression());
+      liquibase.update(applicableChangeSetsBefore("1.0.0-exo-90582-01"), new Contexts(), new LabelExpression());
       liquibase.tag("before-delegation-send-mode");
-      assertFalse(columnExists(connection, "EMAIL_DELEGATION", "SEND_MODE"), "not before 1.0.0-88");
-      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "FOLDER_ACCESS"), "1.0.0-86 runs before it");
+      assertFalse(columnExists(connection, "EMAIL_DELEGATION", "SEND_MODE"), "not before 1.0.0-exo-90582-01");
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "FOLDER_ACCESS"), "1.0.0-exo-90556-01 runs before it");
       try (Statement statement = connection.createStatement()) {
         statement.executeUpdate("INSERT INTO EMAIL_DELEGATION (ID, GRANTEE_ID, OWNER_ID, OWNER_MAILBOX, CONNECTOR_ID, PRESET, RIGHTS, STATUS,"
             + " ORIGIN, FOLDER_ACCESS, CREATED_DATE, UPDATED_DATE) VALUES (1, 'bob', 'alice', 'alice@acme.com', 7, 'EDITOR', 'lrswite',"
             + " 'ACCEPTED', 'EXO', 'TRASH=READER', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
       }
       liquibase.update("");
-      assertEquals(16, columnSize(connection, "EMAIL_DELEGATION", "SEND_MODE"), "1.0.0-88 adds EMAIL_DELEGATION.SEND_MODE");
+      assertEquals(16, columnSize(connection, "EMAIL_DELEGATION", "SEND_MODE"), "1.0.0-exo-90582-01 adds EMAIL_DELEGATION.SEND_MODE");
       assertTrue(columnExists(connection, "EMAIL_DELEGATION", "SEND_MODE_DATE"), "and SEND_MODE_DATE");
       assertTrue(columnExists(connection, "EMAIL_DELEGATION", "SEND_REFUSED_DATE"), "and SEND_REFUSED_DATE");
       try (Statement statement = connection.createStatement()) {
@@ -896,14 +897,14 @@ public class MasterChangelogTest {
         assertFalse(columnExists(connection, "EMAIL_DELEGATION", column), "the rollback drops " + column);
       }
       assertTrue(columnExists(connection, "EMAIL_DELEGATION", "FOLDER_ACCESS"), "and nothing before it");
-      assertTrue(columnExists(connection, "EMAIL_BOX", "DRAFT_DELEGATION_ID"), "not 1.0.0-87 either");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "DRAFT_DELEGATION_ID"), "not 1.0.0-exo-90595-01 either");
       liquibase.update("");
       assertTrue(columnExists(connection, "EMAIL_DELEGATION", "SEND_MODE"), "the changeset applies again after its rollback");
     }
   }
 
   /**
-   * EXO-90582 -- 1.0.0-88 as MySQL and PostgreSQL would run it, bounded to its own
+   * EXO-90582 -- 1.0.0-exo-90582-01 as MySQL and PostgreSQL would run it, bounded to its own
    * changeset: three nullable, unquoted columns, no default, and a rollback that drops
    * those three only.
    *
@@ -912,14 +913,14 @@ public class MasterChangelogTest {
   @Test
   void theDelegationSendModeOnMySqlAndPostgreSql() throws Exception {
     for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
-      String update = offlineUpdateSql(vendor, "1.0.0-88", "1.0.0-88").toUpperCase(Locale.ROOT);
+      String update = offlineUpdateSql(vendor, "1.0.0-exo-90582-01", "1.0.0-exo-90582-01").toUpperCase(Locale.ROOT);
       assertTrue(update.contains("SEND_MODE VARCHAR(16)"), vendor + ": " + update);
       assertTrue(update.contains("SEND_MODE_DATE") && update.contains("SEND_REFUSED_DATE"), vendor + ": " + update);
       assertTrue(update.contains("ALTER TABLE EMAIL_DELEGATION"), vendor + ": " + update);
       assertFalse(update.contains("NOT NULL"), vendor + " every column is nullable: " + update);
       assertFalse(update.contains("DEFAULT"), vendor + " no default: " + update);
       assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
-      String rollback = offlineRollbackSql(vendor, "1.0.0-88", "1.0.0-88").toUpperCase(Locale.ROOT).trim();
+      String rollback = offlineRollbackSql(vendor, "1.0.0-exo-90582-01", "1.0.0-exo-90582-01").toUpperCase(Locale.ROOT).trim();
       assertEquals("ALTER TABLE EMAIL_DELEGATION DROP COLUMN SEND_REFUSED_DATE;\n"
           + "ALTER TABLE EMAIL_DELEGATION DROP COLUMN SEND_MODE_DATE;\n"
           + "ALTER TABLE EMAIL_DELEGATION DROP COLUMN SEND_MODE;", rollback, vendor + " rollback drops those three only");
@@ -927,7 +928,7 @@ public class MasterChangelogTest {
   }
 
   /**
-   * EXO-90584 -- 1.0.0-89 adds EMAIL_BOX.DRAFT_SEND_MODE, null on a draft that existed
+   * EXO-90584 -- 1.0.0-exo-90584-01 adds EMAIL_BOX.DRAFT_SEND_MODE, null on a draft that existed
    * before it (it never said in which name it goes out) and leaving its mailbox as it was;
    * rolls back to a tag placed immediately before it, dropping that column and nothing
    * else, the draft kept; and applies again.
@@ -938,16 +939,16 @@ public class MasterChangelogTest {
   void theDraftSendModeRollsBackAndReapplies() throws Exception {
     try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback89" + System.nanoTime(), "sa", "")) {
       Liquibase liquibase = newLiquibase(connection);
-      liquibase.update(applicableChangeSetsBefore("1.0.0-89"), new Contexts(), new LabelExpression());
+      liquibase.update(applicableChangeSetsBefore("1.0.0-exo-90584-01"), new Contexts(), new LabelExpression());
       liquibase.tag("before-draft-send-mode");
-      assertFalse(columnExists(connection, "EMAIL_BOX", "DRAFT_SEND_MODE"), "not before 1.0.0-89");
-      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "SEND_MODE"), "1.0.0-88 runs before it");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "DRAFT_SEND_MODE"), "not before 1.0.0-exo-90584-01");
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "SEND_MODE"), "1.0.0-exo-90582-01 runs before it");
       try (Statement statement = connection.createStatement()) {
         statement.executeUpdate("INSERT INTO EMAIL_BOX (ID, USER_ID, SUBJECT, SENDER, RECEIVED_DATE, FOLDER, DRAFT_LOCAL_ID,"
             + " DRAFT_DELEGATION_ID) VALUES (1, 'bob', 's', 'Bob,bob@example.org', CURRENT_TIMESTAMP, 'DRAFTS', 'draft-1', 100)");
       }
       liquibase.update("");
-      assertEquals(16, columnSize(connection, "EMAIL_BOX", "DRAFT_SEND_MODE"), "1.0.0-89 adds EMAIL_BOX.DRAFT_SEND_MODE");
+      assertEquals(16, columnSize(connection, "EMAIL_BOX", "DRAFT_SEND_MODE"), "1.0.0-exo-90584-01 adds EMAIL_BOX.DRAFT_SEND_MODE");
       try (Statement statement = connection.createStatement()) {
         try (ResultSet row = statement.executeQuery("SELECT DRAFT_SEND_MODE, DRAFT_DELEGATION_ID FROM EMAIL_BOX WHERE ID = 1")) {
           assertTrue(row.next());
@@ -959,7 +960,7 @@ public class MasterChangelogTest {
       liquibase.rollback("before-draft-send-mode", "");
       assertFalse(columnExists(connection, "EMAIL_BOX", "DRAFT_SEND_MODE"), "the rollback drops it");
       assertTrue(columnExists(connection, "EMAIL_BOX", "DRAFT_DELEGATION_ID"), "and nothing before it");
-      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "SEND_MODE"), "not 1.0.0-88 either");
+      assertTrue(columnExists(connection, "EMAIL_DELEGATION", "SEND_MODE"), "not 1.0.0-exo-90582-01 either");
       try (Statement statement = connection.createStatement();
           ResultSet row = statement.executeQuery("SELECT DRAFT_LOCAL_ID, DRAFT_DELEGATION_ID FROM EMAIL_BOX WHERE ID = 1")) {
         assertTrue(row.next(), "the draft itself survives the rollback");
@@ -972,7 +973,7 @@ public class MasterChangelogTest {
   }
 
   /**
-   * EXO-90584 -- 1.0.0-89 as MySQL and PostgreSQL would run it, bounded to its own
+   * EXO-90584 -- 1.0.0-exo-90584-01 as MySQL and PostgreSQL would run it, bounded to its own
    * changeset: one nullable, unquoted VARCHAR(16) with no default, and a rollback that
    * drops that column only.
    *
@@ -981,18 +982,18 @@ public class MasterChangelogTest {
   @Test
   void theDraftSendModeOnMySqlAndPostgreSql() throws Exception {
     for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
-      String update = offlineUpdateSql(vendor, "1.0.0-89", "1.0.0-89").toUpperCase(Locale.ROOT);
+      String update = offlineUpdateSql(vendor, "1.0.0-exo-90584-01", "1.0.0-exo-90584-01").toUpperCase(Locale.ROOT);
       assertTrue(update.contains("ALTER TABLE EMAIL_BOX ADD DRAFT_SEND_MODE VARCHAR(16)"), vendor + ": " + update);
       assertFalse(update.contains("NOT NULL"), vendor + " the column is nullable: " + update);
       assertFalse(update.contains("DEFAULT"), vendor + " no default: " + update);
       assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
-      String rollback = offlineRollbackSql(vendor, "1.0.0-89", "1.0.0-89").toUpperCase(Locale.ROOT).trim();
+      String rollback = offlineRollbackSql(vendor, "1.0.0-exo-90584-01", "1.0.0-exo-90584-01").toUpperCase(Locale.ROOT).trim();
       assertEquals("ALTER TABLE EMAIL_BOX DROP COLUMN DRAFT_SEND_MODE;", rollback, vendor + " rollback drops that column only");
     }
   }
 
   /**
-   * EXO-90626 -- 1.0.0-90 adds EMAIL_DELEGATION.SEND_REFUSED_MODE to a table that already
+   * EXO-90626 -- 1.0.0-exo-90626-01 adds EMAIL_DELEGATION.SEND_REFUSED_MODE to a table that already
    * holds a share refused before it: null there (a refusal that named no shape) beside
    * the date it kept; rolls back to a tag placed immediately before it, dropping that
    * column and nothing else, the refusal's date kept; and applies again.
@@ -1003,10 +1004,10 @@ public class MasterChangelogTest {
   void theSendRefusedModeRollsBackAndReapplies() throws Exception {
     try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback90" + System.nanoTime(), "sa", "")) {
       Liquibase liquibase = newLiquibase(connection);
-      liquibase.update(applicableChangeSetsBefore("1.0.0-90"), new Contexts(), new LabelExpression());
+      liquibase.update(applicableChangeSetsBefore("1.0.0-exo-90626-01"), new Contexts(), new LabelExpression());
       liquibase.tag("before-send-refused-mode");
-      assertFalse(columnExists(connection, "EMAIL_DELEGATION", "SEND_REFUSED_MODE"), "not before 1.0.0-90");
-      assertTrue(columnExists(connection, "EMAIL_BOX", "DRAFT_SEND_MODE"), "1.0.0-89 runs before it");
+      assertFalse(columnExists(connection, "EMAIL_DELEGATION", "SEND_REFUSED_MODE"), "not before 1.0.0-exo-90626-01");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "DRAFT_SEND_MODE"), "1.0.0-exo-90584-01 runs before it");
       try (Statement statement = connection.createStatement()) {
         statement.executeUpdate("INSERT INTO EMAIL_DELEGATION (ID, GRANTEE_ID, OWNER_ID, OWNER_MAILBOX, CONNECTOR_ID, PRESET, RIGHTS, STATUS,"
             + " ORIGIN, SEND_MODE, SEND_MODE_DATE, SEND_REFUSED_DATE, CREATED_DATE, UPDATED_DATE) VALUES (1, 'bob', 'alice',"
@@ -1014,7 +1015,7 @@ public class MasterChangelogTest {
             + " CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
       }
       liquibase.update("");
-      assertEquals(16, columnSize(connection, "EMAIL_DELEGATION", "SEND_REFUSED_MODE"), "1.0.0-90 adds EMAIL_DELEGATION.SEND_REFUSED_MODE");
+      assertEquals(16, columnSize(connection, "EMAIL_DELEGATION", "SEND_REFUSED_MODE"), "1.0.0-exo-90626-01 adds EMAIL_DELEGATION.SEND_REFUSED_MODE");
       try (Statement statement = connection.createStatement()) {
         try (ResultSet row = statement.executeQuery("SELECT SEND_REFUSED_MODE, SEND_REFUSED_DATE, SEND_MODE FROM EMAIL_DELEGATION WHERE ID = 1")) {
           assertTrue(row.next());
@@ -1027,7 +1028,7 @@ public class MasterChangelogTest {
       liquibase.rollback("before-send-refused-mode", "");
       assertFalse(columnExists(connection, "EMAIL_DELEGATION", "SEND_REFUSED_MODE"), "the rollback drops it");
       assertTrue(columnExists(connection, "EMAIL_DELEGATION", "SEND_REFUSED_DATE"), "and nothing before it");
-      assertTrue(columnExists(connection, "EMAIL_BOX", "DRAFT_SEND_MODE"), "not 1.0.0-89 either");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "DRAFT_SEND_MODE"), "not 1.0.0-exo-90584-01 either");
       try (Statement statement = connection.createStatement();
           ResultSet row = statement.executeQuery("SELECT SEND_REFUSED_DATE, SEND_MODE FROM EMAIL_DELEGATION WHERE ID = 1")) {
         assertTrue(row.next(), "the share itself survives the rollback");
@@ -1040,7 +1041,7 @@ public class MasterChangelogTest {
   }
 
   /**
-   * EXO-90626 -- 1.0.0-90 as MySQL and PostgreSQL would run it, bounded to its own
+   * EXO-90626 -- 1.0.0-exo-90626-01 as MySQL and PostgreSQL would run it, bounded to its own
    * changeset: one nullable, unquoted VARCHAR(16) with no default, and a rollback that
    * drops that column only.
    *
@@ -1049,19 +1050,19 @@ public class MasterChangelogTest {
   @Test
   void theSendRefusedModeOnMySqlAndPostgreSql() throws Exception {
     for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
-      String update = offlineUpdateSql(vendor, "1.0.0-90", "1.0.0-90").toUpperCase(Locale.ROOT);
+      String update = offlineUpdateSql(vendor, "1.0.0-exo-90626-01", "1.0.0-exo-90626-01").toUpperCase(Locale.ROOT);
       assertTrue(update.contains("ALTER TABLE EMAIL_DELEGATION ADD SEND_REFUSED_MODE VARCHAR(16)"), vendor + ": " + update);
       assertFalse(update.contains("NOT NULL"), vendor + " the column is nullable: " + update);
       assertFalse(update.contains("DEFAULT"), vendor + " no default: " + update);
       assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
-      String rollback = offlineRollbackSql(vendor, "1.0.0-90", "1.0.0-90").toUpperCase(Locale.ROOT).trim();
+      String rollback = offlineRollbackSql(vendor, "1.0.0-exo-90626-01", "1.0.0-exo-90626-01").toUpperCase(Locale.ROOT).trim();
       assertEquals("ALTER TABLE EMAIL_DELEGATION DROP COLUMN SEND_REFUSED_MODE;", rollback, vendor + " rollback drops that column only");
     }
   }
 
   /**
-   * EXO-90654 -- the mail filters' changesets (1.0.0-70 to -75) apply, roll back and
-   * apply again, to a tag placed immediately before 1.0.0-70 for the reason the folder
+   * EXO-90654 -- the mail filters' changesets (1.0.0-exo-90654-01 to -06) apply, roll back and
+   * apply again, to a tag placed immediately before 1.0.0-exo-90654-01 for the reason the folder
    * registry's test gives. They sit before 1.0.0-76 in the file, where their ids were
    * reserved, so the rollback also undoes the delegation changesets after them, and the
    * re-apply brings everything back. Between the two, the keys are exercised: one match
@@ -1074,17 +1075,17 @@ public class MasterChangelogTest {
   void theMailFilterChangesetsRollBackAndReapply() throws Exception {
     try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback70" + System.nanoTime(), "sa", "")) {
       Liquibase liquibase = newLiquibase(connection);
-      liquibase.update(applicableChangeSetsBefore("1.0.0-70"), new Contexts(), new LabelExpression());
+      liquibase.update(applicableChangeSetsBefore("1.0.0-exo-90654-01"), new Contexts(), new LabelExpression());
       liquibase.tag("before-mail-filters");
-      assertFalse(tableExists(connection, "EMAIL_FILTER"), "sanity: not there before 1.0.0-71");
+      assertFalse(tableExists(connection, "EMAIL_FILTER"), "sanity: not there before 1.0.0-exo-90654-02");
       assertTrue(tableExists(connection, "EMAIL_READ_RECEIPT_ANSWER"), "1.0.0-68 runs before it");
       liquibase.update("");
-      assertTrue(sequenceExists(connection, "SEQ_EMAIL_FILTER_ID"), "1.0.0-70 creates the rules' sequence");
-      assertTrue(tableExists(connection, "EMAIL_FILTER"), "1.0.0-71 creates EMAIL_FILTER");
+      assertTrue(sequenceExists(connection, "SEQ_EMAIL_FILTER_ID"), "1.0.0-exo-90654-01 creates the rules' sequence");
+      assertTrue(tableExists(connection, "EMAIL_FILTER"), "1.0.0-exo-90654-02 creates EMAIL_FILTER");
       assertTrue(indexExists(connection, "EMAIL_FILTER", "IDX_EMAIL_FILTER_USER"), "and its listing index");
       assertTrue(indexExists(connection, "EMAIL_FILTER", "UK_EMAIL_FILTER_TAG"), "and its keyword key");
-      assertTrue(sequenceExists(connection, "SEQ_EMAIL_FILTER_MATCH_ID"), "1.0.0-73 creates the matches' sequence");
-      assertTrue(tableExists(connection, "EMAIL_FILTER_MATCH"), "1.0.0-74 creates EMAIL_FILTER_MATCH");
+      assertTrue(sequenceExists(connection, "SEQ_EMAIL_FILTER_MATCH_ID"), "1.0.0-exo-90654-04 creates the matches' sequence");
+      assertTrue(tableExists(connection, "EMAIL_FILTER_MATCH"), "1.0.0-exo-90654-05 creates EMAIL_FILTER_MATCH");
       for (String index : List.of("UK_EMAIL_FILTER_MATCH", "IDX_EMAIL_FILTER_MATCH_AGENT", "IDX_EMAIL_FILTER_MATCH_MAIL")) {
         assertTrue(indexExists(connection, "EMAIL_FILTER_MATCH", index), index);
       }
@@ -1110,7 +1111,7 @@ public class MasterChangelogTest {
   /**
    * EXO-90654 -- the mail filters' changesets as MySQL and PostgreSQL would run them,
    * bounded to their own ids: the auto-increment / sequence split, the table options and
-   * the binary collations of 1.0.0-72 and -75 on MySQL, the NOT NULL columns and their
+   * the binary collations of 1.0.0-exo-90654-03 and -06 on MySQL, the NOT NULL columns and their
    * defaults, the keys on both, and a rollback that drops the indexes before their
    * tables and, on PostgreSQL, the sequences last.
    *
@@ -1118,7 +1119,7 @@ public class MasterChangelogTest {
    */
   @Test
   void theMailFilterChangesetsOnMySqlAndPostgreSql() throws Exception {
-    String mysql = offlineUpdateSql("mysql?version=8.0.17", "1.0.0-70", "1.0.0-75");
+    String mysql = offlineUpdateSql("mysql?version=8.0.17", "1.0.0-exo-90654-01", "1.0.0-exo-90654-06");
     for (String table : List.of("EMAIL_FILTER", "EMAIL_FILTER_MATCH")) {
       Matcher create = Pattern.compile("CREATE TABLE " + table + " \\(.*?\\)[^;]*", Pattern.DOTALL).matcher(mysql);
       assertTrue(create.find(), "no CREATE TABLE " + table + " in the MySQL SQL: " + mysql);
@@ -1132,7 +1133,7 @@ public class MasterChangelogTest {
                "and the keyword: " + mysql);
     assertFalse(mysql.contains("SEQ_EMAIL_FILTER"), "no sequence on MySQL");
 
-    String postgresql = offlineUpdateSql("postgresql?version=15", "1.0.0-70", "1.0.0-75");
+    String postgresql = offlineUpdateSql("postgresql?version=15", "1.0.0-exo-90654-01", "1.0.0-exo-90654-06");
     assertTrue(postgresql.contains("CREATE SEQUENCE  IF NOT EXISTS SEQ_EMAIL_FILTER_ID START WITH 1"), postgresql);
     assertTrue(postgresql.contains("CREATE SEQUENCE  IF NOT EXISTS SEQ_EMAIL_FILTER_MATCH_ID START WITH 1"), postgresql);
     assertTrue(postgresql.indexOf("SEQ_EMAIL_FILTER_ID") < postgresql.indexOf("CREATE TABLE EMAIL_FILTER (ID BIGINT NOT NULL,"),
@@ -1140,7 +1141,7 @@ public class MasterChangelogTest {
     assertFalse(postgresql.contains("ALTER TABLE EMAIL_FILTER ENGINE"), "no MySQL options elsewhere");
 
     for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
-      String update = offlineUpdateSql(vendor, "1.0.0-70", "1.0.0-75").toUpperCase(Locale.ROOT);
+      String update = offlineUpdateSql(vendor, "1.0.0-exo-90654-01", "1.0.0-exo-90654-06").toUpperCase(Locale.ROOT);
       assertTrue(update.contains("CREATE UNIQUE INDEX UK_EMAIL_FILTER_MATCH ON EMAIL_FILTER_MATCH(USER_ID, FILTER_ID, MAIL_HEADER_HASH)"),
                  vendor + ": " + update);
       assertTrue(update.contains("CREATE UNIQUE INDEX UK_EMAIL_FILTER_TAG ON EMAIL_FILTER(TAG_KEYWORD)"), vendor + ": " + update);
@@ -1155,7 +1156,7 @@ public class MasterChangelogTest {
       }
       assertTrue(Pattern.compile("MAILBOX_SCOPE VARCHAR\\(20\\) DEFAULT 'OWN' NOT NULL").matcher(update).find(), vendor + ": " + update);
       assertTrue(Pattern.compile("AGENT_STATUS VARCHAR\\(20\\) DEFAULT 'NONE' NOT NULL").matcher(update).find(), vendor + ": " + update);
-      String rollback = offlineRollbackSql(vendor, "1.0.0-70", "1.0.0-75").toUpperCase(Locale.ROOT);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-exo-90654-01", "1.0.0-exo-90654-06").toUpperCase(Locale.ROOT);
       int matchKey = rollback.indexOf("UK_EMAIL_FILTER_MATCH");
       int matchTable = rollback.indexOf("DROP TABLE EMAIL_FILTER_MATCH");
       int tagKey = rollback.indexOf("UK_EMAIL_FILTER_TAG");
@@ -1163,13 +1164,13 @@ public class MasterChangelogTest {
       assertTrue(matchKey >= 0 && matchTable > matchKey, vendor + " the match key, then its table: " + rollback);
       assertTrue(tagKey > matchTable && filterTable > tagKey, vendor + " then the rule's key, then its table: " + rollback);
     }
-    String postgresqlRollback = offlineRollbackSql("postgresql?version=15", "1.0.0-70", "1.0.0-75");
+    String postgresqlRollback = offlineRollbackSql("postgresql?version=15", "1.0.0-exo-90654-01", "1.0.0-exo-90654-06");
     assertTrue(postgresqlRollback.contains("DROP SEQUENCE SEQ_EMAIL_FILTER_MATCH_ID")
         && postgresqlRollback.contains("DROP SEQUENCE SEQ_EMAIL_FILTER_ID"), "and the sequences: " + postgresqlRollback);
   }
 
   /**
-   * EXO-90659 -- the proposals' changesets (1.0.0-94 to -97) apply, roll back and apply
+   * EXO-90659 -- the proposals' changesets (1.0.0-exo-90659-01 to -04) apply, roll back and apply
    * again, to a tag placed immediately before them: the sequence, the table and its two
    * indexes, and the cascading foreign key to the match; one call once per match; a
    * match deleted takes its proposals along; after the rollback the table and its
@@ -1181,13 +1182,13 @@ public class MasterChangelogTest {
   void theFilterProposalChangesetsRollBackAndReapply() throws Exception {
     try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback94" + System.nanoTime(), "sa", "")) {
       Liquibase liquibase = newLiquibase(connection);
-      liquibase.update(applicableChangeSetsBefore("1.0.0-94"), new Contexts(), new LabelExpression());
+      liquibase.update(applicableChangeSetsBefore("1.0.0-exo-90659-01"), new Contexts(), new LabelExpression());
       liquibase.tag("before-filter-proposals");
-      assertFalse(tableExists(connection, "EMAIL_FILTER_PROPOSAL"), "sanity: not there before 1.0.0-95");
-      assertTrue(tableExists(connection, "EMAIL_FILTER_MATCH"), "1.0.0-74 runs before it");
+      assertFalse(tableExists(connection, "EMAIL_FILTER_PROPOSAL"), "sanity: not there before 1.0.0-exo-90659-02");
+      assertTrue(tableExists(connection, "EMAIL_FILTER_MATCH"), "1.0.0-exo-90654-05 runs before it");
       liquibase.update("");
-      assertTrue(sequenceExists(connection, "SEQ_EMAIL_FILTER_PROPOSAL_ID"), "1.0.0-94 creates the sequence");
-      assertTrue(tableExists(connection, "EMAIL_FILTER_PROPOSAL"), "1.0.0-95 creates EMAIL_FILTER_PROPOSAL");
+      assertTrue(sequenceExists(connection, "SEQ_EMAIL_FILTER_PROPOSAL_ID"), "1.0.0-exo-90659-01 creates the sequence");
+      assertTrue(tableExists(connection, "EMAIL_FILTER_PROPOSAL"), "1.0.0-exo-90659-02 creates EMAIL_FILTER_PROPOSAL");
       for (String index : List.of("UK_EMAIL_FILTER_PROPOSAL", "IDX_EMAIL_FILTER_PROPOSAL_USER")) {
         assertTrue(indexExists(connection, "EMAIL_FILTER_PROPOSAL", index), index);
       }
@@ -1215,7 +1216,7 @@ public class MasterChangelogTest {
    */
   @Test
   void theFilterProposalChangesetsOnMySqlAndPostgreSql() throws Exception {
-    String mysql = offlineUpdateSql("mysql?version=8.0.17", "1.0.0-94", "1.0.0-97");
+    String mysql = offlineUpdateSql("mysql?version=8.0.17", "1.0.0-exo-90659-01", "1.0.0-exo-90659-04");
     Matcher create = Pattern.compile("CREATE TABLE EMAIL_FILTER_PROPOSAL \\(.*?\\)[^;]*", Pattern.DOTALL).matcher(mysql);
     assertTrue(create.find(), "no CREATE TABLE EMAIL_FILTER_PROPOSAL in the MySQL SQL: " + mysql);
     assertTrue(create.group().contains("AUTO_INCREMENT"), "MySQL ids come from an auto-increment: " + create.group());
@@ -1223,11 +1224,11 @@ public class MasterChangelogTest {
     int owner = mysql.indexOf("ALTER TABLE EMAIL_FILTER_PROPOSAL MODIFY USER_ID VARCHAR(250) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL");
     int foreignKey = mysql.indexOf("ADD CONSTRAINT FK_EMAIL_FILTER_PROPOSAL_MATCH FOREIGN KEY (MATCH_ID) REFERENCES EMAIL_FILTER_MATCH (ID)"
         + " ON DELETE CASCADE");
-    assertTrue(options > 0 && owner > 0, "the table options and the binary owner of 1.0.0-96: " + mysql);
-    assertTrue(foreignKey > options && foreignKey > owner, "the cascading key of 1.0.0-97, after them: " + mysql);
+    assertTrue(options > 0 && owner > 0, "the table options and the binary owner of 1.0.0-exo-90659-03: " + mysql);
+    assertTrue(foreignKey > options && foreignKey > owner, "the cascading key of 1.0.0-exo-90659-04, after them: " + mysql);
     assertFalse(mysql.contains("SEQ_EMAIL_FILTER_PROPOSAL_ID"), "no sequence on MySQL");
 
-    String postgresql = offlineUpdateSql("postgresql?version=15", "1.0.0-94", "1.0.0-97");
+    String postgresql = offlineUpdateSql("postgresql?version=15", "1.0.0-exo-90659-01", "1.0.0-exo-90659-04");
     assertTrue(postgresql.contains("CREATE SEQUENCE  IF NOT EXISTS SEQ_EMAIL_FILTER_PROPOSAL_ID START WITH 1"), postgresql);
     assertTrue(postgresql.indexOf("SEQ_EMAIL_FILTER_PROPOSAL_ID") < postgresql.indexOf("CREATE TABLE EMAIL_FILTER_PROPOSAL (ID BIGINT NOT NULL,"),
                "created before its table, with no auto-increment on the id: " + postgresql);
@@ -1236,7 +1237,7 @@ public class MasterChangelogTest {
     assertFalse(postgresql.contains("ALTER TABLE EMAIL_FILTER_PROPOSAL ENGINE"), "no MySQL options elsewhere");
 
     for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
-      String update = offlineUpdateSql(vendor, "1.0.0-94", "1.0.0-97").toUpperCase(Locale.ROOT);
+      String update = offlineUpdateSql(vendor, "1.0.0-exo-90659-01", "1.0.0-exo-90659-04").toUpperCase(Locale.ROOT);
       assertTrue(update.contains("CREATE UNIQUE INDEX UK_EMAIL_FILTER_PROPOSAL ON EMAIL_FILTER_PROPOSAL(MATCH_ID, CALL_HASH)"),
                  vendor + ": " + update);
       assertTrue(update.contains("CREATE INDEX IDX_EMAIL_FILTER_PROPOSAL_USER ON EMAIL_FILTER_PROPOSAL(USER_ID, STATUS)"), vendor + ": " + update);
@@ -1247,13 +1248,13 @@ public class MasterChangelogTest {
         assertTrue(update.contains(column), vendor + " " + column + ": " + update);
       }
       assertTrue(Pattern.compile("STATUS VARCHAR\\(20\\) DEFAULT 'PROPOSED' NOT NULL").matcher(update).find(), vendor + ": " + update);
-      String rollback = offlineRollbackSql(vendor, "1.0.0-94", "1.0.0-97").toUpperCase(Locale.ROOT);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-exo-90659-01", "1.0.0-exo-90659-04").toUpperCase(Locale.ROOT);
       int dropKey = rollback.indexOf("FK_EMAIL_FILTER_PROPOSAL_MATCH");
       int dropIndex = rollback.indexOf("UK_EMAIL_FILTER_PROPOSAL");
       int dropTable = rollback.indexOf("DROP TABLE EMAIL_FILTER_PROPOSAL");
       assertTrue(dropKey >= 0 && dropIndex > dropKey && dropTable > dropIndex, vendor + " the key, the indexes, then the table: " + rollback);
     }
-    assertTrue(offlineRollbackSql("postgresql?version=15", "1.0.0-94", "1.0.0-97").contains("DROP SEQUENCE SEQ_EMAIL_FILTER_PROPOSAL_ID"),
+    assertTrue(offlineRollbackSql("postgresql?version=15", "1.0.0-exo-90659-01", "1.0.0-exo-90659-04").contains("DROP SEQUENCE SEQ_EMAIL_FILTER_PROPOSAL_ID"),
                "and the sequence, where there is one");
   }
 
@@ -1645,9 +1646,9 @@ public class MasterChangelogTest {
     boolean from = false;
     for (ChangeSet changeSet : new Liquibase(CHANGELOG, new ClassLoaderResourceAccessor(), database).getDatabaseChangeLog()
                                                                                                     .getChangeSets()) {
-      // Compared by number, not by equality: a changeset another vendor filters out at
+      // Compared by position, not by equality: a changeset another vendor filters out at
       // parse time (1.0.0-62 on MySQL) never appears in this list to be matched.
-      from = from || sequenceNumber(changeSet.getId()) >= sequenceNumber(fromId);
+      from = from || position(changeSet.getId()) >= position(fromId);
       if (from && appliesTo(changeSet, dbms)) {
         selected.add(changeSet);
       }
@@ -1656,29 +1657,77 @@ public class MasterChangelogTest {
   }
 
   /**
-   * Whether a changeset lies outside a bounded range of ids, by number: the file is read
-   * in its own order, where a changeset appended later may carry a lower number than
-   * the one before it (1.0.0-86 after 1.0.0-87), so a range is never "from here to
-   * there in the file".
+   * Whether a changeset lies outside a bounded range of ids, by position in the file: a
+   * range runs from one changeset of the file to another, both included. Ids do not order
+   * changesets: a task-scoped id ({@code 1.0.0-exo-<task>-NN}) carries no sequence number.
    *
    * @param id the changeset's id
    * @param fromId the first id of the range
    * @param throughId the last id of the range
-   * @return true when its number is below the first or above the last
+   * @return true when it stands before the first or after the last
+   * @throws Exception when the changelog cannot be read or parsed
    */
-  private static boolean outside(String id, String fromId, String throughId) {
-    int number = sequenceNumber(id);
-    return number < sequenceNumber(fromId) || number > sequenceNumber(throughId);
+  private boolean outside(String id, String fromId, String throughId) throws Exception {
+    int position = position(id);
+    return position < position(fromId) || position > position(throughId);
   }
 
   /**
-   * The number at the end of a {@code 1.0.0-N} changeset id.
+   * The position of a changeset in the file, counted over every changeset whatever its
+   * {@code dbms}, so a changeset a vendor filters out at parse time still has one.
    *
    * @param id the id
-   * @return N
+   * @return its zero-based position
+   * @throws Exception when the changelog cannot be read or parsed
    */
-  private static int sequenceNumber(String id) {
-    return Integer.parseInt(id.substring(id.lastIndexOf('-') + 1));
+  private int position(String id) throws Exception {
+    if (changeSetIds == null) {
+      changeSetIds = changeSetIdsInFileOrder();
+    }
+    int position = changeSetIds.indexOf(id);
+    assertTrue(position >= 0, id + " is not a changeset of " + CHANGELOG);
+    return position;
+  }
+
+  private static List<String> changeSetIds;
+
+  /**
+   * The id of every changeset of the file, in file order, whatever its {@code dbms}.
+   *
+   * @return the ids
+   * @throws Exception when the changelog cannot be read or parsed
+   */
+  private List<String> changeSetIdsInFileOrder() throws Exception {
+    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+    factory.setNamespaceAware(true);
+    List<String> ids = new ArrayList<>();
+    try (InputStream changelog = getClass().getClassLoader().getResourceAsStream(CHANGELOG)) {
+      NodeList changeSets = factory.newDocumentBuilder().parse(changelog).getElementsByTagNameNS("*", "changeSet");
+      for (int i = 0; i < changeSets.getLength(); i++) {
+        ids.add(((Element) changeSets.item(i)).getAttribute("id"));
+      }
+    }
+    return ids;
+  }
+
+  /**
+   * A changeset id is either a bare {@code 1.0.0-N}, the numbering of the changesets
+   * already on develop, or names the task that added it, {@code 1.0.0-exo-<task>-NN}:
+   * lineages forked from the same changelog tail derive the same next bare number, never
+   * the same task. No id is declared twice.
+   *
+   * @throws Exception when the changelog cannot be read or parsed
+   */
+  @Test
+  void everyChangesetIdHasAKnownShapeAndIsDeclaredOnce() throws Exception {
+    Pattern bare = Pattern.compile("1\\.0\\.0-\\d+");
+    Pattern scoped = Pattern.compile("1\\.0\\.0-exo-\\d+-\\d{2}");
+    Set<String> seen = new HashSet<>();
+    for (String id : changeSetIdsInFileOrder()) {
+      assertTrue(bare.matcher(id).matches() || scoped.matcher(id).matches(),
+                 id + " is neither 1.0.0-N nor 1.0.0-exo-<task>-NN");
+      assertTrue(seen.add(id), id + " is declared twice");
+    }
   }
 
   /**
@@ -1759,8 +1808,8 @@ public class MasterChangelogTest {
   // (the custom-folder registry, 1.0.0-53 to -56; the sync-state table, 1.0.0-58 and
   // -59; the notification boundary, 1.0.0-61; the scheduled-send table, 1.0.0-62 to
   // -65; the read-receipt columns, 1.0.0-66; the read-receipt answer store, 1.0.0-67
-  // to -69; the mail filters, 1.0.0-70 to -75; mailbox delegation, 1.0.0-76 to -79; the
-  // mail filters' tool-call proposals, 1.0.0-94 to -97). They are the ones a second evaluation computes ahead of the update in
+  // to -69; the mail filters, 1.0.0-exo-90654-01 to -06; mailbox delegation, 1.0.0-76 to -79; the
+  // mail filters' tool-call proposals, 1.0.0-exo-90659-01 to -04). They are the ones a second evaluation computes ahead of the update in
   // the pin, and nothing on this list may ever drift.
   private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-53",
                                                               "1.0.0-54",
@@ -1777,20 +1826,20 @@ public class MasterChangelogTest {
                                                               "1.0.0-67",
                                                               "1.0.0-68",
                                                               "1.0.0-69",
-                                                              "1.0.0-70",
-                                                              "1.0.0-71",
-                                                              "1.0.0-72",
-                                                              "1.0.0-73",
-                                                              "1.0.0-74",
-                                                              "1.0.0-75",
+                                                              "1.0.0-exo-90654-01",
+                                                              "1.0.0-exo-90654-02",
+                                                              "1.0.0-exo-90654-03",
+                                                              "1.0.0-exo-90654-04",
+                                                              "1.0.0-exo-90654-05",
+                                                              "1.0.0-exo-90654-06",
                                                               "1.0.0-76",
                                                               "1.0.0-77",
                                                               "1.0.0-78",
                                                               "1.0.0-79",
-                                                              "1.0.0-94",
-                                                              "1.0.0-95",
-                                                              "1.0.0-96",
-                                                              "1.0.0-97");
+                                                              "1.0.0-exo-90659-01",
+                                                              "1.0.0-exo-90659-02",
+                                                              "1.0.0-exo-90659-03",
+                                                              "1.0.0-exo-90659-04");
 
   // The changesets whose checksum already depends on where it is computed: every one
   // of them carries a modifySql. Three are covered by validCheckSum ANY (1.0.0-5, -46,
@@ -1862,7 +1911,7 @@ public class MasterChangelogTest {
   }
 
   /**
-   * EXO-90841 -- 1.0.0-98 adds EMAIL_BOX.AUTH_FAILURE, null on a message cached before
+   * EXO-90841 -- 1.0.0-exo-90841-01 adds EMAIL_BOX.AUTH_FAILURE, null on a message cached before
    * it (its authentication verdict was never read); rolls back to a tag placed
    * immediately before it, dropping that column and nothing else, the message kept; and
    * applies again.
@@ -1873,15 +1922,15 @@ public class MasterChangelogTest {
   void theAuthenticationFailureRollsBackAndReapplies() throws Exception {
     try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback98" + System.nanoTime(), "sa", "")) {
       Liquibase liquibase = newLiquibase(connection);
-      liquibase.update(applicableChangeSetsBefore("1.0.0-98"), new Contexts(), new LabelExpression());
+      liquibase.update(applicableChangeSetsBefore("1.0.0-exo-90841-01"), new Contexts(), new LabelExpression());
       liquibase.tag("before-auth-failure");
-      assertFalse(columnExists(connection, "EMAIL_BOX", "AUTH_FAILURE"), "not before 1.0.0-98");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "AUTH_FAILURE"), "not before 1.0.0-exo-90841-01");
       try (Statement statement = connection.createStatement()) {
         statement.executeUpdate("INSERT INTO EMAIL_BOX (ID, USER_ID, SUBJECT, SENDER, RECEIVED_DATE, FOLDER)"
             + " VALUES (1, 'bob', 's', 'Bank,alerts@bank.example', CURRENT_TIMESTAMP, 'INBOX')");
       }
       liquibase.update("");
-      assertEquals(16, columnSize(connection, "EMAIL_BOX", "AUTH_FAILURE"), "1.0.0-98 adds EMAIL_BOX.AUTH_FAILURE");
+      assertEquals(16, columnSize(connection, "EMAIL_BOX", "AUTH_FAILURE"), "1.0.0-exo-90841-01 adds EMAIL_BOX.AUTH_FAILURE");
       try (Statement statement = connection.createStatement()) {
         try (ResultSet row = statement.executeQuery("SELECT AUTH_FAILURE FROM EMAIL_BOX WHERE ID = 1")) {
           assertTrue(row.next());
@@ -1902,7 +1951,7 @@ public class MasterChangelogTest {
   }
 
   /**
-   * EXO-90841 -- 1.0.0-98 as MySQL and PostgreSQL would run it, bounded to its own
+   * EXO-90841 -- 1.0.0-exo-90841-01 as MySQL and PostgreSQL would run it, bounded to its own
    * changeset: one nullable VARCHAR(16), unquoted, and a rollback that drops it.
    *
    * @throws Exception when the SQL cannot be generated
@@ -1910,17 +1959,17 @@ public class MasterChangelogTest {
   @Test
   void theAuthenticationFailureOnMySqlAndPostgreSql() throws Exception {
     for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
-      String update = offlineUpdateSql(vendor, "1.0.0-98", "1.0.0-98").toUpperCase(Locale.ROOT);
+      String update = offlineUpdateSql(vendor, "1.0.0-exo-90841-01", "1.0.0-exo-90841-01").toUpperCase(Locale.ROOT);
       assertTrue(update.contains("ALTER TABLE EMAIL_BOX ADD AUTH_FAILURE VARCHAR(16)"), vendor + ": " + update);
       assertFalse(update.contains("NOT NULL"), vendor + " the column is nullable: " + update);
       assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
-      String rollback = offlineRollbackSql(vendor, "1.0.0-98", "1.0.0-98").toUpperCase(Locale.ROOT).trim();
+      String rollback = offlineRollbackSql(vendor, "1.0.0-exo-90841-01", "1.0.0-exo-90841-01").toUpperCase(Locale.ROOT).trim();
       assertEquals("ALTER TABLE EMAIL_BOX DROP COLUMN AUTH_FAILURE;", rollback, vendor + " rollback drops that column only");
     }
   }
 
   /**
-   * EXO-90893 -- 1.0.0-99 adds EMAIL_BOX.DMARC_PASS, null on a message cached before it
+   * EXO-90893 -- 1.0.0-exo-90893-01 adds EMAIL_BOX.DMARC_PASS, null on a message cached before it
    * (read as not passed); rolls back to a tag placed immediately before it, dropping
    * that column and nothing else, the message kept; and applies again.
    *
@@ -1930,15 +1979,15 @@ public class MasterChangelogTest {
   void theDmarcPassRollsBackAndReapplies() throws Exception {
     try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback99" + System.nanoTime(), "sa", "")) {
       Liquibase liquibase = newLiquibase(connection);
-      liquibase.update(applicableChangeSetsBefore("1.0.0-99"), new Contexts(), new LabelExpression());
+      liquibase.update(applicableChangeSetsBefore("1.0.0-exo-90893-01"), new Contexts(), new LabelExpression());
       liquibase.tag("before-dmarc-pass");
-      assertFalse(columnExists(connection, "EMAIL_BOX", "DMARC_PASS"), "not before 1.0.0-99");
+      assertFalse(columnExists(connection, "EMAIL_BOX", "DMARC_PASS"), "not before 1.0.0-exo-90893-01");
       try (Statement statement = connection.createStatement()) {
         statement.executeUpdate("INSERT INTO EMAIL_BOX (ID, USER_ID, SUBJECT, SENDER, RECEIVED_DATE, FOLDER)"
             + " VALUES (1, 'bob', 's', 'Brand,news@brand.example', CURRENT_TIMESTAMP, 'INBOX')");
       }
       liquibase.update("");
-      assertTrue(columnExists(connection, "EMAIL_BOX", "DMARC_PASS"), "1.0.0-99 adds EMAIL_BOX.DMARC_PASS");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "DMARC_PASS"), "1.0.0-exo-90893-01 adds EMAIL_BOX.DMARC_PASS");
       try (Statement statement = connection.createStatement()) {
         try (ResultSet row = statement.executeQuery("SELECT DMARC_PASS FROM EMAIL_BOX WHERE ID = 1")) {
           assertTrue(row.next());
@@ -1960,7 +2009,7 @@ public class MasterChangelogTest {
   }
 
   /**
-   * EXO-90893 -- 1.0.0-99 as MySQL and PostgreSQL would run it, bounded to its own
+   * EXO-90893 -- 1.0.0-exo-90893-01 as MySQL and PostgreSQL would run it, bounded to its own
    * changeset: one nullable boolean column, unquoted, and a rollback that drops it.
    *
    * @throws Exception when the SQL cannot be generated
@@ -1968,13 +2017,13 @@ public class MasterChangelogTest {
   @Test
   void theDmarcPassOnMySqlAndPostgreSql() throws Exception {
     for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
-      String update = offlineUpdateSql(vendor, "1.0.0-99", "1.0.0-99").toUpperCase(Locale.ROOT);
+      String update = offlineUpdateSql(vendor, "1.0.0-exo-90893-01", "1.0.0-exo-90893-01").toUpperCase(Locale.ROOT);
       assertTrue(update.contains("ALTER TABLE EMAIL_BOX ADD DMARC_PASS " + (vendor.startsWith("mysql") ? "TINYINT" : "BOOLEAN")),
                  vendor + ": " + update);
       assertFalse(update.contains("NOT NULL"), vendor + " the column is nullable: " + update);
       assertFalse(update.contains("DEFAULT"), vendor + " no default: " + update);
       assertFalse(update.contains("`") || update.contains("\""), vendor + " no identifier needs quoting: " + update);
-      String rollback = offlineRollbackSql(vendor, "1.0.0-99", "1.0.0-99").toUpperCase(Locale.ROOT).trim();
+      String rollback = offlineRollbackSql(vendor, "1.0.0-exo-90893-01", "1.0.0-exo-90893-01").toUpperCase(Locale.ROOT).trim();
       assertEquals("ALTER TABLE EMAIL_BOX DROP COLUMN DMARC_PASS;", rollback, vendor + " rollback drops that column only");
     }
   }
