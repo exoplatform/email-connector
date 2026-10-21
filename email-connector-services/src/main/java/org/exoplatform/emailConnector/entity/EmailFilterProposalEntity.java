@@ -32,7 +32,7 @@ import lombok.NoArgsConstructor;
 
 /**
  * One tool call a mail filter's assistant made, recorded instead of run (changesets
- * 1.0.0-94 to -97), until its owner approves, rejects or hands it over.
+ * 1.0.0-exo-90659-01 to -04), until its owner approves, rejects or hands it over.
  * <p>
  * {@link DynamicUpdate}: the status moves by conditional UPDATEs (the claim of an
  * approval) while the run that recorded it may still write its rationale.
