@@ -9111,6 +9111,40 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * A document whose file reached the draft before the failure is not refused -- it is
+   * on the draft, and naming it again would attach it twice -- and its size counts
+   * against the room the documents after it are read into.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void aDocumentWrittenBeforeTheFailureCountsAsAttached() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    when(emailBoxStorage.getDraftAttachments(TEST_USER, "draft-1"))
+                                                                   .thenReturn(List.of())
+                                                                   .thenReturn(List.of(new EmailAttachment(8L, null, null, "a.pdf",
+                                                                                                           "application/pdf", null,
+                                                                                                           MailFolder.DRAFTS, 55L,
+                                                                                                           1000L, null)));
+    when(emailDocumentReader.readDocument(eq("doc-1"), eq(TEST_USER), anyLong()))
+                                                                               .thenReturn(new EmailDocumentContent("a.pdf",
+                                                                                                                    "application/pdf",
+                                                                                                                    new byte[1000]));
+    when(emailDocumentReader.readDocument(eq("doc-2"), eq(TEST_USER), anyLong()))
+                                                                               .thenReturn(new EmailDocumentContent("b.pdf",
+                                                                                                                    "application/pdf",
+                                                                                                                    new byte[1]));
+    when(emailBoxStorage.copyDraftAttachment(eq(TEST_USER), eq("draft-1"), eq("a.pdf"), any(), any()))
+                                                                                                    .thenThrow(new IllegalStateException("touch failed"));
+
+    DocumentAttachments attached = emailBoxService.addDocumentAttachments("draft-1", TEST_USER, List.of("doc-1", "doc-2"));
+
+    assertTrue(attached.getRefused().isEmpty(), "the file on the draft is not refused");
+    verify(emailDocumentReader).readDocument("doc-2", TEST_USER, 25L * 1024 * 1024 - 1000);
+  }
+
+  /**
    * An id named twice is attached once, and a blank one is ignored.
    *
    * @throws Exception when the mocked plumbing misbehaves

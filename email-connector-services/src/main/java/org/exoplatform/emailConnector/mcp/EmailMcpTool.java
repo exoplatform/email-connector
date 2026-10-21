@@ -164,8 +164,12 @@ public class EmailMcpTool implements McpToolPlugin {
   private static final String           SCHEDULED_DOCUMENT_REFUSAL = "The draft is scheduled to be sent, so no file can be "
       + "added to it here: the user cancels the schedule in the Email app first.";
 
-  /** Why a document is not on the draft when attaching it failed. */
-  private static final String           FAILED_DOCUMENT_REFUSAL = "The file could not be attached.";
+  /**
+   * Why a document may not be on the draft when attaching failed part way: whether it is
+   * shows in the draft's attachments, which are read again after the failure.
+   */
+  private static final String           FAILED_DOCUMENT_REFUSAL = "Attaching failed part way: the draft's attachments say "
+      + "which files it carries; name this document again only if its file is not among them.";
 
   /**
    * The address of the user's signature logo, as the signature service writes it, with
@@ -2384,16 +2388,35 @@ public class EmailMcpTool implements McpToolPlugin {
       return toDraftModel(saved, true, refusedAll(documentIds, SCHEDULED_DOCUMENT_REFUSAL));
     } catch (IllegalAccessException | RuntimeException e) {
       LOG.warn("The documents named for draft {} of user {} could not be attached", saved.getDraftLocalId(), username, e);
-      return toDraftModel(saved, true, refusedAll(documentIds, FAILED_DOCUMENT_REFUSAL));
+      return toDraftModel(readAgain(saved, username), true, refusedAll(documentIds, FAILED_DOCUMENT_REFUSAL));
     }
     if (attached == null || attached.getDraft() == null) {
-      return toDraftModel(saved, true, refusedAll(documentIds, FAILED_DOCUMENT_REFUSAL));
+      return toDraftModel(readAgain(saved, username), true, refusedAll(documentIds, FAILED_DOCUMENT_REFUSAL));
     }
     List<RefusedDocumentModel> refused = attached.getRefused()
                                                  .stream()
                                                  .map(this::toRefusedDocumentModel)
                                                  .toList();
     return toDraftModel(attached.getDraft(), true, refused);
+  }
+
+  /**
+   * The draft as it is stored now, after attaching failed part way, so the answer shows
+   * the files it carries rather than those it carried before; the draft as saved when it
+   * cannot be read.
+   *
+   * @param saved the draft as the call saved it
+   * @param username the user
+   * @return the draft as stored now, or {@code saved}
+   */
+  private Email readAgain(Email saved, String username) {
+    try {
+      Email stored = emailBoxService.getDraft(saved.getDraftLocalId(), username);
+      return stored == null ? saved : stored;
+    } catch (Exception e) {
+      LOG.debug("Draft {} of user {} could not be read again after its documents failed", saved.getDraftLocalId(), username, e);
+      return saved;
+    }
   }
 
   /**
