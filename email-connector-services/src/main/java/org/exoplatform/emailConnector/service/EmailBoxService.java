@@ -6921,6 +6921,10 @@ public class EmailBoxService {
    * of the callers left wants "whatever folder the signature picked"; the ones that
    * genuinely act on the inbox now say {@link MailFolder#INBOX} out loud, which is a
    * line a reader can question and a default is not.
+   * <p>
+   * The lookup is scoped to the user's own rows: the message is found by its UID, the
+   * user and the folder, and no connection or entitlement check is made on the way. Only
+   * the open-email broadcast checks the user's connector, and only when asked for.
    *
    * @param mailRemoteId the message IMAP UID
    * @param username the mailbox owner
@@ -6930,7 +6934,8 @@ public class EmailBoxService {
    * @param withProfile whether to resolve sender/recipient platform profiles
    * @param broadcast whether to broadcast the open-email event
    * @return the message, or null when not found in that folder
-   * @throws IllegalAccessException if the user is not allowed to read their mailbox
+   * @throws IllegalAccessException when {@code broadcast} is set and the user has no
+   *           connector or may no longer connect with it, see {@link #broadcastOpenEmail}
    */
   public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId,
                                                String username,
