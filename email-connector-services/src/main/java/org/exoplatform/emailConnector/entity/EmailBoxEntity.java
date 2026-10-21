@@ -220,7 +220,7 @@ public class EmailBoxEntity {
 
   // On a draft of a mailbox shared with USER_ID, the name it is to go out in (EXO-90584):
   // NONE, ON_BEHALF or AS, as the writer last left it, written with every revision; null
-  // when the draft never said (every row before changeset 1.0.0-89, and every draft of the
+  // when the draft never said (every row before changeset 1.0.0-exo-90584-01, and every draft of the
   // writer's own mailbox). Never a right: every send checks the owner's consent again.
   // Declared last and set by name, like the draft's mailbox.
   @Column(name = "DRAFT_SEND_MODE")
@@ -228,7 +228,7 @@ public class EmailBoxEntity {
 
   // The sender-authentication method the receiving server reported as failed in the
   // message's own Authentication-Results header (EXO-90841): DMARC, SPF or DKIM; null when
-  // none failed, the server said nothing, or the row predates changeset 1.0.0-98. Decided
+  // none failed, the server said nothing, or the row predates changeset 1.0.0-exo-90841-01. Decided
   // at sync, when the header still exists. Declared last and set by name, like the
   // draft's send mode.
   @Column(name = "AUTH_FAILURE")
@@ -236,7 +236,7 @@ public class EmailBoxEntity {
 
   // Whether the receiving server reported, in the message's own Authentication-Results
   // header, that it passed DMARC for its From domain (EXO-90893): what lets the reader
-  // show the sender's brand logo. Null on a row written before changeset 1.0.0-99, read
+  // show the sender's brand logo. Null on a row written before changeset 1.0.0-exo-90893-01, read
   // as "not passed": the DMARC backfill fills it only for a received-mail folder of the
   // user's own mailbox, opened while the logos are on and a trusted authserv-id is
   // configured; on Sent, Drafts and shared folders it stays null. Decided at sync, like

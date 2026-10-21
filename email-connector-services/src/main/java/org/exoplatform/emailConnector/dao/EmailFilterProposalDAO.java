@@ -27,7 +27,7 @@ import org.exoplatform.emailConnector.entity.EmailFilterProposalEntity;
 
 /**
  * The tool calls mail filters' assistants recorded instead of running them (changeset
- * 1.0.0-95), read once more to move them to the AI add-on's shared proposals
+ * 1.0.0-exo-90659-02), read once more to move them to the AI add-on's shared proposals
  * (EXO-90956): nothing writes this table any more, which is dropped by a later release.
  */
 public interface EmailFilterProposalDAO extends JpaRepository<EmailFilterProposalEntity, Long> {
