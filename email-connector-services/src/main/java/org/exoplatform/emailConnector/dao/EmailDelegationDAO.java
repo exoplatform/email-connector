@@ -383,12 +383,13 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
    * @param granteeId the grantee, whose row it must be
    * @param consentDate when the consent the mail was sent under was set
    * @param mode the shape the refused mail was sent in, {@code ON_BEHALF} or {@code AS}:
-   *          it is also the shape the consent must carry, so a consent set again in the
-   *          other shape at the same instant is not marked
+   *          the consent must cover it, as {@code SendMode.allows} does -- a consent as
+   *          the owner covers both shapes, one on behalf covers only itself -- so a mail
+   *          sent as the owner is never marked on a consent on behalf
    * @param refused when the server refused it
    * @param live the statuses a consent may live on
    * @return the rows updated: one, or zero when the row is not that grantee's, not live,
-   *         or no longer carries that consent in that shape
+   *         or no longer carries that consent, or a consent that does not cover that shape
    */
   @Transactional
   @Modifying(clearAutomatically = true, flushAutomatically = true)
@@ -396,7 +397,7 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
       + " AND (d.sendRefusedMode IS NULL OR d.sendRefusedMode = 'ON_BEHALF') THEN d.sendRefusedMode ELSE :mode END,"
       + " d.sendRefusedDate = :refused, d.updatedDate = :refused"
       + " WHERE d.id = :id AND d.granteeId = :granteeId AND d.status IN :live"
-      + " AND d.sendMode = :mode AND d.sendModeDate = :consentDate")
+      + " AND (d.sendMode = 'AS' OR d.sendMode = :mode) AND d.sendModeDate = :consentDate")
   int markSendRefused(@Param("id")
   long id, @Param("granteeId")
   String granteeId, @Param("consentDate")
