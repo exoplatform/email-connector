@@ -590,6 +590,13 @@ public class EmailBoxService {
   // (EmailConnectorMailBoxSearchCriteria.js).
   static final int                SEARCH_MAX_ATTACHMENT_NAME_LENGTH                           = 100;
 
+  // The years a search's day may fall in (EXO-91675): an IMAP SEARCH date carries a
+  // four-digit year, which JavaMail writes from a GregorianCalendar -- Julian before
+  // 1582, so the floor stays well past it.
+  public static final int         SEARCH_MIN_YEAR                                             = 1900;
+
+  static final int                SEARCH_MAX_YEAR                                             = 9999;
+
   /** How much of a message to quote when the search matched nothing in its body. */
   private static final int        EXCERPT_LENGTH                                              = 180;
 
@@ -7412,7 +7419,9 @@ public class EmailBoxService {
 
   /**
    * Searches one folder of a mailbox shared with the user in the user's mirror of it
-   * (EXO-90555) -- what an agent's search of a shared mailbox reads. The mirror, not the
+   * (EXO-90555), by free text, sender, unread state and age only: the legacy form of
+   * {@link #searchSharedMailboxMirror(String, String, EmailSearchCriteria, int)}, which
+   * the assistant's search calls with every criterion (EXO-91675). The mirror, not the
    * mail server: the rows are the ones the shared mailbox's sync brought in, so an
    * answer covers what that folder's mirror holds and says so through its caller.
    * <p>
@@ -7442,6 +7451,34 @@ public class EmailBoxService {
                                                          boolean unreadOnly,
                                                          Integer sinceDays,
                                                          int limit) throws IllegalAccessException {
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setQuery(query);
+    criteria.setFrom(from);
+    criteria.setUnreadOnly(unreadOnly);
+    criteria.setSinceDays(sinceDays);
+    return searchSharedMailboxMirror(username, folderKey, criteria, limit);
+  }
+
+  /**
+   * The same search of the user's mirror of a shared mailbox's folder, with every
+   * criterion of {@link EmailSearchCriteria} (EXO-91675): the words of the subject or the
+   * body, a range of days and a Message-ID, as the assistant's mailbox search asks them.
+   *
+   * @param username the reader
+   * @param folderKey the shared folder's key, as
+   *          {@link EmailDelegationService#getMirroredFolderKey} resolved it
+   * @param criteria what to match, at least one criterion
+   * @param limit how many hits to return, newest first
+   * @return the newest matching mirrored messages and how many matched
+   * @throws IllegalAccessException if the user may not read their mailbox
+   * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for a key
+   *           that is not a folder of a mailbox shared with the user, and the codes of
+   *           {@link #validateSearchCriteria}
+   */
+  public EmailSearchResultPage searchSharedMailboxMirror(String username,
+                                                         String folderKey,
+                                                         EmailSearchCriteria criteria,
+                                                         int limit) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -7450,11 +7487,6 @@ public class EmailBoxService {
     if (emailDelegationService.delegationOf(username, folderKey) == null) {
       throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
     }
-    EmailSearchCriteria criteria = new EmailSearchCriteria();
-    criteria.setQuery(query);
-    criteria.setFrom(from);
-    criteria.setUnreadOnly(unreadOnly);
-    criteria.setSinceDays(sinceDays);
     return searchMirror(username, folderKey, criteria, limit);
   }
 
@@ -7571,7 +7603,8 @@ public class EmailBoxService {
    * internal dates -- and a message has an attachment when eXo holds an attachment row
    * for it: the paperclip of the list. A kind of attachment or a file name (EXO-90910)
    * asks for an attachment too, the ids given being then those of the rows with such an
-   * attachment. Package-visible for tests.
+   * attachment. A Message-ID (EXO-91675) is matched exactly, by {@link #sameMessageId}.
+   * Package-visible for tests.
    *
    * @param rows the copy's messages, as the search read gives them -- with their To and
    *          Cc recipients when the criteria name one
@@ -7586,6 +7619,7 @@ public class EmailBoxService {
     String sender = StringUtils.trimToNull(criteria.getFrom());
     String recipient = StringUtils.trimToNull(criteria.getTo());
     String words = StringUtils.trimToNull(criteria.getWords());
+    String messageId = StringUtils.trimToNull(criteria.getMessageId());
     Date since = criteria.getSinceDays() == null ? null
                                                  : new Date(System.currentTimeMillis()
                                                      - TimeUnit.DAYS.toMillis(criteria.getSinceDays()));
@@ -7603,6 +7637,7 @@ public class EmailBoxService {
                    || senderMatches(email, term))
                .filter(email -> words == null || StringUtils.containsIgnoreCase(email.getSubject(), words)
                    || bodyTextContains(email, words))
+               .filter(email -> messageId == null || sameMessageId(email.getMailHeaderId(), messageId))
                .sorted(Comparator.comparing(Email::getReceivedDate, Comparator.nullsLast(Comparator.reverseOrder())))
                .toList();
   }
@@ -7614,7 +7649,8 @@ public class EmailBoxService {
    *
    * @param criteria the criteria
    * @throws IllegalArgumentException {@code emailConnector.search.invalidDate} for a day
-   *           the caller sent that is not yyyy-MM-dd,
+   *           the caller sent that is not yyyy-MM-dd, or whose year is outside
+   *           {@value #SEARCH_MIN_YEAR}..{@value #SEARCH_MAX_YEAR},
    *           {@code emailConnector.search.invalidSinceDays} for a
    *           negative window -- a future-dated lower bound that would match nothing,
    *           silently -- {@code emailConnector.search.invalidDateRange} when the day
@@ -7623,7 +7659,7 @@ public class EmailBoxService {
    *           search
    */
   static void validateSearchCriteria(EmailSearchCriteria criteria) {
-    if (criteria.isInvalidDay()) {
+    if (criteria.isInvalidDay() || !isSearchableDay(criteria.getAfter()) || !isSearchableDay(criteria.getBefore())) {
       throw new IllegalArgumentException("emailConnector.search.invalidDate");
     }
     if (criteria.getSinceDays() != null && criteria.getSinceDays() < 0) {
@@ -7635,6 +7671,17 @@ public class EmailBoxService {
     if (!criteria.hasCriterion()) {
       throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
     }
+  }
+
+  /**
+   * Whether a day can bound an IMAP SEARCH: none, or one of a year from
+   * {@value #SEARCH_MIN_YEAR} to {@value #SEARCH_MAX_YEAR}.
+   *
+   * @param day the day, may be null
+   * @return false for a day of any other year
+   */
+  private static boolean isSearchableDay(LocalDate day) {
+    return day == null || day.getYear() >= SEARCH_MIN_YEAR && day.getYear() <= SEARCH_MAX_YEAR;
   }
 
   /**
@@ -12252,6 +12299,81 @@ public class EmailBoxService {
   }
 
   /**
+   * One of the user's drafts as it is stored now, with its body, recipients and
+   * attachments: what the composer would open, the user's own edits included. A
+   * scheduled draft is returned too, marked {@code scheduled}; the writes refuse it.
+   *
+   * @param draftLocalId the draft's local id
+   * @param username the mailbox owner
+   * @return the draft, or null when the user has no draft under that id
+   * @throws IllegalAccessException if the user may not use their mailbox
+   */
+  public Email getDraft(String draftLocalId, String username) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SAVE_DRAFT_MESSAGE, username));
+    }
+    Email draft = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+    if (draft != null) {
+      draft.setScheduled(emailScheduledSendStorage.isScheduled(username, draftLocalId));
+    }
+    return draft;
+  }
+
+  /**
+   * Sends a draft exactly as it is stored, for a caller that holds no composer: the
+   * subject, body and recipients the row carries at the moment of sending, so the
+   * user's last edits in the Email app are what goes out, never an older copy the
+   * caller read earlier.
+   * <p>
+   * The row is read under the draft's lock and handed to {@link #sendDraft} as the
+   * composer's text, still under that lock (it is reentrant), so no save can land
+   * between the read and the send. The draft's own mailbox and send mode are the
+   * stored ones.
+   * <p>
+   * {@code check} runs on that row, under the lock and marked {@code scheduled} when it
+   * is, before anything is claimed: a caller
+   * that had the user approve what the draft said refuses there a row that says
+   * something else by now, and nothing is sent.
+   *
+   * @param draftLocalId the draft's local id
+   * @param username the mailbox owner
+   * @param check throws to refuse the stored row; nothing is sent then
+   * @return the draft as it was sent
+   * @throws IllegalAccessException if the user may not send from their mailbox
+   * @throws ObjectNotFoundException when the user has no draft under that id
+   * @throws IllegalArgumentException when the draft has no recipient, or is being sent
+   * @throws ScheduledSendConflictException when the draft is scheduled
+   */
+  public Email sendDraftAsStored(String draftLocalId,
+                                 String username,
+                                 Consumer<Email> check) throws IllegalAccessException, ObjectNotFoundException {
+    if (StringUtils.isBlank(draftLocalId)) {
+      throw new IllegalArgumentException("emailConnector.drafts.send.localIdMandatory");
+    }
+    ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
+    lock.lock();
+    try {
+      Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+      if (stored == null) {
+        throw new ObjectNotFoundException("emailConnector.drafts.send.gone");
+      }
+      if (CollectionUtils.isEmpty(stored.getTo())) {
+        throw new IllegalArgumentException("emailConnector.drafts.send.recipientMandatory");
+      }
+      if (check != null) {
+        stored.setScheduled(emailScheduledSendStorage.isScheduled(username, draftLocalId));
+        check.accept(stored);
+      }
+      sendDraft(stored, username, stored.getSendDelegationId(), null);
+      return stored;
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
    * Discards a draft: the copy on the mail server first, then the local row.
    * <p>
    * That order is the opposite of the upload's, and for the same underlying reason.
@@ -12268,6 +12390,23 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not use their mailbox
    */
   public boolean deleteDraft(String draftLocalId, String username) throws IllegalAccessException {
+    return deleteDraft(draftLocalId, username, null);
+  }
+
+  /**
+   * Discards a draft as {@link #deleteDraft(String, String)} does, once {@code check}
+   * accepts the row: it runs under the draft's lock on the row as it is stored, marked
+   * {@code scheduled} when it is, before anything is removed. A caller that had the user
+   * approve what the draft said refuses there a draft that says something else by now,
+   * or that has been scheduled meanwhile, and nothing is removed.
+   *
+   * @param draftLocalId the composer's handle on the draft
+   * @param username the mailbox owner
+   * @param check throws to refuse the stored row, or null to accept any
+   * @return true when a draft was found and removed
+   * @throws IllegalAccessException if the user may not use their mailbox
+   */
+  public boolean deleteDraft(String draftLocalId, String username, Consumer<Email> check) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -12276,10 +12415,16 @@ public class EmailBoxService {
     String lockKey = draftLockKey(username, draftLocalId);
     ReentrantLock lock = draftLocks.computeIfAbsent(lockKey, key -> new ReentrantLock());
     lock.lock();
+    boolean gone = false;
     try {
       Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
       if (stored == null) {
+        gone = true;
         return false;
+      }
+      if (check != null) {
+        stored.setScheduled(emailScheduledSendStorage.isScheduled(username, draftLocalId));
+        check.accept(stored);
       }
       // A scheduled draft may be discarded -- but not while it is on its way, or already
       // gone out. Decided by the schedule's own conditional DELETE, never by a read: a
@@ -12304,13 +12449,18 @@ public class EmailBoxService {
         throw new IllegalStateException("emailConnector.drafts.discard.serverCopyRemains");
       }
       deleteEmails(List.of(stored));
+      gone = true;
       return true;
     } finally {
       lock.unlock();
-      // The draft is gone, so nobody can be about to take this lock for it. Removing
-      // it here is what keeps the map bounded by the drafts that actually exist
-      // rather than by every draft ever written in this JVM's lifetime.
-      draftLocks.remove(lockKey);
+      // Once the draft is gone nobody can be about to take this lock for it. Removing
+      // it then is what keeps the map bounded by the drafts that actually exist rather
+      // than by every draft ever written in this JVM's lifetime. A refused discard
+      // leaves the draft, and a writer may be waiting on this very lock: removing it
+      // would hand the next caller a second lock for the same draft.
+      if (gone) {
+        draftLocks.remove(lockKey);
+      }
     }
   }
 
@@ -14306,7 +14456,22 @@ public class EmailBoxService {
     if (term == null) {
       return List.of();
     }
-    Message[] hits = folder.search(term);
+    return exactMessageIdMatches(folder.search(term), messageId);
+  }
+
+  /**
+   * The messages of a server search that carry the given Message-ID exactly, each hit's
+   * raw header compared with {@link #sameMessageId}: what decides after a {@code HEADER
+   * Message-ID} search, which is a substring match on most servers. A hit whose header
+   * was not fetched with the search's batch costs one round-trip to read it: a caller
+   * whose id may over-match fetches it for every hit first.
+   *
+   * @param hits the messages the server's search returned, may be null
+   * @param messageId the Message-ID to keep
+   * @return the hits carrying exactly that id, in the server's order; empty when none
+   * @throws MessagingException if a hit's header cannot be read
+   */
+  static List<Message> exactMessageIdMatches(Message[] hits, String messageId) throws MessagingException {
     List<Message> exact = new ArrayList<>();
     for (Message hit : hits == null ? new Message[0] : hits) {
       String[] messageIds = hit.getHeader(HEADER_MESSAGE_ID);
@@ -16125,8 +16290,10 @@ public class EmailBoxService {
   }
 
   /**
-   * Server-side mailbox search: an IMAP {@code SEARCH} over one remote folder, so a
-   * user finds mail anywhere in that folder — a 161k-message inbox, not just the
+   * Server-side mailbox search by free text, sender, unread state and age only: the
+   * legacy form of {@link #searchEmails(String, EmailSearchCriteria, String, int)}, which
+   * every production caller uses (EXO-91675). An IMAP {@code SEARCH} over one remote
+   * folder, so a user finds mail anywhere in that folder — a 161k-message inbox, not just the
    * ~1000-message local cache window (0.6% of it on the reference mailbox, which is
    * why filtering the cache was never a search).
    * <p>
@@ -16173,7 +16340,9 @@ public class EmailBoxService {
   }
 
   /**
-   * The same server-side search, narrowed to the messages the user favorited.
+   * The same server-side search, narrowed to the messages the user favorited: a legacy
+   * form too, building the criteria of
+   * {@link #searchEmails(String, EmailSearchCriteria, String, int)}.
    * <p>
    * The narrowing is done by the mail server, as one more term of the IMAP SEARCH:
    * asking for everything and dropping the rest here would return the newest hits and
@@ -16320,6 +16489,15 @@ public class EmailBoxService {
         // The attachment criterion alone leaves no term: the newest messages of the folder
         // are examined instead (see below), never the whole folder.
         found = searchTerm == null ? newestMessages(remoteFolder, ATTACHMENT_SCAN_LIMIT) : remoteFolder.search(searchTerm);
+      }
+      if (found != null && found.length > 0 && StringUtils.isNotBlank(criteria.getMessageId())) {
+        // The server's HEADER search is a substring match: only the exact id is this mail.
+        // The id comes from the caller and may match many messages, so every hit's header
+        // is read in one batched FETCH, never one round-trip per hit.
+        FetchProfile messageIdProfile = new FetchProfile();
+        messageIdProfile.add(HEADER_MESSAGE_ID);
+        remoteFolder.fetch(found, messageIdProfile);
+        found = exactMessageIdMatches(found, criteria.getMessageId()).toArray(new Message[0]);
       }
       if (found == null || found.length == 0) {
         return new EmailSearchResultPage(List.of(), 0);
@@ -16693,6 +16871,9 @@ public class EmailBoxService {
    * excluded); JavaMail writes the day of the date it is given in eXo's JVM zone, so
    * each bound is that day's first instant there ({@link #startOfServerDay}), which is
    * also correct when JavaMail falls back to matching on the client.</li>
+   * <li>The Message-ID (EXO-91675) is the {@code HEADER Message-ID} search of
+   * {@link #messageIdSearchTerm}, which only narrows: the caller keeps the exact matches
+   * ({@link #exactMessageIdMatches}).</li>
    * <li>The attachment criterion is never a term: IMAP has no key for it, and a
    * {@code HEADER Content-Type} search is a scan of the folder some servers time out on.
    * {@link #searchEmails(String, EmailSearchCriteria, String, int)} examines the newest
@@ -16736,6 +16917,10 @@ public class EmailBoxService {
     }
     if (criteria.getBefore() != null) {
       terms.add(new ReceivedDateTerm(ComparisonTerm.LT, startOfServerDay(criteria.getBefore())));
+    }
+    SearchTerm messageIdTerm = messageIdSearchTerm(criteria.getMessageId());
+    if (messageIdTerm != null) {
+      terms.add(messageIdTerm);
     }
     if (terms.isEmpty()) {
       return null;

@@ -101,6 +101,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
@@ -9545,6 +9546,95 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-91674 -- a draft sent with no composer goes out as the row says it now: the
+   * subject and body the user last saved in the Email app, checked by the caller on
+   * that very row.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftSentAsStoredGoesOutAsTheRowSaysItNow() {
+    Email stored = mockDraftSendFixture();
+    stored.setSubject("Edited in the app");
+    stored.setContent(new EmailContent("<p>The user's own words</p>"));
+    stored.setTo(List.of(new EmailRecipient(null, "bob@acme.com", null, false)));
+    List<Email> checked = new ArrayList<>();
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      Email sent = emailBoxService.sendDraftAsStored("draft-1", TEST_USER, checked::add);
+
+      ArgumentCaptor<Message> message = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(message.capture()));
+      assertEquals("Edited in the app", message.getValue().getSubject());
+      assertSame(stored, sent);
+      assertEquals(List.of(stored), checked);
+    }
+  }
+
+  /**
+   * EXO-91674 -- a row the caller's check refuses is not sent and not claimed: the user
+   * approved something else than what the draft says now.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftSentAsStoredIsLeftAloneWhenTheCheckRefusesTheRow() {
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    stored.setTo(List.of(new EmailRecipient(null, "bob@acme.com", null, false)));
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertThrows(IllegalArgumentException.class, () -> emailBoxService.sendDraftAsStored("draft-1", TEST_USER, row -> {
+        throw new IllegalArgumentException("not what was approved");
+      }));
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+    }
+    verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any());
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+  }
+
+  /**
+   * EXO-91674 -- a discard whose check refuses the row, here because the draft has been
+   * scheduled, removes nothing: not the schedule, not the copy, not the row.
+   */
+  @Test
+  @SneakyThrows
+  void aDraftDiscardIsLeftAloneWhenTheCheckRefusesTheRow() {
+    givenAUsableMailbox();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(storedDraft());
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.deleteDraft("draft-1", TEST_USER, row -> {
+      if (row.isScheduled()) {
+        throw new IllegalArgumentException("scheduled");
+      }
+    }));
+    verify(emailScheduledSendStorage, never()).cancel(anyString(), anyString());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+    // The draft is still there, and so is its lock: a writer waiting on it and the next
+    // caller must share one lock, never hold two.
+    @SuppressWarnings("unchecked")
+    Map<String, ReentrantLock> draftLocks = (Map<String, ReentrantLock>) org.springframework.test.util.ReflectionTestUtils.getField(emailBoxService,
+                                                                                                                                    "draftLocks");
+    assertTrue(draftLocks.containsKey(TEST_USER + "/draft-1"));
+  }
+
+  /**
+   * EXO-91674 -- reading one draft is the owner's: a user who may not use their mailbox
+   * reads none, and a scheduled draft says it is.
+   */
+  @Test
+  @SneakyThrows
+  void getDraftIsTheOwnersAndMarksAScheduledDraft() {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+    assertTrue(emailBoxService.getDraft("draft-1", TEST_USER).isScheduled());
+
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.getDraft("draft-1", TEST_USER));
+  }
+
+  /**
    * EXO-90551 -- the composer's own draft of a mail written in a shared mailbox (the
    * common send path: any composer that paused holds one) is sent as any draft, and a
    * copy of the very message is filed in the owner's Sent; the answer says FILED.
@@ -15552,6 +15642,94 @@ public class EmailBoxServiceTest {
     verify(inbox).search(searched.capture());
     assertTrue(searched.getValue() instanceof AndTerm);
     assertEquals(2, ((AndTerm) searched.getValue()).getTerms().length, "words and day: one search, the attachment never in it");
+  }
+
+  /**
+   * EXO-91675 -- a Message-ID is one more term of the server's SEARCH, which only narrows:
+   * the server's substring match also answers a longer id containing the searched one,
+   * and only the exact one is kept, counted and paged. A search where no hit carries it
+   * exactly is an empty page, with nothing fetched.
+   */
+  @Test
+  void aMessageIdSearchOfAnOwnFolderKeepsOnlyTheMailCarryingItExactly() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    MimeMessage exact = searchHit("Our offer", "me@acme.com", new Date(), true);
+    when(exact.getHeader("Message-ID")).thenReturn(new String[] { "<draft.1@acme.com>" });
+    MimeMessage longer = searchHit("Another offer", "me@acme.com", new Date(), true);
+    when(longer.getHeader("Message-ID")).thenReturn(new String[] { "<xdraft.1@acme.com.org>" });
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { longer, exact });
+    when(((UIDFolder) inbox).getUID(exact)).thenReturn(31L);
+    when(emailBoxStorage.getCachedEmailIds(TEST_USER, "INBOX", List.of(31L))).thenReturn(Map.of(31L, 310L));
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setMessageId("<draft.1@acme.com>");
+
+    EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, criteria, "INBOX", 10);
+
+    assertEquals(1, page.getTotalMatches(), "the longer id is not this mail");
+    assertEquals(List.of(310L), page.getResults().stream().map(EmailSearchResult::getEmailId).toList());
+    ArgumentCaptor<SearchTerm> searched = ArgumentCaptor.forClass(SearchTerm.class);
+    verify(inbox).search(searched.capture());
+    assertEquals(EmailBoxService.messageIdSearchTerm("<draft.1@acme.com>"), searched.getValue(), "the id is searched on the server");
+    // Every hit's header in one batched FETCH before the exact filter, then the page's.
+    ArgumentCaptor<Message[]> fetched = ArgumentCaptor.forClass(Message[].class);
+    ArgumentCaptor<FetchProfile> profiles = ArgumentCaptor.forClass(FetchProfile.class);
+    verify(inbox, times(2)).fetch(fetched.capture(), profiles.capture());
+    assertArrayEquals(new Message[] { longer, exact }, fetched.getAllValues().get(0), "every hit, the longer id included");
+    assertArrayEquals(new String[] { "Message-ID" }, profiles.getAllValues().get(0).getHeaderNames());
+    assertArrayEquals(new Message[] { exact }, fetched.getAllValues().get(1), "the page: the exact match only");
+
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { longer });
+    EmailSearchResultPage none = emailBoxService.searchEmails(TEST_USER, criteria, "INBOX", 10);
+    assertEquals(0, none.getTotalMatches());
+    assertTrue(none.getResults().isEmpty());
+    verify(inbox, times(3)).fetch(any(Message[].class), any(FetchProfile.class));
+  }
+
+  /**
+   * EXO-91675 -- the assistant's search of a shared mailbox takes every criterion: a
+   * Message-ID is matched exactly against the copy's rows, a longer id containing it
+   * never, and the words and days apply as they do in the advanced search.
+   */
+  @Test
+  void anAgentsSearchOfASharedMailboxMatchesAMessageIdExactly() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(aSharedMailboxRow());
+    Email sent = mirrored(1L, "Our offer", "owner@acme.com", true, 1);
+    sent.setMailHeaderId("<draft.1@acme.com>");
+    sent.setContent(new EmailContent("<p>Pricing attached</p>"));
+    Email longer = mirrored(2L, "Another offer", "owner@acme.com", true, 1);
+    longer.setMailHeaderId("<xdraft.1@acme.com.org>");
+    Email noId = mirrored(3L, "Lunch", "owner@acme.com", true, 5);
+    noId.setContent(new EmailContent("<p>pricing for lunch</p>"));
+    when(emailBoxStorage.getEmailsForSearchInFolders(TEST_USER, List.of("CUSTOM:8"), false)).thenReturn(List.of(noId, longer, sent));
+    EmailSearchCriteria byId = new EmailSearchCriteria();
+    byId.setMessageId("draft.1@acme.com");
+
+    EmailSearchResultPage page = emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", byId, 10);
+
+    assertEquals(List.of(1L), page.getResults().stream().map(EmailSearchResult::getMailRemoteId).toList(), "bare or bracketed, exactly");
+    EmailSearchCriteria wordsThisWeek = new EmailSearchCriteria();
+    wordsThisWeek.setWords("pricing");
+    wordsThisWeek.setAfter(LocalDate.now().minusDays(2));
+    assertEquals(List.of(1L),
+                 emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:8", wordsThisWeek, 10)
+                                .getResults()
+                                .stream()
+                                .map(EmailSearchResult::getMailRemoteId)
+                                .toList(),
+                 "the body's words, from the first day of the range");
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:9")).thenReturn(null);
+    assertEquals("emailConnector.folder.notBrowsable",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.searchSharedMailboxMirror(TEST_USER, "CUSTOM:9", byId, 10)).getMessage());
   }
 
   /**

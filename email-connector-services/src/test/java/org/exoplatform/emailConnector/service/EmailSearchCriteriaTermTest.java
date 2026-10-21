@@ -33,6 +33,7 @@ import java.time.ZoneId;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.GregorianCalendar;
+import java.util.List;
 import java.util.Properties;
 
 import javax.activation.DataHandler;
@@ -109,6 +110,29 @@ public class EmailSearchCriteriaTermTest {
   }
 
   /**
+   * EXO-91675 -- the assistant's search of the mail a draft became once sent: the words
+   * of the body and a range of days, then the draft's Message-ID, all in one SEARCH; the
+   * id is asked bare and bracketed, as every server is asked for it.
+   *
+   * @throws Exception when the term cannot be written
+   */
+  @Test
+  void aMessageIdIsOneMoreTermOfTheSameSearch() throws Exception {
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setWords("pricing");
+    criteria.setAfter(LocalDate.of(2026, 10, 20));
+    criteria.setBefore(LocalDate.of(2026, 10, 22));
+    criteria.setMessageId("<draft.1@acme.com>");
+
+    assertEquals("OR SUBJECT pricing BODY pricing SINCE 20-Oct-2026 BEFORE 22-Oct-2026"
+        + " OR HEADER Message-ID draft.1@acme.com HEADER Message-ID <draft.1@acme.com>",
+                 imapSearch(EmailBoxService.buildEmailSearchTerm(criteria, null)));
+    EmailSearchCriteria idAlone = new EmailSearchCriteria();
+    idAlone.setMessageId("  ");
+    assertNull(EmailBoxService.buildEmailSearchTerm(idAlone, null), "a blank id searches nothing");
+  }
+
+  /**
    * The search box's own text never searches the body: only the words of the advanced
    * search do, since a body search on a server without an index scans the folder.
    *
@@ -170,6 +194,25 @@ public class EmailSearchCriteriaTermTest {
     notADay.setInvalidDay(true);
     assertEquals("emailConnector.search.invalidDate",
                  assertThrows(IllegalArgumentException.class, () -> EmailBoxService.validateSearchCriteria(notADay)).getMessage());
+
+    // An IMAP SEARCH date carries a four-digit year, written from a calendar that is
+    // Julian before 1582: a day outside 1900..9999 is refused, from the REST search too.
+    for (LocalDate outside : List.of(LocalDate.of(1899, 12, 31), LocalDate.of(1000, 1, 1), LocalDate.of(10000, 1, 1))) {
+      EmailSearchCriteria after = new EmailSearchCriteria();
+      after.setAfter(outside);
+      assertEquals("emailConnector.search.invalidDate",
+                   assertThrows(IllegalArgumentException.class, () -> EmailBoxService.validateSearchCriteria(after)).getMessage(),
+                   "after " + outside);
+      EmailSearchCriteria before = new EmailSearchCriteria();
+      before.setBefore(outside);
+      assertEquals("emailConnector.search.invalidDate",
+                   assertThrows(IllegalArgumentException.class, () -> EmailBoxService.validateSearchCriteria(before)).getMessage(),
+                   "before " + outside);
+    }
+    EmailSearchCriteria edges = new EmailSearchCriteria();
+    edges.setAfter(LocalDate.of(1900, 1, 1));
+    edges.setBefore(LocalDate.of(9999, 12, 31));
+    assertDoesNotThrow(() -> EmailBoxService.validateSearchCriteria(edges), "the first and the last searchable days");
 
     EmailSearchCriteria negative = new EmailSearchCriteria();
     negative.setSinceDays(-1);

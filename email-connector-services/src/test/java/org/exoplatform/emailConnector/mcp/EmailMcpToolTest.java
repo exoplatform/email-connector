@@ -26,13 +26,13 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.time.LocalDate;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -55,6 +55,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailContent;
+import org.exoplatform.emailConnector.model.EmailSearchCriteria;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
@@ -75,6 +76,7 @@ import org.exoplatform.emailConnector.model.SharedMailboxFolder;
 import org.exoplatform.emailConnector.model.FolderRole;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailDelegationService;
+import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
 
 class EmailMcpToolTest {
@@ -98,7 +100,7 @@ class EmailMcpToolTest {
     emailBoxService = Mockito.mock(EmailBoxService.class);
     userEmailSettingService = Mockito.mock(UserEmailSettingService.class);
     emailDelegationService = Mockito.mock(EmailDelegationService.class);
-    emailMcpTool = new EmailMcpTool(emailBoxService, userEmailSettingService, emailDelegationService) {
+    emailMcpTool = new EmailMcpTool(emailBoxService, userEmailSettingService, emailDelegationService, Mockito.mock(EmailSignatureService.class)) {
       @Override
       public String getCurrentUserName() {
         return USERNAME;
@@ -244,6 +246,100 @@ class EmailMcpToolTest {
 
   // --- search_emails -------------------------------------------------------
 
+  /**
+   * EXO-91675 -- every argument of the search reaches the service as one criterion: the
+   * words of the body, the age window, the days of the range -- the last one included,
+   * so the criteria stop before the day after it -- and the Message-ID, trimmed.
+   */
+  @Test
+  void searchEmailsPassesTheBodyWordsTheDaysAndTheMessageIdAsCriteria() throws Exception {
+    when(emailBoxService.searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), eq(MailFolder.ARCHIVE), anyInt()))
+                                                                                                                      .thenReturn(new EmailSearchResultPage(List.of(),
+                                                                                                                                                            0));
+
+    emailMcpTool.searchEmails("offer", "carol", true, 3, "ARCHIVE", 5, null, "pricing", "2026-10-20", " 2026-10-21 ", " <d.1@acme.com> ");
+
+    EmailSearchCriteria expected = queryCriteria("offer");
+    expected.setFrom("carol");
+    expected.setUnreadOnly(true);
+    expected.setSinceDays(3);
+    expected.setWords("pricing");
+    expected.setAfter(LocalDate.of(2026, 10, 20));
+    expected.setBefore(LocalDate.of(2026, 10, 22));
+    expected.setMessageId("<d.1@acme.com>");
+    verify(emailBoxService).searchEmails(USERNAME, expected, MailFolder.ARCHIVE, 5);
+
+    // The last day of 9999 excludes nothing, and has no four-digit next day: no bound.
+    emailMcpTool.searchEmails(null, null, null, null, "ARCHIVE", 5, null, "pricing", null, "9999-12-31", null);
+    EmailSearchCriteria unbounded = new EmailSearchCriteria();
+    unbounded.setWords("pricing");
+    verify(emailBoxService).searchEmails(USERNAME, unbounded, MailFolder.ARCHIVE, 5);
+  }
+
+  /**
+   * EXO-91675 -- a draft's message_id names a mail the user sent: SENT is searched when no
+   * folder is named, the folder named otherwise, and INBOX stays the default of any other
+   * search.
+   */
+  @Test
+  void aMessageIdSearchesTheSentFolderUnlessAnotherIsNamed() throws Exception {
+    when(emailBoxService.searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), any(), anyInt()))
+                                                                                                    .thenReturn(new EmailSearchResultPage(List.of(),
+                                                                                                                                          0));
+
+    emailMcpTool.searchEmails(null, null, null, null, null, null, null, null, null, null, "<d.1@acme.com>");
+    emailMcpTool.searchEmails(null, null, null, null, "inbox", null, null, null, null, null, "<d.1@acme.com>");
+    emailMcpTool.searchEmails(null, null, null, null, null, null, null, "pricing", null, null, "  ");
+
+    ArgumentCaptor<String> folders = ArgumentCaptor.forClass(String.class);
+    verify(emailBoxService, times(3)).searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), folders.capture(), anyInt());
+    assertEquals(List.of(MailFolder.SENT, MailFolder.INBOX, MailFolder.INBOX), folders.getAllValues(), "call by call");
+  }
+
+  /**
+   * EXO-91675 -- a message_id with no @ is no Message-ID: an email_id passed in its place
+   * is refused before the mailbox is searched, since the server's substring search would
+   * match it against every id carrying its digits.
+   */
+  @Test
+  void aMessageIdThatIsNoMessageIdIsRefusedBeforeTheSearch() throws Exception {
+    IllegalArgumentException notAnId = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, null, null, null, " 42 "));
+    assertTrue(notAnId.getMessage().startsWith("message_id must be the message_id a draft tool returned"), notAnId.getMessage());
+    verify(emailBoxService, never()).searchEmails(any(), any(EmailSearchCriteria.class), any(), anyInt());
+  }
+
+  /**
+   * EXO-91675 -- a day the model wrote wrong is refused in words naming the argument,
+   * before the mailbox is searched, and a range the service refuses is said in words too.
+   */
+  @Test
+  void aSearchDayThatIsNotOneIsRefusedInWords() throws Exception {
+    IllegalArgumentException badSince = assertThrows(IllegalArgumentException.class,
+                                                     () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, "x", "21/10/2026", null, null));
+    assertTrue(badSince.getMessage().startsWith("since_date must be a day written yyyy-MM-dd"), badSince.getMessage());
+    IllegalArgumentException badUntil = assertThrows(IllegalArgumentException.class,
+                                                     () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, "x", null, "yesterday", null));
+    assertTrue(badUntil.getMessage().startsWith("until_date must be a day written yyyy-MM-dd"), badUntil.getMessage());
+    // A signed year parses as an ISO date, and its next day does not exist: refused as a
+    // day, never a DateTimeException out of the range's last day.
+    IllegalArgumentException farYear = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, "x", null, "+999999999-12-31", null));
+    assertTrue(farYear.getMessage().startsWith("until_date must be a day written yyyy-MM-dd"), farYear.getMessage());
+    verify(emailBoxService, never()).searchEmails(any(), any(EmailSearchCriteria.class), any(), anyInt());
+
+    when(emailBoxService.searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), any(), anyInt()))
+                                                                                                    .thenThrow(new IllegalArgumentException("emailConnector.search.invalidDateRange"));
+    IllegalArgumentException reversed = assertThrows(IllegalArgumentException.class,
+                                                     () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, null, "2026-10-21", "2026-10-19", null));
+    assertEquals("until_date must be the same day as since_date or a later one.", reversed.getMessage());
+    // Said of the day written, whichever bound it becomes: until_date's next day would be
+    // 1900-01-01, which the service takes.
+    IllegalArgumentException lastDayOf1899 = assertThrows(IllegalArgumentException.class,
+                                                          () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, "x", null, "1899-12-31", null));
+    assertEquals("until_date must be a day of a year from 1900 to 9999.", lastDayOf1899.getMessage());
+  }
+
   @Test
   void searchEmailsAsksTheServerAndReportsTheTotal() throws Exception {
     EmailSearchResult hit = new EmailSearchResult(42L,
@@ -267,12 +363,12 @@ class EmailMcpToolTest {
                                                        false,
                                                        true,
                                                        null);
-    when(emailBoxService.searchEmails(eq(USERNAME), eq("invoice"), isNull(), eq(false), isNull(), eq(MailFolder.INBOX), anyInt()))
+    when(emailBoxService.searchEmails(eq(USERNAME), eq(queryCriteria("invoice")), eq(MailFolder.INBOX), anyInt()))
                                                                                                                                  .thenReturn(new EmailSearchResultPage(List.of(hit,
                                                                                                                                                                                cachedHit),
                                                                                                                                                                        90));
 
-    EmailSearchResultsModel results = emailMcpTool.searchEmails("invoice", null, null, null, null, null, null);
+    EmailSearchResultsModel results = emailMcpTool.searchEmails("invoice", null, null, null, null, null, null, null, null, null, null);
 
     // The count is what keeps the agent honest: it saw two of ninety.
     assertEquals(90, results.getTotalMatches());
@@ -289,22 +385,22 @@ class EmailMcpToolTest {
 
   @Test
   void searchEmailsDefaultsToTheInboxAndUppercasesTheFolder() throws Exception {
-    when(emailBoxService.searchEmails(eq(USERNAME), any(), any(), anyBoolean(), any(), eq(MailFolder.ARCHIVE), anyInt()))
+    when(emailBoxService.searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), eq(MailFolder.ARCHIVE), anyInt()))
                                                                                                                         .thenReturn(new EmailSearchResultPage(List.of(),
                                                                                                                                                               0));
 
-    emailMcpTool.searchEmails("invoice", null, null, null, "archive", null, null);
+    emailMcpTool.searchEmails("invoice", null, null, null, "archive", null, null, null, null, null, null);
 
-    verify(emailBoxService).searchEmails(eq(USERNAME), eq("invoice"), isNull(), eq(false), isNull(), eq(MailFolder.ARCHIVE), anyInt());
+    verify(emailBoxService).searchEmails(eq(USERNAME), eq(queryCriteria("invoice")), eq(MailFolder.ARCHIVE), anyInt());
   }
 
   @Test
   void searchEmailsTranslatesAMessageCodeIntoSomethingAModelCanAct() throws Exception {
-    when(emailBoxService.searchEmails(eq(USERNAME), any(), any(), anyBoolean(), any(), any(), anyInt()))
+    when(emailBoxService.searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), any(), anyInt()))
                                                                                                        .thenThrow(new IllegalArgumentException("emailConnector.search.criteriaRequired"));
 
     IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                                                   () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null));
+                                                   () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, null, null, null, null));
     // A message code tells a model nothing about what to change.
     assertFalse(thrown.getMessage().contains("emailConnector."));
     assertTrue(thrown.getMessage().contains("query"));
@@ -320,15 +416,15 @@ class EmailMcpToolTest {
   void searchEmailsRefusesARegistryFolderKey() throws Exception {
     // Were the key let through, the service would answer normally: the refusal below is
     // the guard's, not a downstream failure's.
-    when(emailBoxService.searchEmails(eq(USERNAME), any(), any(), anyBoolean(), any(), eq("CUSTOM:42"), anyInt()))
+    when(emailBoxService.searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), eq("CUSTOM:42"), anyInt()))
                                                                                                                  .thenReturn(new EmailSearchResultPage(List.of(),
                                                                                                                                                        0));
 
     IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                                                   () -> emailMcpTool.searchEmails("invoice", null, null, null, "CUSTOM:42", null, null));
+                                                   () -> emailMcpTool.searchEmails("invoice", null, null, null, "CUSTOM:42", null, null, null, null, null, null));
 
     assertTrue(thrown.getMessage().contains("INBOX, SENT or ARCHIVE"), thrown.getMessage());
-    verify(emailBoxService, never()).searchEmails(any(), any(), any(), anyBoolean(), any(), any(), anyInt());
+    verify(emailBoxService, never()).searchEmails(any(), any(EmailSearchCriteria.class), any(), anyInt());
   }
 
   /**
@@ -337,20 +433,14 @@ class EmailMcpToolTest {
    */
   @Test
   void searchEmailsDefaultsToTheInboxWhenNoFolderIsGiven() throws Exception {
-    when(emailBoxService.searchEmails(eq(USERNAME), any(), any(), anyBoolean(), any(), eq(MailFolder.INBOX), anyInt()))
+    when(emailBoxService.searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), eq(MailFolder.INBOX), anyInt()))
                                                                                                                       .thenReturn(new EmailSearchResultPage(List.of(),
                                                                                                                                                             0));
 
-    emailMcpTool.searchEmails("invoice", null, null, null, null, null, null);
-    emailMcpTool.searchEmails("invoice", null, null, null, "  ", null, null);
+    emailMcpTool.searchEmails("invoice", null, null, null, null, null, null, null, null, null, null);
+    emailMcpTool.searchEmails("invoice", null, null, null, "  ", null, null, null, null, null, null);
 
-    verify(emailBoxService, times(2)).searchEmails(eq(USERNAME),
-                                                   eq("invoice"),
-                                                   isNull(),
-                                                   eq(false),
-                                                   isNull(),
-                                                   eq(MailFolder.INBOX),
-                                                   anyInt());
+    verify(emailBoxService, times(2)).searchEmails(eq(USERNAME), eq(queryCriteria("invoice")), eq(MailFolder.INBOX), anyInt());
   }
 
   /**
@@ -361,20 +451,20 @@ class EmailMcpToolTest {
    */
   @Test
   void searchEmailsKeepsAnUnmappedArgumentFailureGeneric() throws Exception {
-    when(emailBoxService.searchEmails(eq(USERNAME), any(), any(), anyBoolean(), any(), any(), anyInt()))
+    when(emailBoxService.searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), any(), anyInt()))
                                                                                                        .thenThrow(new NumberFormatException("For input string: \"abc\""));
 
     IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                                                   () -> emailMcpTool.searchEmails("invoice", null, null, null, null, null, null));
+                                                   () -> emailMcpTool.searchEmails("invoice", null, null, null, null, null, null, null, null, null, null));
     assertFalse(thrown.getMessage().contains("For input string"));
     assertNotNull(thrown.getCause());
 
     // A cause-only exception carries a null message: the old getOrDefault(null, null)
     // threw NPE here instead of reporting anything.
-    when(emailBoxService.searchEmails(eq(USERNAME), any(), any(), anyBoolean(), any(), any(), anyInt()))
+    when(emailBoxService.searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), any(), anyInt()))
                                                                                                        .thenThrow(new IllegalArgumentException(new IllegalStateException("boom")));
     IllegalArgumentException blank = assertThrows(IllegalArgumentException.class,
-                                                  () -> emailMcpTool.searchEmails("invoice", null, null, null, null, null, null));
+                                                  () -> emailMcpTool.searchEmails("invoice", null, null, null, null, null, null, null, null, null, null));
     assertNotNull(blank.getMessage());
   }
 
@@ -385,12 +475,12 @@ class EmailMcpToolTest {
    */
   @Test
   void searchEmailsReportsAConnectionFailureRatherThanASyncInProgress() throws Exception {
-    when(emailBoxService.searchEmails(eq(USERNAME), any(), any(), anyBoolean(), any(), any(), anyInt()))
+    when(emailBoxService.searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), any(), anyInt()))
                                                                                                        .thenThrow(new IllegalStateException("Error when searching mailbox of user "
                                                                                                            + USERNAME));
 
     IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                                                () -> emailMcpTool.searchEmails("invoice", null, null, null, null, null, null));
+                                                () -> emailMcpTool.searchEmails("invoice", null, null, null, null, null, null, null, null, null, null));
     assertFalse(thrown.getMessage().contains("synchroniz"));
     assertTrue(thrown.getMessage().contains("could not be reached"));
     assertNotNull(thrown.getCause());
@@ -841,7 +931,7 @@ class EmailMcpToolTest {
                                                           List.of(() -> emailMcpTool.getEmailById(EMAIL_ID, nobody),
                                                                   () -> emailMcpTool.listEmails(null, null, null, null, nobody),
                                                                   () -> emailMcpTool.getUnreadCount(nobody),
-                                                                  () -> emailMcpTool.searchEmails("x", null, null, null, null, null, nobody),
+                                                                  () -> emailMcpTool.searchEmails("x", null, null, null, null, null, nobody, null, null, null, null),
                                                                   () -> emailMcpTool.getEmailFull(REMOTE_ID, null, nobody),
                                                                   () -> emailMcpTool.listAttachments(REMOTE_ID, null, nobody),
                                                                   () -> emailMcpTool.getEmailThread("thread-1", nobody),
@@ -899,7 +989,7 @@ class EmailMcpToolTest {
                                                    () -> emailMcpTool.listEmails(null, null, null, "sent", OWNER_MAILBOX));
     assertTrue(listed.getMessage().contains("not available") && listed.getMessage().contains("Alice Martin"), listed.getMessage());
     IllegalArgumentException searched = assertThrows(IllegalArgumentException.class,
-                                                     () -> emailMcpTool.searchEmails("x", null, null, null, "SENT", null, OWNER_MAILBOX));
+                                                     () -> emailMcpTool.searchEmails("x", null, null, null, "SENT", null, OWNER_MAILBOX, null, null, null, null));
     assertTrue(searched.getMessage().contains("not an empty folder"), searched.getMessage());
     Mockito.verifyNoInteractions(emailBoxService);
 
@@ -910,12 +1000,12 @@ class EmailMcpToolTest {
     assertTrue(emailMcpTool.listEmails(null, null, null, "ARCHIVE", OWNER_MAILBOX).isEmpty());
 
     EmailSearchResult hit = new EmailSearchResult(9L, "CUSTOM:7", "Budget", null, new Date(), false, false, true, null);
-    when(emailBoxService.searchSharedMailboxMirror(USERNAME, "CUSTOM:7", "budget", null, false, null, 20))
+    when(emailBoxService.searchSharedMailboxMirror(USERNAME, "CUSTOM:7", queryCriteria("budget"), 20))
                                                                                                           .thenReturn(new EmailSearchResultPage(List.of(hit), 1));
-    EmailSearchResultsModel results = emailMcpTool.searchEmails("budget", null, null, null, "ARCHIVE", null, OWNER_MAILBOX);
+    EmailSearchResultsModel results = emailMcpTool.searchEmails("budget", null, null, null, "ARCHIVE", null, OWNER_MAILBOX, null, null, null, null);
     assertEquals(1, results.getTotalMatches());
     assertEquals("ARCHIVE", results.getResults().get(0).getFolder(), "the folder's name, never a shared folder's key");
-    verify(emailBoxService, never()).searchEmails(any(), any(), any(), anyBoolean(), any(), any(), anyInt());
+    verify(emailBoxService, never()).searchEmails(any(), any(EmailSearchCriteria.class), any(), anyInt());
   }
 
   /** The unread count of a shared inbox is the mirror's, reaching no mail server. */
@@ -1252,14 +1342,14 @@ class EmailMcpToolTest {
   @Test
   void aSearchHitHandsOutAUidOnlyForTheOwnInbox() throws Exception {
     EmailSearchResult sentHit = new EmailSearchResult(REMOTE_ID, MailFolder.SENT, "Our offer", null, new Date(), true, false, true, null);
-    when(emailBoxService.searchEmails(USERNAME, "offer", null, false, null, MailFolder.SENT, 20)).thenReturn(new EmailSearchResultPage(List.of(sentHit), 1));
-    assertNull(emailMcpTool.searchEmails("offer", null, null, null, "SENT", null, null).getResults().get(0).getMailRemoteId());
+    when(emailBoxService.searchEmails(USERNAME, queryCriteria("offer"), MailFolder.SENT, 20)).thenReturn(new EmailSearchResultPage(List.of(sentHit), 1));
+    assertNull(emailMcpTool.searchEmails("offer", null, null, null, "SENT", null, null, null, null, null, null).getResults().get(0).getMailRemoteId());
 
     SharedMailboxEntry share = givenAliceShares();
     when(emailDelegationService.getMirroredFolderKey(USERNAME, share, "INBOX")).thenReturn(SHARED_INBOX);
     EmailSearchResult sharedHit = new EmailSearchResult(REMOTE_ID, SHARED_INBOX, "Budget", null, new Date(), false, false, true, null, EMAIL_ID);
-    when(emailBoxService.searchSharedMailboxMirror(USERNAME, SHARED_INBOX, "budget", null, false, null, 20)).thenReturn(new EmailSearchResultPage(List.of(sharedHit), 1));
-    EmailSearchHitModel hit = emailMcpTool.searchEmails("budget", null, null, null, null, null, OWNER_MAILBOX).getResults().get(0);
+    when(emailBoxService.searchSharedMailboxMirror(USERNAME, SHARED_INBOX, queryCriteria("budget"), 20)).thenReturn(new EmailSearchResultPage(List.of(sharedHit), 1));
+    EmailSearchHitModel hit = emailMcpTool.searchEmails("budget", null, null, null, null, null, OWNER_MAILBOX, null, null, null, null).getResults().get(0);
     assertNull(hit.getMailRemoteId());
     assertEquals(EMAIL_ID, hit.getEmailId());
   }
@@ -1274,9 +1364,9 @@ class EmailMcpToolTest {
   void anOwnInboxSearchHitCarriesTheEmailIdOfItsRow() throws Exception {
     EmailSearchResult synced = new EmailSearchResult(8L, MailFolder.INBOX, "From Alice", null, new Date(), false, false, true, null, 42L);
     EmailSearchResult notYet = new EmailSearchResult(9L, MailFolder.INBOX, "From Carol", null, new Date(), false, false, false, null);
-    when(emailBoxService.searchEmails(USERNAME, "alice", null, false, null, MailFolder.INBOX, 20)).thenReturn(new EmailSearchResultPage(List.of(synced, notYet), 2));
+    when(emailBoxService.searchEmails(USERNAME, queryCriteria("alice"), MailFolder.INBOX, 20)).thenReturn(new EmailSearchResultPage(List.of(synced, notYet), 2));
 
-    List<EmailSearchHitModel> hits = emailMcpTool.searchEmails("alice", null, null, null, null, null, null).getResults();
+    List<EmailSearchHitModel> hits = emailMcpTool.searchEmails("alice", null, null, null, null, null, null, null, null, null, null).getResults();
 
     assertEquals(42L, hits.get(0).getEmailId());
     assertEquals(8L, hits.get(0).getMailRemoteId());
@@ -1349,6 +1439,19 @@ class EmailMcpToolTest {
     when(userEmailSettingService.getUserEmailSetting(USERNAME)).thenReturn(setting);
     when(emailBoxService.sendEmail(any(Email.class), eq(USERNAME), eq(100L))).thenReturn(OwnerCopy.FILED);
     return original;
+  }
+
+  /**
+   * The criteria the tool builds for a search by free text alone, as the service receives
+   * them: compared by value, so a stray criterion fails the stub.
+   *
+   * @param query the free text
+   * @return the criteria
+   */
+  private static EmailSearchCriteria queryCriteria(String query) {
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setQuery(query);
+    return criteria;
   }
 
   /**
