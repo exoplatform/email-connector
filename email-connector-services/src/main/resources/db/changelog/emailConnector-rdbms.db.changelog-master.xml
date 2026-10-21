@@ -1458,9 +1458,7 @@
   <changeSet author="email-connector" id="1.0.0-exo-90654-01" dbms="oracle,postgresql,hsqldb">
     <comment>
       The mail filters' sequence (EXO-90654), on the vendors that have sequences, created
-      before its table for the reason 1.0.0-43 records. Ids 70 to 75 were reserved for
-      the mail-filters work while 76 onwards went to mailbox delegation; never
-      renumbered once any database ran them.
+      before its table for the reason 1.0.0-43 records.
     </comment>
     <createSequence sequenceName="SEQ_EMAIL_FILTER_ID" startValue="1"/>
     <rollback>
@@ -2026,9 +2024,7 @@
   <changeSet author="email-connector" id="1.0.0-exo-90659-01" dbms="oracle,postgresql,hsqldb">
     <comment>
       The mail filters' tool-call proposals' sequence (EXO-90659), created before its
-      table for the reason 1.0.0-43 records. 1.0.0-91 and -92 are reserved by the
-      delegation's phase 4 and -93 by the automatic reply's, so this starts at 94; never
-      renumbered once any database ran it.
+      table for the reason 1.0.0-43 records.
     </comment>
     <createSequence sequenceName="SEQ_EMAIL_FILTER_PROPOSAL_ID" startValue="1"/>
     <rollback>
