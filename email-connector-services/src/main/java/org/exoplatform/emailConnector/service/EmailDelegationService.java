@@ -29,6 +29,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -2017,7 +2018,7 @@ public class EmailDelegationService {
     if (ace == null) {
       return describe(folder, FolderAccess.NONE, null, true);
     }
-    MailboxRights rights = ace.rights() == null ? MailboxRights.NONE : ace.rights();
+    MailboxRights rights = Objects.requireNonNullElse(ace.rights(), MailboxRights.NONE);
     FolderAccess access = FolderAccess.of(engine.presetOf(rights));
     return describe(folder, access, access == null ? rights.letters() : null, true);
   }
