@@ -35,15 +35,27 @@ export default {
     },
     message() {
       if (!this.files.length) {
-        return this.$t('AiAgentChat.tool.confirm.send_email_draft', this.toolInput);
+        return this.withLinks(this.$t('AiAgentChat.tool.confirm.send_email_draft', this.toolInput));
       }
-      return this.$t('AiAgentChat.tool.confirm.send_email_draft.withFiles', {
+      return this.withLinks(this.$t('AiAgentChat.tool.confirm.send_email_draft.withFiles', {
         ...this.toolInput,
         files: this.files.map(this.escape).join(', '),
-      });
+      }));
     },
   },
   methods: {
+    /**
+     * The card's text with the user and content references marked as the AI app's own
+     * approval card marks them, so a draft without files reads as it did before.
+     *
+     * @param {string} text the card's text
+     * @returns {string} the text, its references marked
+     */
+    withLinks(text) {
+      return text
+        .replace(/(\/user:([a-zA-Z0-9]+))/ig, '<user-by-name>$2</user-by-name>')
+        .replace(/(\/[a-z]+:[a-zA-Z0-9]+)/ig, '<content-link>$1</content-link>');
+    },
     /**
      * A file name as text inside the card's HTML: the names come from the assistant.
      *
