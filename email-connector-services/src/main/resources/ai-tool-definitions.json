@@ -364,7 +364,7 @@
     {
       "name": "list_email_drafts",
       "title": "List email drafts",
-      "description": "List the drafts of the current user's own mailbox, most recently changed first, as the Drafts folder of the Email app shows them: recipients, subject, the body as plain text (cut when long), last_modified, whether it is a reply, its draft_id, revision, message_id and thread_id. Scheduled drafts and drafts written in a mailbox shared with the user are not listed. 'subject' keeps the drafts whose subject contains it, 'recipient' those with an address containing it, 'since_days' those changed in the last N days; 'limit' caps the list (default 20, max 100); 'with_html' adds each draft's whole HTML body as body_html, which update_email_draft needs to change part of a body. A draft that is no longer listed was sent, deleted or scheduled by the user: look for its message_id in the Sent folder.",
+      "description": "List the drafts of the current user's own mailbox, most recently changed first, as the Drafts folder of the Email app shows them: recipients, subject, the body as plain text (cut when long), last_modified, whether it is a reply, its attachments (the names of its files), its draft_id, revision, message_id and thread_id. Scheduled drafts and drafts written in a mailbox shared with the user are not listed. 'subject' keeps the drafts whose subject contains it, 'recipient' those with an address containing it, 'since_days' those changed in the last N days; 'limit' caps the list (default 20, max 100); 'with_html' adds each draft's whole HTML body as body_html, which update_email_draft needs to change part of a body. A draft that is no longer listed was sent, deleted or scheduled by the user: look for its message_id in the Sent folder.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -385,7 +385,7 @@
     {
       "name": "send_email_draft",
       "title": "Send an email draft",
-      "description": "Send a draft of the current user's own mailbox over real SMTP, as it is stored at this moment: the user's own edits in the Email app are what goes out, never an earlier version. A reply draft stays in its conversation. IMPORTANT: this action is outward-facing and irreversible. Read the draft with list_email_drafts first and pass its to, cc, bcc and subject exactly as it says them now: they are what the user approves, and the draft is sent only if it still says exactly that; otherwise nothing is sent and you read it again. Always show the user those recipients and the subject, and never send without their explicit confirmation. A draft that is scheduled, or written in a mailbox shared with the user, is refused: the user sends it from the Email app. Returns the sent mail's message_id and thread_id.",
+      "description": "Send a draft of the current user's own mailbox over real SMTP, as it is stored at this moment: the user's own edits in the Email app are what goes out, never an earlier version. A reply draft stays in its conversation. IMPORTANT: this action is outward-facing and irreversible. Read the draft with list_email_drafts first and pass its to, cc, bcc, subject and attachments exactly as it says them now: they are what the user approves, and the draft is sent only if it still says exactly that; otherwise nothing is sent and you read it again. Always show the user those recipients, the subject and the attached files, and never send without their explicit confirmation. A draft that is scheduled, or written in a mailbox shared with the user, is refused: the user sends it from the Email app. Returns the sent mail's message_id and thread_id.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -393,7 +393,8 @@
           "to": { "type": "array", "items": { "type": "string" }, "description": "The draft's recipients as list_email_drafts reads them now, bare addresses." },
           "subject": { "type": "string", "description": "The draft's subject as list_email_drafts reads it now." },
           "cc": { "type": "array", "items": { "type": "string" }, "description": "The draft's copied recipients as read now; empty when it has none." },
-          "bcc": { "type": "array", "items": { "type": "string" }, "description": "The draft's blind-copied recipients as read now; empty when it has none." }
+          "bcc": { "type": "array", "items": { "type": "string" }, "description": "The draft's blind-copied recipients as read now; empty when it has none." },
+          "attachments": { "type": "array", "items": { "type": "string" }, "description": "The names of the draft's files as list_email_drafts reads them now; empty when it carries none." }
         },
         "required": ["draft_id", "to", "subject"]
       },
