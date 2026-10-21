@@ -42,6 +42,8 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
+import java.util.stream.Collectors;
 
 import javax.xml.parsers.DocumentBuilderFactory;
 
@@ -1063,8 +1065,7 @@ public class MasterChangelogTest {
   /**
    * EXO-90654 -- the mail filters' changesets (1.0.0-exo-90654-01 to -06) apply, roll back and
    * apply again, to a tag placed immediately before 1.0.0-exo-90654-01 for the reason the folder
-   * registry's test gives. They sit before 1.0.0-76 in the file, where their ids were
-   * reserved, so the rollback also undoes the delegation changesets after them, and the
+   * registry's test gives. They sit before 1.0.0-76 in the file, so the rollback also undoes the delegation changesets after them, and the
    * re-apply brings everything back. Between the two, the keys are exercised: one match
    * per user, rule and mail, and one rule per keyword, with any number of rules carrying
    * no keyword at all.
@@ -2029,6 +2030,14 @@ public class MasterChangelogTest {
   }
 
   /**
+   * The bare ids the eXip's changesets carried before they took task-scoped ids: 1.0.0-70
+   * to -75, -85 to -90 and -94 to -99.
+   */
+  private static final Set<String> RETIRED_BARE_IDS = Stream.of(70, 71, 72, 73, 74, 75, 85, 86, 87, 88, 89, 90, 94, 95, 96, 97, 98, 99)
+                                                    .map(n -> "1.0.0-" + n)
+                                                    .collect(Collectors.toUnmodifiableSet());
+
+  /**
    * 1.0.0-52 is burned and must never be reused: the index that is 1.0.0-24 today
    * carried that id on feature/ai-contribution between 20 and 23 August 2026, and the
    * databases that ran the branch then hold a 1.0.0-52 row for it. A changeset's
@@ -2046,9 +2055,13 @@ public class MasterChangelogTest {
     try (InputStream changelog = getClass().getClassLoader().getResourceAsStream(CHANGELOG)) {
       NodeList changeSets = factory.newDocumentBuilder().parse(changelog).getElementsByTagNameNS("*", "changeSet");
       for (int i = 0; i < changeSets.getLength(); i++) {
-        assertTrue(!"1.0.0-52".equals(((Element) changeSets.item(i)).getAttribute("id")),
+        String id = ((Element) changeSets.item(i)).getAttribute("id");
+        assertTrue(!"1.0.0-52".equals(id),
                    "1.0.0-52 was recorded on every database that ran feature/ai-contribution between 20 and 23 August 2026"
                        + " (as the index now at 1.0.0-24); a changeset under that id collides with all of them");
+        assertTrue(!RETIRED_BARE_IDS.contains(id),
+                   id + " is recorded under another change on every database that ran feature/ai-contribution or this"
+                       + " lineage before the eXip's changesets took task-scoped ids; a changeset under it collides with them");
       }
     }
   }
