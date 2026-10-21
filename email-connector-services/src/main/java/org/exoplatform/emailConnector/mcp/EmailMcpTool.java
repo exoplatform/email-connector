@@ -2402,8 +2402,17 @@ public class EmailMcpTool implements McpToolPlugin {
       return toDraftModel(saved, true, refusedAll(documentIds, SCHEDULED_DOCUMENT_REFUSAL));
     } catch (IllegalAccessException | RuntimeException e) {
       LOG.warn("The documents named for draft {} of user {} could not be attached", saved.getDraftLocalId(), username, e);
-      Email stored = readAgain(saved, username);
-      return stored == null ? toDraftModel(saved, true, refusedAll(documentIds, UNKNOWN_DOCUMENT_REFUSAL))
+      Email stored;
+      try {
+        stored = emailBoxService.getDraft(saved.getDraftLocalId(), username);
+      } catch (Exception readFailure) {
+        LOG.debug("Draft {} of user {} could not be read again after its documents failed",
+                  saved.getDraftLocalId(),
+                  username,
+                  readFailure);
+        return toDraftModel(saved, true, refusedAll(documentIds, UNKNOWN_DOCUMENT_REFUSAL));
+      }
+      return stored == null ? toDraftModel(saved, true, refusedAll(documentIds, GONE_DOCUMENT_REFUSAL))
                             : toDraftModel(stored, true, refusedAll(documentIds, FAILED_DOCUMENT_REFUSAL));
     }
     if (attached == null || attached.getDraft() == null) {
@@ -2414,23 +2423,6 @@ public class EmailMcpTool implements McpToolPlugin {
                                                  .map(this::toRefusedDocumentModel)
                                                  .toList();
     return toDraftModel(attached.getDraft(), true, refused);
-  }
-
-  /**
-   * The draft as it is stored now, after attaching failed, so the answer shows the files
-   * it carries rather than those it carried before.
-   *
-   * @param saved the draft as the call saved it
-   * @param username the user
-   * @return the draft as stored now, or null when it cannot be read again
-   */
-  private Email readAgain(Email saved, String username) {
-    try {
-      return emailBoxService.getDraft(saved.getDraftLocalId(), username);
-    } catch (Exception e) {
-      LOG.debug("Draft {} of user {} could not be read again after its documents failed", saved.getDraftLocalId(), username, e);
-      return null;
-    }
   }
 
   /**
