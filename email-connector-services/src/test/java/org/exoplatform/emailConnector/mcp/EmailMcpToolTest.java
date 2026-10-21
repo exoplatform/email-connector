@@ -1418,12 +1418,6 @@ class EmailMcpToolTest {
   }
 
   /**
-   * Asserts a call is refused as a recipient mismatch.
-   *
-   * @param call the reply
-   * @param why what the recipients got wrong, for the failure message
-   */
-  /**
    * The criteria the tool builds for a search by free text alone, as the service receives
    * them: compared by value, so a stray criterion fails the stub.
    *
@@ -1436,6 +1430,12 @@ class EmailMcpToolTest {
     return criteria;
   }
 
+  /**
+   * Asserts a call is refused as a recipient mismatch.
+   *
+   * @param call the reply
+   * @param why what the recipients got wrong, for the failure message
+   */
   private static void assertRefusedAsAMismatch(org.junit.jupiter.api.function.Executable call, String why) {
     IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, call, why);
     assertTrue(refused.getMessage().startsWith("Nothing was sent"), why + ": " + refused.getMessage());

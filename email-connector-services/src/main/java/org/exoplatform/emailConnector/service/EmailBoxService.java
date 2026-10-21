@@ -7412,7 +7412,9 @@ public class EmailBoxService {
 
   /**
    * Searches one folder of a mailbox shared with the user in the user's mirror of it
-   * (EXO-90555) -- what an agent's search of a shared mailbox reads. The mirror, not the
+   * (EXO-90555), by free text, sender, unread state and age only: the legacy form of
+   * {@link #searchSharedMailboxMirror(String, String, EmailSearchCriteria, int)}, which
+   * the assistant's search calls with every criterion (EXO-91675). The mirror, not the
    * mail server: the rows are the ones the shared mailbox's sync brought in, so an
    * answer covers what that folder's mirror holds and says so through its caller.
    * <p>
