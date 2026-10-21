@@ -179,7 +179,7 @@ do not, because turning one off only stops a READ (see their subtitles).
           </v-list-item-content>
           <v-list-item-action class="my-0">
             <v-switch
-              :input-value="senderLogosEnabled"
+              :input-value="senderLogosShown"
               :loading="savingSenderLogos"
               :disabled="savingSenderLogos"
               @change="onSenderLogosChange" />
@@ -241,6 +241,7 @@ export default {
       savingSharedMailboxSentCopy: false,
       queuedSharedMailboxSentCopy: null,
       senderLogosEnabled: true,
+      senderLogosShown: true,
       savingSenderLogos: false,
     };
   },
@@ -305,7 +306,10 @@ export default {
           this.sharedMailboxSentCopyShown = enabled;
         });
       this.$emailConnectorAdministrationService.getSenderLogosEnabled()
-        .then(enabled => this.senderLogosEnabled = enabled);
+        .then(enabled => {
+          this.senderLogosEnabled = enabled;
+          this.senderLogosShown = enabled;
+        });
     },
     /**
      * Opens the confirmation before applying a cache size change — every
@@ -465,10 +469,14 @@ export default {
      * @returns {void}
      */
     onSenderLogosChange(enabled) {
+      this.senderLogosShown = enabled;
       this.savingSenderLogos = true;
       this.$emailConnectorAdministrationService.updateSenderLogosEnabled(enabled)
         .then(() => this.senderLogosEnabled = enabled)
-        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error'))
+        .catch(() => {
+          this.senderLogosShown = this.senderLogosEnabled;
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error');
+        })
         .finally(() => this.savingSenderLogos = false);
     },
   },
