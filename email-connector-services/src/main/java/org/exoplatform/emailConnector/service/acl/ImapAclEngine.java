@@ -112,9 +112,6 @@ public class ImapAclEngine implements MailboxAclEngine {
   /** The engine name a preset selects. */
   public static final String NAME                 = "imap";
 
-  /** How many folders "Remove access" asks for the grantee's entry, at most (plan, A-4). */
-  static final int           MAX_FOLDERS_ASKED    = 200;
-
   /** The RFC 4314 capability -- a fast positive in {@link #probe}, never the gate. */
   static final String        ACL_CAPABILITY       = "ACL";
 
@@ -416,11 +413,14 @@ public class ImapAclEngine implements MailboxAclEngine {
   }
 
   /**
-   * The owner's folders whose GETACL names the identifier, INBOX included. At most
-   * {@link #MAX_FOLDERS_ASKED} folders are asked -- "Remove access" on a mailbox of
-   * hundreds of folders stops there and says so in the log (plan, assumption A-4). A
-   * folder whose ACL cannot be read is skipped: its entry, if any, is the owner's to
-   * remove in the mail server's own interface.
+   * The owner's folders whose GETACL names the identifier, INBOX included. Every folder
+   * of the owner's own LIST is asked, whatever its position: "Folders and access" can
+   * write an entry on any of them over a share's life, and only the server's ACL records
+   * it, so a folder left unasked keeps the grantee's access after "Remove access". The
+   * sweep is one GETACL per folder of the owner's own mailbox, and it stops at the
+   * first lost connection, returning what it found: every later folder would fail the
+   * same way. A folder whose ACL cannot be read is skipped: its entry, if any, is the
+   * owner's to remove in the mail server's own interface.
    *
    * @param session the owner's session
    * @param identifier the grantee as the server names them
@@ -434,10 +434,8 @@ public class ImapAclEngine implements MailboxAclEngine {
       return holding;
     }
     List<IMAPFolder> folders = ownFolders(session);
-    if (folders.size() > MAX_FOLDERS_ASKED) {
-      LOG.warn("Removing an access asks only the first {} of {} folders; an entry beyond them stays", MAX_FOLDERS_ASKED, folders.size());
-    }
-    for (IMAPFolder folder : folders.subList(0, Math.min(folders.size(), MAX_FOLDERS_ASKED))) {
+    for (int index = 0; index < folders.size(); index++) {
+      IMAPFolder folder = folders.get(index);
       try {
         for (ACL acl : folder.getACL()) {
           if (acl != null && identifier.equalsIgnoreCase(acl.getName())) {
@@ -446,6 +444,12 @@ public class ImapAclEngine implements MailboxAclEngine {
           }
         }
       } catch (MessagingException e) {
+        if (isConnectionFailure(e)) {
+          LOG.warn("The connection was lost while removing an access: {} of {} folders were not asked; an entry on them stays",
+                   folders.size() - index,
+                   folders.size());
+          break;
+        }
         LOG.debug("GETACL on '{}' could not be read while removing an access: {}", folder.getFullName(), e.getMessage());
       }
     }
