@@ -91,7 +91,7 @@ public record ServerRule(String ref,
   public static final String       NOT_CONTAINS     = "NOT_CONTAINS";
 
   /** The value is the text, ignoring case. */
-  public static final String       EQUALS           = "EQUALS";
+  public static final String       EQUALS_OPERATOR  = "EQUALS";
 
   /** The value starts with the text. */
   public static final String       STARTS_WITH      = "STARTS_WITH";
@@ -186,7 +186,7 @@ public record ServerRule(String ref,
                                                               IS_AUTOMATED);
 
   /** The operators on text. */
-  public static final List<String> TEXT_OPERATORS   = List.of(CONTAINS, NOT_CONTAINS, EQUALS, STARTS_WITH, ENDS_WITH);
+  public static final List<String> TEXT_OPERATORS   = List.of(CONTAINS, NOT_CONTAINS, EQUALS_OPERATOR, STARTS_WITH, ENDS_WITH);
 
   /** Every action type, in the form's order. */
   public static final List<String> ACTION_TYPES     = List.of(MOVE_TO_FOLDER, MARK_JUNK, DELETE, MARK_READ, STAR, TAG, FORWARD);
@@ -194,7 +194,7 @@ public record ServerRule(String ref,
   /** The actions that file the mail somewhere, of which a rule has at most one. */
   public static final Set<String>  FILING_ACTIONS   = Set.of(MOVE_TO_FOLDER, MARK_JUNK, DELETE);
 
-  private static final Pattern     REF              = Pattern.compile("[A-Za-z0-9._-]{1,64}");
+  private static final Pattern     REF_PATTERN      = Pattern.compile("[A-Za-z0-9._-]{1,64}");
 
   private static final Pattern     HEADER_NAME      = Pattern.compile("[A-Za-z0-9-]{1,76}");
 
@@ -321,7 +321,7 @@ public record ServerRule(String ref,
    * @return true for letters, digits, dots, underscores and dashes, at most 64
    */
   public static boolean isValidRef(String value) {
-    return value != null && REF.matcher(value).matches();
+    return value != null && REF_PATTERN.matcher(value).matches();
   }
 
   /**
