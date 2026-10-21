@@ -612,7 +612,8 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param day the day, yyyy-MM-dd, may be blank
    * @param argument the argument's name, for the refusal
    * @return the day, or null when none was given
-   * @throws IllegalArgumentException when the text is not a yyyy-MM-dd day
+   * @throws IllegalArgumentException when the text is not a yyyy-MM-dd day, or is one of a
+   *           year a search does not take
    */
   private static LocalDate searchDay(String day, String argument) {
     if (StringUtils.isBlank(day)) {
@@ -623,7 +624,13 @@ public class EmailMcpTool implements McpToolPlugin {
       if (!SEARCH_DAY.matcher(text).matches()) {
         throw new DateTimeParseException("not yyyy-MM-dd", text, 0);
       }
-      return LocalDate.parse(text);
+      LocalDate parsed = LocalDate.parse(text);
+      // The service bounds the days it searches by; this says it of the day the model
+      // wrote, never of the bound it is turned into (until_date's next day).
+      if (parsed.getYear() < EmailBoxService.SEARCH_MIN_YEAR) {
+        throw new IllegalArgumentException(argument + " must be a day of a year from 1900 to 9999.");
+      }
+      return parsed;
     } catch (DateTimeParseException e) {
       throw new IllegalArgumentException(argument + " must be a day written yyyy-MM-dd, such as 2026-10-21.", e);
     }

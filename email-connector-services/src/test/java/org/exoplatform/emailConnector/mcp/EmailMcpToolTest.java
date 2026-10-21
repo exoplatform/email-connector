@@ -324,8 +324,13 @@ class EmailMcpToolTest {
            .when(emailBoxService)
            .searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), any(), anyInt());
     IllegalArgumentException outOfYears = assertThrows(IllegalArgumentException.class,
-                                                       () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, null, "0001-01-01", null, null));
+                                                       () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, null, "2026-01-01", null, null));
     assertEquals("since_date and until_date must be days of a year from 1900 to 9999.", outOfYears.getMessage());
+    // Said of the day written, whichever bound it becomes: until_date's next day would be
+    // 1900-01-01, which the service takes.
+    IllegalArgumentException lastDayOf1899 = assertThrows(IllegalArgumentException.class,
+                                                          () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, "x", null, "1899-12-31", null));
+    assertEquals("until_date must be a day of a year from 1900 to 9999.", lastDayOf1899.getMessage());
   }
 
   @Test
