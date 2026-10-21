@@ -292,6 +292,28 @@
     </depends>
   </module>
 
+  <!-- The Email app's contributions to the AI assistant's chat (EXO-91676): the
+       send_email_draft approval card, which names the draft's files. The name MUST
+       contain "AiAgentChatExtension": the chat loads AiAgentChatGrp, then runs the modules
+       whose NAME holds it (includeExtensions matches on the name). Harmless where the AI
+       add-on is not installed: nothing loads that group. -->
+  <module>
+    <name>EmailConnectorAiAgentChatExtension</name>
+    <load-group>AiAgentChatGrp</load-group>
+    <script>
+      <path>/js/emailConnectorAiAgentChatExtension.bundle.js</path>
+    </script>
+    <depends>
+      <module>vue</module>
+    </depends>
+    <depends>
+      <module>eXoVueI18n</module>
+    </depends>
+    <depends>
+      <module>extensionRegistry</module>
+    </depends>
+  </module>
+
   <!-- Contributes the "Emails" section to the platform's global Favorites drawer. The
        name MUST contain "FavoriteDrawerExtension": the favorites portlet discovers its
        contributors with includeExtensions('FavoriteDrawerExtension'), which matches on
