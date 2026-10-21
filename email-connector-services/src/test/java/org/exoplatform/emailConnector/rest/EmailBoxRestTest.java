@@ -21,6 +21,7 @@ package org.exoplatform.emailConnector.rest;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.hamcrest.Matchers.hasKey;
@@ -66,6 +67,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureWebMvc;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.web.SecurityFilterChain;
@@ -515,14 +517,71 @@ public class EmailBoxRestTest {
     mockMvc.perform(get(EMAIL_BOX_PATH + "/7").param("broadcast", "false").with(testSimpleUser())).andExpect(status().isOk());
     verify(emailBoxService).getEmailByMailRemoteIdAndUserId(7L, SIMPLE_USER, "INBOX", true, true, true, false);
 
-    String eTag = "\"" + java.util.Objects.hash(7L, "INBOX", SIMPLE_USER, false, 0) + "\"";
+    String eTag = readETag(7L, false, 0, email);
     mockMvc.perform(get(EMAIL_BOX_PATH + "/7").param("broadcast", "false").header("If-None-Match", eTag).with(testSimpleUser()))
            .andExpect(status().isNotModified());
-    verify(emailBoxService, never()).broadcastOpenEmail(anyString());
+    verify(emailBoxService, times(2)).getEmailByMailRemoteIdAndUserId(7L, SIMPLE_USER, "INBOX", true, true, true, false);
 
     mockMvc.perform(get(EMAIL_BOX_PATH + "/7").header("If-None-Match", eTag).with(testSimpleUser()))
            .andExpect(status().isNotModified());
-    verify(emailBoxService).broadcastOpenEmail(SIMPLE_USER);
+    verify(emailBoxService, times(2)).getEmailByMailRemoteIdAndUserId(7L, SIMPLE_USER, "INBOX", true, true, true, true);
+    verify(emailBoxService, never()).broadcastOpenEmail(anyString());
+  }
+
+  /**
+   * A read answers 304 only while the message is the one the caller holds: its row
+   * carries no update date, so a read flag, a star, a read-receipt answer or a row
+   * rebuilt under the same UID each answer 200 with a new eTag.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void aChangedMessageIsNeverAnsweredNotModified() throws Exception {
+    Email email = new Email();
+    email.setId(7L);
+    email.setMailRemoteId(7L);
+    email.setFolder("INBOX");
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(anyLong(), anyString(), anyString(), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean()))
+      .thenReturn(email);
+
+    String held = mockMvc.perform(get(EMAIL_BOX_PATH + "/7").with(testSimpleUser()))
+                         .andExpect(status().isOk())
+                         .andReturn()
+                         .getResponse()
+                         .getHeader(HttpHeaders.ETAG);
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/7").header("If-None-Match", held).with(testSimpleUser()))
+           .andExpect(status().isNotModified());
+
+    email.setRead(true);
+    held = assertReadAnswersAFreshCopy(held);
+
+    email.setStarred(true);
+    held = assertReadAnswersAFreshCopy(held);
+
+    doAnswer(invocation -> {
+      invocation.<Email> getArgument(0).setReadReceiptAnswer(ReadReceiptState.SENT);
+      return null;
+    }).when(readReceiptService).decorate(any(Email.class), anyString());
+    held = assertReadAnswersAFreshCopy(held);
+
+    email.setId(8L);
+    assertReadAnswersAFreshCopy(held);
+  }
+
+  private String assertReadAnswersAFreshCopy(String held) throws Exception {
+    String fresh = mockMvc.perform(get(EMAIL_BOX_PATH + "/7").header("If-None-Match", held).with(testSimpleUser()))
+                          .andExpect(status().isOk())
+                          .andReturn()
+                          .getResponse()
+                          .getHeader(HttpHeaders.ETAG);
+    assertNotEquals(held, fresh);
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/7").header("If-None-Match", fresh).with(testSimpleUser()))
+           .andExpect(status().isNotModified());
+    return fresh;
+  }
+
+  private static String readETag(long mailRemoteId, boolean remoteContent, int settingsFingerprint, Email email) {
+    return "\"" + java.util.Objects.hash(mailRemoteId, "INBOX", SIMPLE_USER, remoteContent, settingsFingerprint, email) + "\"";
   }
 
   /**
@@ -544,13 +603,13 @@ public class EmailBoxRestTest {
     mockMvc.perform(get(EMAIL_BOX_PATH + "/7").param("remoteContent", "true").with(testSimpleUser())).andExpect(status().isOk());
     verify(emailSecurityService).decorate(email, SIMPLE_USER, true);
 
-    String blockedTag = "\"" + java.util.Objects.hash(7L, "INBOX", SIMPLE_USER, false, 0) + "\"";
+    String blockedTag = readETag(7L, false, 0, email);
     mockMvc.perform(get(EMAIL_BOX_PATH + "/7").param("remoteContent", "true").header("If-None-Match", blockedTag).with(testSimpleUser()))
            .andExpect(status().isOk());
     when(emailSecurityService.settingsFingerprint(SIMPLE_USER)).thenReturn(42);
     mockMvc.perform(get(EMAIL_BOX_PATH + "/7").header("If-None-Match", blockedTag).with(testSimpleUser()))
            .andExpect(status().isOk());
-    String trustedTag = "\"" + java.util.Objects.hash(7L, "INBOX", SIMPLE_USER, false, 42) + "\"";
+    String trustedTag = readETag(7L, false, 42, email);
     mockMvc.perform(get(EMAIL_BOX_PATH + "/7").header("If-None-Match", trustedTag).with(testSimpleUser()))
            .andExpect(status().isNotModified());
 
