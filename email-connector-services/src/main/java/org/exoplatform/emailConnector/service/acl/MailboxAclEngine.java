@@ -309,12 +309,14 @@ public interface MailboxAclEngine {
   /**
    * The owner's own folders whose ACL names an identifier, for "Remove access" to remove
    * every entry of that person -- including one written in another mail application
-   * (EXO-90548). Only on a per-folder engine; the default knows none.
+   * (EXO-90548). Only on a per-folder engine; the default knows none. The answer is the
+   * whole of them or a failure, never part of them: "Remove access" ends the share on it.
    *
    * @param session the owner's session
    * @param identifier the grantee as the server names them
    * @return the folder full names, possibly empty, never null
-   * @throws MailboxAclException when the server cannot be asked
+   * @throws MailboxAclException {@code UNREACHABLE} when not every folder could be asked,
+   *           another code when the server cannot be asked
    */
   default List<String> foldersHolding(MailboxAclSession session, String identifier) {
     return List.of();
