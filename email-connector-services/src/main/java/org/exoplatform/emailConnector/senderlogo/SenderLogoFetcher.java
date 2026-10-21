@@ -87,7 +87,9 @@ import jakarta.annotation.PreDestroy;
  * limit counted on the decoded bytes, two redirects at most, the declared type checked
  * against the image types and the bytes against what they claim. Each fetch has its own
  * deadline, so one domain's lookup -- BIMI logo, favicon, home page, declared icon --
- * takes at most four of them ({@link #TOTAL_TIMEOUT} each), on a background thread.
+ * takes at most four of them ({@link #TOTAL_TIMEOUT} each), after at most four TXT
+ * lookups (the BIMI and DMARC records of the domain and of its organisational domain),
+ * each up to three seconds per name server the host uses; all of it on a background thread.
  * The guard and the fetch mirror agenda's {@code CalendarAddressGuard} and {@code CalendarFeedFetcher}.
  * <b>Nothing of the platform goes out</b>: no cookie, no credentials, no referrer, no retry.
  * <p>

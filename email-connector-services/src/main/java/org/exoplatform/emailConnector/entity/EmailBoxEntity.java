@@ -236,9 +236,9 @@ public class EmailBoxEntity {
 
   // Whether the receiving server reported, in the message's own Authentication-Results
   // header, that it passed DMARC for its From domain (EXO-90893): what lets the reader
-  // show the sender's brand logo. Null on every row written before changeset 1.0.0-99,
-  // read as "not passed". Decided at sync, like the failure above, declared last and set
-  // by name.
+  // show the sender's brand logo. Null on a row written before changeset 1.0.0-99 until
+  // the DMARC backfill fills it when its folder is opened, and read as "not passed"
+  // meanwhile. Decided at sync, like the failure above, declared last and set by name.
   @Column(name = "DMARC_PASS")
   private Boolean                     dmarcPass;
 }

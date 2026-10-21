@@ -167,9 +167,10 @@ public final class SenderLogoUtils {
    * One TXT record as a single string. A record is made of character-strings, which are
    * one value concatenated without separator (as for SPF, RFC 7208 §3.3). The JDK's DNS
    * lookup answers them joined by single spaces, each one bare, or quoted when it holds
-   * a space, a quote or a backslash or is empty -- with {@code \\}, {@code \"} and
-   * {@code \DDD} (a decimal byte) escapes inside the quotes. Each is read back and
-   * the pieces are joined.
+   * a space, a quote or a backslash or is empty -- with {@code \\} and {@code \"}
+   * escapes inside the quotes. Each is read back and the pieces are joined. A
+   * {@code \DDD} escape (a decimal byte, RFC 1035 §5.1) is read as well, defensively:
+   * the JDK's lookup never writes one.
    *
    * @param raw the record as the lookup answered it
    * @return the record's value
