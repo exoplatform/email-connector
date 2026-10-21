@@ -354,8 +354,8 @@ public class EmailDelegationDAOTest {
    * EXO-90583 -- a refusal by the owner's mail server recorded, executed: the refusal's
    * date and the update stamp on the grantee's live row still carrying the consent the
    * mail was sent under, and nothing else; no write on another grantee's row, on a
-   * consent set again since (another date, or the other shape at the same date), on a
-   * row carrying no consent, or on an ended share.
+   * consent set again since (another date), on a row carrying no consent, or on an ended
+   * share.
    */
   @Test
   void aSendRefusalIsMarkedOnTheConsentItWasSentUnderOnly() {
@@ -373,9 +373,6 @@ public class EmailDelegationDAOTest {
 
     assertEquals(0, emailDelegationDAO.markSendRefused(id, OWNER, new Date(1_000L), "AS", new Date(5_000L), live), "the owner is not the sender");
     assertEquals(0, emailDelegationDAO.markSendRefused(id, GRANTEE, new Date(1_001L), "AS", new Date(5_000L), live), "a consent set since");
-    assertEquals(0,
-                 emailDelegationDAO.markSendRefused(id, GRANTEE, new Date(1_000L), "ON_BEHALF", new Date(5_000L), live),
-                 "a consent now in the other shape, at the same date");
     assertEquals(0, emailDelegationDAO.markSendRefused(withoutConsent, GRANTEE, new Date(1_000L), "AS", new Date(5_000L), live), "no consent");
     assertEquals(0, emailDelegationDAO.markSendRefused(ended, GRANTEE, new Date(1_000L), "AS", new Date(5_000L), live), "an ended share");
     assertEquals(1, emailDelegationDAO.markSendRefused(id, GRANTEE, new Date(1_000L), "AS", new Date(5_000L), live));
@@ -390,6 +387,46 @@ public class EmailDelegationDAOTest {
     assertEquals("ACCEPTED", read.getStatus());
     assertEquals("lrs", read.getRights());
     assertNull(emailDelegationDAO.findById(ended).orElseThrow().getSendRefusedDate());
+  }
+
+  /**
+   * EXO-90626 -- a refusal is marked on the consent that covers the shape the mail was
+   * sent in, executed: a mail sent on her behalf under a consent as the owner is marked
+   * (that consent allows it) and recorded on her behalf; a mail sent as the owner is never
+   * marked on a consent on her behalf, which does not allow it; a mail sent on her behalf
+   * under a consent on her behalf is marked.
+   */
+  @Test
+  void aSendRefusalIsMarkedOnTheConsentThatCoversTheShapeItWasSentIn() {
+    List<String> live = List.of("PENDING", "ACCEPTED");
+    Long asConsent = persist(GRANTEE, OWNER, "alice@acme.com", 7L, "ACCEPTED");
+    Long onBehalfConsent = persist(GRANTEE, OTHER, "carol@acme.com", 7L, "ACCEPTED");
+    for (Object[] row : new Object[][] { { asConsent, "AS" }, { onBehalfConsent, "ON_BEHALF" } }) {
+      EmailDelegationEntity entity = emailDelegationDAO.findById((Long) row[0]).orElseThrow();
+      entity.setSendMode((String) row[1]);
+      entity.setSendModeDate(new Date(1_000L));
+      emailDelegationDAO.saveAndFlush(entity);
+    }
+    entityManager.clear();
+
+    assertEquals(1,
+                 emailDelegationDAO.markSendRefused(asConsent, GRANTEE, new Date(1_000L), "ON_BEHALF", new Date(5_000L), live),
+                 "a mail sent on her behalf under a consent as the owner");
+    assertEquals(0,
+                 emailDelegationDAO.markSendRefused(onBehalfConsent, GRANTEE, new Date(1_000L), "AS", new Date(5_000L), live),
+                 "a mail sent as the owner under a consent on her behalf");
+    entityManager.clear();
+
+    EmailDelegationEntity read = emailDelegationDAO.findById(asConsent).orElseThrow();
+    assertEquals(5_000L, read.getSendRefusedDate().getTime());
+    assertEquals("ON_BEHALF", read.getSendRefusedMode(), "the shape refused, which blocks both");
+    assertNull(emailDelegationDAO.findById(onBehalfConsent).orElseThrow().getSendRefusedDate(), "nothing written");
+
+    assertEquals(1,
+                 emailDelegationDAO.markSendRefused(onBehalfConsent, GRANTEE, new Date(1_000L), "ON_BEHALF", new Date(6_000L), live),
+                 "a mail sent on her behalf under a consent on her behalf");
+    entityManager.clear();
+    assertEquals("ON_BEHALF", emailDelegationDAO.findById(onBehalfConsent).orElseThrow().getSendRefusedMode());
   }
 
   /**
@@ -410,7 +447,7 @@ public class EmailDelegationDAOTest {
     for (Object[] testCase : cases) {
       Long id = persist(GRANTEE, OWNER, "case" + index++ + "@acme.com", 7L, "ACCEPTED");
       EmailDelegationEntity entity = emailDelegationDAO.findById(id).orElseThrow();
-      entity.setSendMode((String) testCase[2]);
+      entity.setSendMode("AS");
       entity.setSendModeDate(new Date(1_000L));
       entity.setSendRefusedMode((String) testCase[0]);
       entity.setSendRefusedDate((Date) testCase[1]);
