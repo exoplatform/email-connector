@@ -421,6 +421,23 @@ class EmailMcpToolDraftsTest {
   }
 
   /**
+   * A failure followed by a draft found gone on the second read is answered as gone,
+   * not as a draft to check in the Email app.
+   *
+   * @throws Exception never, the services are mocked
+   */
+  @Test
+  void createEmailDraftSaysTheDraftWasGoneWhenItIsGoneAfterAFailure() throws Exception {
+    saveDraftEchoes();
+    when(emailBoxService.addDocumentAttachments(DRAFT_ID, USERNAME, List.of("doc-1"))).thenThrow(new IllegalStateException("down"));
+
+    EmailDraftModel model = emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, false,
+                                                          List.of("doc-1"));
+
+    assertTrue(model.getRefusedDocuments().get(0).getReason().contains("no longer found"));
+  }
+
+  /**
    * A draft gone when its documents are added is answered as such, not as a failure to
    * check the draft's attachments for.
    *
