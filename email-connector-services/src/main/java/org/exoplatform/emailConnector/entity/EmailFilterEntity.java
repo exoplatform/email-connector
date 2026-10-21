@@ -32,7 +32,7 @@ import lombok.NoArgsConstructor;
 
 /**
  * One rule eXo runs itself after each sync of the owner's own inbox (changeset
- * 1.0.0-71). The rules the mail server runs at delivery are never stored here.
+ * 1.0.0-exo-90654-02). The rules the mail server runs at delivery are never stored here.
  * <p>
  * {@link DynamicUpdate}: the sync bumps the counters of a rule while its owner may be
  * saving it from the settings drawer; without it, either write would flush every column
