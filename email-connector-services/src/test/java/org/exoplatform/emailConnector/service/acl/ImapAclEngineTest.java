@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -879,6 +880,31 @@ class ImapAclEngineTest {
     assertEquals(MailboxAclException.UNREACHABLE, thrown.getCode());
     verify(projects).getACL();
     verify(archive, never()).getACL();
+  }
+
+  /**
+   * EXO-90554 -- a LIST cut by a lost connection answers UNREACHABLE, so "Remove access"
+   * stops before anything is written; a LIST the server refuses still answers
+   * SERVER_REFUSED, and the caller falls back to the folders the grant recorded.
+   */
+  @Test
+  void foldersHoldingTellsALostConnectionOnTheListingFromARefusal() throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.list("%")).thenReturn(new Folder[0]);
+    when(root.list("*")).thenThrow(new StoreClosedException(store, "BYE"));
+
+    MailboxAclException lost = assertThrows(MailboxAclException.class, () -> engine.foldersHolding(session(), IDENTIFIER));
+    assertEquals(MailboxAclException.UNREACHABLE, lost.getCode());
+
+    reset(root);
+    when(root.list("%")).thenReturn(new Folder[0]);
+    when(root.list("*")).thenThrow(new MessagingException("NO LIST refused"));
+
+    MailboxAclException refused = assertThrows(MailboxAclException.class, () -> engine.foldersHolding(session(), IDENTIFIER));
+    assertEquals(MailboxAclException.SERVER_REFUSED, refused.getCode());
   }
 
   /**
