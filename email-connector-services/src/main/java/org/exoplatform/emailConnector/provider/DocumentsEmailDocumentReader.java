@@ -32,6 +32,7 @@ import org.exoplatform.documents.service.DocumentFileService;
 import org.exoplatform.emailConnector.constant.DocumentRefusalReason;
 import org.exoplatform.emailConnector.exception.DocumentRefusedException;
 import org.exoplatform.emailConnector.model.EmailDocumentContent;
+import org.exoplatform.services.security.ConversationState;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -39,8 +40,11 @@ import io.meeds.portal.thumbnail.model.FileContent;
 
 /**
  * Reads a user's document through the Documents add-on's own service, with that user's
- * rights: {@link DocumentFileService#getDocumentById(String, String)} opens the document
- * in a session of the user's, so what they cannot open in Documents is refused here.
+ * rights. Documents reads in a session of the calling thread's current user
+ * ({@code ConversationState.getCurrent()}), whatever user name it is given -- that name
+ * only feeds the document's computed permissions -- so the reader reads only on a thread
+ * whose current user is the user named, and refuses otherwise. A document that user
+ * cannot open is not found for them: Documents answers it as it answers an unknown id.
  * <p>
  * Present only when the Documents API is on the classpath, which is the case wherever
  * the Documents add-on is deployed; the condition is read from bytecode metadata, so
@@ -77,7 +81,9 @@ public class DocumentsEmailDocumentReader implements EmailDocumentReader {
   /**
    * {@inheritDoc}
    * <p>
-   * The document is resolved first, as the user, which is the access check and gives
+   * The thread's current user must be {@code username}: Documents reads as that current
+   * user, never as the name it is given. The document is resolved first, which is the
+   * access check -- a document the user cannot open is not found -- and gives
    * its name and declared size: a folder, or a file declared larger than
    * {@code maxSize}, is refused without its content being read. The content is then
    * read as the user too, and never beyond {@code maxSize + 1} bytes, so a file whose
@@ -89,6 +95,11 @@ public class DocumentsEmailDocumentReader implements EmailDocumentReader {
   public EmailDocumentContent readDocument(String documentId,
                                            String username,
                                            long maxSize) throws DocumentRefusedException {
+    ConversationState current = ConversationState.getCurrent();
+    if (current == null || current.getIdentity() == null || !StringUtils.equals(current.getIdentity().getUserId(), username)) {
+      LOG.warn("Document {} not read for user {}: the thread's current user is another one", documentId, username);
+      throw new DocumentRefusedException(DocumentRefusalReason.UNREADABLE, null);
+    }
     DocumentFileService service;
     try {
       service = documentFileService.getIfAvailable();
