@@ -28,7 +28,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.exoplatform.emailConnector.entity.EmailFilterEntity;
 
 /**
- * The eXo rules of a user (changeset 1.0.0-71). Every read is scoped to the owner: an id
+ * The eXo rules of a user (changeset 1.0.0-exo-90654-02). Every read is scoped to the owner: an id
  * alone never resolves a row. A user's rules are tens at most, so the listing is not
  * paged.
  */

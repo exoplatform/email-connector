@@ -421,7 +421,7 @@ class EmailDelegationStorageWritesTest {
   }
 
   /**
-   * EXO-90626 -- a refusal by the owner's mail server, over the shipped changelog (1.0.0-90
+   * EXO-90626 -- a refusal by the owner's mail server, over the shipped changelog (1.0.0-exo-90626-01
    * included): recorded with its shape on the grantee's row under the consent it was sent
    * under, read back with that shape by the grantee and by the owner; the owner's next
    * consent clears the date and the shape; a shape that is neither on behalf nor as the

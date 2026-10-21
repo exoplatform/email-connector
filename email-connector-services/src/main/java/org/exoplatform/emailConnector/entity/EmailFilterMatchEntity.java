@@ -31,7 +31,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * One match of one eXo rule on one mail (changeset 1.0.0-74): the log, the data an undo
+ * One match of one eXo rule on one mail (changeset 1.0.0-exo-90654-05): the log, the data an undo
  * needs, the assistant's work item and, through its unique key, the at-most-once
  * decision.
  * <p>
