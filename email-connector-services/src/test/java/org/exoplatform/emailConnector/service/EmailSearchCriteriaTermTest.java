@@ -109,6 +109,29 @@ public class EmailSearchCriteriaTermTest {
   }
 
   /**
+   * EXO-91675 -- the assistant's search of the mail a draft became once sent: the words
+   * of the body and a range of days, then the draft's Message-ID, all in one SEARCH; the
+   * id is asked bare and bracketed, as every server is asked for it.
+   *
+   * @throws Exception when the term cannot be written
+   */
+  @Test
+  void aMessageIdIsOneMoreTermOfTheSameSearch() throws Exception {
+    EmailSearchCriteria criteria = new EmailSearchCriteria();
+    criteria.setWords("pricing");
+    criteria.setAfter(LocalDate.of(2026, 10, 20));
+    criteria.setBefore(LocalDate.of(2026, 10, 22));
+    criteria.setMessageId("<draft.1@acme.com>");
+
+    assertEquals("OR SUBJECT pricing BODY pricing SINCE 20-Oct-2026 BEFORE 22-Oct-2026"
+        + " OR HEADER Message-ID draft.1@acme.com HEADER Message-ID <draft.1@acme.com>",
+                 imapSearch(EmailBoxService.buildEmailSearchTerm(criteria, null)));
+    EmailSearchCriteria idAlone = new EmailSearchCriteria();
+    idAlone.setMessageId("  ");
+    assertNull(EmailBoxService.buildEmailSearchTerm(idAlone, null), "a blank id searches nothing");
+  }
+
+  /**
    * The search box's own text never searches the body: only the words of the advanced
    * search do, since a body search on a server without an index scans the folder.
    *
