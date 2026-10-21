@@ -31,6 +31,7 @@ import static org.mockito.Mockito.when;
 import java.io.ByteArrayInputStream;
 import java.util.Date;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
@@ -43,6 +44,8 @@ import org.exoplatform.documents.service.DocumentFileService;
 import org.exoplatform.emailConnector.constant.DocumentRefusalReason;
 import org.exoplatform.emailConnector.exception.DocumentRefusedException;
 import org.exoplatform.emailConnector.model.EmailDocumentContent;
+import org.exoplatform.services.security.ConversationState;
+import org.exoplatform.services.security.Identity;
 
 import io.meeds.portal.thumbnail.model.FileContent;
 
@@ -70,6 +73,13 @@ class DocumentsEmailDocumentReaderTest {
     provider = mock(ObjectProvider.class);
     when(provider.getIfAvailable()).thenReturn(documentFileService);
     reader = new DocumentsEmailDocumentReader(provider);
+    ConversationState.setCurrent(new ConversationState(new Identity(USERNAME)));
+  }
+
+  /** No current user is left on the thread for the next test. */
+  @AfterEach
+  void tearDown() {
+    ConversationState.setCurrent(null);
   }
 
   /**
@@ -268,6 +278,23 @@ class DocumentsEmailDocumentReaderTest {
 
     when(provider.getIfAvailable()).thenThrow(new IllegalStateException("context closing"));
     assertEquals(DocumentRefusalReason.UNREADABLE, refusal(1024).getReason());
+  }
+
+  /**
+   * Documents reads as the thread's current user, never as the name it is given, so a
+   * read for a user who is not the thread's current one -- or on a thread with none -- is
+   * refused before Documents is asked anything.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aReadForAnotherUserThanTheThreadsIsRefusedBeforeDocumentsIsAsked() throws Exception {
+    ConversationState.setCurrent(new ConversationState(new Identity("someone-else")));
+    assertEquals(DocumentRefusalReason.UNREADABLE, refusal(1024).getReason());
+
+    ConversationState.setCurrent(null);
+    assertEquals(DocumentRefusalReason.UNREADABLE, refusal(1024).getReason());
+    verify(documentFileService, never()).getDocumentById(anyString(), anyString());
   }
 
   /**

@@ -163,7 +163,7 @@ public class EmailMcpTool implements McpToolPlugin {
   /** Why a document named for a draft is not on it, in words the caller can relay. */
   private static final Map<DocumentRefusalReason, String> DOCUMENT_REFUSALS =
                                                             Map.of(DocumentRefusalReason.NOT_FOUND,
-                                                                   "No document has this id.",
+                                                                   "No document the user can open has this id.",
                                                                    DocumentRefusalReason.NO_ACCESS,
                                                                    "The user cannot open this document.",
                                                                    DocumentRefusalReason.NOT_A_FILE,
