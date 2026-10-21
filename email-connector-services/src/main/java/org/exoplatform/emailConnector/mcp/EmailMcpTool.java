@@ -169,7 +169,8 @@ public class EmailMcpTool implements McpToolPlugin {
                                                                    DocumentRefusalReason.NOT_A_FILE,
                                                                    "This is a folder, not a file.",
                                                                    DocumentRefusalReason.TOO_LARGE,
-                                                                   "The file would take the draft over the 25 MB a mail may carry.",
+                                                                   String.format("The file would take the draft over the %d MB a mail may carry.",
+                                                                                 EmailBoxService.MAX_OUTGOING_ATTACHMENTS_MB),
                                                                    DocumentRefusalReason.UNREADABLE,
                                                                    "The file could not be read.",
                                                                    DocumentRefusalReason.DOCUMENTS_UNAVAILABLE,
@@ -1207,15 +1208,19 @@ public class EmailMcpTool implements McpToolPlugin {
    * sent mail keeps the draft's Message-ID and, for a reply draft, its conversation.
    * <p>
    * The approval card is drawn from the arguments, so they must say what goes out:
-   * {@code to}, {@code cc}, {@code bcc} and {@code subject} must be the draft's own, as
-   * list_email_drafts reads them now. If the user changed any of them since, nothing is
-   * sent and the call must be made again with the draft read anew.
+   * {@code to}, {@code cc}, {@code bcc}, {@code subject} and {@code attachments} must be
+   * the draft's own, as list_email_drafts reads them now -- the files included, since a
+   * draft may carry documents an assistant attached (EXO-91676). If the user changed any
+   * of them since, nothing is sent and the call must be made again with the draft read
+   * anew.
    *
    * @param draftId the draft's id
    * @param to the draft's recipients, as read
    * @param subject the draft's subject, as read
    * @param cc the draft's copied recipients, as read
    * @param bcc the draft's blind-copied recipients, as read
+   * @param attachments the names of the draft's files, as read; null or empty for a draft
+   *          carrying none
    * @return the outcome, in words, with the sent mail's message_id and thread_id
    * @throws ObjectNotFoundException when the user has no such draft
    * @throws IllegalAccessException if the user may not send
@@ -1227,10 +1232,12 @@ public class EmailMcpTool implements McpToolPlugin {
                                List<String> to,
                                String subject,
                                List<String> cc,
-                               List<String> bcc) throws ObjectNotFoundException, IllegalAccessException {
+                               List<String> bcc,
+                               List<String> attachments) throws ObjectNotFoundException, IllegalAccessException {
     String username = getCurrentUserName();
     Email stored = ownDraft(draftId, username, "sent");
     requireDraftSays(stored, to, cc, bcc, subject, "sent");
+    requireDraftFiles(stored, attachments);
     Email sent;
     try {
       // Checked again under the draft's lock on the row that goes out: the user may
@@ -1240,6 +1247,7 @@ public class EmailMcpTool implements McpToolPlugin {
                                                row -> {
                                                  requireActionable(row, draftId, "sent");
                                                  requireDraftSays(row, to, cc, bcc, subject, "sent");
+                                                 requireDraftFiles(row, attachments);
                                                });
     } catch (ScheduledSendConflictException e) {
       throw scheduledDraftRefusal(draftId, "sent");
@@ -2016,6 +2024,29 @@ public class EmailMcpTool implements McpToolPlugin {
                                                        String.join(", ", addressesOf(stored.getCc())),
                                                        String.join(", ", addressesOf(stored.getBcc())),
                                                        StringUtils.defaultString(stored.getSubject())));
+    }
+  }
+
+  /**
+   * Refuse a send whose arguments do not name the files the draft carries, so the
+   * approval card shows every file that leaves: the names, each as many times as the
+   * draft carries it, in any order.
+   *
+   * @param stored the draft as stored
+   * @param attachments the file names given, possibly null for none
+   * @throws IllegalArgumentException naming the draft's files when they differ
+   */
+  private void requireDraftFiles(Email stored, List<String> attachments) {
+    List<String> carried = attachmentNames(stored).stream().map(String::trim).sorted().toList();
+    List<String> given = attachments == null ? List.of()
+                                             : attachments.stream()
+                                                          .filter(StringUtils::isNotBlank)
+                                                          .map(String::trim)
+                                                          .sorted()
+                                                          .toList();
+    if (!carried.equals(given)) {
+      throw new IllegalArgumentException(String.format("Nothing was sent: the draft now carries the files [%s]. Pass exactly those "
+          + "in attachments, and ask the user to approve again with them shown.", String.join(", ", attachmentNames(stored))));
     }
   }
 
