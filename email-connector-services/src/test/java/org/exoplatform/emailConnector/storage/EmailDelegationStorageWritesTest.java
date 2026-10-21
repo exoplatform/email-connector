@@ -443,7 +443,10 @@ class EmailDelegationStorageWritesTest {
     assertNull(again.getSendRefusedDate(), "a consent set again clears the refusal");
     assertNull(again.getSendRefusedMode(), "and its shape");
 
-    assertTrue(emailDelegationStorage.markSendRefused("mia", row.getId(), again.getSendModeDate(), null));
+    assertFalse(emailDelegationStorage.markSendRefused("mia", row.getId(), again.getSendModeDate(), SendMode.ON_BEHALF),
+                "a refusal of a mail sent on behalf is not recorded on a consent now as the owner, at the same date");
+    EmailDelegation onBehalf = emailDelegationStorage.updateSendMode("alice", row.getId(), SendMode.ON_BEHALF);
+    assertTrue(emailDelegationStorage.markSendRefused("mia", row.getId(), onBehalf.getSendModeDate(), null));
     assertEquals(SendMode.ON_BEHALF, emailDelegationStorage.getAsGrantee("mia", row.getId()).getSendRefusedMode(),
                  "a refusal of no known shape is recorded as on behalf, which blocks both");
   }
