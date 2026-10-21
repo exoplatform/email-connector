@@ -354,8 +354,8 @@ public class EmailDelegationDAOTest {
    * EXO-90583 -- a refusal by the owner's mail server recorded, executed: the refusal's
    * date and the update stamp on the grantee's live row still carrying the consent the
    * mail was sent under, and nothing else; no write on another grantee's row, on a
-   * consent set again since (another date), on a row carrying no consent, or on an ended
-   * share.
+   * consent set again since (another date, or the other shape at the same date), on a
+   * row carrying no consent, or on an ended share.
    */
   @Test
   void aSendRefusalIsMarkedOnTheConsentItWasSentUnderOnly() {
@@ -373,6 +373,9 @@ public class EmailDelegationDAOTest {
 
     assertEquals(0, emailDelegationDAO.markSendRefused(id, OWNER, new Date(1_000L), "AS", new Date(5_000L), live), "the owner is not the sender");
     assertEquals(0, emailDelegationDAO.markSendRefused(id, GRANTEE, new Date(1_001L), "AS", new Date(5_000L), live), "a consent set since");
+    assertEquals(0,
+                 emailDelegationDAO.markSendRefused(id, GRANTEE, new Date(1_000L), "ON_BEHALF", new Date(5_000L), live),
+                 "a consent now in the other shape, at the same date");
     assertEquals(0, emailDelegationDAO.markSendRefused(withoutConsent, GRANTEE, new Date(1_000L), "AS", new Date(5_000L), live), "no consent");
     assertEquals(0, emailDelegationDAO.markSendRefused(ended, GRANTEE, new Date(1_000L), "AS", new Date(5_000L), live), "an ended share");
     assertEquals(1, emailDelegationDAO.markSendRefused(id, GRANTEE, new Date(1_000L), "AS", new Date(5_000L), live));
@@ -407,7 +410,7 @@ public class EmailDelegationDAOTest {
     for (Object[] testCase : cases) {
       Long id = persist(GRANTEE, OWNER, "case" + index++ + "@acme.com", 7L, "ACCEPTED");
       EmailDelegationEntity entity = emailDelegationDAO.findById(id).orElseThrow();
-      entity.setSendMode("AS");
+      entity.setSendMode((String) testCase[2]);
       entity.setSendModeDate(new Date(1_000L));
       entity.setSendRefusedMode((String) testCase[0]);
       entity.setSendRefusedDate((Date) testCase[1]);
