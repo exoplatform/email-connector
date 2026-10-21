@@ -142,6 +142,17 @@ public class EmailMcpTool implements McpToolPlugin {
   /** The most drafts one call returns. */
   private static final int              MAX_DRAFTS_LIMIT     = 100;
 
+  /**
+   * Why a document may not be on the draft when attaching failed: the file may be there
+   * anyway, which the draft's attachments in the same answer tell.
+   */
+  private static final String           FAILED_DOCUMENT_REFUSAL = "Attaching failed, and the file may be on the draft anyway: "
+      + "check the draft's attachments in this answer, and name this document again only if its file is not among them.";
+
+  /** Why no document is on a draft that was gone when its files were added. */
+  private static final String           GONE_DOCUMENT_REFUSAL = "The draft was no longer found when its files were added: "
+      + "it was sent or deleted meanwhile.";
+
   /** Why a document named for a draft is not on it, in words the caller can relay. */
   private static final Map<DocumentRefusalReason, String> DOCUMENT_REFUSALS =
                                                             Map.of(DocumentRefusalReason.NOT_FOUND,
@@ -155,7 +166,9 @@ public class EmailMcpTool implements McpToolPlugin {
                                                                    DocumentRefusalReason.UNREADABLE,
                                                                    "The file could not be read.",
                                                                    DocumentRefusalReason.DOCUMENTS_UNAVAILABLE,
-                                                                   "Documents are not available on this platform.");
+                                                                   "Documents are not available on this platform.",
+                                                                   DocumentRefusalReason.FAILED,
+                                                                   FAILED_DOCUMENT_REFUSAL);
 
   /**
    * Why no document named for a scheduled draft is on it: the draft was scheduled between
@@ -163,13 +176,6 @@ public class EmailMcpTool implements McpToolPlugin {
    */
   private static final String           SCHEDULED_DOCUMENT_REFUSAL = "The draft is scheduled to be sent, so no file can be "
       + "added to it here: the user cancels the schedule in the Email app first.";
-
-  /**
-   * Why a document may not be on the draft when attaching failed part way: whether it is
-   * shows in the draft's attachments, which are read again after the failure.
-   */
-  private static final String           FAILED_DOCUMENT_REFUSAL = "Attaching failed part way: the draft's attachments say "
-      + "which files it carries; name this document again only if its file is not among them.";
 
   /**
    * The address of the user's signature logo, as the signature service writes it, with
@@ -2357,7 +2363,8 @@ public class EmailMcpTool implements McpToolPlugin {
    * The draft, or its change, is saved by then, so nothing past this point answers with
    * an error: one would tell the caller the call did nothing, and a caller retrying a
    * create would make a second draft. A failure to attach is answered as the documents
-   * it kept off the draft, with the draft as saved.
+   * it may have kept off the draft, with the draft read again, so its attachments say
+   * which files it carries.
    *
    * @param saved the draft as the call saved it
    * @param username the user
@@ -2377,7 +2384,10 @@ public class EmailMcpTool implements McpToolPlugin {
       LOG.warn("The documents named for draft {} of user {} could not be attached", saved.getDraftLocalId(), username, e);
       return toDraftModel(readAgain(saved, username), true, refusedAll(documentIds, FAILED_DOCUMENT_REFUSAL));
     }
-    if (attached == null || attached.getDraft() == null) {
+    if (attached == null) {
+      return toDraftModel(saved, true, refusedAll(documentIds, GONE_DOCUMENT_REFUSAL));
+    }
+    if (attached.getDraft() == null) {
       return toDraftModel(readAgain(saved, username), true, refusedAll(documentIds, FAILED_DOCUMENT_REFUSAL));
     }
     List<RefusedDocumentModel> refused = attached.getRefused()
@@ -2388,9 +2398,9 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
-   * The draft as it is stored now, after attaching failed part way, so the answer shows
-   * the files it carries rather than those it carried before; the draft as saved when it
-   * cannot be read.
+   * The draft as it is stored now, after attaching failed, so the answer shows the files
+   * it carries rather than those it carried before; the draft as the call saved it, which
+   * carries no file of this call, when it cannot be read again.
    *
    * @param saved the draft as the call saved it
    * @param username the user
