@@ -84,4 +84,14 @@ public class EmailDraftModel {
 
   /** Where the user opens their drafts in the Email app. */
   private String       link;
+
+  /** The names of the files the draft carries. */
+  private List<String> attachments;
+
+  /**
+   * The documents named in this call that are not on the draft, each with the reason:
+   * the files the user must be told are missing.
+   */
+  @JsonProperty("refused_documents")
+  private List<RefusedDocumentModel> refusedDocuments;
 }
