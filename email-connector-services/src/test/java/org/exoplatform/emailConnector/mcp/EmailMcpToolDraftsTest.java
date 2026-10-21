@@ -384,6 +384,23 @@ class EmailMcpToolDraftsTest {
   }
 
   /**
+   * The limit counts documents as the service does, an id repeated with spaces once:
+   * twenty documents and a repeat of one of them are not refused.
+   *
+   * @throws Exception never, the services are mocked
+   */
+  @Test
+  void createEmailDraftCountsARepeatedDocumentOnce() throws Exception {
+    saveDraftEchoes();
+    List<String> ids = new java.util.ArrayList<>(java.util.stream.IntStream.rangeClosed(1, 20).mapToObj(i -> "doc-" + i).toList());
+    ids.add(" doc-1 ");
+
+    emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, false, ids);
+
+    verify(emailBoxService).addDocumentAttachments(DRAFT_ID, USERNAME, ids);
+  }
+
+  /**
    * Documents named on update are added after the change is saved, to the draft the
    * change was saved on.
    *
@@ -406,22 +423,45 @@ class EmailMcpToolDraftsTest {
   }
 
   /**
-   * A scheduled draft is refused in words when documents are added to it.
+   * Once the change is saved, a draft found scheduled when its documents are added is
+   * answered as saved, every document refused in words: an error would say the change
+   * was not made.
    *
    * @throws Exception never, the services are mocked
    */
   @Test
-  void updateEmailDraftRefusesDocumentsOnAScheduledDraft() throws Exception {
+  void updateEmailDraftAnswersTheSavedChangeWhenTheDraftIsScheduledMeanwhile() throws Exception {
     saveDraftEchoes();
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Hello", "<p>Hi</p>", "bob@acme.com"));
     when(emailBoxService.addDocumentAttachments(DRAFT_ID, USERNAME, List.of("doc-1")))
                                                                                     .thenThrow(new ScheduledSendConflictException(ScheduledSendConflictException.LOCKED));
 
-    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                                                    () -> emailMcpTool.updateEmailDraft(DRAFT_ID, null, null, null, null, null, 1L,
-                                                                                        List.of("doc-1")));
+    EmailDraftModel model = emailMcpTool.updateEmailDraft(DRAFT_ID, null, "New subject", null, null, null, 1L, List.of("doc-1"));
 
-    assertTrue(refusal.getMessage().contains("scheduled"));
+    assertEquals(DRAFT_ID, model.getDraftId());
+    assertEquals("New subject", model.getSubject());
+    assertEquals(1, model.getRefusedDocuments().size());
+    assertEquals("doc-1", model.getRefusedDocuments().get(0).getDocumentId());
+    assertTrue(model.getRefusedDocuments().get(0).getReason().contains("scheduled"));
+  }
+
+  /**
+   * A draft created and then failing to take its documents is still answered as
+   * created, with its draft_id: an error would have the caller create it a second time.
+   *
+   * @throws Exception never, the services are mocked
+   */
+  @Test
+  void createEmailDraftAnswersTheCreatedDraftWhenItsDocumentsCannotBeAttached() throws Exception {
+    saveDraftEchoes();
+    when(emailBoxService.addDocumentAttachments(DRAFT_ID, USERNAME, List.of("doc-1", "doc-1 ")))
+                                                                                             .thenThrow(new IllegalStateException("store down"));
+
+    EmailDraftModel model = emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, false,
+                                                          List.of("doc-1", "doc-1 "));
+
+    assertEquals(DRAFT_ID, model.getDraftId());
+    assertEquals(List.of(new RefusedDocumentModel("doc-1", null, "The file could not be attached.")), model.getRefusedDocuments());
   }
 
   // --- update_email_draft ----------------------------------------------------
