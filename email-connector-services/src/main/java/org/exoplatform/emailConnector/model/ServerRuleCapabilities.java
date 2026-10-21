@@ -229,8 +229,8 @@ public record ServerRuleCapabilities(boolean supported,
    * @param support the element's answer
    * @return the new capabilities
    */
-  public ServerRuleCapabilities withElement(String element, ElementSupport support) {
-    Map<String, ElementSupport> changed = new LinkedHashMap<>(elements);
+  public ServerRuleCapabilities withElement(String element, ServerRuleElementSupport support) {
+    Map<String, ServerRuleElementSupport> changed = new LinkedHashMap<>(elements);
     changed.put(element, support);
     return new ServerRuleCapabilities(supported, reasonCode, readsForeignRules, publishConflict, vocabularySource, changed);
   }
