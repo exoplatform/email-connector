@@ -300,6 +300,18 @@ class AiToolDefinitionsTest {
   }
 
   /**
+   * create_email_draft states the size a mail may carry as the mailbox service caps it,
+   * so a change of the cap cannot leave the description promising another.
+   *
+   * @throws Exception when the definitions cannot be read
+   */
+  @Test
+  void theDraftDescriptionStatesTheServiceAttachmentCap() throws Exception {
+    String description = readDefinitions().get("create_email_draft").path("description").asText();
+    assertTrue(description.contains(EmailBoxService.MAX_OUTGOING_ATTACHMENTS_MB + " MB"), description);
+  }
+
+  /**
    * Reads the shipped tool definitions off the classpath, keyed by tool name.
    *
    * @return the name → definition map
