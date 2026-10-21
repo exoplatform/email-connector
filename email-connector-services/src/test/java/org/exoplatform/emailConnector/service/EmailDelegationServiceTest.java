@@ -3740,8 +3740,8 @@ class EmailDelegationServiceTest {
   /**
    * The caller's own session for the automatic reply (EXO-90642): built for the caller
    * on their own connected mailbox, its mail credentials resolved through the credentials
-   * contract on the IMAP channel for that caller, and refused to a caller with no
-   * connected mailbox.
+   * contract on the IMAP channel for that caller, a refusal of that material reported for
+   * the same connector and caller, and refused to a caller with no connected mailbox.
    *
    * @throws Exception on failure
    */
@@ -3767,6 +3767,17 @@ class EmailDelegationServiceTest {
       assertFalse(own.hasOpenStore());
     }
     verify(resolver).authenticator(CONNECTOR_ID, null, OWNER, ConnectorCredentialsChannel.IMAP);
+
+    // A refusal an engine reports through the session reaches the provider for the same
+    // connector's provider and caller, on the channel the engine names; the retry is that
+    // provider's to allow.
+    connector.setAuthProviderName("bluemind-sudo");
+    when(resolver.retriesAfterRefusal("bluemind-sudo")).thenReturn(true);
+    try (MailboxAclSession own = service.openOwnSession(OWNER)) {
+      own.invalidateCredentials(ConnectorCredentialsChannel.HTTP);
+      assertTrue(own.retriesAfterRefusal());
+    }
+    verify(resolver).invalidate(CONNECTOR_ID, "bluemind-sudo", OWNER, ConnectorCredentialsChannel.HTTP);
     when(userEmailSettingService.getUserEmailSetting("carol")).thenReturn(new UserEmailSetting());
     assertThrows(IllegalAccessException.class, () -> service.openOwnSession("carol"));
   }
