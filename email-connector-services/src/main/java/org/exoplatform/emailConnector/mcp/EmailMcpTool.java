@@ -512,6 +512,12 @@ public class EmailMcpTool implements McpToolPlugin {
     criteria.setBefore(lastDay == null || lastDay.getYear() == 9999 && lastDay.getDayOfYear() == lastDay.lengthOfYear() ? null
                                                                                                                 : lastDay.plusDays(1));
     criteria.setMessageId(StringUtils.trimToNull(messageId));
+    if (criteria.getMessageId() != null && !criteria.getMessageId().contains("@")) {
+      // Every Message-ID has an @: anything else is another id, which the server's
+      // substring search would match against a whole folder.
+      throw new IllegalArgumentException("message_id must be the message_id a draft tool returned, such as <abc@example.com>; "
+          + "it is never an email_id or a draft_id.");
+    }
     // A draft's message_id names a mail the user sent: SENT unless the caller says otherwise.
     String searchedFolder = StringUtils.isBlank(folder) && criteria.getMessageId() != null ? MailFolder.SENT : folder;
     return searchEmails(criteria, searchedFolder, limit, mailbox);

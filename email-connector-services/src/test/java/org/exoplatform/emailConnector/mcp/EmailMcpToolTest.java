@@ -308,6 +308,10 @@ class EmailMcpToolTest {
     IllegalArgumentException badUntil = assertThrows(IllegalArgumentException.class,
                                                      () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, "x", null, "yesterday", null));
     assertTrue(badUntil.getMessage().startsWith("until_date must be a day written yyyy-MM-dd"), badUntil.getMessage());
+    // An email_id passed as a message_id would match every id containing its digits.
+    IllegalArgumentException notAnId = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, null, null, null, " 42 "));
+    assertTrue(notAnId.getMessage().startsWith("message_id must be the message_id a draft tool returned"), notAnId.getMessage());
     // A signed year parses as an ISO date, and its next day does not exist: refused as a
     // day, never a DateTimeException out of the range's last day.
     IllegalArgumentException farYear = assertThrows(IllegalArgumentException.class,

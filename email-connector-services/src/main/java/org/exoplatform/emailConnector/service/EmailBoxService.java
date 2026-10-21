@@ -14462,8 +14462,9 @@ public class EmailBoxService {
   /**
    * The messages of a server search that carry the given Message-ID exactly, each hit's
    * raw header compared with {@link #sameMessageId}: what decides after a {@code HEADER
-   * Message-ID} search, which is a substring match on most servers. The header is read
-   * per hit, which an exact id keeps to a handful.
+   * Message-ID} search, which is a substring match on most servers. A hit whose header
+   * was not fetched with the search's batch costs one round-trip to read it: a caller
+   * whose id may over-match fetches it for every hit first.
    *
    * @param hits the messages the server's search returned, may be null
    * @param messageId the Message-ID to keep
@@ -16485,8 +16486,13 @@ public class EmailBoxService {
         // are examined instead (see below), never the whole folder.
         found = searchTerm == null ? newestMessages(remoteFolder, ATTACHMENT_SCAN_LIMIT) : remoteFolder.search(searchTerm);
       }
-      if (found != null && StringUtils.isNotBlank(criteria.getMessageId())) {
+      if (found != null && found.length > 0 && StringUtils.isNotBlank(criteria.getMessageId())) {
         // The server's HEADER search is a substring match: only the exact id is this mail.
+        // The id comes from the caller and may match many messages, so every hit's header
+        // is read in one batched FETCH, never one round-trip per hit.
+        FetchProfile messageIdProfile = new FetchProfile();
+        messageIdProfile.add(HEADER_MESSAGE_ID);
+        remoteFolder.fetch(found, messageIdProfile);
         found = exactMessageIdMatches(found, criteria.getMessageId()).toArray(new Message[0]);
       }
       if (found == null || found.length == 0) {

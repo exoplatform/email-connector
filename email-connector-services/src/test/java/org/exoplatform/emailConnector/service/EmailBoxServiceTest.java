@@ -15677,12 +15677,19 @@ public class EmailBoxServiceTest {
     ArgumentCaptor<SearchTerm> searched = ArgumentCaptor.forClass(SearchTerm.class);
     verify(inbox).search(searched.capture());
     assertEquals(EmailBoxService.messageIdSearchTerm("<draft.1@acme.com>"), searched.getValue(), "the id is searched on the server");
+    // Every hit's header in one batched FETCH before the exact filter, then the page's.
+    ArgumentCaptor<Message[]> fetched = ArgumentCaptor.forClass(Message[].class);
+    ArgumentCaptor<FetchProfile> profiles = ArgumentCaptor.forClass(FetchProfile.class);
+    verify(inbox, times(2)).fetch(fetched.capture(), profiles.capture());
+    assertArrayEquals(new Message[] { longer, exact }, fetched.getAllValues().get(0), "every hit, the longer id included");
+    assertArrayEquals(new String[] { "Message-ID" }, profiles.getAllValues().get(0).getHeaderNames());
+    assertArrayEquals(new Message[] { exact }, fetched.getAllValues().get(1), "the page: the exact match only");
 
     when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { longer });
     EmailSearchResultPage none = emailBoxService.searchEmails(TEST_USER, criteria, "INBOX", 10);
     assertEquals(0, none.getTotalMatches());
     assertTrue(none.getResults().isEmpty());
-    verify(inbox, times(1)).fetch(any(Message[].class), any(FetchProfile.class));
+    verify(inbox, times(3)).fetch(any(Message[].class), any(FetchProfile.class));
   }
 
   /**
