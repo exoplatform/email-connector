@@ -198,8 +198,13 @@ public record ServerRule(String ref,
 
   private static final Pattern     HEADER_NAME      = Pattern.compile("[A-Za-z0-9-]{1,76}");
 
-  private static final Pattern     DOMAIN           = Pattern.compile("[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?"
-      + "(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*");
+  /**
+   * A domain: dot-separated labels of letters, digits and inner hyphens. The labels are
+   * repeated possessively, so a long domain is matched label after label, without one
+   * nested call per label.
+   */
+  static final Pattern             DOMAIN           = Pattern.compile("[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?"
+      + "(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*+");
 
   private static final Pattern     KEYWORD          = Pattern.compile(Pattern.quote(TAG_PREFIX) + "[A-Za-z0-9._-]{1,48}");
 
