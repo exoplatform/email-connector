@@ -13394,22 +13394,21 @@ public class EmailBoxService {
       requireNotScheduled(username, draftLocalId);
       List<RefusedDocument> refused = new ArrayList<>();
       long total = storedAttachmentsSize(username, draftLocalId);
-      for (String documentId : ids) {
+      for (int index = 0; index < ids.size(); index++) {
+        String documentId = ids.get(index);
         try {
           total += attachDocument(draftLocalId, username, documentId, MAX_OUTGOING_ATTACHMENTS_SIZE - total);
         } catch (DocumentRefusedException e) {
           refused.add(new RefusedDocument(documentId, e.getDocumentName(), e.getReason()));
         } catch (RuntimeException e) {
+          // A write that failed part way may have left the file on the draft, and the
+          // store that failed would answer the documents after it no better: this one
+          // and the rest are refused as failed, which tells the caller to read the
+          // draft's attachments before naming any of them again.
           LOG.warn("The document {} of user {} could not be attached to draft {}", documentId, username, draftLocalId, e);
-          // The file may be on the draft by then, its row written before the failure: what
-          // the draft carries says whether it is, so a file that got there is neither
-          // refused, which would have it attached again, nor left out of the size count.
-          long carried = storedAttachmentsSize(username, draftLocalId);
-          if (carried > total) {
-            total = carried;
-          } else {
-            refused.add(new RefusedDocument(documentId, null, DocumentRefusalReason.UNREADABLE));
-          }
+          ids.subList(index, ids.size())
+             .forEach(failed -> refused.add(new RefusedDocument(failed, null, DocumentRefusalReason.FAILED)));
+          break;
         }
       }
       LOG.info("Documents for user {}: {} of {} attached to draft {}, {} refused",
