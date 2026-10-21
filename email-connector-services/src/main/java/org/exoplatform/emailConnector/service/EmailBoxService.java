@@ -593,7 +593,7 @@ public class EmailBoxService {
   // The years a search's day may fall in (EXO-91675): an IMAP SEARCH date carries a
   // four-digit year, which JavaMail writes from a GregorianCalendar -- Julian before
   // 1582, so the floor stays well past it.
-  static final int                SEARCH_MIN_YEAR                                             = 1900;
+  public static final int         SEARCH_MIN_YEAR                                             = 1900;
 
   static final int                SEARCH_MAX_YEAR                                             = 9999;
 
