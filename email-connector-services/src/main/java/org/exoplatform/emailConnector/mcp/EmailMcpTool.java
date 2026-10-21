@@ -151,8 +151,7 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /**
    * A day of the search's range as the tool takes it: a four-digit year, so the day after
-   * the last one of the range is a day {@code LocalDate} holds. The years a search takes
-   * are the service's to bound.
+   * the last one of the range is a day {@code LocalDate} holds.
    */
   private static final Pattern          SEARCH_DAY           = Pattern.compile("\\d{4}-\\d{2}-\\d{2}");
 
@@ -175,9 +174,7 @@ public class EmailMcpTool implements McpToolPlugin {
                                                                    "emailConnector.folder.notBrowsable",
                                                                    "folder must be one of INBOX, SENT or ARCHIVE.",
                                                                    "emailConnector.search.invalidDateRange",
-                                                                   "until_date must be the same day as since_date or a later one.",
-                                                                   "emailConnector.search.invalidDate",
-                                                                   "since_date and until_date must be days of a year from 1900 to 9999.");
+                                                                   "until_date must be the same day as since_date or a later one.");
 
   /**
    * The {@code identity} word for the user's own name (EXO-90585): the default, and what

@@ -320,12 +320,6 @@ class EmailMcpToolTest {
     IllegalArgumentException reversed = assertThrows(IllegalArgumentException.class,
                                                      () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, null, "2026-10-21", "2026-10-19", null));
     assertEquals("until_date must be the same day as since_date or a later one.", reversed.getMessage());
-    Mockito.doThrow(new IllegalArgumentException("emailConnector.search.invalidDate"))
-           .when(emailBoxService)
-           .searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), any(), anyInt());
-    IllegalArgumentException outOfYears = assertThrows(IllegalArgumentException.class,
-                                                       () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, null, "2026-01-01", null, null));
-    assertEquals("since_date and until_date must be days of a year from 1900 to 9999.", outOfYears.getMessage());
     // Said of the day written, whichever bound it becomes: until_date's next day would be
     // 1900-01-01, which the service takes.
     IllegalArgumentException lastDayOf1899 = assertThrows(IllegalArgumentException.class,
