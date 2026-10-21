@@ -205,10 +205,10 @@ public class EmailFilterRoutingTest {
   @Test
   void aCategoryFilterAlwaysRunsInExo() throws Exception {
     Condition important = new Condition("CATEGORY", "EQUALS", null, "emailImportantCategory");
-    Map<String, ElementSupport> elements = new HashMap<>();
-    ServerRuleCapabilities.ALL_ELEMENTS.forEach(element -> elements.put(element, new ElementSupport(true, null)));
-    elements.put("CATEGORY", new ElementSupport(true, null));
-    ServerRuleCapabilities claimsAll = new ServerRuleCapabilities(true, null, true, false, VocabularySource.FIXED, elements);
+    Map<String, ServerRuleElementSupport> elements = new HashMap<>();
+    ServerRuleCapabilities.ALL_ELEMENTS.forEach(element -> elements.put(element, new ServerRuleElementSupport(true, null)));
+    elements.put("CATEGORY", new ServerRuleElementSupport(true, null));
+    ServerRuleCapabilities claimsAll = new ServerRuleCapabilities(true, null, true, false, ServerRuleVocabularySource.FIXED, elements);
 
     assertEquals(EmailFilter.KIND_EXO, EmailFilterService.route(filter(List.of(important), action(FilterAction.STAR)), claimsAll));
     assertEquals(EmailFilter.KIND_EXO,

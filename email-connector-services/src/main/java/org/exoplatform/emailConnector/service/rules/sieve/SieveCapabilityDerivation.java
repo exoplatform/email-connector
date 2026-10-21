@@ -22,9 +22,9 @@ import static org.exoplatform.emailConnector.model.ServerRuleElementSupport.unsu
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
 import org.exoplatform.emailConnector.model.ServerRuleCapabilities;
 import org.exoplatform.emailConnector.model.ServerRuleElementSupport;
-import org.exoplatform.emailConnector.constant.ServerRuleVocabularySource;
 
 /**
  * What a Sieve server can do, derived from the capabilities it advertised <b>after</b>
@@ -90,7 +90,7 @@ public final class SieveCapabilityDerivation {
     // eXo writes the interval and the exclusions into the script wherever it writes a reply.
     elements.put(ServerRuleCapabilities.VACATION_RULES, vacation);
     elements.put(ServerRuleCapabilities.FORWARDING_READ, SUPPORTED_ELEMENT);
-    ElementSupport copy = needs(capabilities, SieveRulesSection.COPY_EXTENSION);
+    ServerRuleElementSupport copy = needs(capabilities, SieveRulesSection.COPY_EXTENSION);
     elements.put(ServerRuleCapabilities.FORWARDING_WRITE, copy);
     elements.put(ServerRuleCapabilities.READS_FOREIGN_VACATION, unsupported(FOREIGN_OPAQUE));
     for (String core : new String[] { ServerRuleCapabilities.FROM, ServerRuleCapabilities.TO, ServerRuleCapabilities.CC,
