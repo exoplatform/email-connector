@@ -297,6 +297,19 @@ class EmailMcpToolTest {
   }
 
   /**
+   * EXO-91675 -- a message_id with no @ is no Message-ID: an email_id passed in its place
+   * is refused before the mailbox is searched, since the server's substring search would
+   * match it against every id carrying its digits.
+   */
+  @Test
+  void aMessageIdThatIsNoMessageIdIsRefusedBeforeTheSearch() throws Exception {
+    IllegalArgumentException notAnId = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, null, null, null, " 42 "));
+    assertTrue(notAnId.getMessage().startsWith("message_id must be the message_id a draft tool returned"), notAnId.getMessage());
+    verify(emailBoxService, never()).searchEmails(any(), any(EmailSearchCriteria.class), any(), anyInt());
+  }
+
+  /**
    * EXO-91675 -- a day the model wrote wrong is refused in words naming the argument,
    * before the mailbox is searched, and a range the service refuses is said in words too.
    */
@@ -308,10 +321,6 @@ class EmailMcpToolTest {
     IllegalArgumentException badUntil = assertThrows(IllegalArgumentException.class,
                                                      () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, "x", null, "yesterday", null));
     assertTrue(badUntil.getMessage().startsWith("until_date must be a day written yyyy-MM-dd"), badUntil.getMessage());
-    // An email_id passed as a message_id would match every id containing its digits.
-    IllegalArgumentException notAnId = assertThrows(IllegalArgumentException.class,
-                                                    () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, null, null, null, " 42 "));
-    assertTrue(notAnId.getMessage().startsWith("message_id must be the message_id a draft tool returned"), notAnId.getMessage());
     // A signed year parses as an ISO date, and its next day does not exist: refused as a
     // day, never a DateTimeException out of the range's last day.
     IllegalArgumentException farYear = assertThrows(IllegalArgumentException.class,
