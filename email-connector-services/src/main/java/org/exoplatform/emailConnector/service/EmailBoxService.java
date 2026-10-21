@@ -13437,6 +13437,7 @@ public class EmailBoxService {
    * @param remaining the bytes the draft may still carry
    * @return the bytes the draft now carries more
    * @throws DocumentRefusedException when the document cannot be attached
+   * @throws IllegalStateException when the file store wrote nothing
    */
   private long attachDocument(String draftLocalId,
                               String username,
@@ -13451,8 +13452,9 @@ public class EmailBoxService {
     }
     String name = StringUtils.defaultIfBlank(document.getName(), DEFAULT_ATTACHMENT_NAME);
     if (emailBoxStorage.copyDraftAttachment(username, draftLocalId, name, document.getMimeType(), document.getContent()) == null) {
-      LOG.warn("The document {} of user {} could not be written onto draft {}", documentId, username, draftLocalId);
-      throw new DocumentRefusedException(DocumentRefusalReason.UNREADABLE, name);
+      // The file store wrote nothing: a failed write, which stops the call as one that
+      // throws does.
+      throw new IllegalStateException(String.format("The document %s could not be written onto draft %s", documentId, draftLocalId));
     }
     return document.getContent().length;
   }
