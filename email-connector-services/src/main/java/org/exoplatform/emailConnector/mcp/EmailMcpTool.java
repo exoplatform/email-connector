@@ -1677,6 +1677,8 @@ public class EmailMcpTool implements McpToolPlugin {
    * be in that inbox, a mail of Sent or Archive being refused rather than a same-numbered
    * inbox mail acted on -- or by {@code mail_remote_ids} alone, UIDs of the user's own
    * INBOX (refused with a {@code mailbox}). Given both, they must name the same mails.
+   * A null among the {@code email_ids} is refused in words; a null among the
+   * {@code mail_remote_ids} beside the UIDs of the {@code email_ids} is ignored.
    *
    * @param emailIds the local ids, or null
    * @param mailRemoteIds the UIDs, or null
@@ -1695,6 +1697,9 @@ public class EmailMcpTool implements McpToolPlugin {
         throw new IllegalArgumentException("In a shared mailbox, name the mails by their email_ids: a mail_remote_id alone names a mail of your own inbox.");
       }
       return mailRemoteIds;
+    }
+    if (emailIds.stream().anyMatch(Objects::isNull)) {
+      throw new IllegalArgumentException("email_ids must not contain a null: nothing was done. Name each mail by the email_id of the mail you read.");
     }
     String inbox = inboxOf(share);
     List<Long> uids = new ArrayList<>();
