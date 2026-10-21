@@ -828,6 +828,59 @@ class ImapAclEngineTest {
   }
 
   /**
+   * EXO-90554 -- "Folders and access" can share any of the owner's folders, and only the
+   * server's ACL records it: "Remove access" asks every folder of a mailbox of more than
+   * two hundred, so an entry on a folder listed after the two hundredth is found.
+   */
+  @Test
+  void foldersHoldingAsksEveryFolderBeyondTheFirstTwoHundred() throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.list("%")).thenReturn(new Folder[0]);
+    Folder[] listing = new Folder[250];
+    for (int index = 0; index < listing.length; index++) {
+      String name = String.format("F%03d", index);
+      listing[index] = listed(name, name);
+      when(((IMAPFolder) listing[index]).getACL()).thenReturn(new ACL[0]);
+    }
+    when(((IMAPFolder) listing[10]).getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("lr")) });
+    when(((IMAPFolder) listing[230]).getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("lr")) });
+    when(root.list("*")).thenReturn(listing);
+
+    assertEquals(List.of("F010", "F230"), engine.foldersHolding(session(), IDENTIFIER));
+    verify((IMAPFolder) listing[249]).getACL();
+  }
+
+  /**
+   * "Remove access" goes past a folder that refuses GETACL, but stops at a lost
+   * connection: what was found before it is returned, and no later folder is asked.
+   */
+  @Test
+  void foldersHoldingStopsAtALostConnectionButNotAtARefusal() throws MessagingException {
+    when(store.getUserNamespaces(null)).thenReturn(new Folder[0]);
+    when(store.getSharedNamespaces()).thenReturn(new Folder[0]);
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.list("%")).thenReturn(new Folder[0]);
+    IMAPFolder sent = (IMAPFolder) listed("Sent", "Sent");
+    IMAPFolder locked = (IMAPFolder) listed("Locked", "Locked");
+    IMAPFolder projects = (IMAPFolder) listed("Projects", "Projects");
+    IMAPFolder dropped = (IMAPFolder) listed("Dropped", "Dropped");
+    IMAPFolder archive = (IMAPFolder) listed("Archive", "Archive");
+    when(root.list("*")).thenReturn(new Folder[] { sent, locked, projects, dropped, archive });
+    when(sent.getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("lr")) });
+    when(locked.getACL()).thenThrow(new MessagingException("NO"));
+    when(projects.getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("lr")) });
+    when(dropped.getACL()).thenThrow(new StoreClosedException(store, "BYE"));
+    when(archive.getACL()).thenReturn(new ACL[] { new ACL(IDENTIFIER, new Rights("lr")) });
+
+    assertEquals(List.of("Sent", "Projects"), engine.foldersHolding(session(), IDENTIFIER));
+    verify(archive, never()).getACL();
+  }
+
+  /**
    * EXO-90548 -- a shared mailbox's folders are listed by pattern from the default folder
    * under its root, each with the attributes and selectability the listing carries; a
    * lost connection is UNREACHABLE, not a refusal.
