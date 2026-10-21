@@ -94,6 +94,21 @@ final class SieveRulesSection {
   /** The header value of "any condition". */
   static final String         MATCH_ANY          = "ANY";
 
+  /** The Sieve test on a header's value. */
+  private static final String HEADER_TEST        = "header";
+
+  /** The header JSON key of whether a rule applies. */
+  private static final String ENABLED_KEY        = "enabled";
+
+  /** The header JSON key of a rule's conditions. */
+  private static final String CONDITIONS_KEY     = "conditions";
+
+  /** The header JSON key of a rule's actions. */
+  private static final String ACTIONS_KEY        = "actions";
+
+  /** The header JSON key of a condition's header name. */
+  private static final String HEADER_KEY         = "header";
+
   /**
    * Utility class.
    */
@@ -297,9 +312,9 @@ final class SieveRulesSection {
     case ServerRule.FROM, ServerRule.TO, ServerRule.CC, ServerRule.ANY_RECIPIENT:
       return addressTest(field, operator, condition.value(), quoter);
     case ServerRule.SUBJECT:
-      return textTest("header", quoter.quote("subject"), operator, condition.value(), quoter);
+      return textTest(HEADER_TEST, quoter.quote("subject"), operator, condition.value(), quoter);
     case ServerRule.HEADER:
-      return textTest("header", quoter.quote(condition.header()), operator, condition.value(), quoter);
+      return textTest(HEADER_TEST, quoter.quote(condition.header()), operator, condition.value(), quoter);
     case ServerRule.MESSAGE_SIZE:
       if (ServerRule.GT.equals(operator)) {
         return "size :over " + Long.parseLong(condition.value()) + "K";
@@ -416,17 +431,17 @@ final class SieveRulesSection {
       ObjectNode node = array.addObject();
       node.put("id", rule.ref());
       node.put("name", rule.name());
-      node.put("enabled", rule.enabled());
+      node.put(ENABLED_KEY, rule.enabled());
       node.put("match", rule.matchAll() ? MATCH_ALL : MATCH_ANY);
-      ArrayNode conditions = node.putArray("conditions");
+      ArrayNode conditions = node.putArray(CONDITIONS_KEY);
       for (Condition condition : rule.conditions()) {
         ObjectNode item = conditions.addObject();
         item.put("field", condition.field());
         item.put("operator", condition.operator());
-        putIfPresent(item, "header", condition.header());
+        putIfPresent(item, HEADER_KEY, condition.header());
         putIfPresent(item, "value", condition.value());
       }
-      ArrayNode actions = node.putArray("actions");
+      ArrayNode actions = node.putArray(ACTIONS_KEY);
       for (Action action : rule.actions()) {
         ObjectNode item = actions.addObject();
         item.put("type", action.type());
@@ -452,8 +467,8 @@ final class SieveRulesSection {
     List<ServerRule> rules = new ArrayList<>();
     Set<String> refs = new HashSet<>();
     for (JsonNode node : array) {
-      if (!node.isObject() || !node.path("enabled").isBoolean() || !node.path("stop").isBoolean()
-          || !node.path("conditions").isArray() || !node.path("actions").isArray()) {
+      if (!node.isObject() || !node.path(ENABLED_KEY).isBoolean() || !node.path("stop").isBoolean()
+          || !node.path(CONDITIONS_KEY).isArray() || !node.path(ACTIONS_KEY).isArray()) {
         throw new IllegalArgumentException(ServerRule.INVALID);
       }
       String ref = string(node, "id");
@@ -462,11 +477,11 @@ final class SieveRulesSection {
         throw new IllegalArgumentException(ServerRule.INVALID);
       }
       List<Condition> conditions = new ArrayList<>();
-      for (JsonNode item : node.path("conditions")) {
-        conditions.add(new Condition(string(item, "field"), string(item, "operator"), string(item, "header"), string(item, "value")));
+      for (JsonNode item : node.path(CONDITIONS_KEY)) {
+        conditions.add(new Condition(string(item, "field"), string(item, "operator"), string(item, HEADER_KEY), string(item, "value")));
       }
       List<Action> actions = new ArrayList<>();
-      for (JsonNode item : node.path("actions")) {
+      for (JsonNode item : node.path(ACTIONS_KEY)) {
         actions.add(new Action(string(item, "type"),
                                string(item, "folderKey"),
                                string(item, "folder"),
@@ -475,7 +490,7 @@ final class SieveRulesSection {
       }
       rules.add(new ServerRule(ref,
                                string(node, "name"),
-                               node.path("enabled").booleanValue(),
+                               node.path(ENABLED_KEY).booleanValue(),
                                MATCH_ALL.equals(match),
                                conditions,
                                actions,
