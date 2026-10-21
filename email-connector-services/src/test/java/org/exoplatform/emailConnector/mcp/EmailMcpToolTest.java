@@ -1199,6 +1199,12 @@ class EmailMcpToolTest {
     IllegalArgumentException withANull = assertThrows(IllegalArgumentException.class,
                                                        () -> emailMcpTool.archiveEmail(java.util.Arrays.asList((Long) null), null, List.of(EMAIL_ID)));
     assertTrue(withANull.getMessage().contains("do not name the same mails"), withANull.getMessage());
+    IllegalArgumentException nullEmailId = assertThrows(IllegalArgumentException.class,
+                                                        () -> emailMcpTool.archiveEmail(null, null, java.util.Arrays.asList((Long) null)));
+    assertTrue(nullEmailId.getMessage().contains("email_ids must not contain a null"), nullEmailId.getMessage());
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailMcpTool.archiveEmail(null, null, java.util.Arrays.asList(EMAIL_ID, null)),
+                 "a null beside a valid id is refused too");
     givenAliceShares();
     assertThrows(IllegalArgumentException.class, () -> emailMcpTool.replyAll(REMOTE_ID, "<p>x</p>", OWNER_MAILBOX, null, List.of("x@acme.com"), List.of(), null));
     assertThrows(IllegalArgumentException.class, () -> emailMcpTool.deleteEmail(List.of(REMOTE_ID), OWNER_MAILBOX, null));
