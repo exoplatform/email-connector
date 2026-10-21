@@ -194,10 +194,6 @@ public record ServerRule(String ref,
   /** The actions that file the mail somewhere, of which a rule has at most one. */
   public static final Set<String>  FILING_ACTIONS   = Set.of(MOVE_TO_FOLDER, MARK_JUNK, DELETE);
 
-  private static final Pattern     REF_PATTERN      = Pattern.compile("[A-Za-z0-9._-]{1,64}");
-
-  private static final Pattern     HEADER_NAME      = Pattern.compile("[A-Za-z0-9-]{1,76}");
-
   /**
    * A domain: dot-separated labels of letters, digits and inner hyphens. The labels are
    * repeated possessively, so a long domain is matched label after label, without one
@@ -205,6 +201,10 @@ public record ServerRule(String ref,
    */
   static final Pattern             DOMAIN           = Pattern.compile("[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?"
       + "(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*+");
+
+  private static final Pattern     REF_PATTERN      = Pattern.compile("[A-Za-z0-9._-]{1,64}");
+
+  private static final Pattern     HEADER_NAME      = Pattern.compile("[A-Za-z0-9-]{1,76}");
 
   private static final Pattern     KEYWORD          = Pattern.compile(Pattern.quote(TAG_PREFIX) + "[A-Za-z0-9._-]{1,48}");
 
