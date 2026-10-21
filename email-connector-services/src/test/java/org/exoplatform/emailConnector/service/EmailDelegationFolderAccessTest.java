@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -525,6 +526,29 @@ class EmailDelegationFolderAccessTest {
                  update.results().stream().map(FolderAccessResult::outcome).toList());
     verify(engine, never()).grant(any(), eq("Spam"), anyString(), any(), any(), any());
     assertEquals("INBOX,SENT", written.get("grantedRoles"));
+  }
+
+  /**
+   * A lost connection while a folder is set to Not shared stops the loop the same way:
+   * the DELETEACL that lost it and the folders after it are not reached, rather than
+   * read as refused.
+   */
+  @Test
+  void aLostConnectionOnARemovalStopsTheLoopAndSaysWhatWasNotReached() throws Exception {
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted());
+    doThrow(new MailboxAclException(MailboxAclException.UNREACHABLE, "down")).when(engine)
+                                                                             .revoke(any(), eq("Archive"), anyString());
+    answerTheFolderGrantsWrite();
+
+    FolderAccessUpdate update = service.setFolderAccess(OWNER,
+                                                        100L,
+                                                        List.of(change("Sent", FolderAccess.EDITOR),
+                                                                change("Archive", FolderAccess.NONE),
+                                                                change("Spam", FolderAccess.EDITOR)));
+
+    assertEquals(List.of(Outcome.DONE, Outcome.NOT_REACHED, Outcome.NOT_REACHED),
+                 update.results().stream().map(FolderAccessResult::outcome).toList());
+    verify(engine, never()).grant(any(), eq("Spam"), anyString(), any(), any(), any());
   }
 
   /**
