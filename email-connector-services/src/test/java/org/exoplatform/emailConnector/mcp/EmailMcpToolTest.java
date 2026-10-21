@@ -268,6 +268,12 @@ class EmailMcpToolTest {
     expected.setBefore(LocalDate.of(2026, 10, 22));
     expected.setMessageId("<d.1@acme.com>");
     verify(emailBoxService).searchEmails(USERNAME, expected, MailFolder.ARCHIVE, 5);
+
+    // The last day of 9999 excludes nothing, and has no four-digit next day: no bound.
+    emailMcpTool.searchEmails(null, null, null, null, "ARCHIVE", 5, null, "pricing", null, "9999-12-31", null);
+    EmailSearchCriteria unbounded = new EmailSearchCriteria();
+    unbounded.setWords("pricing");
+    verify(emailBoxService).searchEmails(USERNAME, unbounded, MailFolder.ARCHIVE, 5);
   }
 
   /**
@@ -307,6 +313,10 @@ class EmailMcpToolTest {
     IllegalArgumentException farYear = assertThrows(IllegalArgumentException.class,
                                                     () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, "x", null, "+999999999-12-31", null));
     assertTrue(farYear.getMessage().startsWith("until_date must be a day written yyyy-MM-dd"), farYear.getMessage());
+    // An IMAP SEARCH date has a four-digit year: a year before 1000 is refused as a day.
+    IllegalArgumentException earlyYear = assertThrows(IllegalArgumentException.class,
+                                                      () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, "x", "0001-01-01", null, null));
+    assertTrue(earlyYear.getMessage().startsWith("since_date must be a day written yyyy-MM-dd"), earlyYear.getMessage());
     verify(emailBoxService, never()).searchEmails(any(), any(EmailSearchCriteria.class), any(), anyInt());
 
     when(emailBoxService.searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), any(), anyInt()))
