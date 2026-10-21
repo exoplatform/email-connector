@@ -28,8 +28,8 @@ import org.exoplatform.emailConnector.model.EmailDocumentContent;
 public interface EmailDocumentReader {
 
   /**
-   * Reads a document with the user's own rights: a document the user cannot open in
-   * Documents is refused here too.
+   * Reads a document with the user's own rights, on a thread whose current user is that
+   * user: a document the user cannot open in Documents is refused here too.
    *
    * @param documentId the document's id, as Documents gives it
    * @param username the user reading it
