@@ -96,7 +96,7 @@ do not, because turning one off only stops a READ (see their subtitles).
           </v-list-item-content>
           <v-list-item-action class="my-0">
             <v-switch
-              :input-value="trashSyncEnabled"
+              :input-value="trashSyncShown"
               :loading="savingTrash"
               :disabled="savingTrash"
               @change="onTrashSyncChange" />
@@ -113,7 +113,7 @@ do not, because turning one off only stops a READ (see their subtitles).
           </v-list-item-content>
           <v-list-item-action class="my-0">
             <v-switch
-              :input-value="junkSyncEnabled"
+              :input-value="junkSyncShown"
               :loading="savingJunk"
               :disabled="savingJunk"
               @change="onJunkSyncChange" />
@@ -130,7 +130,7 @@ do not, because turning one off only stops a READ (see their subtitles).
           </v-list-item-content>
           <v-list-item-action class="my-0">
             <v-switch
-              :input-value="draftsServerEnabled"
+              :input-value="draftsServerShown"
               :loading="savingDraftsServer"
               :disabled="savingDraftsServer"
               @change="onDraftsServerChange" />
@@ -229,10 +229,13 @@ export default {
       savingSyncPeriod: false,
       pendingSyncPeriod: null,
       trashSyncEnabled: true,
+      trashSyncShown: true,
       savingTrash: false,
       junkSyncEnabled: true,
+      junkSyncShown: true,
       savingJunk: false,
       draftsServerEnabled: true,
+      draftsServerShown: true,
       savingDraftsServer: false,
       customFoldersEnabled: true,
       savingCustomFolders: false,
@@ -293,11 +296,20 @@ export default {
           }
         });
       this.$emailConnectorAdministrationService.getTrashSyncEnabled()
-        .then(enabled => this.trashSyncEnabled = enabled);
+        .then(enabled => {
+          this.trashSyncEnabled = enabled;
+          this.trashSyncShown = enabled;
+        });
       this.$emailConnectorAdministrationService.getJunkSyncEnabled()
-        .then(enabled => this.junkSyncEnabled = enabled);
+        .then(enabled => {
+          this.junkSyncEnabled = enabled;
+          this.junkSyncShown = enabled;
+        });
       this.$emailConnectorAdministrationService.getServerDraftsEnabled()
-        .then(enabled => this.draftsServerEnabled = enabled);
+        .then(enabled => {
+          this.draftsServerEnabled = enabled;
+          this.draftsServerShown = enabled;
+        });
       this.$emailConnectorAdministrationService.getCustomFoldersEnabled()
         .then(enabled => this.customFoldersEnabled = enabled);
       this.$emailConnectorAdministrationService.getSharedMailboxSentCopyEnabled()
@@ -375,10 +387,14 @@ export default {
      * @returns {void}
      */
     onTrashSyncChange(enabled) {
+      this.trashSyncShown = enabled;
       this.savingTrash = true;
       this.$emailConnectorAdministrationService.updateTrashSyncEnabled(enabled)
         .then(() => this.trashSyncEnabled = enabled)
-        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error'))
+        .catch(() => {
+          this.trashSyncShown = this.trashSyncEnabled;
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error');
+        })
         .finally(() => this.savingTrash = false);
     },
     /**
@@ -388,10 +404,14 @@ export default {
      * @returns {void}
      */
     onJunkSyncChange(enabled) {
+      this.junkSyncShown = enabled;
       this.savingJunk = true;
       this.$emailConnectorAdministrationService.updateJunkSyncEnabled(enabled)
         .then(() => this.junkSyncEnabled = enabled)
-        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error'))
+        .catch(() => {
+          this.junkSyncShown = this.junkSyncEnabled;
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error');
+        })
         .finally(() => this.savingJunk = false);
     },
     /**
@@ -401,10 +421,14 @@ export default {
      * @returns {void}
      */
     onDraftsServerChange(enabled) {
+      this.draftsServerShown = enabled;
       this.savingDraftsServer = true;
       this.$emailConnectorAdministrationService.updateServerDraftsEnabled(enabled)
         .then(() => this.draftsServerEnabled = enabled)
-        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error'))
+        .catch(() => {
+          this.draftsServerShown = this.draftsServerEnabled;
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error');
+        })
         .finally(() => this.savingDraftsServer = false);
     },
     /**
