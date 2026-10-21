@@ -13099,6 +13099,11 @@ public class EmailBoxService {
    * documents beside it are still attached. Without the Documents add-on, every one is
    * refused as unavailable. An id named twice is attached once.
    * <p>
+   * A write onto the draft that fails stops the call: that document and the ones after
+   * it are refused as {@link DocumentRefusalReason#FAILED}, since the failed file may be
+   * on the draft anyway and the store that failed would answer the next no better; the
+   * documents before it stay attached.
+   * <p>
    * Under the draft's lock, as every other write to a draft, and each file steps the
    * draft's revision, as an attachment made in the composer does.
    *

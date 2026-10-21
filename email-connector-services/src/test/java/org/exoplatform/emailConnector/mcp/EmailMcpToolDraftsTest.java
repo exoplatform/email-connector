@@ -401,6 +401,26 @@ class EmailMcpToolDraftsTest {
   }
 
   /**
+   * A failure followed by a draft that cannot be read again is answered without a claim
+   * about its attachments: the caller is sent to the Email app, not to a list that does
+   * not say what the draft carries.
+   *
+   * @throws Exception never, the services are mocked
+   */
+  @Test
+  void createEmailDraftSendsTheUserToTheAppWhenTheDraftCannotBeReadAfterAFailure() throws Exception {
+    saveDraftEchoes();
+    when(emailBoxService.addDocumentAttachments(DRAFT_ID, USERNAME, List.of("doc-1"))).thenThrow(new IllegalStateException("down"));
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenThrow(new IllegalStateException("down"));
+
+    EmailDraftModel model = emailMcpTool.createEmailDraft(List.of("bob@acme.com"), "Hello", "<p>Hi</p>", null, null, null, false,
+                                                          List.of("doc-1"));
+
+    assertEquals(DRAFT_ID, model.getDraftId());
+    assertTrue(model.getRefusedDocuments().get(0).getReason().contains("check the draft in the Email app"));
+  }
+
+  /**
    * A draft gone when its documents are added is answered as such, not as a failure to
    * check the draft's attachments for.
    *
