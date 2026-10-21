@@ -13401,7 +13401,15 @@ public class EmailBoxService {
           refused.add(new RefusedDocument(documentId, e.getDocumentName(), e.getReason()));
         } catch (RuntimeException e) {
           LOG.warn("The document {} of user {} could not be attached to draft {}", documentId, username, draftLocalId, e);
-          refused.add(new RefusedDocument(documentId, null, DocumentRefusalReason.UNREADABLE));
+          // The file may be on the draft by then, its row written before the failure: what
+          // the draft carries says whether it is, so a file that got there is neither
+          // refused, which would have it attached again, nor left out of the size count.
+          long carried = storedAttachmentsSize(username, draftLocalId);
+          if (carried > total) {
+            total = carried;
+          } else {
+            refused.add(new RefusedDocument(documentId, null, DocumentRefusalReason.UNREADABLE));
+          }
         }
       }
       LOG.info("Documents for user {}: {} of {} attached to draft {}, {} refused",
