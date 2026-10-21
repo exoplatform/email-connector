@@ -1311,6 +1311,81 @@ class EmailDelegationServiceTest {
   }
 
   /**
+   * EXO-90554 -- a sweep of the owner's folders that could not ask every one of them (a
+   * lost connection, or its time budget spent) refuses "Remove access" as UNREACHABLE:
+   * no further DELETEACL, the mirror kept and the row as it was, so it can be run again.
+   */
+  @Test
+  void revokeKeepsTheShareWhenNotEveryFolderCouldBeAsked() throws Exception {
+    EmailDelegation accepted = aRowSharingRoleFolders();
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.foldersHolding(any(), eq(GRANTEE_MAILBOX))).thenThrow(new MailboxAclException(MailboxAclException.UNREACHABLE,
+                                                                                              "sweep deadline exceeded"));
+
+    MailboxAclException thrown = assertThrows(MailboxAclException.class, () -> service.revoke(OWNER, 100L));
+
+    assertEquals(MailboxAclException.UNREACHABLE, thrown.getCode());
+    verify(engine, never()).revoke(any(), eq("Corbeille"), any());
+    assertKeptAsItWas(accepted);
+  }
+
+  /**
+   * A server that refuses to list the owner's folders does not stop "Remove access": the
+   * folders the grant recorded are freed and the share ends.
+   */
+  @Test
+  void revokeGoesOnWithTheRecordedFoldersWhenTheListingIsRefused() throws Exception {
+    EmailDelegation accepted = aRowSharingRoleFolders();
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.foldersHolding(any(), eq(GRANTEE_MAILBOX))).thenThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED, "NO"));
+
+    service.revoke(OWNER, 100L);
+
+    verify(engine).revoke(any(), eq("Corbeille"), eq(GRANTEE_MAILBOX));
+    assertEquals(DelegationStatus.REVOKED, accepted.getStatus());
+    verify(emailFolderStorage).deleteDelegatedFolders(GRANTEE, 100L);
+  }
+
+  /**
+   * EXO-90554 -- a DELETEACL lost with the connection refuses "Remove access" as
+   * UNREACHABLE where a folder's NO is skipped: no later folder is tried, the mirror is
+   * kept and the row is as it was, so it can be run again.
+   */
+  @Test
+  void revokeKeepsTheShareWhenTheConnectionIsLostOnAFolder() throws Exception {
+    EmailDelegation accepted = aRowSharingRoleFolders();
+    when(emailDelegationStorage.getAsOwner(OWNER, 100L)).thenReturn(accepted);
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.foldersHolding(any(), eq(GRANTEE_MAILBOX))).thenReturn(List.of("Sent", "Projects", "Archive"));
+    lenient().doThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED, "NO")).when(engine).revoke(any(), eq("Sent"), any());
+    lenient().doThrow(new MailboxAclException(MailboxAclException.UNREACHABLE, "BYE")).when(engine).revoke(any(), eq("Projects"), any());
+
+    MailboxAclException thrown = assertThrows(MailboxAclException.class, () -> service.revoke(OWNER, 100L));
+
+    assertEquals(MailboxAclException.UNREACHABLE, thrown.getCode());
+    verify(engine).revoke(any(), eq("Projects"), eq(GRANTEE_MAILBOX));
+    verify(engine, never()).revoke(any(), eq("Archive"), any());
+    assertKeptAsItWas(accepted);
+  }
+
+  /**
+   * The share stands as it did before "Remove access": still accepted, its mirror
+   * registered, nothing written and nothing published.
+   *
+   * @param delegation the row
+   */
+  private void assertKeptAsItWas(EmailDelegation delegation) {
+    assertEquals(DelegationStatus.ACCEPTED, delegation.getStatus());
+    assertNull(delegation.getRevokedDate());
+    verify(emailFolderStorage, never()).deleteDelegatedFolders(any(), anyLong());
+    verify(emailDelegationStorage, never()).markRevoked(anyLong(), any());
+    verify(emailDelegationStorage, never()).update(any());
+    verify(eventPublisher, never()).publishEvent(any(EmailDelegationEvent.class));
+  }
+
+  /**
    * "Extend access": a share written before roles were recorded gets the owner's role
    * folders with its own preset; only the owner's, only a share eXo wrote, only on a
    * per-folder server.

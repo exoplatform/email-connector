@@ -24,6 +24,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 
 import javax.mail.Folder;
 import javax.mail.FolderClosedException;
@@ -117,6 +119,19 @@ public class ImapAclEngine implements MailboxAclEngine {
 
   /** The RFC 2342 capability -- a hint in {@link #probe}, never the gate. */
   static final String        NAMESPACE_CAPABILITY = "NAMESPACE";
+
+  /**
+   * How long, in seconds, "Remove access" may spend asking the owner's folders for the
+   * grantee's entry ({@link #foldersHolding}), LIST included. Read from this JVM property
+   * on each sweep, {@value #DEFAULT_SWEEP_SECONDS} by default.
+   */
+  public static final String SWEEP_SECONDS_PROPERTY = "exo.email.delegation.revokeSweepSeconds";
+
+  /** The default of {@link #SWEEP_SECONDS_PROPERTY}. */
+  public static final int    DEFAULT_SWEEP_SECONDS  = 60;
+
+  /** The clock the sweep's deadline is read on, in nanoseconds. */
+  LongSupplier               clock                = System::nanoTime;
 
   /**
    * @return {@value #NAME}
@@ -417,15 +432,18 @@ public class ImapAclEngine implements MailboxAclEngine {
    * of the owner's own LIST is asked, whatever its position: "Folders and access" can
    * write an entry on any of them over a share's life, and only the server's ACL records
    * it, so a folder left unasked keeps the grantee's access after "Remove access". The
-   * sweep is one GETACL per folder of the owner's own mailbox, and it stops at the
-   * first lost connection, returning what it found: every later folder would fail the
-   * same way. A folder whose ACL cannot be read is skipped: its entry, if any, is the
-   * owner's to remove in the mail server's own interface.
+   * sweep is one GETACL per folder, on the caller's request, within the budget of
+   * {@link #SWEEP_SECONDS_PROPERTY} counted from before the LIST. A sweep that cannot ask
+   * every folder -- the connection lost, or the time spent -- answers {@code UNREACHABLE}
+   * rather than a partial list, so the caller never takes it for the whole. A folder
+   * whose ACL the server refuses to read is skipped: its entry, if any, is the owner's to
+   * remove in the mail server's own interface.
    *
    * @param session the owner's session
    * @param identifier the grantee as the server names them
    * @return the folder full names, never null
-   * @throws MailboxAclException when the server cannot list folders
+   * @throws MailboxAclException {@code UNREACHABLE} when not every folder could be asked,
+   *           {@code SERVER_REFUSED} when the server refuses the LIST
    */
   @Override
   public List<String> foldersHolding(MailboxAclSession session, String identifier) {
@@ -433,8 +451,17 @@ public class ImapAclEngine implements MailboxAclEngine {
     if (StringUtils.isBlank(identifier)) {
       return holding;
     }
+    int budget = getSweepSeconds();
+    long deadline = clock.getAsLong() + TimeUnit.SECONDS.toNanos(budget);
     List<IMAPFolder> folders = ownFolders(session);
     for (int index = 0; index < folders.size(); index++) {
+      if (clock.getAsLong() - deadline >= 0) {
+        LOG.warn("Removing an access took longer than {} s: {} of {} folders were not asked, the access stays as it is",
+                 budget,
+                 folders.size() - index,
+                 folders.size());
+        throw new MailboxAclException(MailboxAclException.UNREACHABLE, "sweep deadline exceeded");
+      }
       IMAPFolder folder = folders.get(index);
       try {
         for (ACL acl : folder.getACL()) {
@@ -445,15 +472,34 @@ public class ImapAclEngine implements MailboxAclEngine {
         }
       } catch (MessagingException e) {
         if (isConnectionFailure(e)) {
-          LOG.warn("The connection was lost while removing an access: {} of {} folders were not asked; an entry on them stays",
+          LOG.warn("The connection was lost while removing an access: {} of {} folders were not asked, the access stays as it is",
                    folders.size() - index,
                    folders.size());
-          break;
+          throw new MailboxAclException(MailboxAclException.UNREACHABLE, e);
         }
         LOG.debug("GETACL on '{}' could not be read while removing an access: {}", folder.getFullName(), e.getMessage());
       }
     }
     return holding;
+  }
+
+  /**
+   * The time budget of {@link #foldersHolding} -- see {@link #SWEEP_SECONDS_PROPERTY}. A
+   * misconfigured value falls back to the default.
+   *
+   * @return the budget in seconds, at least one
+   */
+  int getSweepSeconds() {
+    String value = System.getProperty(SWEEP_SECONDS_PROPERTY);
+    if (StringUtils.isBlank(value)) {
+      return DEFAULT_SWEEP_SECONDS;
+    }
+    try {
+      int parsed = Integer.parseInt(value.trim());
+      return parsed > 0 ? parsed : DEFAULT_SWEEP_SECONDS;
+    } catch (NumberFormatException e) {
+      return DEFAULT_SWEEP_SECONDS;
+    }
   }
 
   /**
@@ -704,13 +750,18 @@ public class ImapAclEngine implements MailboxAclEngine {
    * @param session the owner's session
    * @param mailbox the mailbox's full name
    * @param identifier the grantee as the server names them
-   * @throws MailboxAclException when the server refuses
+   * @throws MailboxAclException {@code UNREACHABLE} when the connection failed,
+   *           {@code SERVER_REFUSED} when the server refuses
    */
   @Override
   public void revoke(MailboxAclSession session, String mailbox, String identifier) {
     try {
       folder(session.store(), mailbox).removeACL(identifier);
     } catch (MessagingException e) {
+      if (isConnectionFailure(e)) {
+        LOG.debug("DELETEACL on '{}' could not be sent, the connection failed: {}", mailbox, e.getMessage());
+        throw new MailboxAclException(MailboxAclException.UNREACHABLE, e);
+      }
       throw refused("DELETEACL", mailbox, e);
     }
   }

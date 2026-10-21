@@ -596,7 +596,9 @@ public class EmailDelegationService {
    * @throws IllegalAccessException when the caller has no connected mailbox
    * @throws IllegalArgumentException {@code emailConnector.delegation.notChangeable} for a
    *           row of a mailbox the caller is no longer connected to
-   * @throws MailboxAclException when the server refuses DELETEACL
+   * @throws MailboxAclException when the server refuses DELETEACL on INBOX, or
+   *           {@code UNREACHABLE} when not every folder could be asked or freed: the row
+   *           and the mirror stay as they are, for "Remove access" to be run again
    */
   public void revoke(String ownerUsername, long id) throws ObjectNotFoundException, IllegalAccessException {
     EmailDelegation delegation = asOwner(ownerUsername, id);
@@ -1252,18 +1254,23 @@ public class EmailDelegationService {
    * "Remove access" beyond INBOX: every other folder of the owner whose ACL names the
    * grantee -- including an entry written in another mail application -- and the folders
    * the grant recorded, in case the ACLs cannot be listed. A folder that refuses is
-   * logged and left; INBOX, which is what the share is, has already gone.
+   * logged and left; INBOX, which is what the share is, has already gone. A server that
+   * can no longer be asked -- the sweep of the folders cut short, or a DELETEACL on a lost
+   * connection -- stops it with {@code UNREACHABLE}, before the share is ended, so the
+   * owner can run "Remove access" again.
    *
    * @param engine the engine
    * @param session the owner's session
    * @param identifier the grantee as the server names them
    * @param delegation the row, for the folders its grant recorded
+   * @throws MailboxAclException {@code UNREACHABLE} when the server can no longer be asked
    */
   private void revokeOtherFolders(MailboxAclEngine engine, MailboxAclSession session, String identifier, EmailDelegation delegation) {
     Set<String> folders = new LinkedHashSet<>();
     try {
       folders.addAll(engine.foldersHolding(session, identifier));
     } catch (MailboxAclException e) {
+      rethrowUnreachable(e);
       LOG.debug("The owner's folders holding an access could not be listed ({})", e.getCode());
     }
     Map<FolderRole, String> roleFolders = delegation.getOwnerRoleFolders();
@@ -1279,6 +1286,7 @@ public class EmailDelegationService {
       try {
         engine.revoke(session, folder, identifier);
       } catch (MailboxAclException e) {
+        rethrowUnreachable(e);
         LOG.warn("An access on one of the owner's folders could not be removed ({})", e.getCode());
       }
     }
