@@ -370,7 +370,8 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
    * row: the refusal's date and shape and the update stamp. Only that grantee's row, only
    * a share in use or on offer, and only while it still carries the consent the mail was
    * sent under ({@code sendModeDate}): a consent withdrawn or set again since is left as
-   * the owner made it.
+   * the owner made it, except a consent set again as the owner at the same instant,
+   * which covers an on-behalf send and takes its refusal.
    * <p>
    * A later refusal never narrows what stands refused: a refusal already standing on
    * behalf (which blocks both shapes), or one recorded before shapes were (null, read the
