@@ -149,6 +149,12 @@ public class EmailMcpTool implements McpToolPlugin {
                                                              Pattern.compile(Pattern.quote(EmailSignatureService.SIGNATURE_IMAGE_PATH)
                                                                  + "(?:\\?v=[0-9A-Za-z_-]{1,64})?");
 
+  /**
+   * A day of the search's range as the tool takes it: four-digit year, so the day after
+   * the last one of the range always exists.
+   */
+  private static final Pattern          SEARCH_DAY           = Pattern.compile("\\d{4}-\\d{2}-\\d{2}");
+
   /** A CSS call of any function that takes an image or an address. */
   private static final Pattern          CSS_IMAGE_CALL       = Pattern.compile("(?:url|src|image|image-set|cross-fade|element)\\s*\\(",
                                                                               Pattern.CASE_INSENSITIVE);
@@ -601,14 +607,19 @@ public class EmailMcpTool implements McpToolPlugin {
    * @param day the day, yyyy-MM-dd, may be blank
    * @param argument the argument's name, for the refusal
    * @return the day, or null when none was given
-   * @throws IllegalArgumentException when the text is not a yyyy-MM-dd day
+   * @throws IllegalArgumentException when the text is not a yyyy-MM-dd day, a signed or
+   *           five-digit year included
    */
   private static LocalDate searchDay(String day, String argument) {
     if (StringUtils.isBlank(day)) {
       return null;
     }
+    String text = day.trim();
     try {
-      return LocalDate.parse(day.trim());
+      if (!SEARCH_DAY.matcher(text).matches()) {
+        throw new DateTimeParseException("not yyyy-MM-dd", text, 0);
+      }
+      return LocalDate.parse(text);
     } catch (DateTimeParseException e) {
       throw new IllegalArgumentException(argument + " must be a day written yyyy-MM-dd, such as 2026-10-21.", e);
     }
