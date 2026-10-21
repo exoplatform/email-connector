@@ -1055,22 +1055,6 @@ public class EmailBoxRest {
                                                   @RequestHeader(value = "If-None-Match", required = false)
                                                   String ifNoneMatch) {
     try {
-      // UIDs are per-folder, so the folder is part of the message identity / eTag.
-      // And so is what the reader may fetch from the internet: a copy served with its
-      // remote content held back must not be confirmed once the caller asked for it,
-      // trusted its sender or switched blocking off (EXO-90841).
-      String eTag = "\"" + Objects.hash(mailRemoteId,
-                                        folder,
-                                        request.getRemoteUser(),
-                                        remoteContent,
-                                        emailSecurityService.settingsFingerprint(request.getRemoteUser()))
-          + "\"";
-      if (ifNoneMatch != null && ifNoneMatch.replace("W/", "").equals(eTag)) {
-        if (broadcast) {
-          emailBoxService.broadcastOpenEmail(request.getRemoteUser());
-        }
-        return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
-      }
       Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId,
                                                                     request.getRemoteUser(),
                                                                     folder,
@@ -1083,6 +1067,24 @@ public class EmailBoxRest {
       }
       readReceiptService.decorate(email, request.getRemoteUser());
       emailSecurityService.decorate(email, request.getRemoteUser(), remoteContent);
+      // UIDs are per-folder, so the folder is part of the message identity / eTag.
+      // And so is what the reader may fetch from the internet: a copy served with its
+      // remote content held back must not be confirmed once the caller asked for it,
+      // trusted its sender or switched blocking off (EXO-90841).
+      // And so is the message as answered: its row carries no update date, while what
+      // the reader shows changes under the same UID -- the read flag, the star, the
+      // read-receipt answer kept in its own table, a row rebuilt with a new id. Hashing
+      // the decorated message itself means a changed message is never answered 304.
+      String eTag = "\"" + Objects.hash(mailRemoteId,
+                                        folder,
+                                        request.getRemoteUser(),
+                                        remoteContent,
+                                        emailSecurityService.settingsFingerprint(request.getRemoteUser()),
+                                        email)
+          + "\"";
+      if (ifNoneMatch != null && ifNoneMatch.replace("W/", "").equals(eTag)) {
+        return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
+      }
       return ResponseEntity.ok().eTag(eTag).cacheControl(CacheControl.noCache().cachePrivate()).body(email);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
