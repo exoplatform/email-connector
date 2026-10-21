@@ -247,6 +247,30 @@ class DocumentsEmailDocumentReaderTest {
   }
 
   /**
+   * A failure of Documents while the content is read is this document's: refused as
+   * unreadable, never thrown, so the documents after it are still read.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aFailureWhileReadingTheContentIsRefusedAsUnreadable() throws Exception {
+    when(documentFileService.getDocumentById(DOCUMENT_ID, USERNAME)).thenReturn(file("deck.pptx", 5, null));
+    java.io.InputStream failing = new java.io.InputStream() {
+      @Override
+      public int read() {
+        throw new IllegalStateException("jcr stream");
+      }
+    };
+    when(documentFileService.getDocumentContent(DOCUMENT_ID, USERNAME)).thenReturn(new FileContent(DOCUMENT_ID, "deck.pptx", null,
+                                                                                                    failing, new Date()));
+
+    assertEquals(DocumentRefusalReason.UNREADABLE, refusal(1024).getReason());
+
+    when(provider.getIfAvailable()).thenThrow(new IllegalStateException("context closing"));
+    assertEquals(DocumentRefusalReason.UNREADABLE, refusal(1024).getReason());
+  }
+
+  /**
    * Without the Documents service, every document is refused as unavailable.
    */
   @Test

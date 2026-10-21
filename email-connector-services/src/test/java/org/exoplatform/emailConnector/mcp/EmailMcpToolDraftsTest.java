@@ -856,11 +856,81 @@ class EmailMcpToolDraftsTest {
       return stored;
     });
 
-    String answer = emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("BOB@acme.com"), "Hello", null, null);
+    String answer = emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("BOB@acme.com"), "Hello", null, null, null);
 
     verify(emailBoxService).sendDraftAsStored(eq(DRAFT_ID), eq(USERNAME), any());
     verify(emailBoxService, never()).sendDraft(any(), anyString(), any(), any());
     assertTrue(answer.contains("<draft-mid@example.com>") && answer.contains("thread-9"), answer);
+  }
+
+  /**
+   * A draft carrying files is sent only when the arguments name them, so the approval
+   * card shows every file that leaves (EXO-91676): left out, or one too few, nothing is
+   * sent and the refusal names the draft's files; named in any order, the draft is sent.
+   */
+  @Test
+  void sendEmailDraftSendsADraftsFilesOnlyWhenTheArgumentsNameThem() throws Exception {
+    Email stored = draftCarrying("pricing.xlsx");
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(stored);
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Campaign",
+                                                                                      null, null, null));
+    assertTrue(refusal.getMessage().contains("pricing.xlsx"), refusal.getMessage());
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Campaign", null, null,
+                                                   List.of("brochure.pdf")));
+    verify(emailBoxService, never()).sendDraftAsStored(anyString(), anyString(), any());
+
+    when(emailBoxService.sendDraftAsStored(eq(DRAFT_ID), eq(USERNAME), any())).thenAnswer(invocation -> {
+      Consumer<Email> check = invocation.getArgument(2);
+      check.accept(stored);
+      return stored;
+    });
+    emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Campaign", null, null, List.of(" pricing.xlsx "));
+    verify(emailBoxService).sendDraftAsStored(eq(DRAFT_ID), eq(USERNAME), any());
+  }
+
+  /**
+   * Two files of one name are two files: naming the name once does not approve both.
+   */
+  @Test
+  void sendEmailDraftCountsTwoFilesOfOneNameTwice() throws Exception {
+    Email stored = draftCarrying("brochure.pdf");
+    stored.getContent()
+          .setAttachments(List.of(stored.getContent().getAttachments().get(0), stored.getContent().getAttachments().get(0)));
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(stored);
+    when(emailBoxService.sendDraftAsStored(eq(DRAFT_ID), eq(USERNAME), any())).thenAnswer(invocation -> {
+      Consumer<Email> check = invocation.getArgument(2);
+      check.accept(stored);
+      return stored;
+    });
+
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Campaign", null, null,
+                                                   List.of("brochure.pdf")));
+    verify(emailBoxService, never()).sendDraftAsStored(anyString(), anyString(), any());
+  }
+
+  /**
+   * A file added to the draft between the check and the send -- by the Email app, or a
+   * document attached meanwhile -- is caught on the row under the draft's lock: the
+   * approved arguments never name it, so nothing is sent.
+   */
+  @Test
+  void sendEmailDraftSendsNothingWhenAFileIsAddedBeforeTheLockIsHeld() throws Exception {
+    when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(storedDraft("Campaign", "<p>Hi</p>", "bob@acme.com"));
+    Email withFile = draftCarrying("pricing.xlsx");
+    when(emailBoxService.sendDraftAsStored(eq(DRAFT_ID), eq(USERNAME), any())).thenAnswer(invocation -> {
+      Consumer<Email> check = invocation.getArgument(2);
+      check.accept(withFile);
+      return withFile;
+    });
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Campaign",
+                                                                                      null, null, List.of()));
+    assertTrue(refusal.getMessage().contains("pricing.xlsx"), refusal.getMessage());
   }
 
   /**
@@ -873,12 +943,12 @@ class EmailMcpToolDraftsTest {
     when(emailBoxService.getDraft(DRAFT_ID, USERNAME)).thenReturn(stored);
 
     assertThrows(IllegalArgumentException.class,
-                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("eve@evil.com"), "Hello", null, null));
+                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("eve@evil.com"), "Hello", null, null, null));
     assertThrows(IllegalArgumentException.class,
-                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Other subject", null, null));
+                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Other subject", null, null, null));
     stored.setBcc(recipients("boss@acme.com"));
     assertThrows(IllegalArgumentException.class,
-                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Hello", null, null));
+                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Hello", null, null, null));
     verify(emailBoxService, never()).sendDraftAsStored(anyString(), anyString(), any());
 
     Email edited = storedDraft("Hello", "<p>Hi</p>", "bob@acme.com", "new@acme.com");
@@ -890,7 +960,7 @@ class EmailMcpToolDraftsTest {
     });
     IllegalArgumentException refusal =
                                      assertThrows(IllegalArgumentException.class,
-                                                  () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Hello", null, null));
+                                                  () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Hello", null, null, null));
     assertTrue(refusal.getMessage().contains("new@acme.com"), refusal.getMessage());
 
     Email scheduledMeanwhile = storedDraft("Hello", "<p>Hi</p>", "bob@acme.com");
@@ -901,7 +971,7 @@ class EmailMcpToolDraftsTest {
       return scheduledMeanwhile;
     });
     assertThrows(IllegalArgumentException.class,
-                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Hello", null, null));
+                 () -> emailMcpTool.sendEmailDraft(DRAFT_ID, List.of("bob@acme.com"), "Hello", null, null, null));
   }
 
   // --- delete_email_draft ----------------------------------------------------
