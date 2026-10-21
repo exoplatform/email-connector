@@ -33,6 +33,7 @@ import java.time.ZoneId;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.GregorianCalendar;
+import java.util.List;
 import java.util.Properties;
 
 import javax.activation.DataHandler;
@@ -193,6 +194,25 @@ public class EmailSearchCriteriaTermTest {
     notADay.setInvalidDay(true);
     assertEquals("emailConnector.search.invalidDate",
                  assertThrows(IllegalArgumentException.class, () -> EmailBoxService.validateSearchCriteria(notADay)).getMessage());
+
+    // An IMAP SEARCH date carries a four-digit year, written from a calendar that is
+    // Julian before 1582: a day outside 1900..9999 is refused, from the REST search too.
+    for (LocalDate outside : List.of(LocalDate.of(1899, 12, 31), LocalDate.of(1000, 1, 1), LocalDate.of(10000, 1, 1))) {
+      EmailSearchCriteria after = new EmailSearchCriteria();
+      after.setAfter(outside);
+      assertEquals("emailConnector.search.invalidDate",
+                   assertThrows(IllegalArgumentException.class, () -> EmailBoxService.validateSearchCriteria(after)).getMessage(),
+                   "after " + outside);
+      EmailSearchCriteria before = new EmailSearchCriteria();
+      before.setBefore(outside);
+      assertEquals("emailConnector.search.invalidDate",
+                   assertThrows(IllegalArgumentException.class, () -> EmailBoxService.validateSearchCriteria(before)).getMessage(),
+                   "before " + outside);
+    }
+    EmailSearchCriteria edges = new EmailSearchCriteria();
+    edges.setAfter(LocalDate.of(1900, 1, 1));
+    edges.setBefore(LocalDate.of(9999, 12, 31));
+    assertDoesNotThrow(() -> EmailBoxService.validateSearchCriteria(edges), "the first and the last searchable days");
 
     EmailSearchCriteria negative = new EmailSearchCriteria();
     negative.setSinceDays(-1);

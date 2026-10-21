@@ -313,10 +313,6 @@ class EmailMcpToolTest {
     IllegalArgumentException farYear = assertThrows(IllegalArgumentException.class,
                                                     () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, "x", null, "+999999999-12-31", null));
     assertTrue(farYear.getMessage().startsWith("until_date must be a day written yyyy-MM-dd"), farYear.getMessage());
-    // An IMAP SEARCH date has a four-digit year: a year before 1000 is refused as a day.
-    IllegalArgumentException earlyYear = assertThrows(IllegalArgumentException.class,
-                                                      () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, "x", "0001-01-01", null, null));
-    assertTrue(earlyYear.getMessage().startsWith("since_date must be a day written yyyy-MM-dd"), earlyYear.getMessage());
     verify(emailBoxService, never()).searchEmails(any(), any(EmailSearchCriteria.class), any(), anyInt());
 
     when(emailBoxService.searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), any(), anyInt()))
@@ -324,6 +320,12 @@ class EmailMcpToolTest {
     IllegalArgumentException reversed = assertThrows(IllegalArgumentException.class,
                                                      () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, null, "2026-10-21", "2026-10-19", null));
     assertEquals("until_date must be the same day as since_date or a later one.", reversed.getMessage());
+    Mockito.doThrow(new IllegalArgumentException("emailConnector.search.invalidDate"))
+           .when(emailBoxService)
+           .searchEmails(eq(USERNAME), any(EmailSearchCriteria.class), any(), anyInt());
+    IllegalArgumentException outOfYears = assertThrows(IllegalArgumentException.class,
+                                                       () -> emailMcpTool.searchEmails(null, null, null, null, null, null, null, null, "0001-01-01", null, null));
+    assertEquals("since_date and until_date must be days of a year from 1900 to 9999.", outOfYears.getMessage());
   }
 
   @Test

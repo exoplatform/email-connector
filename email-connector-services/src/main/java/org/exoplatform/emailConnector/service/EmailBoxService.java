@@ -590,6 +590,13 @@ public class EmailBoxService {
   // (EmailConnectorMailBoxSearchCriteria.js).
   static final int                SEARCH_MAX_ATTACHMENT_NAME_LENGTH                           = 100;
 
+  // The years a search's day may fall in (EXO-91675): an IMAP SEARCH date carries a
+  // four-digit year, which JavaMail writes from a GregorianCalendar -- Julian before
+  // 1582, so the floor stays well past it.
+  static final int                SEARCH_MIN_YEAR                                             = 1900;
+
+  static final int                SEARCH_MAX_YEAR                                             = 9999;
+
   /** How much of a message to quote when the search matched nothing in its body. */
   private static final int        EXCERPT_LENGTH                                              = 180;
 
@@ -7642,7 +7649,8 @@ public class EmailBoxService {
    *
    * @param criteria the criteria
    * @throws IllegalArgumentException {@code emailConnector.search.invalidDate} for a day
-   *           the caller sent that is not yyyy-MM-dd,
+   *           the caller sent that is not yyyy-MM-dd, or whose year is outside
+   *           {@value #SEARCH_MIN_YEAR}..{@value #SEARCH_MAX_YEAR},
    *           {@code emailConnector.search.invalidSinceDays} for a
    *           negative window -- a future-dated lower bound that would match nothing,
    *           silently -- {@code emailConnector.search.invalidDateRange} when the day
@@ -7651,7 +7659,7 @@ public class EmailBoxService {
    *           search
    */
   static void validateSearchCriteria(EmailSearchCriteria criteria) {
-    if (criteria.isInvalidDay()) {
+    if (criteria.isInvalidDay() || !isSearchableDay(criteria.getAfter()) || !isSearchableDay(criteria.getBefore())) {
       throw new IllegalArgumentException("emailConnector.search.invalidDate");
     }
     if (criteria.getSinceDays() != null && criteria.getSinceDays() < 0) {
@@ -7663,6 +7671,17 @@ public class EmailBoxService {
     if (!criteria.hasCriterion()) {
       throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
     }
+  }
+
+  /**
+   * Whether a day can bound an IMAP SEARCH: none, or one of a year from
+   * {@value #SEARCH_MIN_YEAR} to {@value #SEARCH_MAX_YEAR}.
+   *
+   * @param day the day, may be null
+   * @return false for a day of any other year
+   */
+  private static boolean isSearchableDay(LocalDate day) {
+    return day == null || day.getYear() >= SEARCH_MIN_YEAR && day.getYear() <= SEARCH_MAX_YEAR;
   }
 
   /**
