@@ -39,5 +39,11 @@ public enum DocumentRefusalReason {
   UNREADABLE,
 
   /** The Documents add-on is not deployed, so no document can be read. */
-  DOCUMENTS_UNAVAILABLE
+  DOCUMENTS_UNAVAILABLE,
+
+  /**
+   * Writing a file onto the draft failed, on this document or on one before it: the
+   * file may be on the draft anyway, which its attachments tell.
+   */
+  FAILED
 }
