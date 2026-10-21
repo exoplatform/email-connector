@@ -1082,10 +1082,13 @@ public class EmailBoxRest {
                                         emailSecurityService.settingsFingerprint(request.getRemoteUser()),
                                         email)
           + "\"";
+      // The 304 carries the 200's Cache-Control: a cache updates the stored answer's
+      // headers from it, so the copy stays private and revalidated on every read.
+      CacheControl cacheControl = CacheControl.noCache().cachePrivate();
       if (ifNoneMatch != null && ifNoneMatch.replace("W/", "").equals(eTag)) {
-        return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
+        return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).cacheControl(cacheControl).build();
       }
-      return ResponseEntity.ok().eTag(eTag).cacheControl(CacheControl.noCache().cachePrivate()).body(email);
+      return ResponseEntity.ok().eTag(eTag).cacheControl(cacheControl).body(email);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {

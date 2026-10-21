@@ -48,6 +48,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -146,6 +147,9 @@ public class EmailBoxRestTest {
   private static final String SIMPLE_USER    = "simple";
 
   private static final String TEST_PASSWORD  = "testPassword";
+
+  /** The Cache-Control a mail read answers with, on a 200 and on a 304 alike. */
+  private static final String READ_CACHE_CONTROL = "no-cache, private";
 
   static final ObjectMapper   OBJECT_MAPPER;
 
@@ -546,11 +550,13 @@ public class EmailBoxRestTest {
 
     String held = mockMvc.perform(get(EMAIL_BOX_PATH + "/7").with(testSimpleUser()))
                          .andExpect(status().isOk())
+                         .andExpect(header().string(HttpHeaders.CACHE_CONTROL, READ_CACHE_CONTROL))
                          .andReturn()
                          .getResponse()
                          .getHeader(HttpHeaders.ETAG);
     mockMvc.perform(get(EMAIL_BOX_PATH + "/7").header("If-None-Match", held).with(testSimpleUser()))
-           .andExpect(status().isNotModified());
+           .andExpect(status().isNotModified())
+           .andExpect(header().string(HttpHeaders.CACHE_CONTROL, READ_CACHE_CONTROL));
 
     email.setRead(true);
     held = assertReadAnswersAFreshCopy(held);
@@ -571,12 +577,14 @@ public class EmailBoxRestTest {
   private String assertReadAnswersAFreshCopy(String held) throws Exception {
     String fresh = mockMvc.perform(get(EMAIL_BOX_PATH + "/7").header("If-None-Match", held).with(testSimpleUser()))
                           .andExpect(status().isOk())
+                          .andExpect(header().string(HttpHeaders.CACHE_CONTROL, READ_CACHE_CONTROL))
                           .andReturn()
                           .getResponse()
                           .getHeader(HttpHeaders.ETAG);
     assertNotEquals(held, fresh);
     mockMvc.perform(get(EMAIL_BOX_PATH + "/7").header("If-None-Match", fresh).with(testSimpleUser()))
-           .andExpect(status().isNotModified());
+           .andExpect(status().isNotModified())
+           .andExpect(header().string(HttpHeaders.CACHE_CONTROL, READ_CACHE_CONTROL));
     return fresh;
   }
 
